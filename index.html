@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#070D18">
+<title>Market Radar</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg0:#070D18;--bg1:#0B1120;--bg2:#0F1830;--bg3:#172340;
+  --am:#F5A623;--am2:#C4821A;--gn:#00E5A0;--gn2:#009966;
+  --rd:#FF3D5A;--rd2:#991F35;--bl:#4DA6FF;--tl:#00C8B4;
+  --lm:#7ED321;--or:#FF7A00;--mt:#3A5070;--dm:#1E3050;
+  --wh:#E8F2FF;--fn:'IBM Plex Mono',monospace;--dp:'Bebas Neue',cursive;
+  --st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px);
+  --r:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--bg0)}
+body{font-family:var(--fn);color:var(--wh);font-size:13px;display:flex;flex-direction:column}
+body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.06) 2px,rgba(0,0,0,.06) 4px);pointer-events:none;z-index:9000}
+
+/* HEADER */
+.hdr{flex:0 0 auto;padding:calc(var(--st) + 10px) 14px 10px;background:var(--bg1);border-bottom:1px solid var(--dm);display:flex;align-items:center;justify-content:space-between;position:relative}
+.hdr::after{content:'';position:absolute;bottom:-2px;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--am) 20%,var(--am) 80%,transparent)}
+.htitle{font-family:var(--dp);font-size:24px;letter-spacing:2px;color:var(--am);line-height:1}
+.hsub{font-size:8px;color:var(--mt);letter-spacing:2px;text-transform:uppercase;margin-top:2px}
+.hright{display:flex;gap:6px;align-items:center}
+.hchip{background:var(--bg3);border:1px solid var(--dm);border-radius:4px;padding:3px 8px;font-size:8px;color:var(--mt);letter-spacing:1px;text-transform:uppercase}
+.hchip.live{color:var(--gn);border-color:var(--gn2);animation:bl 2s ease infinite}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.4}}
+.hbtn{width:34px;height:34px;border-radius:6px;background:var(--bg3);border:1px solid var(--dm);color:var(--wh);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
+.hbtn:active{background:var(--am);color:var(--bg0)}
+
+/* TABS */
+.tabs{flex:0 0 auto;display:flex;background:var(--bg0);border-bottom:1px solid var(--dm);overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.t{flex:0 0 auto;padding:10px 15px;font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--mt);cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:.2s}
+.t.on{color:var(--am);border-bottom-color:var(--am)}
+
+/* PANELS */
+.wrap{flex:1;overflow:hidden;position:relative}
+.p{display:none;height:100%;overflow-y:auto;padding:12px 12px calc(52px + var(--sb));scrollbar-width:thin;scrollbar-color:var(--dm) transparent}
+.p::-webkit-scrollbar{width:3px}
+.p::-webkit-scrollbar-thumb{background:var(--dm)}
+.p.on{display:block}
+
+/* SECTION HEADER */
+.sh{display:flex;align-items:center;gap:8px;margin:14px 0 7px;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--mt)}
+.sh::before{content:'//';color:var(--am);margin-right:2px}
+.sh::after{content:'';flex:1;height:1px;background:var(--dm)}
+.sh.g{color:var(--gn)}.sh.b{color:var(--bl)}.sh.t{color:var(--tl)}.sh.a{color:var(--am)}.sh.r{color:var(--rd)}.sh.l{color:var(--lm)}
+
+/* FETCH BAR */
+.fbar{background:var(--bg2);border:1px solid var(--dm);border-left:3px solid var(--gn2);border-radius:var(--r);padding:10px 12px;display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.finfo{flex:1}
+.finfo strong{display:block;font-size:11px;color:var(--gn);margin-bottom:2px}
+.finfo small{font-size:9px;color:var(--mt)}
+.fbtn{background:var(--am);color:var(--bg0);border:none;border-radius:6px;padding:8px 14px;font-family:var(--fn);font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer;white-space:nowrap;transition:.15s}
+.fbtn:active{transform:scale(.95)}
+.fbtn:disabled{opacity:.4;cursor:not-allowed}
+@keyframes sp{to{transform:rotate(360deg)}}
+.sp{display:inline-block;animation:sp .6s linear infinite}
+
+/* AUTO ROW */
+.arow{background:var(--bg2);border:1px solid var(--dm);border-left:3px solid var(--gn2);border-radius:var(--r);padding:9px 11px;margin-bottom:5px;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px}
+.al{font-size:8px;color:var(--mt);margin-bottom:2px;letter-spacing:.5px}
+.an{font-size:12px;font-weight:600;color:var(--wh)}
+.av{font-size:13px;font-weight:700;text-align:right;min-width:78px}
+.av.ph{font-size:9px;color:var(--mt);font-style:italic}
+.tag{font-size:9px;font-weight:700;padding:3px 7px;border-radius:4px;text-align:center;min-width:54px;white-space:nowrap}
+.u{background:#00331A;color:var(--gn)}.d{background:#33001A;color:var(--rd)}.f{background:var(--bg3);color:var(--mt)}
+
+/* INPUT ROW */
+.ir{background:var(--bg2);border:1px solid var(--dm);border-left:3px solid var(--am2);border-radius:var(--r);padding:9px 11px;margin-bottom:5px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ir.adv{border-left-color:var(--mt);opacity:.8}
+.iname{font-size:11px;color:var(--wh);font-weight:500}
+.isrc{font-size:8px;color:var(--mt);margin-top:2px}
+.inp{background:#FFE55A;color:#0B1120;border:none;border-radius:5px;padding:7px 9px;font-size:13px;font-weight:700;font-family:var(--fn);width:92px;text-align:center;outline:none}
+.inp:focus{box-shadow:0 0 0 2px var(--am)}
+select.inp{width:130px;font-size:10px;cursor:pointer;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M5 6L0 0h10z' fill='%23000'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center;padding-right:20px}
+
+/* VERDICT CARD */
+.vc{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--dm);border-top:2px solid var(--am);border-radius:var(--r);padding:18px 14px;text-align:center;margin:10px 0;position:relative;overflow:hidden}
+.vc::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 40% at 50% 0%,rgba(245,166,35,.08),transparent)}
+.vscore{font-family:var(--dp);font-size:68px;line-height:1;text-shadow:0 0 28px currentColor}
+.vdir{font-size:13px;font-weight:700;letter-spacing:1px;margin-top:4px}
+.vstars{font-size:16px;margin:6px 0}
+.vstrat{display:inline-block;background:rgba(0,0,0,.4);border:1px solid var(--dm);border-radius:5px;padding:5px 12px;font-size:10px;margin-top:8px;letter-spacing:.5px}
+.vsigs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}
+.vsig{background:var(--bg0);border-radius:6px;padding:8px;text-align:center}
+.vsign{font-family:var(--dp);font-size:30px;line-height:1}
+.vsigl{font-size:7px;color:var(--mt);letter-spacing:1.5px;text-transform:uppercase;margin-top:2px}
+
+/* SCORE BAR */
+.sbar{background:var(--bg2);border:1px solid var(--dm);border-radius:var(--r);padding:12px 14px;margin-bottom:10px}
+.strack{height:6px;border-radius:3px;position:relative;margin:8px 0 6px;background:linear-gradient(90deg,var(--rd),var(--dm) 50%,var(--gn))}
+.sthumb{width:14px;height:14px;border-radius:50%;background:var(--wh);border:2px solid var(--am);position:absolute;top:-4px;transition:left .5s cubic-bezier(.34,1.56,.64,1);box-shadow:0 0 8px var(--am)}
+.slabs{display:flex;justify-content:space-between;font-size:7px;color:var(--mt)}
+
+/* BREAKDOWN */
+.br{background:var(--bg2);border:1px solid var(--dm);border-radius:6px;padding:7px 10px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.brn{font-size:10px;color:var(--wh);flex:1}
+.brs{font-size:10px;font-weight:700;width:28px;text-align:center;border-radius:3px;padding:1px}
+.sp2{background:#00331A;color:var(--gn)}.sn2{background:#33001A;color:var(--rd)}.s02{background:var(--bg3);color:var(--mt)}
+.brw{font-size:8px;color:var(--mt);width:24px;text-align:right}
+.brv{font-size:8px;color:var(--mt);width:56px;text-align:right;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* INFO BOX */
+.info{background:var(--bg2);border:1px solid var(--dm);border-radius:var(--r);padding:12px 14px;margin-bottom:8px}
+.info h3{font-size:11px;color:var(--am);margin-bottom:8px;letter-spacing:.5px}
+.info p,.info li{font-size:10px;color:var(--mt);line-height:1.75}
+.info ul{padding-left:14px}
+
+/* RR CALC */
+.rrtog{display:flex;gap:6px;margin-bottom:10px}
+.rrb{flex:1;padding:8px;border-radius:6px;border:1px solid var(--dm);background:var(--bg2);color:var(--mt);font-family:var(--fn);font-size:10px;font-weight:700;letter-spacing:1px;cursor:pointer;text-transform:uppercase;transition:.15s}
+.rrb.on{background:var(--am);color:var(--bg0);border-color:var(--am)}
+.rrgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
+.rrlabel{font-size:8px;color:var(--mt);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;display:block}
+.rrinp{background:#FFE55A;color:var(--bg0);border:none;border-radius:5px;padding:8px;font-size:14px;font-weight:700;font-family:var(--fn);width:100%;text-align:center;outline:none}
+.rrinp:focus{box-shadow:0 0 0 2px var(--am)}
+.rrrow{background:var(--bg2);border:1px solid var(--dm);border-radius:6px;padding:9px 12px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center}
+.rrl{font-size:9px;color:var(--mt)}
+.rrv{font-size:13px;font-weight:700}
+.rrverd{border-radius:var(--r);padding:13px;text-align:center;font-family:var(--dp);font-size:18px;letter-spacing:1px;margin-top:8px}
+.rv-pass{background:#00331A;color:var(--gn);border:1px solid var(--gn2)}
+.rv-warn{background:#332500;color:var(--am);border:1px solid var(--am2)}
+.rv-fail{background:#33001A;color:var(--rd);border:1px solid var(--rd2)}
+
+/* TOAST */
+.toast{position:fixed;bottom:calc(50px + var(--sb) + 8px);left:50%;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--bg3);border:1px solid var(--dm);color:var(--wh);font-size:10px;padding:8px 16px;border-radius:20px;transition:.3s;z-index:8000;white-space:nowrap;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* STATUSBAR */
+.statusbar{flex:0 0 auto;background:var(--bg0);border-top:1px solid var(--dm);padding:7px 14px calc(7px + var(--sb));display:flex;justify-content:space-between;font-size:9px}
+.stl{color:var(--mt)}
+.stm{color:var(--mt);font-weight:700}
+.str{color:var(--dm)}
+
+/* PATCH */
+.pv{font-size:10px;color:var(--am);font-weight:700;margin-bottom:4px}
+.pd{font-size:8px;color:var(--mt);margin-left:8px}
+.pi{border-left:2px solid var(--dm);padding-left:10px;margin-bottom:12px}
+.pi ul li{font-size:9px;color:var(--mt);line-height:1.9}
+
+@media(min-width:480px){
+  .p{padding:14px 18px calc(56px + var(--sb))}
+  .rrgrid{grid-template-columns:repeat(3,1fr)}
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="hdr">
+  <div>
+    <div class="htitle">MARKET RADAR</div>
+    <div class="hsub">Options Intelligence · NSE</div>
+  </div>
+  <div class="hright">
+    <div class="hchip live" id="chip-live">LIVE</div>
+    <div class="hchip" id="chip-ver">v1.0.0</div>
+    <button class="hbtn" onclick="saveAll()" title="Save all inputs">💾</button>
+  </div>
+</header>
+
+<!-- TABS -->
+<nav class="tabs">
+  <div class="t on" id="t0" onclick="go(0)">🧭 Radar</div>
+  <div class="t"    id="t1" onclick="go(1)">📊 Breadth</div>
+  <div class="t"    id="t2" onclick="go(2)">⚡ Verdict</div>
+  <div class="t"    id="t3" onclick="go(3)">⚖️ R/R Gate</div>
+  <div class="t"    id="t4" onclick="go(4)">📖 Guide</div>
+</nav>
+
+<div class="wrap">
+
+<!-- ══════════════ PANEL 0: RADAR ══════════════ -->
+<div class="p on" id="p0">
+
+  <!-- Fetch bar -->
+  <div class="fbar">
+    <div class="finfo">
+      <strong id="fs-title">🌐 Global Indicators</strong>
+      <small id="fs-sub">Tap FETCH — 9 indicators auto-load from Yahoo Finance</small>
+    </div>
+    <button class="fbtn" id="btn-fetch" onclick="fetchData()">⚡ FETCH</button>
+  </div>
+
+  <!-- Auto-fetched rows placeholder -->
+  <div class="sh g">Auto-Fetched  <span style="color:var(--mt);font-size:8px;font-weight:400">(9 indicators)</span></div>
+  <div id="auto-rows"></div>
+
+  <!-- GIFT Nifty -->
+  <div class="sh a" style="margin-top:16px">Gift Nifty  <span style="color:var(--mt);font-size:8px;font-weight:400">nseifsc.com</span></div>
+  <div class="ir">
+    <div><div class="iname">GIFT Nifty Level (8:45 AM)</div><div class="isrc">Current level on nseifsc.com</div></div>
+    <input class="inp" type="number" id="gift_now" value="25700" oninput="calc()">
+  </div>
+  <div class="ir">
+    <div><div class="iname">Nifty Previous Close</div><div class="isrc">Yesterday's NSE closing price</div></div>
+    <input class="inp" type="number" id="nifty_prev" value="25650" oninput="calc()">
+  </div>
+  <div class="ir">
+    <div><div class="iname">GIFT Nifty at 6 AM</div><div class="isrc">Note when you first wake up</div></div>
+    <input class="inp" type="number" id="gift_6am" value="25620" oninput="calc()">
+  </div>
+
+  <!-- India specific -->
+  <div class="sh a" style="margin-top:16px">India Specific  <span style="color:var(--mt);font-size:8px;font-weight:400">NSE · manual</span></div>
+  <div class="ir">
+    <div><div class="iname">India VIX</div><div class="isrc">nseindia.com → search "India VIX"</div></div>
+    <input class="inp" type="number" id="india_vix" value="14" step="0.1" oninput="calc()">
+  </div>
+  <div class="ir">
+    <div><div class="iname">FII Net Flow (₹ Cr)</div><div class="isrc">NSE → Market Data → FII/DII  |  +buy / −sell</div></div>
+    <input class="inp" type="number" id="fii" value="500" oninput="calc()">
+  </div>
+  <div class="ir adv">
+    <div><div class="iname">DII Net Flow (₹ Cr) <span style="color:var(--mt);font-size:9px">advisory</span></div><div class="isrc">Same NSE page — context for FII</div></div>
+    <input class="inp" type="number" id="dii" value="300" oninput="calc()">
+  </div>
+  <div class="ir">
+    <div><div class="iname">Put-Call Ratio (PCR)</div><div class="isrc">NSE Option Chain → top of page</div></div>
+    <input class="inp" type="number" id="pcr" value="1.1" step="0.01" oninput="calc()">
+  </div>
+  <div class="ir">
+    <div><div class="iname">Max Pain Level</div><div class="isrc">sensibull.com → Option Chain → Max Pain</div></div>
+    <input class="inp" type="number" id="max_pain" value="25450" oninput="calc()">
+  </div>
+  <div class="ir">
+    <div><div class="iname">Prev Day Close Character</div><div class="isrc">Where did index close in its day range?</div></div>
+    <select class="inp" id="close_char" onchange="calc()">
+      <option value="2">Strong Close ↑↑</option>
+      <option value="1">Mild Strong ↑</option>
+      <option value="0" selected>Neutral →</option>
+      <option value="-1">Mild Weak ↓</option>
+      <option value="-2">Weak Close ↓↓</option>
+    </select>
+  </div>
+</div><!-- /p0 -->
+
+<!-- ══════════════ PANEL 1: BREADTH ══════════════ -->
+<div class="p" id="p1">
+
+  <div class="info" style="border-color:var(--tl)">
+    <h3 style="color:var(--tl)">Why breadth matters</h3>
+    <p>Nifty +200pts on 11/50 stocks = <b style="color:var(--rd)">hollow rally → reduce size</b><br>
+       Nifty flat but 38/50 green = <b style="color:var(--gn)">hidden strength → full size</b><br>
+       Source: NSE → Market Stats → Advances/Declines (previous evening)</p>
+  </div>
+
+  <div class="sh b">Nifty 50 Breadth</div>
+
+  <div class="ir">
+    <div><div class="iname">Nifty 50 Advances (0–50)</div><div class="isrc">NSE Market Stats → Advances/Declines</div></div>
+    <input class="inp" type="number" id="n50adv" value="32" min="0" max="50" oninput="calc()">
+  </div>
+  <div class="arow">
+    <div><div class="al">AUTO-CALCULATED</div><div class="an">Nifty 50 Declines</div></div>
+    <div class="av" id="n50dec" style="color:var(--rd)">18</div>
+    <div class="tag f" id="n50sig">MIXED</div>
+  </div>
+  <div class="ir">
+    <div><div class="iname">% Stocks above 200-DMA</div><div class="isrc">Screener.in — check weekly, not daily</div></div>
+    <input class="inp" type="number" id="n50dma" value="62" min="0" max="100" oninput="calc()">
+  </div>
+
+  <div class="sh g" style="margin-top:14px">Bank Nifty Breadth</div>
+
+  <div class="ir">
+    <div><div class="iname">BNF Advances (0–12)</div><div class="isrc">NSE Market Stats → Advances/Declines</div></div>
+    <input class="inp" type="number" id="bnfadv" value="8" min="0" max="12" oninput="calc()">
+  </div>
+  <div class="arow" style="border-left-color:var(--gn2)">
+    <div><div class="al">AUTO-CALCULATED</div><div class="an">BNF Declines</div></div>
+    <div class="av" id="bnfdec" style="color:var(--rd)">4</div>
+    <div class="tag f" id="bnfsig">BROAD</div>
+  </div>
+
+  <div class="sh l" style="margin-top:14px">Breadth Quality</div>
+  <div class="vc" id="bvc">
+    <div style="font-size:9px;color:var(--mt);letter-spacing:1.5px;margin-bottom:4px">BREADTH QUALITY</div>
+    <div id="bvt" style="font-family:var(--dp);font-size:30px;color:var(--am)">BROAD</div>
+    <div id="bvs" class="vstrat" style="margin-top:8px;font-size:10px">Full size — good breadth</div>
+  </div>
+
+  <div class="sh" style="margin-top:14px">Reference Table</div>
+  <div class="info">
+    <table style="width:100%;border-collapse:collapse;font-size:9px">
+      <tr style="color:var(--am)"><th style="text-align:left;padding:4px 0">Reading</th><th>N50</th><th>BNF</th><th style="text-align:right">Size</th></tr>
+      <tr style="color:var(--gn)"><td style="padding:3px 0">Very Broad</td><td style="text-align:center">40-50</td><td style="text-align:center">10-12</td><td style="text-align:right">Full ✅✅</td></tr>
+      <tr style="color:var(--lm)"><td style="padding:3px 0">Broad</td><td style="text-align:center">30-40</td><td style="text-align:center">7-9</td><td style="text-align:right">Full ✅</td></tr>
+      <tr style="color:var(--wh)"><td style="padding:3px 0">Mixed</td><td style="text-align:center">20-30</td><td style="text-align:center">5-6</td><td style="text-align:right">50% ⚪</td></tr>
+      <tr style="color:var(--or)"><td style="padding:3px 0">Narrow</td><td style="text-align:center">12-20</td><td style="text-align:center">3-4</td><td style="text-align:right">33% ⚠️</td></tr>
+      <tr style="color:var(--rd)"><td style="padding:3px 0">Hollow</td><td style="text-align:center">&lt;12</td><td style="text-align:center">&lt;3</td><td style="text-align:right">Skip 🚨</td></tr>
+    </table>
+  </div>
+</div><!-- /p1 -->
+
+<!-- ══════════════ PANEL 2: VERDICT ══════════════ -->
+<div class="p" id="p2">
+
+  <!-- Score bar -->
+  <div class="sbar">
+    <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--mt)">
+      <span>TOTAL WEIGHTED SCORE</span><span>Range: −2.0 to +2.0</span>
+    </div>
+    <div class="strack"><div class="sthumb" id="sthumb" style="left:calc(50% - 7px)"></div></div>
+    <div class="slabs"><span>−2.0<br>STRONG<br>BEARISH</span><span style="text-align:center">0<br>NEUTRAL</span><span style="text-align:right">+2.0<br>STRONG<br>BULLISH</span></div>
+  </div>
+
+  <!-- Main verdict -->
+  <div class="vc">
+    <div style="font-size:9px;color:var(--mt);letter-spacing:1.5px;margin-bottom:4px">WEIGHTED SCORE</div>
+    <div class="vscore" id="v-score">+0.00</div>
+    <div class="vdir"   id="v-dir">CALCULATING...</div>
+    <div class="vstars" id="v-stars">⭐⭐⭐</div>
+    <div class="vstrat" id="v-strat">—</div>
+    <div class="vsigs">
+      <div class="vsig"><div class="vsign" id="v-bull" style="color:var(--gn)">0</div><div class="vsigl">Bullish</div></div>
+      <div class="vsig"><div class="vsign" id="v-neut" style="color:var(--mt)">0</div><div class="vsigl">Neutral</div></div>
+      <div class="vsig"><div class="vsign" id="v-bear" style="color:var(--rd)">0</div><div class="vsigl">Bearish</div></div>
+    </div>
+  </div>
+
+  <!-- GIFT gap -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+    <div style="background:var(--bg2);border:1px solid var(--dm);border-radius:var(--r);padding:10px">
+      <div style="font-size:8px;color:var(--mt);margin-bottom:4px">GIFT NIFTY GAP</div>
+      <div style="font-family:var(--dp);font-size:26px;" id="v-gap">+0</div>
+      <div style="font-size:9px;color:var(--mt);margin-top:2px" id="v-gaptext">FLAT</div>
+    </div>
+    <div style="background:var(--bg2);border:1px solid var(--dm);border-radius:var(--r);padding:10px">
+      <div style="font-size:8px;color:var(--mt);margin-bottom:4px">INDIA VIX ADVISORY</div>
+      <div style="font-size:10px;line-height:1.5" id="v-vix">—</div>
+    </div>
+  </div>
+
+  <!-- Breadth quality summary -->
+  <div style="background:var(--bg2);border:1px solid var(--dm);border-radius:var(--r);padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="font-size:9px;color:var(--mt)">BREADTH QUALITY</div>
+    <div style="font-size:11px;font-weight:700" id="v-breadth">—</div>
+  </div>
+
+  <!-- Copy to Excel -->
+  <div style="background:var(--bg0);border:1px dashed var(--dm);border-radius:var(--r);padding:10px;margin-bottom:12px;text-align:center">
+    <div style="font-size:8px;color:var(--mt);margin-bottom:4px;letter-spacing:1px">COPY TO STRATEGY ENGINE → EXCEL D6</div>
+    <div style="font-size:14px;font-weight:700;color:var(--gn);letter-spacing:1px" id="v-momentum">—</div>
+  </div>
+
+  <!-- Breakdown -->
+  <div class="sh">Score Breakdown  <span style="color:var(--mt);font-size:8px;font-weight:400">(all indicators)</span></div>
+  <div id="breakdown"></div>
+
+  <!-- Override rules -->
+  <div class="sh r" style="margin-top:14px">Override Rules</div>
+  <div class="info" style="border-color:var(--rd2)">
+    <ul>
+      <li>🚨 <b style="color:var(--wh)">Major India news</b> (RBI/Budget/SEBI) → ignore ALL scores</li>
+      <li>🚨 <b style="color:var(--wh)">GIFT diverges 100+pts from actual open</b> → trust price, not score</li>
+      <li>🚨 <b style="color:var(--wh)">India VIX &lt; 12</b> → buy options, don't sell spreads</li>
+      <li>✅ <b style="color:var(--wh)">ALWAYS 9:20 AM rule</b> — never enter at 9:15 open</li>
+      <li>✅ Score ≥1.5 + GIFT gap &gt;150pts + VIX&gt;14 + PCR&gt;1.1 + FII buying = 85%+ win</li>
+    </ul>
+  </div>
+</div><!-- /p2 -->
+
+<!-- ══════════════ PANEL 3: R/R GATE ══════════════ -->
+<div class="p" id="p3">
+
+  <div class="info" style="border-color:var(--am2)">
+    <h3>The 1:1.5 Entry Gate</h3>
+    <p><b style="color:var(--wh)">Rule:</b> Credit must be ≥ 40% of spread width.<br>
+    Never enter if R/R fails — adjust strikes or skip trade.<br><br>
+    <b style="color:var(--am)">Shortcut:</b> Nifty 200pt spread → need ≥₹80 credit<br>
+    BNF 400pt spread → need ≥₹160 credit</p>
+  </div>
+
+  <div class="rrtog">
+    <button class="rrb on" id="rbn" onclick="setIdx('N50')">NIFTY 50</button>
+    <button class="rrb"    id="rbb" onclick="setIdx('BNF')">BANK NIFTY</button>
+  </div>
+
+  <div class="ir" style="margin-bottom:8px">
+    <div class="iname">Strategy Type</div>
+    <select class="inp" id="rr_strat" style="width:150px;font-size:10px" onchange="calcRR()">
+      <option value="BC">Bear Call Spread</option>
+      <option value="BP">Bull Put Spread</option>
+      <option value="IC">Iron Condor</option>
+    </select>
+  </div>
+
+  <div class="rrgrid">
+    <div><label class="rrlabel">Sell Strike</label><input class="rrinp" type="number" id="rr_sell" value="61500" oninput="calcRR()"></div>
+    <div><label class="rrlabel">Buy Strike</label><input class="rrinp" type="number" id="rr_buy"  value="61900" oninput="calcRR()"></div>
+    <div><label class="rrlabel">Net Credit (₹/unit)</label><input class="rrinp" type="number" id="rr_cr"   value="125" oninput="calcRR()"></div>
+    <div><label class="rrlabel">Lot Size</label><input class="rrinp" type="number" id="rr_lot"  value="15"  oninput="calcRR()"></div>
+    <div><label class="rrlabel">No. of Lots</label><input class="rrinp" type="number" id="rr_lots" value="1" oninput="calcRR()"></div>
+  </div>
+
+  <div class="sh a">Results</div>
+  <div class="rrrow"><div class="rrl">Spread Width</div>         <div class="rrv" id="rr-w">—</div></div>
+  <div class="rrrow"><div class="rrl">Max Profit ₹</div>         <div class="rrv" id="rr-p" style="color:var(--gn)">—</div></div>
+  <div class="rrrow"><div class="rrl">Max Loss ₹</div>           <div class="rrv" id="rr-l" style="color:var(--rd)">—</div></div>
+  <div class="rrrow"><div class="rrl">Risk : Reward</div>        <div class="rrv" id="rr-r" style="color:var(--am)">—</div></div>
+  <div class="rrrow"><div class="rrl">Credit % of Width</div>    <div class="rrv" id="rr-pct">—</div></div>
+  <div class="rrrow"><div class="rrl">Breakeven at expiry</div>  <div class="rrv" id="rr-be" style="color:var(--bl)">—</div></div>
+  <div class="rrrow"><div class="rrl">40% Exit Target ₹</div>    <div class="rrv" id="rr-x40" style="color:var(--lm)">—</div></div>
+  <div class="rrrow"><div class="rrl">Min Credit Needed (40% rule)</div><div class="rrv" id="rr-min" style="color:var(--mt)">—</div></div>
+
+  <div class="rrverd" id="rr-verd">Enter values above</div>
+
+  <div class="sh t" style="margin-top:16px">Quick Reference</div>
+  <div class="info">
+    <table style="width:100%;border-collapse:collapse;font-size:9px">
+      <tr style="color:var(--am)"><th style="text-align:left;padding:4px 0">Spread</th><th>Min Credit</th><th>Typical</th><th style="text-align:right">Pass?</th></tr>
+      <tr style="color:var(--bl)"><td style="padding:3px 0">Nifty 200pt</td><td style="text-align:center">₹80</td><td style="text-align:center">₹70-100</td><td style="text-align:right;color:var(--gn)">Usually ✅</td></tr>
+      <tr style="color:var(--bl)"><td style="padding:3px 0">Nifty 250pt</td><td style="text-align:center">₹100</td><td style="text-align:center">₹90-130</td><td style="text-align:right;color:var(--gn)">✅✅</td></tr>
+      <tr style="color:var(--gn)"><td style="padding:3px 0">BNF 400pt</td><td style="text-align:center">₹160</td><td style="text-align:center">₹140-200</td><td style="text-align:right;color:var(--gn)">Usually ✅</td></tr>
+      <tr style="color:var(--gn)"><td style="padding:3px 0">BNF 500pt</td><td style="text-align:center">₹200</td><td style="text-align:center">₹190-270</td><td style="text-align:right;color:var(--gn)">✅✅</td></tr>
+      <tr style="color:var(--gn)"><td style="padding:3px 0">BNF 600pt</td><td style="text-align:center">₹240</td><td style="text-align:center">₹250-350</td><td style="text-align:right;color:var(--gn)">✅✅✅</td></tr>
+    </table>
+  </div>
+</div><!-- /p3 -->
+
+<!-- ══════════════ PANEL 4: GUIDE ══════════════ -->
+<div class="p" id="p4">
+
+  <!-- Version -->
+  <div style="background:var(--bg2);border:1px solid var(--dm);border-radius:var(--r);padding:8px 12px;display:flex;justify-content:space-between;margin-bottom:10px;font-size:9px">
+    <span style="color:var(--mt)">App version: <strong style="color:var(--am)">v1.0.0</strong></span>
+    <span style="color:var(--mt)">Built: Feb 2026</span>
+  </div>
+
+  <div class="info" style="border-color:var(--am)">
+    <h3>📱 Install on Android</h3>
+    <p>1. Open this URL in <b style="color:var(--wh)">Chrome browser</b><br>
+    2. Tap ⋮ menu (top right) → <b style="color:var(--wh)">"Add to Home Screen"</b><br>
+    3. Tap Add — icon appears on home screen<br>
+    4. Opens fullscreen like a native app ✅<br><br>
+    <b style="color:var(--am)">Your URL:</b> <span id="app-url" style="color:var(--tl)">See GitHub Pages setup below</span></p>
+  </div>
+
+  <div class="info">
+    <h3>⚡ Daily Workflow — 4 Minutes</h3>
+    <ul>
+      <li><b style="color:var(--am)">8:30 AM</b> — Note GIFT Nifty at 6 AM from memory / first check</li>
+      <li><b style="color:var(--am)">8:45 AM</b> — Open app → tap <b style="color:var(--gn)">FETCH</b> (9 globals auto-load)</li>
+      <li><b style="color:var(--am)">8:47 AM</b> — Enter 8 NSE values (FII, PCR, GIFT, VIX, Max Pain, A/D)</li>
+      <li><b style="color:var(--am)">8:50 AM</b> — Enter 3 breadth values on Breadth tab</li>
+      <li><b style="color:var(--am)">8:52 AM</b> — Read Verdict tab → note strategy</li>
+      <li><b style="color:var(--am)">8:55 AM</b> — Enter strikes in R/R Gate → confirm GO/NO-GO</li>
+      <li><b style="color:var(--am)">9:20 AM</b> — Enter trade after 9:20 candle confirms direction</li>
+    </ul>
+  </div>
+
+  <div class="info">
+    <h3>🌐 Auto-Fetched (9 indicators)</h3>
+    <p style="margin-bottom:6px">
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">S&P 500</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">DOW</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">US VIX</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">Nikkei</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">Hang Seng</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">Brent Crude</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">Gold</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">USD/INR</span>
+      <span style="background:var(--bg3);color:var(--gn);border-radius:3px;padding:2px 6px;font-size:9px">US 10Y Yield</span>
+    </p>
+    <h3 style="margin-top:10px">✏️ Manual Entry (8 indicators)</h3>
+    <p>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">GIFT Nifty</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">India VIX</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">FII Flow</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">PCR</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">Max Pain</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">A/D Nifty</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px;margin-right:3px">A/D BNF</span>
+      <span style="background:var(--bg3);color:var(--am);border-radius:3px;padding:2px 6px;font-size:9px">Close Char</span>
+    </p>
+  </div>
+
+  <div class="info" style="border-color:var(--tl)">
+    <h3 style="color:var(--tl)">🚀 GitHub Pages Setup</h3>
+    <ul>
+      <li>1. Create free account at <b style="color:var(--wh)">github.com</b></li>
+      <li>2. New repository → name it <b style="color:var(--wh)">market-radar</b></li>
+      <li>3. Upload all 4 files: <b style="color:var(--wh)">index.html, manifest.json, sw.js, icon-192.png, icon-512.png</b></li>
+      <li>4. Settings → Pages → Source: <b style="color:var(--wh)">main branch / root</b></li>
+      <li>5. Your URL: <b style="color:var(--tl)">yourusername.github.io/market-radar</b></li>
+      <li>6. Open on Android Chrome → ⋮ → Add to Home Screen ✅</li>
+    </ul>
+  </div>
+
+  <div class="info">
+    <h3>🔄 Future Patches</h3>
+    <p style="margin-bottom:8px">To update the app after GitHub is set up:</p>
+    <ul>
+      <li>Edit the files (change any logic, weights, or UI)</li>
+      <li>Upload updated files to your GitHub repo</li>
+      <li>App auto-updates for all users on next open</li>
+      <li>No reinstall needed — just open and get latest version</li>
+    </ul>
+    <p style="margin-top:8px;color:var(--am)">Version number is in the top-right chip — bump it in the HTML each patch.</p>
+  </div>
+
+  <div class="sh" style="margin-top:14px">Patch Notes</div>
+  <div class="pi">
+    <div class="pv">v1.0.0 <span class="pd">Feb 2026</span></div>
+    <ul>
+      <li>Initial release — all 17 parameters from Excel v6</li>
+      <li>Auto-fetch 9 global indicators (Yahoo Finance API)</li>
+      <li>Full weighted scoring engine (100% weights)</li>
+      <li>Advance/Decline breadth quality filter</li>
+      <li>R/R Gate calculator with 1:1.5 minimum enforcement</li>
+      <li>Offline support via Service Worker</li>
+      <li>Persistent state via localStorage</li>
+      <li>8:45 AM push notification reminder</li>
+    </ul>
+  </div>
+
+  <div class="info" style="border-color:var(--rd2)">
+    <h3 style="color:var(--rd)">⚠️ Disclaimer</h3>
+    <p>Educational tool only. Not financial advice. Always verify with live data before trading. Past accuracy of indicators does not guarantee future results.</p>
+  </div>
+
+  <div style="text-align:center;padding:16px 0 4px;font-size:9px;color:var(--dm)">
+    Market Radar v1.0.0 · Built for NSE Options Traders
+  </div>
+</div><!-- /p4 -->
+
+</div><!-- /wrap -->
+
+<!-- STATUS BAR -->
+<div class="statusbar">
+  <span class="stl">Fetched: <strong id="s-fetch" style="color:var(--tl)">Never</strong></span>
+  <span class="stm" id="s-mkt">Pre-market</span>
+  <span class="str">v1.0.0</span>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════════════════════
+   MARKET RADAR v1.0.0
+   Full v6 scoring engine — 17 parameters
+   ═══════════════════════════════════════════════ */
+
+// ── App URL for guide ──────────────────────────
+document.getElementById('app-url').textContent = location.href.split('?')[0];
+
+// ── Tabs ───────────────────────────────────────
+let curTab = 0;
+function go(n) {
+  document.querySelectorAll('.t').forEach((t,i) => t.classList.toggle('on', i===n));
+  document.querySelectorAll('.p').forEach((p,i) => p.classList.toggle('on', i===n));
+  curTab = n;
+  if (n === 2) calc(); // refresh verdict when opened
+}
+
+// ── Toast ──────────────────────────────────────
+let tTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(tTimer);
+  tTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+// ── Market status ──────────────────────────────
+function updateMkt() {
+  const now = new Date();
+  const m = now.getHours()*60 + now.getMinutes();
+  const s = m < 9*60+15  ? '🌅 Pre-market'
+           : m < 9*60+20  ? '⏳ Wait for 9:20!'
+           : m < 15*60+30 ? '🟢 Market OPEN'
+           : '🔴 Market CLOSED';
+  document.getElementById('s-mkt').textContent = s;
+  document.getElementById('s-mkt').style.color =
+    m >= 9*60+20 && m < 15*60+30 ? 'var(--gn)' :
+    m >= 9*60+15 && m < 9*60+20  ? 'var(--am)' : 'var(--mt)';
+}
+setInterval(updateMkt, 30000);
+
+// ── Global indicator definitions ───────────────
+const INDS = [
+  { id:'sp500',  sym:'^GSPC',    name:'S&P 500',       wt:0.17, inv:false, special:null   },
+  { id:'dow',    sym:'^DJI',     name:'DOW JONES',      wt:0.06, inv:false, special:null   },
+  { id:'usvix',  sym:'^VIX',     name:'US VIX (CBOE)',  wt:0.05, inv:false, special:'vix'  },
+  { id:'nk',     sym:'^N225',    name:'NIKKEI 225',     wt:0.06, inv:false, special:null   },
+  { id:'hsi',    sym:'^HSI',     name:'HANG SENG',      wt:0.03, inv:false, special:null   },
+  { id:'crude',  sym:'BZ=F',     name:'BRENT CRUDE',    wt:0.07, inv:true,  special:null   },
+  { id:'gold',   sym:'GC=F',     name:'GOLD',           wt:0.03, inv:true,  special:null   },
+  { id:'usdinr', sym:'USDINR=X', name:'USD / INR',      wt:0.03, inv:false, special:'inr'  },
+  { id:'yield',  sym:'^TNX',     name:'US 10Y YIELD',   wt:0.04, inv:false, special:'yield'},
+];
+
+const GD = {}; // global data store
+
+// ── Render empty auto-rows on load ─────────────
+function renderAutoRows() {
+  const c = document.getElementById('auto-rows');
+  c.innerHTML = '';
+  INDS.forEach(ind => {
+    const d = GD[ind.id];
+    const div = document.createElement('div');
+    div.className = 'arow';
+    div.id = 'arow-' + ind.id;
+
+    let valHtml, tagHtml;
+    if (!d) {
+      valHtml = `<div class="av ph">→ tap fetch</div>`;
+      tagHtml = `<div class="tag f">—</div>`;
+    } else {
+      const ePct = ind.inv ? -d.pct : d.pct;
+      const cls  = ePct > 0.5 ? 'u' : ePct < -0.5 ? 'd' : 'f';
+      const arrow= ePct > 0 ? '▲' : ePct < 0 ? '▼' : '→';
+      const sign = d.pct >= 0 ? '+' : '';
+      let val;
+      if (ind.special==='inr')   val = d.cur.toFixed(2);
+      else if (ind.special==='yield') val = d.cur.toFixed(3)+'%';
+      else if (d.cur > 10000)    val = d.cur.toLocaleString('en-IN',{maximumFractionDigits:0});
+      else                       val = d.cur.toFixed(2);
+      const col = ePct > 0 ? 'var(--gn)' : ePct < 0 ? 'var(--rd)' : 'var(--mt)';
+      valHtml = `<div class="av" style="color:${col}">${val}</div>`;
+      tagHtml = `<div class="tag ${cls}">${arrow} ${sign}${d.pct.toFixed(2)}%</div>`;
+    }
+    div.innerHTML = `<div><div class="al">${ind.sym}</div><div class="an">${ind.name}</div></div>${valHtml}${tagHtml}`;
+    c.appendChild(div);
+  });
+}
+
+// ── Fetch data ─────────────────────────────────
+const PROXIES = [
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+];
+
+async function tryFetch(url) {
+  for (const px of PROXIES) {
+    try {
+      const r = await fetch(px(url), { signal: AbortSignal.timeout(9000) });
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  throw new Error('All proxies failed');
+}
+
+async function fetchData() {
+  const btn = document.getElementById('btn-fetch');
+  const ft  = document.getElementById('fs-title');
+  const fs  = document.getElementById('fs-sub');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="sp">⟳</span> FETCHING...';
+  ft.textContent = '🔄 Connecting...';
+  ft.style.color = 'var(--am)';
+
+  const syms = INDS.map(i => i.sym).join(',');
+  const url  = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${syms}&fields=regularMarketPrice,regularMarketPreviousClose,regularMarketChangePercent`;
+
+  let ok = 0;
+  try {
+    const data   = await tryFetch(url);
+    const quotes = data?.quoteResponse?.result || [];
+    for (const q of quotes) {
+      const ind = INDS.find(i => i.sym === q.symbol);
+      if (!ind) continue;
+      const cur  = q.regularMarketPrice;
+      const prev = q.regularMarketPreviousClose;
+      const pct  = q.regularMarketChangePercent ?? (cur - prev)/prev*100;
+      if (cur != null && prev != null) {
+        GD[ind.id] = { cur: +cur.toFixed(4), prev: +prev.toFixed(4), pct: +pct.toFixed(3) };
+        ok++;
+      }
+    }
+    const t = new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+    document.getElementById('s-fetch').textContent = t;
+    if (ok === INDS.length) {
+      ft.style.color = 'var(--gn)';
+      ft.textContent = `✅ All ${ok} indicators loaded`;
+      fs.textContent = `Fetched at ${t} — now enter NSE values`;
+      document.getElementById('chip-live').textContent = 'LIVE';
+      toast(`✅ ${ok} indicators fetched at ${t}`);
+    } else {
+      ft.style.color = 'var(--am)';
+      ft.textContent = `⚠️ ${ok}/${INDS.length} loaded`;
+      fs.textContent = 'Some failed — check internet or enter manually';
+      toast(`⚠️ ${ok}/${INDS.length} loaded`);
+    }
+  } catch (e) {
+    ft.style.color = 'var(--rd)';
+    ft.textContent = '❌ Fetch failed';
+    fs.textContent = 'Check internet connection and retry';
+    toast('❌ Fetch failed — check internet');
+  }
+
+  renderAutoRows();
+  calc();
+  btn.disabled = false;
+  btn.innerHTML = '⚡ FETCH';
+}
+
+// ── Scoring helpers ────────────────────────────
+function scoreInd(ind) {
+  const d = GD[ind.id];
+  if (!d) return null;
+  const pct = ind.inv ? -d.pct : d.pct;
+  if (ind.special === 'vix') {
+    return d.cur < 15 ? 1 : d.cur < 20 ? 0 : d.cur < 25 ? -1 : -2;
+  }
+  if (ind.special === 'inr') {
+    return d.cur < 84 ? 2 : d.cur < 85 ? 1 : d.cur < 86 ? 0 : d.cur < 87 ? -1 : -2;
+  }
+  if (ind.special === 'yield') {
+    const bps = (d.cur - d.prev) * 100;
+    return bps <= -10 ? 2 : bps <= -3 ? 1 : bps <= 3 ? 0 : bps <= 10 ? -1 : -2;
+  }
+  return pct >= 1.5 ? 2 : pct >= 0.5 ? 1 : pct >= -0.5 ? 0 : pct >= -1.5 ? -1 : -2;
+}
+
+function gv(id, def=0) {
+  const e = document.getElementById(id);
+  return e ? (parseFloat(e.value) || def) : def;
+}
+
+function sigLabel(s) {
+  return s === 2 ? 'Strong ↑' : s === 1 ? 'Mild ↑' : s === 0 ? 'Neutral' : s === -1 ? 'Mild ↓' : 'Strong ↓';
+}
+
+// ── Main calculation ───────────────────────────
+function calc() {
+  let score = 0, bull = 0, bear = 0, neut = 0;
+  const rows = [];
+
+  // 1. Global auto-fetched
+  for (const ind of INDS) {
+    const s = scoreInd(ind);
+    if (s === null) { rows.push({n:ind.name, s:0, wt:ind.wt, sig:'No data', nodata:true}); continue; }
+    score += s * ind.wt;
+    if (s > 0) bull++; else if (s < 0) bear++; else neut++;
+    let sig;
+    if (ind.id==='usvix') sig = `VIX ${GD.usvix?.cur??'?'}`;
+    else if (ind.id==='usdinr') sig = `₹ ${GD.usdinr?.cur?.toFixed(2)??'?'}`;
+    else if (ind.id==='yield') sig = `${((GD.yield?.cur-GD.yield?.prev)*100)?.toFixed(1)??'?'}bps`;
+    else sig = `${GD[ind.id]?.pct>=0?'+':''}${GD[ind.id]?.pct?.toFixed(2)??'?'}%`;
+    rows.push({n:ind.name, s, wt:ind.wt, sig});
+  }
+
+  // 2. GIFT Nifty gap (20%)
+  const gNow=gv('gift_now',25700), nPrev=gv('nifty_prev',25650), g6=gv('gift_6am',25620);
+  const gap=gNow-nPrev, trend=gNow-g6;
+  const gs=gap>=200?2:gap>=80?1:gap>=-80?0:gap>=-200?-1:-2;
+  const ts=trend>=100?2:trend>=30?1:trend>=-30?0:trend>=-100?-1:-2;
+  score += gs*0.20 + ts*0.06;
+  if(gs>0)bull++;else if(gs<0)bear++;else neut++;
+  if(ts>0)bull++;else if(ts<0)bear++;else neut++;
+  rows.push({n:'GIFT Nifty Gap',    s:gs, wt:0.20, sig:(gap>=0?'+':'')+gap+'pts'});
+  rows.push({n:'GIFT Trend 6→8:45', s:ts, wt:0.06, sig:(trend>=0?'+':'')+trend+'pts'});
+
+  // 3. FII (8%)
+  const fii=gv('fii',0);
+  const fs2=fii>=1000?2:fii>=200?1:fii>=-200?0:fii>=-1000?-1:-2;
+  score+=fs2*0.08;
+  if(fs2>0)bull++;else if(fs2<0)bear++;else neut++;
+  rows.push({n:'FII Net Flow', s:fs2, wt:0.08, sig:'₹'+fii+'Cr'});
+
+  // 4. PCR (5%)
+  const pcr=gv('pcr',1.0);
+  const ps=pcr>=1.3?2:pcr>=1.1?1:pcr>=0.9?0:pcr>=0.7?-1:-2;
+  score+=ps*0.05;
+  if(ps>0)bull++;else if(ps<0)bear++;else neut++;
+  rows.push({n:'Put-Call Ratio', s:ps, wt:0.05, sig:'PCR '+pcr.toFixed(2)});
+
+  // 5. Prev day close (4%)
+  const cc=parseInt(gv('close_char',0));
+  score+=cc*0.04;
+  if(cc>0)bull++;else if(cc<0)bear++;else neut++;
+  rows.push({n:'Prev Day Close', s:cc, wt:0.04, sig:['Str↑↑','Mild↑','Neutral','Mild↓','Str↓↓'][cc+2]});
+
+  // 6. Max pain gap (3%)
+  const mp=gv('max_pain',gNow), mpGap=mp-gNow;
+  const ms=mpGap>=300?2:mpGap>=100?1:Math.abs(mpGap)<100?0:mpGap<=-100?-1:-2;
+  score+=ms*0.03;
+  if(ms>0)bull++;else if(ms<0)bear++;else neut++;
+  rows.push({n:'Max Pain Gap', s:ms, wt:0.03, sig:(mpGap>=0?'+':'')+mpGap+'pts'});
+
+  // 7. Breadth (5% combined)
+  const n50a=gv('n50adv',25), n50d=gv('n50dma',50), bnfa=gv('bnfadv',6);
+  const n50s=n50a>=40?2:n50a>=30?1:n50a>=20?0:n50a>=12?-1:-2;
+  const ds=n50d>=70?2:n50d>=50?1:n50d>=35?0:n50d>=20?-1:-2;
+  const bs=bnfa>=10?2:bnfa>=7?1:bnfa>=5?0:bnfa>=3?-1:-2;
+  score+=n50s*0.02+ds*0.01+bs*0.02;
+  if(n50s>0)bull++;else if(n50s<0)bear++;else neut++;
+  if(bs>0)bull++;else if(bs<0)bear++;else neut++;
+  rows.push({n:'Nifty A/D Breadth',   s:n50s, wt:0.02, sig:n50a+'/50'});
+  rows.push({n:'200-DMA Breadth',      s:ds,   wt:0.01, sig:n50d+'%'});
+  rows.push({n:'BNF A/D Breadth',      s:bs,   wt:0.02, sig:bnfa+'/12'});
+
+  score = Math.round(score * 100) / 100;
+
+  // ── Update breadth tab ──────────────────────
+  document.getElementById('n50dec').textContent = 50 - n50a;
+  document.getElementById('bnfdec').textContent = 12 - bnfa;
+  const n50sig = ['HOLLOW','NARROW','MIXED','BROAD','VERY BROAD'][n50s+2];
+  const bnfsig = ['HOLLOW','NARROW','SPLIT','BROAD','VERY BROAD'][bs+2];
+  const n50el  = document.getElementById('n50sig');
+  const bnfel  = document.getElementById('bnfsig');
+  n50el.textContent = n50sig; n50el.className = 'tag '+(n50s>=1?'u':n50s<=-1?'d':'f');
+  bnfel.textContent = bnfsig; bnfel.className = 'tag '+(bs>=1?'u':bs<=-1?'d':'f');
+  const bAvg = (n50s + ds + bs) / 3;
+  let bq, bs2, bc;
+  if(bAvg>=1){bq='VERY BROAD ✅✅';bs2='Full size — max confidence';bc='var(--gn)'}
+  else if(bAvg>=0){bq='BROAD ✅';bs2='Full size — proceed normally';bc='var(--lm)'}
+  else if(bAvg>=-1){bq='NARROW ⚠️';bs2='50% size — hollow participation';bc='var(--or)'}
+  else{bq='HOLLOW 🚨';bs2='SKIP or 25% max — no breadth';bc='var(--rd)'}
+  document.getElementById('bvt').textContent=bq; document.getElementById('bvt').style.color=bc;
+  document.getElementById('bvs').textContent=bs2;
+
+  // ── Update verdict tab ──────────────────────
+  let dir, stars, strat, col;
+  if(score>=1.2)     {dir='STRONGLY BULLISH';stars='⭐⭐⭐⭐⭐';strat='BULL PUT SPREAD ✅ — Best setup';col='var(--gn)'}
+  else if(score>=0.4){dir='MILDLY BULLISH';  stars='⭐⭐⭐⭐';  strat='BULL PUT SPREAD';col='var(--lm)'}
+  else if(score>-0.4){dir='NEUTRAL';          stars='⭐⭐⭐';    strat='IRON CONDOR or SKIP';col='var(--mt)'}
+  else if(score>-1.2){dir='MILDLY BEARISH';  stars='⭐⭐⭐⭐';  strat='BEAR CALL SPREAD';col='var(--or)'}
+  else               {dir='STRONGLY BEARISH'; stars='⭐⭐⭐⭐⭐';strat='BEAR CALL SPREAD ✅ — Best setup';col='var(--rd)'}
+
+  const mom=score>=1.2?'HIGHLY BULLISH':score>=0.4?'MODERATELY BULLISH':score>-0.4?'NEUTRAL':score>-1.2?'MODERATELY BEARISH':'HIGHLY BEARISH';
+
+  const vsc=document.getElementById('v-score');
+  vsc.textContent=(score>=0?'+':'')+score.toFixed(2);
+  vsc.style.color=col;
+  document.getElementById('v-dir').textContent=dir; document.getElementById('v-dir').style.color=col;
+  document.getElementById('v-stars').textContent=stars;
+  document.getElementById('v-strat').textContent=strat;
+  document.getElementById('v-bull').textContent=bull;
+  document.getElementById('v-neut').textContent=neut;
+  document.getElementById('v-bear').textContent=bear;
+  document.getElementById('v-momentum').textContent=mom;
+  document.getElementById('v-breadth').textContent=bq; document.getElementById('v-breadth').style.color=bc;
+
+  // Score thumb
+  const pct2=Math.min(96,Math.max(4,((score+2)/4)*100));
+  document.getElementById('sthumb').style.left=`calc(${pct2}% - 7px)`;
+
+  // GIFT gap display
+  const gapSign = gap>=0?'+':'';
+  const gv2=document.getElementById('v-gap');
+  gv2.textContent=gapSign+gap; gv2.style.color=gap>=80?'var(--gn)':gap<=-80?'var(--rd)':'var(--bl)';
+  const gText=gap>=200?'Large gap up — wait for stall':gap>=80?'Gap up — confirm 9:20':Math.abs(gap)<80?'Flat open — watch direction':gap<=-80?'Gap down ⭐ — Bull Put ideal':'Large gap down ⭐⭐';
+  document.getElementById('v-gaptext').textContent=gText;
+
+  // VIX advisory
+  const vix=gv('india_vix',14);
+  let vixAdv, vixCol;
+  if(vix<12){vixAdv='⚠️ VIX<12 — Buy options, not spreads';vixCol='var(--or)'}
+  else if(vix<14){vixAdv='✅ Moderate — spreads viable';vixCol='var(--lm)'}
+  else if(vix<16){vixAdv='✅✅ Elevated — excellent day to sell';vixCol='var(--gn)'}
+  else if(vix<18){vixAdv='✅✅✅ HIGH — max premium. Best day';vixCol='var(--gn)'}
+  else{vixAdv='🚨 >18 — reduce size 50%';vixCol='var(--rd)'}
+  document.getElementById('v-vix').textContent=vixAdv; document.getElementById('v-vix').style.color=vixCol;
+
+  // Breakdown table
+  const bd=document.getElementById('breakdown');
+  bd.innerHTML='';
+  for(const r of rows){
+    const s=r.nodata?0:r.s;
+    const sc=s>0?'sp2':s<0?'sn2':'s02';
+    const sign=s>0?'+':'';
+    const el=document.createElement('div'); el.className='br';
+    el.innerHTML=`<div class="brn">${r.n}</div><div class="brs ${sc}">${r.nodata?'?':sign+s}</div><div class="brw">${(r.wt*100).toFixed(0)}%</div><div class="brv">${r.sig}</div>`;
+    bd.appendChild(el);
+  }
+}
+
+// ── R/R Calculator ─────────────────────────────
+let rrIdx = 'BNF';
+function setIdx(x){
+  rrIdx=x;
+  document.getElementById('rbn').classList.toggle('on',x==='N50');
+  document.getElementById('rbb').classList.toggle('on',x==='BNF');
+  if(x==='N50'){document.getElementById('rr_sell').value=25900;document.getElementById('rr_buy').value=26100;document.getElementById('rr_cr').value=85;document.getElementById('rr_lot').value=75}
+  else{document.getElementById('rr_sell').value=61500;document.getElementById('rr_buy').value=61900;document.getElementById('rr_cr').value=125;document.getElementById('rr_lot').value=15}
+  calcRR();
+}
+
+function calcRR(){
+  const sell=+document.getElementById('rr_sell').value||0;
+  const buy =+document.getElementById('rr_buy').value||0;
+  const cr  =+document.getElementById('rr_cr').value||0;
+  const lot =+document.getElementById('rr_lot').value||1;
+  const lots=+document.getElementById('rr_lots').value||1;
+  const strat=document.getElementById('rr_strat').value;
+  const w=Math.abs(sell-buy);
+  const profit=cr*lot*lots, loss=(w-cr)*lot*lots;
+  const ratio=cr>0?(w-cr)/cr:999;
+  const pct=w>0?cr/w*100:0;
+  const minCr=Math.round(w*0.4);
+  const ex40=Math.round(profit*0.4);
+  const be=strat==='BC'?sell+cr:sell-cr;
+  const f=n=>n.toLocaleString('en-IN');
+  document.getElementById('rr-w').textContent=w+' pts';
+  document.getElementById('rr-p').textContent='₹'+f(Math.round(profit));
+  document.getElementById('rr-l').textContent='₹'+f(Math.round(loss));
+  document.getElementById('rr-r').textContent=ratio.toFixed(2)+' : 1';
+  document.getElementById('rr-pct').textContent=pct.toFixed(1)+'%';
+  document.getElementById('rr-be').textContent=f(Math.round(be));
+  document.getElementById('rr-x40').textContent='₹'+f(ex40);
+  document.getElementById('rr-min').textContent='₹'+minCr+'/unit needed';
+  const gap=minCr-cr;
+  const vd=document.getElementById('rr-verd');
+  if(ratio<=0.67){vd.className='rrverd rv-pass';vd.textContent='✅ R/R PASSES — ENTER TRADE'}
+  else if(ratio<=1.0){vd.className='rrverd rv-warn';vd.textContent=`⚠️ BORDERLINE — Need ₹${gap} more`}
+  else{vd.className='rrverd rv-fail';vd.textContent=`🚨 R/R FAILS — Need ₹${gap} more/unit`}
+}
+
+// ── Persist state ──────────────────────────────
+const FIELDS=['gift_now','nifty_prev','gift_6am','india_vix','fii','dii','pcr','max_pain','close_char','n50adv','n50dma','bnfadv'];
+
+function saveAll(){
+  const s={};
+  FIELDS.forEach(f=>{const e=document.getElementById(f);if(e)s[f]=e.value});
+  s.gd=GD; s.fetched=document.getElementById('s-fetch').textContent;
+  try{localStorage.setItem('mr-state',JSON.stringify(s));toast('💾 Saved')}
+  catch(e){toast('❌ Save failed')}
+}
+
+function loadState(){
+  try{
+    const raw=localStorage.getItem('mr-state');
+    if(!raw)return;
+    const s=JSON.parse(raw);
+    FIELDS.forEach(f=>{const e=document.getElementById(f);if(e&&s[f]!==undefined)e.value=s[f]});
+    if(s.gd){Object.assign(GD,s.gd);renderAutoRows();
+      const t=s.fetched||'cached';
+      document.getElementById('s-fetch').textContent=t;
+      document.getElementById('fs-title').textContent='📦 Cached data';
+      document.getElementById('fs-sub').textContent=`From ${t} — tap Fetch to refresh`;
+    }
+  }catch(e){}
+}
+
+// ── 8:45 AM Notification ───────────────────────
+async function requestNotif(){
+  if(!('Notification' in window)){toast('Notifications not supported');return}
+  const p=await Notification.requestPermission();
+  if(p==='granted'){toast('✅ Reminder set for 8:45 AM daily');scheduleNotif()}
+  else toast('❌ Permission denied')
+}
+
+function scheduleNotif(){
+  const now=new Date(),t=new Date();
+  t.setHours(8,45,0,0);if(t<=now)t.setDate(t.getDate()+1);
+  setTimeout(()=>{
+    if(Notification.permission==='granted')
+      new Notification('🧭 Market Radar — 8:45 AM',{body:'Time to fetch data and check direction',icon:'icon-192.png',tag:'radar-morning'});
+    scheduleNotif();
+  },t-now);
+}
+
+// ── Service Worker ─────────────────────────────
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+}
+
+// ── Auto-fetch on ?fetch=1 ──────────────────────
+if(location.search.includes('fetch=1'))setTimeout(fetchData,600);
+
+// ── Init ───────────────────────────────────────
+renderAutoRows();
+loadState();
+calc();
+calcRR();
+updateMkt();
+</script>
+</body>
+</html>

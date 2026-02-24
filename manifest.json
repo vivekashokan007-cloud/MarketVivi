@@ -1,0 +1,19 @@
+{
+  "name": "Market Radar — Options Intelligence",
+  "short_name": "Radar",
+  "description": "8:45 AM pre-market direction tool for NSE options traders",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070D18",
+  "theme_color": "#F5A623",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["finance"],
+  "shortcuts": [
+    { "name": "Fetch & Score", "url": "./index.html?fetch=1", "description": "Open and auto-fetch" }
+  ]
+}
