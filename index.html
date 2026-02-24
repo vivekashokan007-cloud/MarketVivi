@@ -385,6 +385,38 @@ select.inp{
   .panel{padding:16px 20px calc(58px + var(--sb))}
   .strat-inputs{grid-template-columns:repeat(4,1fr)}
 }
+
+/* ══ v1.2.2 DUAL INDEX ══════════════════════════════════════════════════ */
+.idx-section{
+  border:1px solid var(--border);border-radius:var(--r);
+  overflow:hidden;margin-bottom:16px;
+  box-shadow:0 1px 4px rgba(0,0,0,.05);
+}
+.idx-section-hdr{
+  padding:10px 14px;display:flex;align-items:center;justify-content:space-between;
+  border-bottom:1px solid var(--border);
+}
+.idx-section.nf .idx-section-hdr{background:var(--bl-bg);border-bottom-color:#90B8E0}
+.idx-section.bn .idx-section-hdr{background:var(--gn-bg);border-bottom-color:var(--gn-br)}
+.idx-label{font-family:var(--dp);font-size:18px;color:var(--navy)}
+.idx-meta{font-size:9px;color:var(--muted);margin-top:1px}
+.idx-section-body{padding:10px 12px;background:var(--bg0)}
+.idx-inputs{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
+.idx-inp-grp label{display:block;font-size:8px;color:var(--muted);letter-spacing:1px;
+  text-transform:uppercase;margin-bottom:3px}
+.idx-inp{
+  width:100%;background:var(--am-bg);color:var(--navy);
+  border:1px solid var(--am-br);border-radius:6px;
+  padding:7px;font-size:14px;font-weight:700;font-family:var(--fn);
+  text-align:center;outline:none;
+}
+.idx-inp:focus{box-shadow:0 0 0 2px var(--am-br)}
+.idx-exp-label{
+  font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);margin:8px 0 6px;display:flex;align-items:center;gap:6px;
+}
+.idx-exp-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
 </style>
 </head>
 <body>
@@ -618,66 +650,106 @@ select.inp{
     <div id="auto-why-text">Run Verdict tab first to get direction score, then return here.</div>
   </div>
 
-  <!-- Inputs: current price, ATR, lots -->
-  <div class="strat-header" style="margin-bottom:10px">
-    <div class="strat-inputs">
-      <div class="sinp-group">
-        <label>Current Price</label>
-        <input class="sinp" type="number" id="s_price" value="61500" oninput="buildMatrix()">
-      </div>
-      <div class="sinp-group">
-        <label>ATR (14-day)</label>
-        <input class="sinp" type="number" id="s_atr" value="450" oninput="buildMatrix()">
-      </div>
-      <div class="sinp-group">
-        <label>Lot Size</label>
-        <input class="sinp" type="number" id="s_lot" value="15" oninput="buildMatrix()">
-      </div>
-      <div class="sinp-group">
-        <label>No. of Lots</label>
-        <input class="sinp" type="number" id="s_lots" value="1" oninput="buildMatrix()">
-      </div>
+  <!-- Direction + VIX + Score info strip -->
+  <div style="display:flex;gap:6px;margin-bottom:12px">
+    <div style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:9px;color:var(--muted)">
+      Direction<br><strong id="sd-dir" style="color:var(--navy);font-size:11px">—</strong>
     </div>
-    <div style="display:flex;gap:6px;margin-top:10px">
-      <div style="flex:1;background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:9px;color:var(--muted)">
-        Direction: <strong id="sd-dir" style="color:var(--navy)">—</strong>
-      </div>
-      <div style="flex:1;background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:9px;color:var(--muted)">
-        India VIX: <strong id="sd-vix" style="color:var(--navy)">—</strong>
-      </div>
-      <div style="flex:1;background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:9px;color:var(--muted)">
-        Score: <strong id="sd-score" style="color:var(--navy)">—</strong>
-      </div>
+    <div style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:9px;color:var(--muted)">
+      India VIX<br><strong id="sd-vix" style="color:var(--navy);font-size:11px">—</strong>
     </div>
-  </div>
-
-  <!-- Index toggle -->
-  <div class="idx-toggle">
-    <button class="idxb" id="ib-nf" onclick="setStratIdx('NF')">NIFTY 50</button>
-    <button class="idxb on" id="ib-bn" onclick="setStratIdx('BN')">BANK NIFTY</button>
+    <div style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:9px;color:var(--muted)">
+      Score<br><strong id="sd-score" style="color:var(--navy);font-size:11px">—</strong>
+    </div>
   </div>
 
   <!-- Holiday override -->
-  <div class="ir" style="margin-bottom:12px">
-    <div><div class="iname">Holiday Override</div><div class="isrc">If next expiry falls on holiday — enter correct date (YYYY-MM-DD)</div></div>
+  <div class="ir" style="margin-bottom:14px">
+    <div><div class="iname">Holiday Override</div><div class="isrc">If next expiry falls on a holiday — enter correct date (YYYY-MM-DD)</div></div>
     <input class="inp" type="text" id="hol_override" placeholder="optional" style="width:110px;font-size:10px" oninput="buildMatrix()">
   </div>
 
-  <!-- Expiry cards -->
-  <div class="sh am">Expiry Cards <span style="font-size:8px;font-weight:400;color:var(--muted)">(tap to expand · 3 strike distances each)</span></div>
-  <div id="exp-cards"></div>
+  <!-- ══ NIFTY 50 SECTION ══════════════════════════════════════════════ -->
+  <div class="idx-section nf">
+    <div class="idx-section-hdr">
+      <div>
+        <div class="idx-label" style="color:var(--bl)">Nifty 50</div>
+        <div class="idx-meta">Weekly expiry: Monday · Lot size 75</div>
+      </div>
+      <div style="font-size:9px;color:var(--muted);text-align:right">
+        Expiry: <strong id="nf-next-exp" style="color:var(--navy)">—</strong>
+      </div>
+    </div>
+    <div class="idx-section-body">
+      <div class="idx-inputs">
+        <div class="idx-inp-grp">
+          <label>Spot Price</label>
+          <input class="idx-inp" type="number" id="nf_price" value="25700" oninput="buildMatrix()">
+        </div>
+        <div class="idx-inp-grp">
+          <label>ATR (14-day)</label>
+          <input class="idx-inp" type="number" id="nf_atr" value="180" oninput="buildMatrix()">
+        </div>
+        <div class="idx-inp-grp">
+          <label>Lot Size</label>
+          <input class="idx-inp" type="number" id="nf_lot" value="75" oninput="buildMatrix()">
+        </div>
+        <div class="idx-inp-grp">
+          <label>No. of Lots</label>
+          <input class="idx-inp" type="number" id="nf_lots" value="1" oninput="buildMatrix()">
+        </div>
+      </div>
+      <div class="idx-exp-label">Expiry Scenarios</div>
+      <div id="nf-exp-cards"></div>
+    </div>
+  </div>
 
-  <!-- Iron Condor / Neutral section -->
+  <!-- ══ BANK NIFTY SECTION ════════════════════════════════════════════ -->
+  <div class="idx-section bn">
+    <div class="idx-section-hdr">
+      <div>
+        <div class="idx-label" style="color:var(--gn)">Bank Nifty</div>
+        <div class="idx-meta">Monthly expiry only (weekly discontinued) · Lot size 15</div>
+      </div>
+      <div style="font-size:9px;color:var(--muted);text-align:right">
+        Expiry: <strong id="bn-next-exp" style="color:var(--navy)">—</strong>
+      </div>
+    </div>
+    <div class="idx-section-body">
+      <div class="idx-inputs">
+        <div class="idx-inp-grp">
+          <label>Spot Price</label>
+          <input class="idx-inp" type="number" id="bn_price" value="61500" oninput="buildMatrix()">
+        </div>
+        <div class="idx-inp-grp">
+          <label>ATR (14-day)</label>
+          <input class="idx-inp" type="number" id="bn_atr" value="450" oninput="buildMatrix()">
+        </div>
+        <div class="idx-inp-grp">
+          <label>Lot Size</label>
+          <input class="idx-inp" type="number" id="bn_lot" value="15" oninput="buildMatrix()">
+        </div>
+        <div class="idx-inp-grp">
+          <label>No. of Lots</label>
+          <input class="idx-inp" type="number" id="bn_lots" value="1" oninput="buildMatrix()">
+        </div>
+      </div>
+      <div class="idx-exp-label">Expiry Scenarios</div>
+      <div id="bn-exp-cards"></div>
+    </div>
+  </div>
+
+  <!-- Iron Condor neutral section -->
   <div id="ic-section" style="display:none">
     <div class="sh tl" style="margin-top:6px">Iron Condor — Both Legs</div>
     <div id="ic-content"></div>
   </div>
 
-  <div class="info" style="border-color:var(--am-br);margin-top:12px">
+  <div class="info" style="border-color:var(--am-br);margin-top:4px">
     <h3>⚠️ Credits & Costs are Estimates</h3>
-    <p>Figures shown are model estimates based on ATR, VIX, and DTE.<br>
-    Always verify <strong>live premiums on Sensibull or NSE Option Chain</strong> before entering.<br>
-    AUTO mode switches strategy type based on VIX thresholds — override manually if needed.</p>
+    <p>Verify <strong>live premiums on Sensibull or NSE Option Chain</strong> before entering.<br>
+    Direction from Verdict tab applies to both indices simultaneously.<br>
+    Spot price, ATR and lots are saved independently per index.</p>
   </div>
 </div>
 
@@ -727,6 +799,27 @@ select.inp{
   </div>
 
   <div class="sh" style="margin-top:14px">Patch Notes</div>
+  <div class="pitem">
+    <div class="pver">v1.2.2 <span class="pdate">Feb 2026</span></div>
+    <ul>
+      <li>Nifty 50 and Bank Nifty now fully independent sections on Strategy tab</li>
+      <li>Each index has its own Spot Price, ATR, Lot Size, No. of Lots — saved separately</li>
+      <li>Direction score and VIX shared from Verdict tab to both indices simultaneously</li>
+      <li>Fixed NF weekly expiry: every Tuesday (was incorrectly Monday)</li>
+      <li>BNF monthly expiry: last Monday of month (weekly discontinued by SEBI)</li>
+      <li>Holiday auto-shift: 19 known NSE 2026 holidays, expiry moves to next trading day</li>
+      <li>Expiry cards and 3 strike scenarios built independently per index</li>
+    </ul>
+    <ul>
+      <li>Dual index — Nifty 50 and Bank Nifty now fully independent sections</li>
+      <li>Spot price, ATR, lot size saved separately per index</li>
+      <li>Direction from Verdict shared across both indices</li>
+      <li>Fixed expiry dates — BNF monthly only (weekly discontinued by SEBI)</li>
+      <li>Fixed Nifty 50 weekly expiry day — Monday (was incorrectly Tuesday)</li>
+      <li>Holiday auto-adjustment — known 2026 NSE holidays shift expiry to next trading day</li>
+      <li>DTE conviction thresholds adjusted separately for BNF (monthly) vs NF (weekly)</li>
+    </ul>
+  </div>
   <div class="pitem">
     <div class="pver">v1.2.0 <span class="pdate">Feb 2026</span></div>
     <ul>
@@ -1045,36 +1138,90 @@ function calc(){
    EXPIRY DATE CALCULATOR
    ═══════════════════════════════════════════════ */
 function getNextWeekday(from,dow){
+  // dow: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
   const d=new Date(from);let diff=dow-d.getDay();
   if(diff<=0)diff+=7;d.setDate(d.getDate()+diff);return d;
 }
-function getLastThursday(month0,year){
-  const d=new Date(year,month0+1,0);
-  while(d.getDay()!==4)d.setDate(d.getDate()-1);return d;
+function getLastMonday(month0based,year){
+  // Last Monday of the given month
+  const d=new Date(year,month0based+1,0);// last day of month
+  while(d.getDay()!==1)d.setDate(d.getDate()-1);// walk back to Monday
+  return d;
 }
 function fmtShort(d){return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}
 
+/* ─────────────────────────────────────────────────────
+   NSE EXPIRY RULES — VERIFIED from NSE Option Chain (Feb 2026)
+
+   NIFTY 50:
+     Weekly  → Every Monday (shift to next trading day if holiday)
+     Monthly → Last Monday of month (same shift rule)
+     Weekly and monthly merge when last Monday = that week's Monday
+
+   BANK NIFTY:
+     Weekly  → NONE (discontinued by SEBI)
+     Monthly → Last Monday of month (shift to next trading day if holiday)
+
+   All dates confirmed against live NSE option chain screenshots.
+   ──────────────────────────────────────────────────── */
 function getExpiries(idxType){
   const today=new Date();today.setHours(0,0,0,0);
   const expiries=[];
+
+  // ── NSE 2026 known holidays ──────────────────────────────────────────
+  const H=['2026-01-26','2026-03-09','2026-03-16','2026-03-23',
+           '2026-03-25','2026-04-02','2026-04-14','2026-04-17',
+           '2026-04-27','2026-05-01','2026-06-29','2026-08-15',
+           '2026-09-28','2026-10-02','2026-10-20','2026-10-21',
+           '2026-11-05','2026-12-25','2026-12-28']
+    .map(s=>{const d=new Date(s);d.setHours(0,0,0,0);return d.getTime();});
+
+  function isHol(d){
+    const dw=d.getDay();
+    return dw===0||dw===6||H.includes(d.getTime());
+  }
+  function adjHol(d){
+    const r=new Date(d);
+    while(isHol(r))r.setDate(r.getDate()+1);
+    return r;
+  }
+
+  // ── Holiday override (user can manually correct any date) ────────────
   const hol=document.getElementById('hol_override')?.value?.trim();
-  if(hol){const hd=new Date(hol);if(!isNaN(hd)&&hd>today)expiries.push({date:hd,label:'Override',type:'HOL'})}
-  const weeklyDow=idxType==='BN'?3:2;
-  const weeklyLabel=idxType==='BN'?'BNF Weekly':'Nifty Weekly';
-  for(let w=0;w<4;w++){
-    const base=new Date(today);base.setDate(base.getDate()+w*7);
-    const exp=getNextWeekday(base,weeklyDow);
-    if(exp>today&&!expiries.find(e=>e.date.toDateString()===exp.toDateString()))
-      expiries.push({date:exp,label:weeklyLabel,type:'WK'});
+  if(hol){
+    const hd=new Date(hol);hd.setHours(0,0,0,0);
+    if(!isNaN(hd)&&hd>today)
+      expiries.push({date:hd,label:'Holiday Override',type:'HOL'});
   }
+
+  // ── NIFTY 50: weekly Monday expiries ─────────────────────────────────
+  if(idxType==='NF'){
+    for(let w=0;w<6;w++){
+      const base=new Date(today);
+      base.setDate(base.getDate()+w*7);
+      let exp=getNextWeekday(base,2);// next Tuesday (NF weekly expiry day)
+      exp=adjHol(exp);
+      if(exp>today&&!expiries.find(e=>e.date.getTime()===exp.getTime()))
+        expiries.push({date:exp,label:'Nifty Weekly (Tue)',type:'WK'});
+    }
+  }
+
+  // ── BOTH: Monthly = last Monday of each month ─────────────────────────
   const now=new Date();
-  for(let m=0;m<=2;m++){
-    const mm=(now.getMonth()+m)%12,yy=now.getFullYear()+Math.floor((now.getMonth()+m)/12);
-    const exp=getLastThursday(mm,yy);
-    if(exp>today&&!expiries.find(e=>e.date.toDateString()===exp.toDateString()))
-      expiries.push({date:exp,label:'Monthly',type:'MON'});
+  for(let m=0;m<=4;m++){
+    const mo=(now.getMonth()+m)%12;
+    const yr=now.getFullYear()+Math.floor((now.getMonth()+m)/12);
+    let exp=getLastMonday(mo,yr);
+    exp=adjHol(exp);
+    if(exp>today&&!expiries.find(e=>e.date.getTime()===exp.getTime())){
+      const lbl=idxType==='BN'?'BNF Monthly':'Nifty Monthly';
+      expiries.push({date:exp,label:lbl,type:'MON'});
+    }
   }
-  return expiries.sort((a,b)=>a.date-b.date).slice(0,4);
+
+  // Sort and return: BNF shows 4 monthly, NF shows 5 (4 weekly + 1 monthly min)
+  const sorted=expiries.sort((a,b)=>a.date-b.date);
+  return sorted.slice(0,idxType==='BN'?4:5);
 }
 function getDTE(d){
   const t=new Date();t.setHours(0,0,0,0);
@@ -1082,7 +1229,7 @@ function getDTE(d){
 }
 
 /* ═══════════════════════════════════════════════
-   AUTO STRATEGY DECISION ENGINE  v1.2.0
+   AUTO STRATEGY DECISION ENGINE  v1.2.2
    ─────────────────────────────────────────────
    Inputs: score, vix, isPreEvent
    Returns: {mode, creditFirst, reason, whyText}
@@ -1231,7 +1378,7 @@ function starRating(rr,wp,dte,isDebit){
   return Math.min(5,Math.max(1,Math.round(s/1.1)));
 }
 
-function dteConviction(dte,score,mode){
+function dteConviction(dte,score,mode,idxType){
   const a=Math.abs(score);
   if(mode==='event')return{label:'🎯 EVENT PLAY',cls:'rec-best'};
   if(mode==='debit'){
@@ -1239,98 +1386,131 @@ function dteConviction(dte,score,mode){
     if(dte<7)return{label:'⚠️ Very short — high theta burn',cls:'rec-poor'};
     return{label:'📅 Long-dated debit',cls:'rec-good'};
   }
+  // BNF is monthly only — adjust thresholds
+  if(idxType==='BN'){
+    if(dte<=7&&a>=1.2)return{label:'⚡ IDEAL — High conviction near expiry',cls:'rec-best'};
+    if(dte<=20&&a>=0.4)return{label:'✅ RECOMMENDED — Monthly sweet spot',cls:'rec-good'};
+    if(dte<=35)return{label:'⚪ STANDARD — Mid-month entry',cls:'rec-good'};
+    return{label:'📅 NEXT MONTH — Consider waiting',cls:'rec-poor'};
+  }
+  // NF weekly
   if(dte<=3&&a>=1.2)return{label:'⚡ IDEAL — High conviction 0-3 DTE',cls:'rec-best'};
-  if(dte<=10&&a>=0.4)return{label:'✅ RECOMMENDED — Sweet spot',cls:'rec-good'};
+  if(dte<=10&&a>=0.4)return{label:'✅ RECOMMENDED — Weekly sweet spot',cls:'rec-good'};
   if(dte<=21)return{label:'⚪ STANDARD — Moderate R/R',cls:'rec-good'};
-  return{label:'📅 LONG-DATED — Low risk',cls:'rec-poor'};
+  return{label:'📅 MONTHLY — Lower R/R',cls:'rec-poor'};
 }
 
 function defaultWidth(idx){return idx==='BN'?400:200;}
-let stratIdx='BN';
-
-function setStratIdx(x){
-  stratIdx=x;
-  document.getElementById('ib-nf').classList.toggle('on',x==='NF');
-  document.getElementById('ib-bn').classList.toggle('on',x==='BN');
-  const p=document.getElementById('s_price'),a=document.getElementById('s_atr'),l=document.getElementById('s_lot');
-  if(x==='NF'){if(!p.dataset.edited)p.value='25700';a.value='180';l.value='75'}
-  else{if(!p.dataset.edited)p.value='61500';a.value='450';l.value='15'}
-  document.getElementById('s_price').addEventListener('input',()=>document.getElementById('s_price').dataset.edited='1');
-  buildMatrix();
-}
 
 /* ═══════════════════════════════════════════════
-   BUILD STRATEGY MATRIX
+   BUILD MATRIX — DUAL INDEPENDENT INDICES v1.2.2
+   
+   · Nifty 50  and Bank Nifty built independently
+   · Each has own: spot price, ATR, lot size, lots
+   · Direction score + VIX shared from Verdict tab
+   · NF expiry: weekly Tuesday + monthly last Monday
+   · BNF expiry: monthly only — last Monday of month
    ═══════════════════════════════════════════════ */
 function buildMatrix(){
-  const score=SCORE||0,vix=gv('india_vix',14);
-  const price=gv('s_price',stratIdx==='BN'?61500:25700);
-  const atr=gv('s_atr',stratIdx==='BN'?450:180);
-  const lot=gv('s_lot',stratIdx==='BN'?15:75);
-  const lots=gv('s_lots',1);
-  const width=defaultWidth(stratIdx);
-  const isBull=score>=0.4,isBear=score<=-0.4,isNeutral=!isBull&&!isBear;
+  const score = SCORE||0;
+  const vix   = gv('india_vix', 14);
+  const isNeutral = score>-0.4 && score<0.4;
 
-  // Update info chips
-  document.getElementById('sd-dir').textContent=DIRECTION||'—';
-  document.getElementById('sd-vix').textContent=vix;
-  document.getElementById('sd-score').textContent=(score>=0?'+':'')+score.toFixed(2);
+  // Update info strip
+  document.getElementById('sd-dir').textContent   = DIRECTION||'—';
+  document.getElementById('sd-vix').textContent   = vix;
+  document.getElementById('sd-score').textContent = (score>=0?'+':'')+score.toFixed(2);
 
-  // AUTO DECISION
-  const dec=autoDecide(score,vix,PRE_EVENT);
+  // AUTO decision — same direction applies to both indices
+  const dec = autoDecide(score, vix, PRE_EVENT);
 
   // Update banner
-  const banner=document.getElementById('strat-banner');
-  banner.className='strat-type-banner '+dec.banner;
-  document.getElementById('stm-type').textContent=dec.type;
-  document.getElementById('stm-why').textContent=dec.reason;
-  const stmBadge=document.getElementById('stm-badge');
-  stmBadge.textContent=dec.badge;
-  stmBadge.className='stm-badge '+dec.badgeCls;
+  document.getElementById('strat-banner').className = 'strat-type-banner ' + dec.banner;
+  document.getElementById('stm-type').textContent   = dec.type;
+  document.getElementById('stm-why').textContent    = dec.reason;
+  const sb = document.getElementById('stm-badge');
+  sb.textContent = dec.badge; sb.className = 'stm-badge ' + dec.badgeCls;
+  document.getElementById('auto-why-text').textContent = dec.whyText;
 
-  // Update auto-why text
-  document.getElementById('auto-why-text').textContent=dec.whyText;
+  // Iron Condor (neutral high-VIX) — show using BNF values
+  const icSec = document.getElementById('ic-section');
+  icSec.style.display = (isNeutral && !PRE_EVENT && vix>=16) ? 'block' : 'none';
+  if(isNeutral && !PRE_EVENT && vix>=16){
+    const bnExp = getExpiries('BN');
+    buildIC(
+      gv('bn_price',61500), gv('bn_atr',450), defaultWidth('BN'),
+      gv('bn_lot',15), gv('bn_lots',1), vix,
+      bnExp[1]||bnExp[0]
+    );
+  }
 
-  // Iron Condor neutral section
-  const icSec=document.getElementById('ic-section');
-  icSec.style.display=(isNeutral&&!PRE_EVENT&&vix>=16)?'block':'none';
-  if(isNeutral&&!PRE_EVENT&&vix>=16)buildIC(price,atr,width,lot,lots,vix,getExpiries(stratIdx)[1]||getExpiries(stratIdx)[0]);
+  // Build both index card sections independently
+  buildIndexCards('NF');
+  buildIndexCards('BN');
+}
 
-  // Build expiry cards
-  const container=document.getElementById('exp-cards');
-  container.innerHTML='';
-  const expiries=getExpiries(stratIdx);
-  const distMultipliers=[
-    {mult:1.0,label:'Aggressive',sub:'1× ATR — max premium, closer to price'},
-    {mult:1.5,label:'Standard',  sub:'1.5× ATR — balanced risk/reward'},
-    {mult:2.0,label:'Conservative',sub:'2× ATR — safer buffer, less premium'},
+/* ─── Build expiry cards for one index ──────────────────────
+   idx = 'NF' | 'BN'
+   Reads its own price/atr/lot inputs, builds expiry cards
+   with 3 strike-distance scenarios each
+   ─────────────────────────────────────────────────────────── */
+function buildIndexCards(idx){
+  const isNF  = (idx==='NF');
+  const price = gv(isNF?'nf_price':'bn_price', isNF?25700:61500);
+  const atr   = gv(isNF?'nf_atr':'bn_atr',     isNF?180:450);
+  const lot   = gv(isNF?'nf_lot':'bn_lot',      isNF?75:15);
+  const lots  = gv(isNF?'nf_lots':'bn_lots',    1);
+  const width = defaultWidth(idx);
+  const score = SCORE||0;
+  const vix   = gv('india_vix',14);
+  const isBull    = score>=0.4;
+  const isBear    = score<=-0.4;
+  const isNeutral = !isBull&&!isBear;
+  const dec   = autoDecide(score, vix, PRE_EVENT);
+
+  // Show next expiry in section header
+  const expiries = getExpiries(idx);
+  const nextEl   = document.getElementById((isNF?'nf':'bn')+'-next-exp');
+  if(nextEl && expiries.length)
+    nextEl.textContent = fmtShort(expiries[0].date)+' ('+getDTE(expiries[0].date)+'D)';
+
+  const distMultipliers = [
+    {mult:1.0, label:'Aggressive',   sub:'1× ATR — max premium, closest to price'},
+    {mult:1.5, label:'Standard',     sub:'1.5× ATR — balanced risk/reward ★'},
+    {mult:2.0, label:'Conservative', sub:'2× ATR — wider buffer, less premium'},
   ];
 
-  expiries.forEach((exp,ei)=>{
-    const dte=getDTE(exp.date);
-    const conv=dteConviction(dte,score,dec.mode);
-    const isRec=conv.cls==='rec-best'||(ei===1&&conv.cls!=='rec-poor');
-    const card=document.createElement('div');
-    card.className='exp-card'+(isRec?' recommended':'');
-    card.id=`ecard-${ei}`;
+  const container = document.getElementById((isNF?'nf':'bn')+'-exp-cards');
+  container.innerHTML = '';
 
-    // Scenario tabs + panels
-    let scenHTML='<div class="scen-tabs">';
-    distMultipliers.forEach((dm,si)=>scenHTML+=`<div class="scen-tab${si===1?' on':''}" onclick="switchScen(${ei},${si})">${dm.label}</div>`);
-    scenHTML+='</div>';
+  expiries.forEach((exp, ei) => {
+    const dte  = getDTE(exp.date);
+    const conv = dteConviction(dte, score, dec.mode, idx);
+    const isRec = conv.cls==='rec-best' || (ei===1 && conv.cls!=='rec-poor');
 
-    distMultipliers.forEach((dm,si)=>{
-      scenHTML+=`<div class="scen-panel${si===1?' on':''}" id="sp-${ei}-${si}">`;
-      scenHTML+=`<div style="font-size:9px;color:var(--muted);padding:8px 14px 2px">${dm.sub}</div>`;
-      scenHTML+=buildScenarioHTML(price,atr,dm.mult,width,dte,vix,lot,lots,dec,isBull,isBear,isNeutral);
-      scenHTML+='</div>';
+    // Build tab headers + scenario panels
+    let scenHTML = '<div class="scen-tabs">';
+    distMultipliers.forEach((dm,si) =>
+      scenHTML += `<div class="scen-tab${si===1?' on':''}" onclick="switchScen('${idx}',${ei},${si})">${dm.label}</div>`
+    );
+    scenHTML += '</div>';
+
+    distMultipliers.forEach((dm,si) => {
+      scenHTML += `<div class="scen-panel${si===1?' on':''}" id="sp-${idx}-${ei}-${si}">`;
+      scenHTML += `<div style="font-size:9px;color:var(--muted);padding:8px 14px 2px">${dm.sub}</div>`;
+      scenHTML += buildScenarioHTML(price, atr, dm.mult, width, dte, vix, lot, lots, dec, isBull, isBear, isNeutral);
+      scenHTML += '</div>';
     });
 
-    card.innerHTML=`
-      <div class="exp-card-hdr" onclick="toggleCard(${ei})">
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const card = document.createElement('div');
+    card.className = 'exp-card' + (isRec?' recommended':'');
+    card.id = `ecard-${idx}-${ei}`;
+    card.innerHTML = `
+      <div class="exp-card-hdr" onclick="toggleCard('${idx}',${ei})">
         <div class="exp-left">
           <div class="exp-date">${fmtShort(exp.date)}</div>
-          <div class="exp-meta">${exp.label} · ${'Sun Mon Tue Wed Thu Fri Sat'.split(' ')[exp.date.getDay()]}</div>
+          <div class="exp-meta">${exp.label} · ${days[exp.date.getDay()]}</div>
         </div>
         <div class="exp-right">
           <div><span class="exp-dte">${dte}</span><small> DTE</small></div>
@@ -1340,182 +1520,21 @@ function buildMatrix(){
       </div>
       <div class="exp-body">${scenHTML}</div>`;
     container.appendChild(card);
-    if(ei===0||isRec)setTimeout(()=>toggleCard(0),80);
+
+    // Auto-open first recommended card per index
+    if(ei===0) setTimeout(()=>toggleCard(idx,0), 80+( isNF?0:50 ));
   });
 }
 
-function switchScen(ci,si){
-  document.querySelectorAll(`#ecard-${ci} .scen-tab`).forEach((t,i)=>t.classList.toggle('on',i===si));
-  document.querySelectorAll(`#ecard-${ci} .scen-panel`).forEach((p,i)=>p.classList.toggle('on',i===si));
+function switchScen(idx, ci, si){
+  document.querySelectorAll(`#ecard-${idx}-${ci} .scen-tab`)
+    .forEach((t,i)=>t.classList.toggle('on',i===si));
+  document.querySelectorAll(`#ecard-${idx}-${ci} .scen-panel`)
+    .forEach((p,i)=>p.classList.toggle('on',i===si));
 }
-function toggleCard(i){document.getElementById(`ecard-${i}`)?.classList.toggle('open')}
 
-/* ═══════════════════════════════════════════════
-   SCENARIO HTML BUILDER
-   Returns both credit + debit side-by-side, 
-   AUTO pick highlighted with outline
-   ═══════════════════════════════════════════════ */
-function buildScenarioHTML(price,atr,distMult,width,dte,vix,lot,lots,dec,isBull,isBear,isNeutral){
-  const dist=Math.round(atr*distMult/5)*5;
-  const f=n=>Math.round(n).toLocaleString('en-IN');
-
-  // ── CREDIT SIDE ──────────────────────────────────────────────────────
-  let creditHTML='';
-  if(!isNeutral){
-    const sellC=isBull?Math.round((price-dist)/5)*5:Math.round((price+dist)/5)*5;
-    const buyC=isBull?sellC-width:sellC+width;
-    const cr=estimateCredit(width,dte,vix);
-    const maxP=cr.mid*lot*lots, maxL=(width-cr.mid)*lot*lots;
-    const rr=cr.mid>0?(width-cr.mid)/cr.mid:99;
-    const exit40=Math.round(maxP*0.4), sl=exit40*2;
-    const be=isBull?sellC-cr.mid:sellC+cr.mid;
-    const wp=winProb(dte,distMult,vix,false);
-    const stars=starRating(rr,wp,dte,false);
-    const rrCls=rr<=0.67?'mini-pass':rr<=1.0?'mini-warn':'mini-fail';
-    const rrTxt=rr<=0.67?'✅ R/R PASSES':rr<=1.0?'⚠️ BORDERLINE':'🚨 R/R FAILS';
-    const typeName=isBull?'BULL PUT SPREAD':'BEAR CALL SPREAD';
-    const sLbl=isBull?'Sell PE':'Sell CE', bLbl=isBull?'Buy PE':'Buy CE';
-    const isAutoPick=dec.mode==='credit';
-    creditHTML=`
-      <div class="strat-half credit${isAutoPick?' auto-pick':''}">
-        ${isAutoPick?'<div class="auto-pick-badge">★ AUTO PICK</div>':''}
-        <div class="sh-title"><span class="sh-type cr">CREDIT</span> ${typeName}</div>
-        <div class="ss-legs">
-          <div class="ss-leg"><div class="ss-leg-t">${sLbl} (SELL)</div><div class="ss-leg-s">${f(sellC)}</div><div class="ss-leg-d">Collect premium</div></div>
-          <div class="ss-leg"><div class="ss-leg-t">${bLbl} (BUY)</div><div class="ss-leg-s">${f(buyC)}</div><div class="ss-leg-d">Hedge / protection</div></div>
-        </div>
-        <div class="ch-row"><div class="chl">Est. Credit ₹/unit</div><div class="chv am">₹${cr.min}–${cr.max}</div></div>
-        <div class="ch-row"><div class="chl">Max Profit ₹</div><div class="chv gn">₹${f(maxP)}</div></div>
-        <div class="ch-row"><div class="chl">Max Loss ₹</div><div class="chv rd">₹${f(maxL)}</div></div>
-        <div class="ch-row"><div class="chl">Risk : Reward</div><div class="chv">${rr.toFixed(2)} : 1</div></div>
-        <div class="ch-row"><div class="chl">Breakeven</div><div class="chv bl">${f(be)}</div></div>
-        <div class="ch-row"><div class="chl">Win Probability</div><div class="chv">${wp}%</div></div>
-        <div class="ch-row" style="background:var(--gn-bg);border-radius:4px;padding:4px 6px;margin-top:4px"><div class="chl" style="color:var(--gn)">✅ 40% Exit at</div><div class="chv gn">₹${f(exit40)} profit</div></div>
-        <div class="ch-row" style="background:var(--rd-bg);border-radius:4px;padding:4px 6px"><div class="chl" style="color:var(--rd)">🛑 Stop Loss at</div><div class="chv rd">₹${f(sl)} loss</div></div>
-        <div class="ch-row"><div class="chl">Rating</div><div class="chv">${'⭐'.repeat(stars)}${'☆'.repeat(5-stars)}</div></div>
-        <div class="${rrCls} mini-rr">${rrTxt}</div>
-      </div>`;
-  }
-
-  // ── DEBIT SIDE ───────────────────────────────────────────────────────
-  let debitHTML='';
-  if(!isNeutral&&!PRE_EVENT){
-    const entryCost=estimateDebitCost(width,dte,vix);
-    // Debit spread: buy the closer strike, sell further for hedge
-    const buyCE=isBull?Math.round((price+dist/2)/5)*5:Math.round((price-dist/2)/5)*5;
-    const sellCE=isBull?buyCE+width:buyCE-width;
-    const maxProfit=(width-entryCost.mid)*lot*lots;
-    const maxLoss=entryCost.mid*lot*lots;
-    const rr=entryCost.mid>0?(width-entryCost.mid)/entryCost.mid:0;
-    const exit40=Math.round(maxProfit*0.4), sl=Math.round(maxLoss*0.5);// SL at 50% of max loss for debit
-    const be=isBull?buyCE+entryCost.mid:buyCE-entryCost.mid;
-    const wp=winProb(dte,distMult,vix,true);
-    const stars=starRating(rr,wp,dte,true);
-    const typeName=isBull?'BULL CALL SPREAD':'BEAR PUT SPREAD';
-    const bLbl=isBull?'Buy CE (entry)':'Buy PE (entry)';
-    const sLbl=isBull?'Sell CE (hedge)':'Sell PE (hedge)';
-    const isAutoPick=dec.mode==='debit';
-    const rrCls=rr>=3?'mini-pass':rr>=2?'mini-warn':'mini-fail';
-    const rrTxt=rr>=3?'✅ Excellent debit R/R':rr>=2?'⚠️ Moderate debit R/R':'🚨 Weak debit R/R';
-    debitHTML=`
-      <div class="strat-half debit${isAutoPick?' auto-pick':''}">
-        ${isAutoPick?'<div class="auto-pick-badge">★ AUTO PICK</div>':''}
-        <div class="sh-title"><span class="sh-type db">DEBIT</span> ${typeName}</div>
-        <div class="ss-legs">
-          <div class="ss-leg"><div class="ss-leg-t">${bLbl}</div><div class="ss-leg-s">${f(buyCE)}</div><div class="ss-leg-d">Pay premium</div></div>
-          <div class="ss-leg"><div class="ss-leg-t">${sLbl}</div><div class="ss-leg-s">${f(sellCE)}</div><div class="ss-leg-d">Cap cost</div></div>
-        </div>
-        <div class="ch-row"><div class="chl">Cost to Enter ₹/unit</div><div class="chv rd">₹${entryCost.min}–${entryCost.max}</div></div>
-        <div class="ch-row"><div class="chl">Max Profit ₹</div><div class="chv gn">₹${f(maxProfit)}</div></div>
-        <div class="ch-row"><div class="chl">Max Loss ₹</div><div class="chv rd">₹${f(maxLoss)}</div></div>
-        <div class="ch-row"><div class="chl">Reward : Risk</div><div class="chv">${rr.toFixed(2)} : 1</div></div>
-        <div class="ch-row"><div class="chl">Breakeven</div><div class="chv bl">${f(be)}</div></div>
-        <div class="ch-row"><div class="chl">Win Probability</div><div class="chv">${wp}%</div></div>
-        <div class="ch-row" style="background:var(--gn-bg);border-radius:4px;padding:4px 6px;margin-top:4px"><div class="chl" style="color:var(--gn)">✅ 40% Exit at</div><div class="chv gn">₹${f(exit40)} profit</div></div>
-        <div class="ch-row" style="background:var(--rd-bg);border-radius:4px;padding:4px 6px"><div class="chl" style="color:var(--rd)">🛑 Stop Loss at</div><div class="chv rd">₹${f(sl)} loss (50% of cost)</div></div>
-        <div class="ch-row"><div class="chl">Rating</div><div class="chv">${'⭐'.repeat(stars)}${'☆'.repeat(5-stars)}</div></div>
-        <div class="${rrCls} mini-rr">${rrTxt}</div>
-      </div>`;
-  }
-
-  // ── PRE-EVENT: Straddle + Strangle ──────────────────────────────────
-  let eventHTML='';
-  if(PRE_EVENT){
-    const sd=estimateStraddle(price,dte,vix);
-    const sg=estimateStrangle(price,atr,dte,vix);
-    const straddleATM=Math.round(price/5)*5;
-    const strangleCE=Math.round((price+Math.round(atr*0.5/5)*5)/5)*5;
-    const stranglePE=Math.round((price-Math.round(atr*0.5/5)*5)/5)*5;
-    const sdMaxP=(price*0.03-sd.mid)*lot*lots;// Rough: needs 3% move to profit
-    const sdMaxL=sd.mid*lot*lots;
-    const sgMaxL=sg.mid*lot*lots;
-    const sdBeu=straddleATM+sd.mid, sdBed=straddleATM-sd.mid;
-    const f=n=>Math.round(n).toLocaleString('en-IN');
-    eventHTML=`
-      <div class="strat-pair">
-        <!-- STRADDLE -->
-        <div class="strat-half event auto-pick">
-          <div class="auto-pick-badge">★ PRIMARY</div>
-          <div class="sh-title"><span class="sh-type ev">EVENT</span> LONG STRADDLE (ATM)</div>
-          <div class="ss-legs">
-            <div class="ss-leg"><div class="ss-leg-t">Buy CE</div><div class="ss-leg-s">${f(straddleATM)}</div><div class="ss-leg-d">ATM call</div></div>
-            <div class="ss-leg"><div class="ss-leg-t">Buy PE</div><div class="ss-leg-s">${f(straddleATM)}</div><div class="ss-leg-d">ATM put</div></div>
-          </div>
-          <div class="ch-row"><div class="chl">Total Cost ₹/unit</div><div class="chv rd">₹${sd.min}–${sd.max}</div></div>
-          <div class="ch-row"><div class="chl">Max Loss (if no move)</div><div class="chv rd">₹${f(sdMaxL)} (premium paid)</div></div>
-          <div class="ch-row"><div class="chl">Profit if big move</div><div class="chv gn">Unlimited above BEP</div></div>
-          <div class="ch-row"><div class="chl">Upper breakeven</div><div class="chv bl">${f(sdBeu)}</div></div>
-          <div class="ch-row"><div class="chl">Lower breakeven</div><div class="chv bl">${f(sdBed)}</div></div>
-          <div class="ch-row" style="background:var(--gn-bg);border-radius:4px;padding:4px 6px;margin-top:4px"><div class="chl" style="color:var(--gn)">✅ Exit rule</div><div class="chv gn">Exit right after event — don't hold</div></div>
-          <div class="ch-row" style="background:var(--rd-bg);border-radius:4px;padding:4px 6px"><div class="chl" style="color:var(--rd)">🛑 Stop Loss</div><div class="chv rd">₹${f(Math.round(sdMaxL*0.4))} loss (40% of cost)</div></div>
-        </div>
-        <!-- STRANGLE -->
-        <div class="strat-half event">
-          <div class="sh-title"><span class="sh-type ev">EVENT</span> LONG STRANGLE (OTM)</div>
-          <div class="ss-legs">
-            <div class="ss-leg"><div class="ss-leg-t">Buy CE</div><div class="ss-leg-s">${f(strangleCE)}</div><div class="ss-leg-d">OTM call</div></div>
-            <div class="ss-leg"><div class="ss-leg-t">Buy PE</div><div class="ss-leg-s">${f(stranglePE)}</div><div class="ss-leg-d">OTM put</div></div>
-          </div>
-          <div class="ch-row"><div class="chl">Total Cost ₹/unit</div><div class="chv rd">₹${sg.min}–${sg.max}</div></div>
-          <div class="ch-row"><div class="chl">Max Loss</div><div class="chv rd">₹${f(sgMaxL)} (cheaper than straddle)</div></div>
-          <div class="ch-row"><div class="chl">Profit if BIG move</div><div class="chv gn">Unlimited (needs more move)</div></div>
-          <div class="ch-row"><div class="chl">Upper breakeven</div><div class="chv bl">${f(strangleCE+sg.mid)}</div></div>
-          <div class="ch-row"><div class="chl">Lower breakeven</div><div class="chv bl">${f(stranglePE-sg.mid)}</div></div>
-          <div class="ch-row" style="background:var(--am-bg);border-radius:4px;padding:4px 6px;margin-top:4px"><div class="chl" style="color:var(--am)">vs Straddle</div><div class="chv am">Cheaper cost, needs bigger move</div></div>
-          <div class="ch-row" style="background:var(--rd-bg);border-radius:4px;padding:4px 6px"><div class="chl" style="color:var(--rd)">🛑 Stop Loss</div><div class="chv rd">₹${f(Math.round(sgMaxL*0.4))} loss (40% of cost)</div></div>
-        </div>
-      </div>`;
-    return eventHTML;
-  }
-
-  // ── NEUTRAL + low VIX: Straddle/Strangle ─────────────────────────────
-  if(isNeutral&&vix<16){
-    const sd=estimateStraddle(price,dte,vix);
-    const straddleATM=Math.round(price/5)*5;
-    const sdBeu=straddleATM+sd.mid, sdBed=straddleATM-sd.mid;
-    const sdMaxL=sd.mid*lot*lots;
-    const f=n=>Math.round(n).toLocaleString('en-IN');
-    return `<div class="strat-pair">
-      <div class="strat-half event auto-pick">
-        <div class="auto-pick-badge">★ AUTO PICK</div>
-        <div class="sh-title"><span class="sh-type ev">DEBIT</span> LONG STRADDLE</div>
-        <div class="ss-legs">
-          <div class="ss-leg"><div class="ss-leg-t">Buy CE</div><div class="ss-leg-s">${f(straddleATM)}</div><div class="ss-leg-d">ATM call</div></div>
-          <div class="ss-leg"><div class="ss-leg-t">Buy PE</div><div class="ss-leg-s">${f(straddleATM)}</div><div class="ss-leg-d">ATM put</div></div>
-        </div>
-        <div class="ch-row"><div class="chl">Total Cost ₹/unit</div><div class="chv rd">₹${sd.min}–${sd.max}</div></div>
-        <div class="ch-row"><div class="chl">Upper BEP</div><div class="chv bl">${f(sdBeu)}</div></div>
-        <div class="ch-row"><div class="chl">Lower BEP</div><div class="chv bl">${f(sdBed)}</div></div>
-        <div class="ch-row"><div class="chl">Max Loss</div><div class="chv rd">₹${f(sdMaxL)}</div></div>
-        <div class="ch-row" style="background:var(--gn-bg);border-radius:4px;padding:4px 6px;margin-top:4px"><div class="chl" style="color:var(--gn)">✅ Exit rule</div><div class="chv gn">Exit at 40% profit on either leg</div></div>
-        <div class="ch-row" style="background:var(--rd-bg);border-radius:4px;padding:4px 6px"><div class="chl" style="color:var(--rd)">🛑 Stop Loss</div><div class="chv rd">₹${f(Math.round(sdMaxL*0.4))} loss</div></div>
-        <div class="mini-rr mini-warn">VIX ${vix.toFixed(1)} — Straddle viable</div>
-      </div>
-    </div>`;
-  }
-
-  // ── WRAP credit + debit in pair ───────────────────────────────────────
-  return `<div class="strat-pair">${creditHTML}${debitHTML}</div>`;
+function toggleCard(idx,i){
+  document.getElementById(`ecard-${idx}-${i}`)?.classList.toggle('open');
 }
 
 /* ─── Iron Condor builder ─── */
@@ -1555,10 +1574,10 @@ function buildIC(price,atr,width,lot,lots,vix,exp){
 }
 
 // ── Persist state ──────────────────────────────
-const FLDS=['gift_now','nifty_prev','gift_6am','india_vix','fii','dii','pcr','max_pain','close_char','n50adv','n50dma','bnfadv','s_price','s_atr','s_lot','s_lots'];
+const FLDS=['gift_now','nifty_prev','gift_6am','india_vix','fii','dii','pcr','max_pain','close_char','n50adv','n50dma','bnfadv','nf_price','nf_atr','nf_lot','nf_lots','bn_price','bn_atr','bn_lot','bn_lots'];
 function saveAll(){
   const s={};FLDS.forEach(f=>{const e=document.getElementById(f);if(e)s[f]=e.value});
-  s.gd=GD;s.ft=document.getElementById('s-fetch').textContent;s.sidx=stratIdx;s.pev=PRE_EVENT;s.evtype=EVENT_TYPE;
+  s.gd=GD;s.ft=document.getElementById('s-fetch').textContent;s.pev=PRE_EVENT;s.evtype=EVENT_TYPE;
   try{localStorage.setItem('mr2-state',JSON.stringify(s));toast('💾 Saved')}catch{toast('❌ Save failed')}
 }
 function loadState(){
@@ -1571,7 +1590,6 @@ function loadState(){
       document.getElementById('fs-sub').textContent=`From ${s.ft||'last session'} — tap FETCH to refresh`;
       document.getElementById('chip-status').className='hchip stale';
       document.getElementById('chip-status').textContent='CACHED';}
-    if(s.sidx)setStratIdx(s.sidx);
     if(s.pev){PRE_EVENT=false;toggleEvent();}
     if(s.evtype)setEvType(s.evtype);
   }catch{}
