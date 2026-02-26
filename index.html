@@ -294,7 +294,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
 <header>
   <div>
     <div class="hlogo">MARKET RADAR
-      <span>OPTIONS INTELLIGENCE · NSE V1.6.3</span>
+      <span>OPTIONS INTELLIGENCE · NSE V1.7.0</span>
     </div>
   </div>
   <div class="hright">
@@ -337,55 +337,55 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <!-- S&P 500 -->
     <div class="igrid-item">
       <div class="igrid-label">S&P 500</div>
-      <input class="igrid-input" id="sp500" type="number" placeholder="5993" oninput="onInput('sp500')">
+      <input class="igrid-input" id="sp500" type="text" inputmode="decimal" placeholder="5993" oninput="onInput('sp500')">
       <div class="igrid-ts" id="ts-sp500"></div>
     </div>
     <!-- DOW -->
     <div class="igrid-item">
       <div class="igrid-label">DOW JONES</div>
-      <input class="igrid-input" id="dow" type="number" placeholder="43428" oninput="onInput('dow')">
+      <input class="igrid-input" id="dow" type="text" inputmode="decimal" placeholder="43428" oninput="onInput('dow')">
       <div class="igrid-ts" id="ts-dow"></div>
     </div>
     <!-- US VIX -->
     <div class="igrid-item">
       <div class="igrid-label">US VIX</div>
-      <input class="igrid-input" id="usvix" type="number" placeholder="14.42" step="0.1" oninput="onInput('usvix')">
+      <input class="igrid-input" id="usvix" type="text" inputmode="decimal" placeholder="14.42" step="0.1" oninput="onInput('usvix')">
       <div class="igrid-ts" id="ts-usvix"></div>
     </div>
     <!-- NIKKEI -->
     <div class="igrid-item">
       <div class="igrid-label">NIKKEI 225</div>
-      <input class="igrid-input" id="nk" type="number" placeholder="38422" oninput="onInput('nk')">
+      <input class="igrid-input" id="nk" type="text" inputmode="decimal" placeholder="38422" oninput="onInput('nk')">
       <div class="igrid-ts" id="ts-nk"></div>
     </div>
     <!-- HANG SENG -->
     <div class="igrid-item">
       <div class="igrid-label">HANG SENG</div>
-      <input class="igrid-input" id="hsi" type="number" placeholder="19820" oninput="onInput('hsi')">
+      <input class="igrid-input" id="hsi" type="text" inputmode="decimal" placeholder="19820" oninput="onInput('hsi')">
       <div class="igrid-ts" id="ts-hsi"></div>
     </div>
     <!-- CRUDE -->
     <div class="igrid-item">
       <div class="igrid-label">BRENT CRUDE</div>
-      <input class="igrid-input" id="crude" type="number" placeholder="74.85" step="0.1" oninput="onInput('crude')">
+      <input class="igrid-input" id="crude" type="text" inputmode="decimal" placeholder="74.85" step="0.1" oninput="onInput('crude')">
       <div class="igrid-ts" id="ts-crude"></div>
     </div>
     <!-- GOLD -->
     <div class="igrid-item">
       <div class="igrid-label">GOLD $/oz</div>
-      <input class="igrid-input" id="gold" type="number" placeholder="2918" oninput="onInput('gold')">
+      <input class="igrid-input" id="gold" type="text" inputmode="decimal" placeholder="2918" oninput="onInput('gold')">
       <div class="igrid-ts" id="ts-gold"></div>
     </div>
     <!-- INR -->
     <div class="igrid-item">
       <div class="igrid-label">USD / INR</div>
-      <input class="igrid-input" id="inr" type="number" placeholder="84.38" step="0.01" oninput="onInput('inr')">
+      <input class="igrid-input" id="inr" type="text" inputmode="decimal" placeholder="84.38" step="0.01" oninput="onInput('inr')">
       <div class="igrid-ts" id="ts-inr"></div>
     </div>
     <!-- YIELD -->
     <div class="igrid-item" style="grid-column:1/-1">
       <div class="igrid-label">US 10Y YIELD %</div>
-      <input class="igrid-input" id="yld" type="number" placeholder="4.51" step="0.01" oninput="onInput('yld')">
+      <input class="igrid-input" id="yld" type="text" inputmode="decimal" placeholder="4.51" step="0.01" oninput="onInput('yld')">
       <div class="igrid-ts" id="ts-yld"></div>
     </div>
   </div>
@@ -398,7 +398,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">nseifsc.com — current level</div>
     </div>
     <div class="iright">
-      <input class="inp" id="gift_now" type="number" placeholder="25674" oninput="onInput('gift_now')">
+      <input class="inp" id="gift_now" type="text" inputmode="decimal" placeholder="25674" oninput="onInput('gift_now')">
       <div class="ts" id="ts-gift_now"></div>
     </div>
   </div>
@@ -408,7 +408,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">Yesterday's NSE closing price</div>
     </div>
     <div class="iright">
-      <input class="inp" id="nifty_prev" type="number" placeholder="25424" oninput="onInput('nifty_prev')">
+      <input class="inp" id="nifty_prev" type="text" inputmode="decimal" placeholder="25424" oninput="onInput('nifty_prev')">
       <div class="ts" id="ts-nifty_prev"></div>
     </div>
   </div>
@@ -418,7 +418,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">Note when you first wake up</div>
     </div>
     <div class="iright">
-      <input class="inp" id="gift_6am" type="number" placeholder="25654" oninput="onInput('gift_6am')">
+      <input class="inp" id="gift_6am" type="text" inputmode="decimal" placeholder="25654" oninput="onInput('gift_6am')">
       <div class="ts" id="ts-gift_6am"></div>
     </div>
   </div>
@@ -431,7 +431,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">nseindia.com → search "India VIX"</div>
     </div>
     <div class="iright">
-      <input class="inp" id="india_vix" type="number" placeholder="14.15" step="0.1" oninput="onInput('india_vix')">
+      <input class="inp" id="india_vix" type="text" inputmode="decimal" placeholder="14.15" step="0.1" oninput="onInput('india_vix')">
       <div class="ts" id="ts-india_vix"></div>
     </div>
   </div>
@@ -445,7 +445,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">Moneycontrol → FII DII Summary → "FII CM*"</div>
     </div>
     <div class="iright">
-      <input class="inp" id="fii" type="number" placeholder="+2991" oninput="onInput('fii')">
+      <input class="inp" id="fii" type="text" inputmode="decimal" placeholder="+2991" oninput="onInput('fii')">
       <div class="ts" id="ts-fii"></div>
     </div>
   </div>
@@ -455,7 +455,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">Moneycontrol → FII DII Summary → "FII Idx Fut"</div>
     </div>
     <div class="iright">
-      <input class="inp" id="fii_fut" type="number" placeholder="+268" oninput="onFIIFO()">
+      <input class="inp" id="fii_fut" type="text" inputmode="decimal" placeholder="+268" oninput="onFIIFO()">
       <div class="ts" id="ts-fii_fut"></div>
     </div>
   </div>
@@ -465,7 +465,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">Moneycontrol → FII DII Summary → "FII Idx Opt"</div>
     </div>
     <div class="iright">
-      <input class="inp" id="fii_opt" type="number" placeholder="-4119" oninput="onFIIFO()">
+      <input class="inp" id="fii_opt" type="text" inputmode="decimal" placeholder="-4119" oninput="onFIIFO()">
       <div class="ts" id="ts-fii_opt"></div>
     </div>
   </div>
@@ -479,37 +479,18 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc" style="color:var(--pu)">Moneycontrol → "DII CM*" · context only</div>
     </div>
     <div class="iright">
-      <input class="inp" id="dii" type="number" placeholder="+5118" oninput="onInput('dii')">
+      <input class="inp" id="dii" type="text" inputmode="decimal" placeholder="+5118" oninput="onInput('dii')">
       <div class="ts" id="ts-dii"></div>
     </div>
   </div>
-  <div class="irow">
-    <div class="ilabel">
-      <div class="iname">Nifty 50 PCR</div>
-      <div class="isrc">NSE Option Chain → Nifty → top PCR value</div>
-    </div>
-    <div class="iright">
-      <input class="inp" id="pcr_nf" type="number" placeholder="1.15" step="0.01" oninput="onInput('pcr_nf')">
-      <div class="ts" id="ts-pcr_nf"></div>
-    </div>
-  </div>
-  <div class="irow">
-    <div class="ilabel">
-      <div class="iname">Bank Nifty PCR</div>
-      <div class="isrc">NSE Option Chain → Bank Nifty → top PCR value</div>
-    </div>
-    <div class="iright">
-      <input class="inp" id="pcr_bn" type="number" placeholder="1.35" step="0.01" oninput="onInput('pcr_bn')">
-      <div class="ts" id="ts-pcr_bn"></div>
-    </div>
-  </div>
+
   <div class="irow">
     <div class="ilabel">
       <div class="iname">Max Pain — Nifty</div>
       <div class="isrc">Sensibull → Option Chain → Max Pain</div>
     </div>
     <div class="iright">
-      <input class="inp" id="max_pain_nf" type="number" placeholder="25400" oninput="onInput('max_pain_nf')">
+      <input class="inp" id="max_pain_nf" type="text" inputmode="decimal" placeholder="25400" oninput="onInput('max_pain_nf')">
       <div class="ts" id="ts-max_pain_nf"></div>
     </div>
   </div>
@@ -519,7 +500,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">Sensibull → Option Chain → Max Pain</div>
     </div>
     <div class="iright">
-      <input class="inp" id="max_pain_bn" type="number" placeholder="61000" oninput="onInput('max_pain_bn')">
+      <input class="inp" id="max_pain_bn" type="text" inputmode="decimal" placeholder="61000" oninput="onInput('max_pain_bn')">
       <div class="ts" id="ts-max_pain_bn"></div>
     </div>
   </div>
@@ -565,7 +546,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">NSE Market Stats — stocks rising</div>
     </div>
     <div class="iright">
-      <input class="inp" id="n50adv" type="number" placeholder="17" min="0" max="50" oninput="renderBreadth()">
+      <input class="inp" id="n50adv" type="text" inputmode="decimal" placeholder="17" min="0" max="50" oninput="renderBreadth()">
       <div class="ts" id="ts-n50adv"></div>
     </div>
   </div>
@@ -575,7 +556,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">NSE / Trendlyne breadth filter</div>
     </div>
     <div class="iright">
-      <input class="inp" id="n50dma" type="number" placeholder="62" min="0" max="100" oninput="renderBreadth()">
+      <input class="inp" id="n50dma" type="text" inputmode="decimal" placeholder="62" min="0" max="100" oninput="renderBreadth()">
       <div class="ts" id="ts-n50dma"></div>
     </div>
   </div>
@@ -588,7 +569,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="isrc">NSE Market Stats — BNF constituents</div>
     </div>
     <div class="iright">
-      <input class="inp" id="bnfadv" type="number" placeholder="7" min="0" max="14" oninput="renderBreadth()">
+      <input class="inp" id="bnfadv" type="text" inputmode="decimal" placeholder="7" min="0" max="14" oninput="renderBreadth()">
       <div class="ts" id="ts-bnfadv"></div>
     </div>
   </div>
@@ -726,19 +707,24 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <div class="igrid" style="margin-top:4px">
       <div class="igrid-item">
         <div class="igrid-label">Spot Price</div>
-        <input class="igrid-input" id="nf_price" type="number" placeholder="25471" oninput="buildMultiExpiry('NF')">
+        <input class="igrid-input" id="nf_price" type="text" inputmode="decimal" placeholder="25471" oninput="buildMultiExpiry('NF')">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">ATR (14-day)</div>
-        <input class="igrid-input" id="nf_atr" type="number" placeholder="180" oninput="buildMultiExpiry('NF')">
+        <input class="igrid-input" id="nf_atr" type="text" inputmode="decimal" placeholder="180" oninput="buildMultiExpiry('NF')">
+      </div>
+      <div class="igrid-item">
+        <div class="igrid-label">NF PCR</div>
+        <input class="igrid-input" id="pcr_nf" type="text" inputmode="decimal" placeholder="1.15" oninput="buildMultiExpiry('NF');stampField('pcr_nf')">
+        <div class="igrid-ts" id="ts-pcr_nf"></div>
       </div>
       <div class="igrid-item">
         <div class="igrid-label">Lot Size</div>
-        <input class="igrid-input" id="nf_lot" type="number" placeholder="65" oninput="buildMultiExpiry('NF')">
+        <input class="igrid-input" id="nf_lot" type="text" inputmode="decimal" placeholder="65" oninput="buildMultiExpiry('NF')">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">No. of Lots</div>
-        <input class="igrid-input" id="nf_lots" type="number" placeholder="1" oninput="buildMultiExpiry('NF')">
+        <input class="igrid-input" id="nf_lots" type="text" inputmode="decimal" placeholder="1" oninput="buildMultiExpiry('NF')">
       </div>
     </div>
 
@@ -746,12 +732,12 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <div class="igrid" style="margin-top:4px">
       <div class="igrid-item">
         <div class="igrid-label">Call OI Wall</div>
-        <input class="igrid-input" id="nf_oi_call" type="number" placeholder="25700" oninput="buildMultiExpiry('NF');stampField('nf_oi_call')">
+        <input class="igrid-input" id="nf_oi_call" type="text" inputmode="decimal" placeholder="25700" oninput="buildMultiExpiry('NF');stampField('nf_oi_call')">
         <div class="igrid-ts" id="ts-nf_oi_call"></div>
       </div>
       <div class="igrid-item">
         <div class="igrid-label">Put OI Wall</div>
-        <input class="igrid-input" id="nf_oi_put" type="number" placeholder="25200" oninput="buildMultiExpiry('NF');stampField('nf_oi_put')">
+        <input class="igrid-input" id="nf_oi_put" type="text" inputmode="decimal" placeholder="25200" oninput="buildMultiExpiry('NF');stampField('nf_oi_put')">
         <div class="igrid-ts" id="ts-nf_oi_put"></div>
       </div>
     </div>
@@ -766,19 +752,24 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <div class="igrid" style="margin-top:4px">
       <div class="igrid-item">
         <div class="igrid-label">Spot Price</div>
-        <input class="igrid-input" id="bn_price" type="number" placeholder="60942" oninput="buildMultiExpiry('BN')">
+        <input class="igrid-input" id="bn_price" type="text" inputmode="decimal" placeholder="60942" oninput="buildMultiExpiry('BN')">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">ATR (14-day)</div>
-        <input class="igrid-input" id="bn_atr" type="number" placeholder="450" oninput="buildMultiExpiry('BN')">
+        <input class="igrid-input" id="bn_atr" type="text" inputmode="decimal" placeholder="450" oninput="buildMultiExpiry('BN')">
+      </div>
+      <div class="igrid-item">
+        <div class="igrid-label">BNF PCR</div>
+        <input class="igrid-input" id="pcr_bn" type="text" inputmode="decimal" placeholder="1.35" oninput="buildMultiExpiry('BN');stampField('pcr_bn')">
+        <div class="igrid-ts" id="ts-pcr_bn"></div>
       </div>
       <div class="igrid-item">
         <div class="igrid-label">Lot Size</div>
-        <input class="igrid-input" id="bn_lot" type="number" placeholder="30" oninput="buildMultiExpiry('BN')">
+        <input class="igrid-input" id="bn_lot" type="text" inputmode="decimal" placeholder="30" oninput="buildMultiExpiry('BN')">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">No. of Lots</div>
-        <input class="igrid-input" id="bn_lots" type="number" placeholder="1" oninput="buildMultiExpiry('BN')">
+        <input class="igrid-input" id="bn_lots" type="text" inputmode="decimal" placeholder="1" oninput="buildMultiExpiry('BN')">
       </div>
     </div>
 
@@ -786,12 +777,12 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <div class="igrid" style="margin-top:4px">
       <div class="igrid-item">
         <div class="igrid-label">Call OI Wall</div>
-        <input class="igrid-input" id="bn_oi_call" type="number" placeholder="62000" oninput="buildMultiExpiry('BN');stampField('bn_oi_call')">
+        <input class="igrid-input" id="bn_oi_call" type="text" inputmode="decimal" placeholder="62000" oninput="buildMultiExpiry('BN');stampField('bn_oi_call')">
         <div class="igrid-ts" id="ts-bn_oi_call"></div>
       </div>
       <div class="igrid-item">
         <div class="igrid-label">Put OI Wall</div>
-        <input class="igrid-input" id="bn_oi_put" type="number" placeholder="60000" oninput="buildMultiExpiry('BN');stampField('bn_oi_put')">
+        <input class="igrid-input" id="bn_oi_put" type="text" inputmode="decimal" placeholder="60000" oninput="buildMultiExpiry('BN');stampField('bn_oi_put')">
         <div class="igrid-ts" id="ts-bn_oi_put"></div>
       </div>
     </div>
@@ -826,80 +817,85 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <div class="sec gn">Global Closing Values</div>
     <div class="igrid">
       <div class="igrid-item"><div class="igrid-label">S&P 500 Close</div>
-        <input class="igrid-input" id="ev_sp500" type="number" placeholder="5993" oninput="stampField('ev_sp500')">
+        <input class="igrid-input" id="ev_sp500" type="text" inputmode="decimal" placeholder="5993" oninput="stampField('ev_sp500')">
         <div class="igrid-ts" id="ts-ev_sp500"></div></div>
       <div class="igrid-item"><div class="igrid-label">DOW Close</div>
-        <input class="igrid-input" id="ev_dow" type="number" placeholder="43428" oninput="stampField('ev_dow')">
+        <input class="igrid-input" id="ev_dow" type="text" inputmode="decimal" placeholder="43428" oninput="stampField('ev_dow')">
         <div class="igrid-ts" id="ts-ev_dow"></div></div>
       <div class="igrid-item"><div class="igrid-label">US VIX Close</div>
-        <input class="igrid-input" id="ev_usvix" type="number" placeholder="14.42" step="0.1" oninput="stampField('ev_usvix')">
+        <input class="igrid-input" id="ev_usvix" type="text" inputmode="decimal" placeholder="14.42" step="0.1" oninput="stampField('ev_usvix')">
         <div class="igrid-ts" id="ts-ev_usvix"></div></div>
       <div class="igrid-item"><div class="igrid-label">Nikkei Close</div>
-        <input class="igrid-input" id="ev_nk" type="number" placeholder="38422" oninput="stampField('ev_nk')">
+        <input class="igrid-input" id="ev_nk" type="text" inputmode="decimal" placeholder="38422" oninput="stampField('ev_nk')">
         <div class="igrid-ts" id="ts-ev_nk"></div></div>
       <div class="igrid-item"><div class="igrid-label">Hang Seng</div>
-        <input class="igrid-input" id="ev_hsi" type="number" placeholder="19820" oninput="stampField('ev_hsi')">
+        <input class="igrid-input" id="ev_hsi" type="text" inputmode="decimal" placeholder="19820" oninput="stampField('ev_hsi')">
         <div class="igrid-ts" id="ts-ev_hsi"></div></div>
       <div class="igrid-item"><div class="igrid-label">Crude Close</div>
-        <input class="igrid-input" id="ev_crude" type="number" placeholder="74.85" step="0.1" oninput="stampField('ev_crude')">
+        <input class="igrid-input" id="ev_crude" type="text" inputmode="decimal" placeholder="74.85" step="0.1" oninput="stampField('ev_crude')">
         <div class="igrid-ts" id="ts-ev_crude"></div></div>
       <div class="igrid-item"><div class="igrid-label">Gold Close</div>
-        <input class="igrid-input" id="ev_gold" type="number" placeholder="2918" oninput="stampField('ev_gold')">
+        <input class="igrid-input" id="ev_gold" type="text" inputmode="decimal" placeholder="2918" oninput="stampField('ev_gold')">
         <div class="igrid-ts" id="ts-ev_gold"></div></div>
       <div class="igrid-item"><div class="igrid-label">USD/INR Close</div>
-        <input class="igrid-input" id="ev_inr" type="number" placeholder="84.38" step="0.01" oninput="stampField('ev_inr')">
+        <input class="igrid-input" id="ev_inr" type="text" inputmode="decimal" placeholder="84.38" step="0.01" oninput="stampField('ev_inr')">
         <div class="igrid-ts" id="ts-ev_inr"></div></div>
     </div>
 
     <div class="sec am">India Closing Values</div>
     <div class="irow">
       <div class="ilabel"><div class="iname">India VIX close</div><div class="isrc">nseindia.com</div></div>
-      <div class="iright"><input class="inp" id="ev_indiavix" type="number" placeholder="14.15" step="0.1" oninput="stampField('ev_indiavix')">
+      <div class="iright"><input class="inp" id="ev_indiavix" type="text" inputmode="decimal" placeholder="14.15" step="0.1" oninput="stampField('ev_indiavix')">
       <div class="ts" id="ts-ev_indiavix"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">FII Cash (CM) ₹ Cr</div><div class="isrc" style="color:var(--am)">⏰ Use PREV DAY until 6 PM · "FII CM*" Moneycontrol</div></div>
-      <div class="iright"><input class="inp" id="ev_fii" type="number" placeholder="+2991" oninput="stampField('ev_fii')">
+      <div class="iright"><input class="inp" id="ev_fii" type="text" inputmode="decimal" placeholder="+2991" oninput="stampField('ev_fii')">
       <div class="ts" id="ts-ev_fii"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">FII Index Options ₹ Cr</div><div class="isrc" style="color:var(--am)">⏰ Use PREV DAY until 6 PM · "FII Idx Opt" Moneycontrol</div></div>
-      <div class="iright"><input class="inp" id="ev_fii_opt" type="number" placeholder="-4119" oninput="stampField('ev_fii_opt')">
+      <div class="iright"><input class="inp" id="ev_fii_opt" type="text" inputmode="decimal" placeholder="-4119" oninput="stampField('ev_fii_opt')">
       <div class="ts" id="ts-ev_fii_opt"></div></div>
     </div>
     <div class="irow">
-      <div class="ilabel"><div class="iname">PCR close</div><div class="isrc">NSE option chain</div></div>
-      <div class="iright"><input class="inp" id="ev_pcr" type="number" placeholder="1.42" step="0.01" oninput="stampField('ev_pcr')">
-      <div class="ts" id="ts-ev_pcr"></div></div>
+      <div class="ilabel"><div class="iname">Nifty PCR close</div><div class="isrc">NSE Nifty Option Chain → PCR value at close</div></div>
+      <div class="iright"><input class="inp" id="ev_pcr_nf" type="text" inputmode="decimal" placeholder="1.15" oninput="stampField('ev_pcr_nf')">
+      <div class="ts" id="ts-ev_pcr_nf"></div></div>
+    </div>
+    <div class="irow">
+      <div class="ilabel"><div class="iname">Bank Nifty PCR close</div><div class="isrc">NSE Bank Nifty Option Chain → PCR value at close</div></div>
+      <div class="iright"><input class="inp" id="ev_pcr_bn" type="text" inputmode="decimal" placeholder="1.35" oninput="stampField('ev_pcr_bn')">
+      <div class="ts" id="ts-ev_pcr_bn"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">Nifty 50 close</div><div class="isrc">NSE or broker</div></div>
-      <div class="iright"><input class="inp" id="ev_nifty" type="number" placeholder="25512" oninput="stampField('ev_nifty')">
+      <div class="iright"><input class="inp" id="ev_nifty" type="text" inputmode="decimal" placeholder="25512" oninput="stampField('ev_nifty')">
       <div class="ts" id="ts-ev_nifty"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">Bank Nifty close</div><div class="isrc">NSE or broker</div></div>
-      <div class="iright"><input class="inp" id="ev_bnf" type="number" placeholder="61175" oninput="stampField('ev_bnf')">
+      <div class="iright"><input class="inp" id="ev_bnf" type="text" inputmode="decimal" placeholder="61175" oninput="stampField('ev_bnf')">
       <div class="ts" id="ts-ev_bnf"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">Nifty A/D (advances)</div><div class="isrc">NSE Market Stats</div></div>
-      <div class="iright"><input class="inp" id="ev_n50adv" type="number" placeholder="32" oninput="stampField('ev_n50adv')">
+      <div class="iright"><input class="inp" id="ev_n50adv" type="text" inputmode="decimal" placeholder="32" oninput="stampField('ev_n50adv')">
       <div class="ts" id="ts-ev_n50adv"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">BNF A/D (of 14)</div><div class="isrc">NSE Market Stats</div></div>
-      <div class="iright"><input class="inp" id="ev_bnfadv" type="number" placeholder="10" oninput="stampField('ev_bnfadv')">
+      <div class="iright"><input class="inp" id="ev_bnfadv" type="text" inputmode="decimal" placeholder="10" oninput="stampField('ev_bnfadv')">
       <div class="ts" id="ts-ev_bnfadv"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">Max Pain — Nifty</div><div class="isrc">Sensibull closing</div></div>
-      <div class="iright"><input class="inp" id="ev_mpnf" type="number" placeholder="25400" oninput="stampField('ev_mpnf')">
+      <div class="iright"><input class="inp" id="ev_mpnf" type="text" inputmode="decimal" placeholder="25400" oninput="stampField('ev_mpnf')">
       <div class="ts" id="ts-ev_mpnf"></div></div>
     </div>
     <div class="irow">
       <div class="ilabel"><div class="iname">Max Pain — BNF</div><div class="isrc">Sensibull closing</div></div>
-      <div class="iright"><input class="inp" id="ev_mpbn" type="number" placeholder="61000" oninput="stampField('ev_mpbn')">
+      <div class="iright"><input class="inp" id="ev_mpbn" type="text" inputmode="decimal" placeholder="61000" oninput="stampField('ev_mpbn')">
       <div class="ts" id="ts-ev_mpbn"></div></div>
     </div>
 
@@ -1089,7 +1085,7 @@ function checkLocks(){
     document.getElementById('morning-msg').textContent=`Opens in ${Math.floor(ml/60)}h ${ml%60}m (8:30 AM IST)`;
     mBanner.classList.add('show');
     setDisabled(['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','pcr_nf','pcr_bn',
+      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
       'max_pain_nf','max_pain_bn','close_char'], true);
     setDisabled(['n50adv','n50dma','bnfadv'],true);
     document.getElementById('breadth-lock').classList.add('show');
@@ -2018,7 +2014,7 @@ function switchStrat(n){
 // ── Save / Lock / Edit ─────────────────────────────────────────
 function saveRadar(){
   const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','pcr_nf','pcr_bn',
+    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
     'max_pain_nf','max_pain_bn','close_char'];
   const data={};
   radarFlds.forEach(f=>{ const e=document.getElementById(f); if(e&&e.value!=='') data[f]=e.value; stampField(f); });
@@ -2037,7 +2033,7 @@ function saveRadar(){
 function editRadar(){
   RADAR_LOCKED=false;
   const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','pcr_nf','pcr_bn',
+    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
     'max_pain_nf','max_pain_bn','close_char'];
   setDisabled(radarFlds,false);
   document.getElementById('btn-save-radar').style.display='inline-flex';
@@ -2071,7 +2067,7 @@ function editBreadth(){
 
 function saveEvening(){
   const flds=['ev_sp500','ev_dow','ev_usvix','ev_nk','ev_hsi','ev_crude','ev_gold','ev_inr',
-    'ev_indiavix','ev_fii','ev_fii_opt','ev_pcr','ev_nifty','ev_bnf','ev_n50adv','ev_bnfadv','ev_mpnf','ev_mpbn'];
+    'ev_indiavix','ev_fii','ev_fii_opt','ev_pcr_nf','ev_pcr_bn','ev_nifty','ev_bnf','ev_n50adv','ev_bnfadv','ev_mpnf','ev_mpbn'];
   const data={};
   flds.forEach(f=>{ const e=document.getElementById(f); if(e) data[f]=e.value; stampField(f); });
   try{
@@ -2088,7 +2084,7 @@ function saveEvening(){
 function editEvening(){
   EVENING_LOCKED=false;
   const flds=['ev_sp500','ev_dow','ev_usvix','ev_nk','ev_hsi','ev_crude','ev_gold','ev_inr',
-    'ev_indiavix','ev_fii','ev_fii_opt','ev_pcr','ev_nifty','ev_bnf','ev_n50adv','ev_bnfadv','ev_mpnf','ev_mpbn'];
+    'ev_indiavix','ev_fii','ev_fii_opt','ev_pcr_nf','ev_pcr_bn','ev_nifty','ev_bnf','ev_n50adv','ev_bnfadv','ev_mpnf','ev_mpbn'];
   setDisabled(flds,false);
   document.getElementById('btn-save-evening').style.display='inline-flex';
   document.getElementById('btn-edit-evening').style.display='none';
@@ -2121,10 +2117,10 @@ function loadChecklist(){
 // ── State persistence ──────────────────────────────────────────
 function saveState(){
   const allFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','pcr_nf','pcr_bn',
+    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
     'max_pain_nf','max_pain_bn','close_char','n50adv','n50dma','bnfadv',
-    'nf_price','nf_atr','nf_lot','nf_lots','nf_oi_call','nf_oi_put',
-    'bn_price','bn_atr','bn_lot','bn_lots','bn_oi_call','bn_oi_put'];
+    'nf_price','nf_atr','pcr_nf','nf_lot','nf_lots','nf_oi_call','nf_oi_put',
+    'bn_price','bn_atr','pcr_bn','bn_lot','bn_lots','bn_oi_call','bn_oi_put'];
   const s={};
   allFlds.forEach(f=>{ const e=document.getElementById(f); if(e) s[f]=e.value; });
   try{ localStorage.setItem('mr140-state',JSON.stringify(s)); }catch{}
@@ -2139,7 +2135,7 @@ function loadState(){
   if(radar){
     RADAR_LOCKED=true;
     const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','pcr_nf','pcr_bn','max_pain_nf','max_pain_bn','close_char'];
+      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','max_pain_nf','max_pain_bn','close_char'];
     setDisabled(radarFlds,true);
     document.getElementById('btn-save-radar').style.display='none';
     document.getElementById('btn-edit-radar').style.display='inline-flex';
