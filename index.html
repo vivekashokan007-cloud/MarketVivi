@@ -6,295 +6,23 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#F8F6F1">
+<meta name="theme-color" content="#0E0F11">
 <title>Market Radar</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<style>
-/* ═══════════════════════════════════════════
-   MARKET RADAR v1.3.0 — CLEAN SLATE
-   Design: dark trading terminal aesthetic
-   Monospace data, clean entry, no fetch cruft
-═══════════════════════════════════════════ */
-:root{
-  --bg0:#F8F6F1;
-  --bg1:#F0EDE6;
-  --bg2:#E8E4DC;
-  --bg3:#DDD9D0;
-  --border:#C2BDB4;
-  --border2:#ADA8A0;
-  --text:#1C1E26;
-  --muted:#5C6070;
-  --dim:#9A9690;
-  --gn:#007F5F;
-  --gn-bg:rgba(0,127,95,0.10);
-  --gn-br:rgba(0,127,95,0.32);
-  --rd:#C8213E;
-  --rd-bg:rgba(200,33,62,0.10);
-  --rd-br:rgba(200,33,62,0.32);
-  --am:#B06E00;
-  --am-bg:rgba(176,110,0,0.10);
-  --am-br:rgba(176,110,0,0.32);
-  --tl:#006E96;
-  --tl-bg:rgba(0,110,150,0.10);
-  --tl-br:rgba(0,110,150,0.32);
-  --pu:#5E3DB3;
-  --r:8px;
-  --font-mono:'Space Mono',monospace;
-  --font-sans:'DM Sans',sans-serif;
-}
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-html,body{height:100%;background:var(--bg0);color:var(--text);font-family:var(--font-sans);overflow:hidden;}
-
-/* ── Layout ─────────────────────────────── */
-#app{display:flex;flex-direction:column;height:100vh;height:100dvh;}
-header{flex-shrink:0;background:var(--bg1);border-bottom:1px solid var(--border);
-  padding:10px 16px 8px;display:flex;align-items:center;justify-content:space-between;}
-.hlogo{font-family:var(--font-mono);font-size:14px;font-weight:700;color:var(--tl);letter-spacing:-0.5px;}
-.hlogo span{color:var(--muted);font-size:9px;display:block;font-family:var(--font-sans);letter-spacing:1.5px;margin-top:1px;}
-.hright{display:flex;align-items:center;gap:8px;}
-.ver{font-size:8px;color:var(--dim);font-family:var(--font-mono);}
-.mkt-dot{width:7px;height:7px;border-radius:50%;background:var(--gn);animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-
-nav{flex-shrink:0;background:var(--bg1);border-bottom:1px solid var(--border);
-  display:flex;overflow-x:auto;scrollbar-width:none;}
-nav::-webkit-scrollbar{display:none;}
-.tab{flex:1;min-width:fit-content;padding:9px 12px;font-size:10px;font-weight:600;
-  letter-spacing:0.5px;text-align:center;color:var(--muted);cursor:pointer;
-  border-bottom:2px solid transparent;white-space:nowrap;transition:all 0.15s;}
-.tab.on{color:var(--tl);border-bottom-color:var(--tl);}
-.tab:active{opacity:0.7;}
-
-.panels{flex:1;overflow:hidden;}
-.panel{display:none;height:100%;overflow-y:auto;padding:0 0 80px;}
-.panel.on{display:block;}
-
-/* ── Sections ─────────────────────────────── */
-.sec{padding:12px 14px 6px;font-size:8px;font-weight:700;letter-spacing:2px;
-  color:var(--muted);text-transform:uppercase;display:flex;align-items:center;gap:8px;}
-.sec::after{content:'';flex:1;height:1px;background:var(--border);}
-.sec.gn::before{content:'';width:3px;height:12px;background:var(--gn);border-radius:2px;}
-.sec.rd::before{content:'';width:3px;height:12px;background:var(--rd);border-radius:2px;}
-.sec.tl::before{content:'';width:3px;height:12px;background:var(--tl);border-radius:2px;}
-.sec.am::before{content:'';width:3px;height:12px;background:var(--am);border-radius:2px;}
-.sec.pu::before{content:'';width:3px;height:12px;background:var(--pu);border-radius:2px;}
-
-/* ── Input rows ─────────────────────────── */
-.irow{display:flex;align-items:center;padding:7px 14px;border-bottom:1px solid var(--border);gap:10px;}
-.irow:last-child{border-bottom:none;}
-.ilabel{flex:1;min-width:0;}
-.iname{font-size:11px;font-weight:500;color:var(--text);line-height:1.3;}
-.isrc{font-size:8.5px;color:var(--muted);margin-top:1px;}
-.iright{display:flex;flex-direction:column;align-items:flex-end;gap:2px;}
-.inp{background:#DCE8FA;border:1px solid #A8BEE0;border-radius:6px;
-  color:var(--text);font-family:var(--font-mono);font-size:12px;font-weight:700;
-  padding:6px 10px;width:110px;text-align:right;outline:none;transition:border 0.15s;}
-.inp:focus{border-color:var(--tl);}
-.inp:disabled{opacity:0.4;cursor:not-allowed;}
-.inp.saved{border-color:var(--gn-br);}
-.ts{font-size:7.5px;color:var(--muted);font-family:var(--font-mono);min-height:9px;}
-.ts.fresh{color:var(--gn);}
-.ts.stale{color:var(--am);}
-.ts.old{color:var(--rd);}
-
-/* ── Grid entry ──────────────────────────── */
-.igrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);margin:8px 14px;}
-.igrid-item{background:var(--bg1);padding:8px 10px;display:flex;flex-direction:column;gap:3px;}
-.igrid-label{font-size:8px;font-weight:600;letter-spacing:1px;color:var(--muted);text-transform:uppercase;}
-.igrid-input{background:#DCE8FA;border:1px solid #A8BEE0;border-radius:5px;
-  color:var(--text);font-family:var(--font-mono);font-size:13px;font-weight:700;
-  padding:5px 8px;width:100%;text-align:right;outline:none;transition:border 0.15s;}
-.igrid-input:focus{border-color:var(--tl);}
-.igrid-input:disabled{opacity:0.4;cursor:not-allowed;}
-.igrid-ts{font-size:7px;color:var(--muted);font-family:var(--font-mono);text-align:right;min-height:8px;}
-
-/* ── Score card ────────────────────────── */
-.score-card{margin:12px 14px;background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);padding:16px;text-align:center;}
-.score-num{font-family:var(--font-mono);font-size:42px;font-weight:700;line-height:1;}
-.score-dir{font-size:12px;font-weight:700;letter-spacing:2px;margin-top:4px;}
-.score-conf{font-size:9px;color:var(--muted);margin-top:4px;}
-
-/* ── Verdict rows ─────────────────────── */
-.vrow{display:flex;align-items:center;padding:7px 14px;border-bottom:1px solid var(--border);gap:8px;}
-.vrow-name{font-size:10px;color:var(--muted);flex:1;}
-.vrow-val{font-size:10px;font-family:var(--font-mono);font-weight:700;}
-.vrow-sig{font-size:9px;color:var(--muted);}
-.bar{height:3px;border-radius:2px;background:var(--border);margin:0 14px 10px;overflow:hidden;}
-.bar-fill{height:100%;border-radius:2px;transition:width 0.4s,background 0.4s;}
-
-/* ── Tags ─────────────────────────────── */
-.tag{display:inline-block;font-size:8px;font-weight:700;letter-spacing:0.5px;
-  padding:2px 6px;border-radius:4px;font-family:var(--font-mono);}
-.tag.up{background:var(--gn-bg);color:var(--gn);border:1px solid var(--gn-br);}
-.tag.dn{background:var(--rd-bg);color:var(--rd);border:1px solid var(--rd-br);}
-.tag.fl{background:var(--bg3);color:var(--muted);border:1px solid var(--border);}
-.tag.am{background:var(--am-bg);color:var(--am);border:1px solid var(--am-br);}
-.tag.tl{background:var(--tl-bg);color:var(--tl);border:1px solid var(--tl-br);}
-.tag.pu{background:rgba(167,139,250,0.1);color:var(--pu);border:1px solid rgba(167,139,250,0.3);}
-
-/* ── Buttons ─────────────────────────── */
-.btn{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-sans);
-  font-size:10px;font-weight:700;letter-spacing:0.5px;padding:8px 14px;border-radius:6px;
-  border:none;cursor:pointer;transition:all 0.15s;}
-.btn:active{transform:scale(0.97);}
-.btn-primary{background:var(--tl);color:#FFFFFF;}
-.btn-save{background:var(--gn);color:#FFFFFF;}
-.btn-edit{background:var(--bg3);color:var(--am);border:1px solid var(--am-br);}
-.btn-lock{background:var(--pu);color:#FFFFFF;}
-.btn-sm{padding:6px 10px;font-size:9px;}
-.btn-row{display:flex;gap:8px;padding:10px 14px;align-items:center;}
-
-/* ── Time lock banner ─────────────────── */
-.lock-banner{display:none;background:var(--am-bg);border:1px solid var(--am-br);
-  border-radius:var(--r);margin:14px;padding:16px;text-align:center;}
-.lock-banner.show{display:block;}
-.lock-icon{font-size:24px;margin-bottom:6px;}
-.lock-msg{font-size:12px;font-weight:700;color:var(--am);}
-.lock-sub{font-size:9px;color:var(--muted);margin-top:4px;}
-
-/* ── Info box ─────────────────────────── */
-.info-box{margin:10px 14px;background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);padding:10px 12px;font-size:9.5px;color:var(--muted);line-height:1.7;}
-
-/* ── Strategy pages ──────────────────── */
-.strat-nav{display:flex;border-bottom:1px solid var(--border);margin:0 14px 14px;}
-.strat-tab{flex:1;padding:8px;text-align:center;font-size:10px;font-weight:700;
-  color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;transition:all 0.15s;}
-.strat-tab.on{color:var(--am);border-bottom-color:var(--am);}
-.strat-page{display:none;}
-.strat-page.on{display:block;}
-
-/* ── Strike cards ────────────────────── */
-.strike-card{margin:0 14px 10px;background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);overflow:hidden;}
-.sc-hdr{padding:10px 14px;background:var(--bg3);display:flex;align-items:center;gap:8px;}
-.sc-title{font-size:11px;font-weight:700;}
-.sc-sub{font-size:8.5px;color:var(--muted);}
-.sc-body{padding:12px 14px;}
-.sc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
-.sc-item{background:var(--bg3);border-radius:6px;padding:8px 10px;}
-.sc-lbl{font-size:7.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:2px;}
-.sc-val{font-family:var(--font-mono);font-size:13px;font-weight:700;}
-.sc-val.gn{color:var(--gn);}
-.sc-val.rd{color:var(--rd);}
-.sc-val.am{color:var(--am);}
-.sc-val.tl{color:var(--tl);}
-.sc-meta{font-size:9px;color:var(--muted);line-height:1.7;border-top:1px solid var(--border);
-  padding-top:8px;margin-top:4px;}
-.sc-exit{display:flex;gap:6px;margin-top:8px;}
-.sc-exit-item{flex:1;background:var(--bg0);border-radius:5px;padding:6px 8px;text-align:center;}
-.sc-exit-lbl{font-size:7px;color:var(--muted);letter-spacing:0.5px;}
-.sc-exit-val{font-family:var(--font-mono);font-size:10px;font-weight:700;margin-top:1px;}
-
-/* ── OI comparison ───────────────────── */
-.oi-compare{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0;}
-.oi-side{background:var(--bg3);border-radius:6px;padding:8px 10px;border:1px solid var(--border);}
-.oi-side.better{border-color:var(--gn-br);background:var(--gn-bg);}
-.oi-side-lbl{font-size:7.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:4px;}
-.oi-side-strike{font-family:var(--font-mono);font-size:12px;font-weight:700;margin-bottom:2px;}
-.oi-side-cr{font-size:9.5px;color:var(--gn);}
-.oi-side-pnl{font-size:8.5px;color:var(--muted);}
-
-/* ── Breadth display ─────────────────── */
-.bcard{margin:0 14px 10px;background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);padding:12px 14px;}
-.bcard-title{font-size:10px;font-weight:700;margin-bottom:8px;}
-.b-meter{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin:4px 0 6px;}
-.b-fill{height:100%;border-radius:3px;transition:width 0.5s;}
-.b-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;}
-.b-stat{text-align:center;}
-.b-stat-val{font-family:var(--font-mono);font-size:13px;font-weight:700;}
-.b-stat-lbl{font-size:7.5px;color:var(--muted);margin-top:1px;}
-
-/* ── Recommendation card ─────────────── */
-.rec-card{margin:10px 14px;border-radius:var(--r);padding:14px;position:relative;overflow:hidden;}
-.rec-card::before{content:'';position:absolute;top:0;left:0;right:0;bottom:0;opacity:0.05;}
-.rec-badge{font-size:8px;font-weight:700;letter-spacing:2px;text-transform:uppercase;
-  margin-bottom:6px;opacity:0.7;}
-.rec-index{font-family:var(--font-mono);font-size:22px;font-weight:700;margin-bottom:4px;}
-.rec-strat{font-size:11px;font-weight:600;margin-bottom:8px;}
-.rec-reasons{font-size:9px;line-height:1.8;opacity:0.75;}
-
-/* ── Delta row ───────────────────────── */
-.delta-row{margin:0 14px 8px;background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;}
-.delta-lbl{font-size:8px;color:var(--muted);letter-spacing:1px;margin-bottom:2px;}
-.delta-val{font-family:var(--font-mono);font-size:11px;font-weight:700;}
-
-/* ── Radio group ─────────────────────── */
-.radio-group{padding:6px 14px;}
-.rg-label{font-size:9px;font-weight:600;color:var(--text);margin-bottom:5px;}
-.rg-opts{display:flex;gap:0;background:var(--bg3);border-radius:6px;overflow:hidden;border:1px solid var(--border);}
-.rg-opt{flex:1;text-align:center;padding:7px 4px;font-size:9px;font-weight:600;
-  color:var(--muted);cursor:pointer;transition:all 0.15s;position:relative;}
-.rg-opt input{position:absolute;opacity:0;width:0;height:0;}
-.rg-opt.checked{background:var(--tl);color:#FFFFFF;}
-
-/* ── Toast ───────────────────────────── */
-#toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(10px);
-  background:var(--bg3);color:var(--text);border:1px solid var(--border);
-  border-radius:20px;padding:8px 16px;font-size:11px;font-weight:600;
-  opacity:0;transition:all 0.3s;pointer-events:none;white-space:nowrap;z-index:999;}
-#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
-
-/* ── Select ─────────────────────────── */
-select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236B7FA0'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right 8px center;padding-right:22px;}
-
-/* ── Scrollbar ─────────────────────── */
-.panel::-webkit-scrollbar{width:3px;}
-.panel::-webkit-scrollbar-track{background:transparent;}
-.panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-
-/* ── Expiry card system v1.3.2 ───────────────────── */
-.expiry-card{margin:10px 14px 0;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;}
-.ec-hdr{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer;background:var(--bg3);transition:background 0.15s;user-select:none;}
-.ec-hdr:active{background:var(--bg2);}
-.ec-chevron{font-size:10px;color:var(--muted);transition:transform 0.2s;margin-left:8px;}
-.expiry-card.open .ec-chevron{transform:rotate(180deg);}
-.ec-body{display:none;padding:0 0 12px;}
-.expiry-card.open .ec-body{display:block;}
-.ec-note{font-size:8.5px;color:var(--muted);padding:8px 14px;background:var(--bg1);border-bottom:1px solid var(--border);line-height:1.5;}
-.ec-section-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 4px;}
-.mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);margin:4px 14px;}
-.mg-item{background:var(--bg1);padding:7px 10px;}
-.mg-lbl{font-size:7px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:2px;}
-.mg-val{font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--text);}
-.mg-val.gn{color:var(--gn);} .mg-val.rd{color:var(--rd);} .mg-val.am{color:var(--am);} .mg-val.tl{color:var(--tl);}
-.exit-row{display:flex;gap:8px;padding:6px 14px;}
-.exit-item{flex:1;background:var(--bg3);border-radius:5px;padding:5px 8px;font-size:9px;font-family:var(--font-mono);color:var(--text);}
-.ec-bias-note{font-size:8.5px;padding:6px 14px;line-height:1.5;}
-.ec-bias-note.gn{color:var(--gn);} .ec-bias-note.rd{color:var(--rd);} .ec-bias-note.am{color:var(--am);}
-/* ── Strat tabs ──────────────────────────────────── */
-.strat-tab{flex:1;padding:10px 8px;text-align:center;font-size:11px;font-weight:700;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;transition:all 0.15s;}
-.strat-tab.on{color:var(--am);border-bottom-color:var(--am);}
-.strat-page{display:none;padding-bottom:40px;}
-.strat-page.on{display:block;}
-
-/* ── Entry Time Signal ──────────────────────────── */
-.entry-banner{margin:10px 14px 0;border-radius:var(--r);padding:12px 14px;border:1px solid var(--border);display:flex;align-items:center;gap:12px;}
-.entry-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;animation:pulse 2s infinite;}
-.entry-time{font-family:var(--font-mono);font-size:20px;font-weight:700;line-height:1;}
-.entry-phase{font-size:8px;letter-spacing:1.5px;font-weight:700;text-transform:uppercase;margin-top:2px;}
-.entry-msg{font-size:9.5px;color:var(--muted);margin-top:3px;line-height:1.5;}
-.entry-split{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 14px 0;}
-.entry-idx{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;}
-.entry-idx-lbl{font-size:7.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:3px;}
-.entry-idx-sig{font-size:10px;font-weight:700;}
-.entry-idx-note{font-size:8px;color:var(--muted);margin-top:2px;line-height:1.4;}
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
+
+<body>
 <body>
 <div id="app">
 
 <header>
   <div>
     <div class="hlogo">MARKET RADAR
-      <span>OPTIONS INTELLIGENCE · NSE V1.7.0</span>
+      <span>OPTIONS INTELLIGENCE · NSE V2.0.2</span>
     </div>
   </div>
   <div class="hright">
@@ -667,7 +395,7 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
 
 </div><!-- /p2 -->
 
-<!-- ═══════════════ PANEL 3: STRATEGY ═══════════════ -->
+<!-- ═══════════════ PANEL 3: STRATEGY v1.8.0 ═══════════════ -->
 <div class="panel" id="p3">
 
   <!-- Entry Time Signal -->
@@ -681,114 +409,86 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
       <div class="entry-msg" id="entry-msg">Initialising...</div>
     </div>
   </div>
-  <div class="entry-split">
-    <div class="entry-idx">
-      <div class="entry-idx-lbl">NIFTY 50</div>
-      <div class="entry-idx-sig" id="nf-entry-sig">—</div>
-      <div class="entry-idx-note" id="nf-entry-note">Settles ~09:45 IST</div>
-    </div>
-    <div class="entry-idx">
-      <div class="entry-idx-lbl">BANK NIFTY</div>
-      <div class="entry-idx-sig" id="bn-entry-sig">—</div>
-      <div class="entry-idx-note" id="bn-entry-note">Settles ~10:15 IST</div>
-    </div>
-  </div>
 
-  <!-- Sub-nav: NF | BNF -->
-  <div style="display:flex;border-bottom:2px solid var(--border);background:var(--bg1)">
-    <div class="strat-tab on" id="st0" onclick="switchStrat(0)">📈 NIFTY 50</div>
-    <div class="strat-tab" id="st1" onclick="switchStrat(1)">🏦 BANK NIFTY</div>
-  </div>
+  <!-- ═══ COMMAND OUTPUT — auto-rendered ═══ -->
+  <div id="cmd-output"></div>
 
-  <!-- ── NIFTY 50 ─────────────────────────────── -->
-  <div class="strat-page on" id="sp0">
-
-    <div class="sec tl" style="margin-top:10px">Nifty 50 Inputs</div>
-    <div class="igrid" style="margin-top:4px">
+  <!-- ═══ INPUTS (always visible, compact) ═══ -->
+  <div style="margin:14px 14px 0;border-top:2px solid var(--border);padding-top:12px;">
+    <div style="font-size:8px;font-weight:700;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:8px;">📥 NIFTY 50 INPUTS</div>
+    <div class="igrid" style="margin:0">
       <div class="igrid-item">
         <div class="igrid-label">Spot Price</div>
-        <input class="igrid-input" id="nf_price" type="text" inputmode="decimal" placeholder="25471" oninput="buildMultiExpiry('NF')">
+        <input class="igrid-input" id="nf_price" type="text" inputmode="decimal" placeholder="25471" oninput="buildCommand()">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">ATR (14-day)</div>
-        <input class="igrid-input" id="nf_atr" type="text" inputmode="decimal" placeholder="180" oninput="buildMultiExpiry('NF')">
+        <input class="igrid-input" id="nf_atr" type="text" inputmode="decimal" placeholder="250" oninput="buildCommand()">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">NF PCR</div>
-        <input class="igrid-input" id="pcr_nf" type="text" inputmode="decimal" placeholder="1.15" oninput="buildMultiExpiry('NF');stampField('pcr_nf')">
+        <input class="igrid-input" id="pcr_nf" type="text" inputmode="decimal" placeholder="1.15" oninput="buildCommand();stampField('pcr_nf')">
         <div class="igrid-ts" id="ts-pcr_nf"></div>
       </div>
       <div class="igrid-item">
-        <div class="igrid-label">Lot Size</div>
-        <input class="igrid-input" id="nf_lot" type="text" inputmode="decimal" placeholder="65" oninput="buildMultiExpiry('NF')">
-      </div>
-      <div class="igrid-item">
-        <div class="igrid-label">No. of Lots</div>
-        <input class="igrid-input" id="nf_lots" type="text" inputmode="decimal" placeholder="1" oninput="buildMultiExpiry('NF')">
+        <div class="igrid-label">Max Pain NF</div>
+        <input class="igrid-input" id="nf_maxpain" type="text" inputmode="decimal" placeholder="25300" oninput="buildCommand();stampField('nf_maxpain')">
+        <div class="igrid-ts" id="ts-nf_maxpain"></div>
       </div>
     </div>
-
-    <div class="sec am">OI Walls (optional)</div>
-    <div class="igrid" style="margin-top:4px">
+    <div class="igrid" style="margin:4px 0 0">
       <div class="igrid-item">
         <div class="igrid-label">Call OI Wall</div>
-        <input class="igrid-input" id="nf_oi_call" type="text" inputmode="decimal" placeholder="25700" oninput="buildMultiExpiry('NF');stampField('nf_oi_call')">
+        <input class="igrid-input" id="nf_oi_call" type="text" inputmode="decimal" placeholder="25700" oninput="buildCommand();stampField('nf_oi_call')">
         <div class="igrid-ts" id="ts-nf_oi_call"></div>
       </div>
       <div class="igrid-item">
         <div class="igrid-label">Put OI Wall</div>
-        <input class="igrid-input" id="nf_oi_put" type="text" inputmode="decimal" placeholder="25200" oninput="buildMultiExpiry('NF');stampField('nf_oi_put')">
+        <input class="igrid-input" id="nf_oi_put" type="text" inputmode="decimal" placeholder="25200" oninput="buildCommand();stampField('nf_oi_put')">
         <div class="igrid-ts" id="ts-nf_oi_put"></div>
       </div>
     </div>
-
-    <div id="nf-multi-output"></div>
   </div>
 
-  <!-- ── BANK NIFTY ─────────────────────────────── -->
-  <div class="strat-page" id="sp1">
-
-    <div class="sec tl" style="margin-top:10px">Bank Nifty Inputs</div>
-    <div class="igrid" style="margin-top:4px">
+  <!-- BNF inputs — compact, always below -->
+  <div style="margin:10px 14px 0;border-top:1px solid var(--border);padding-top:12px;">
+    <div style="font-size:8px;font-weight:700;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:8px;">🏦 BANK NIFTY INPUTS <span style="font-size:7px;font-weight:400">(optional — for BNF viability)</span></div>
+    <div class="igrid" style="margin:0">
       <div class="igrid-item">
-        <div class="igrid-label">Spot Price</div>
-        <input class="igrid-input" id="bn_price" type="text" inputmode="decimal" placeholder="60942" oninput="buildMultiExpiry('BN')">
+        <div class="igrid-label">BNF Spot</div>
+        <input class="igrid-input" id="bn_price" type="text" inputmode="decimal" placeholder="61000" oninput="buildCommand()">
       </div>
       <div class="igrid-item">
-        <div class="igrid-label">ATR (14-day)</div>
-        <input class="igrid-input" id="bn_atr" type="text" inputmode="decimal" placeholder="450" oninput="buildMultiExpiry('BN')">
+        <div class="igrid-label">BNF ATR</div>
+        <input class="igrid-input" id="bn_atr" type="text" inputmode="decimal" placeholder="600" oninput="buildCommand()">
       </div>
       <div class="igrid-item">
         <div class="igrid-label">BNF PCR</div>
-        <input class="igrid-input" id="pcr_bn" type="text" inputmode="decimal" placeholder="1.35" oninput="buildMultiExpiry('BN');stampField('pcr_bn')">
+        <input class="igrid-input" id="pcr_bn" type="text" inputmode="decimal" placeholder="1.35" oninput="buildCommand();stampField('pcr_bn')">
         <div class="igrid-ts" id="ts-pcr_bn"></div>
       </div>
       <div class="igrid-item">
-        <div class="igrid-label">Lot Size</div>
-        <input class="igrid-input" id="bn_lot" type="text" inputmode="decimal" placeholder="30" oninput="buildMultiExpiry('BN')">
-      </div>
-      <div class="igrid-item">
-        <div class="igrid-label">No. of Lots</div>
-        <input class="igrid-input" id="bn_lots" type="text" inputmode="decimal" placeholder="1" oninput="buildMultiExpiry('BN')">
+        <div class="igrid-label">Max Pain BNF</div>
+        <input class="igrid-input" id="bn_maxpain" type="text" inputmode="decimal" placeholder="60500" oninput="buildCommand()">
       </div>
     </div>
-
-    <div class="sec am">OI Walls (optional)</div>
-    <div class="igrid" style="margin-top:4px">
+    <div class="igrid" style="margin:4px 0 0">
       <div class="igrid-item">
         <div class="igrid-label">Call OI Wall</div>
-        <input class="igrid-input" id="bn_oi_call" type="text" inputmode="decimal" placeholder="62000" oninput="buildMultiExpiry('BN');stampField('bn_oi_call')">
+        <input class="igrid-input" id="bn_oi_call" type="text" inputmode="decimal" placeholder="62000" oninput="buildCommand();stampField('bn_oi_call')">
         <div class="igrid-ts" id="ts-bn_oi_call"></div>
       </div>
       <div class="igrid-item">
         <div class="igrid-label">Put OI Wall</div>
-        <input class="igrid-input" id="bn_oi_put" type="text" inputmode="decimal" placeholder="60000" oninput="buildMultiExpiry('BN');stampField('bn_oi_put')">
+        <input class="igrid-input" id="bn_oi_put" type="text" inputmode="decimal" placeholder="60000" oninput="buildCommand();stampField('bn_oi_put')">
         <div class="igrid-ts" id="ts-bn_oi_put"></div>
       </div>
     </div>
-
-    <div id="bn-multi-output"></div>
   </div>
+
+  <!-- hidden compat elements for old saveState refs -->
+  <input type="hidden" id="nf-multi-output-compat">
+  <input type="hidden" id="bn-multi-output-compat">
 
 </div><!-- /p3 -->
 
@@ -902,7 +602,60 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
     <div class="btn-row" style="justify-content:center;margin:8px 0 20px">
       <button class="btn btn-lock" id="btn-lock-bottom" onclick="saveEvening()">🔒 LOCK EVENING DATA</button>
     </div>
-  </div>
+
+    <!-- ══ BHAV COPY ENGINE ═══════════════════════════════════ -->
+    <div class="sec tl" style="margin-top:4px">📊 Bhav Copy — Option Data Engine</div>
+
+    <!-- GitHub config notice -->
+    <div id="fb-config-notice" style="display:none;background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.3);border-radius:6px;padding:10px 12px;margin:6px 0;font-size:8.5px;line-height:1.8">
+      ⚙️ <strong>One-time setup</strong> — create <code>login.json</code> in your repo. App fetches credentials from it automatically. You never type your token again.
+      <div style="background:var(--bg3);border-radius:5px;padding:8px 10px;margin:6px 0;font-size:7.5px;color:var(--muted);line-height:1.8">
+        <strong style="color:var(--text)">Create login.json in your repo root:</strong><br>
+        <span style="color:var(--tl);font-family:var(--font-mono)">{<br>
+        &nbsp;&nbsp;"owner": "your-username",<br>
+        &nbsp;&nbsp;"repo":&nbsp;&nbsp;"market-radar",<br>
+        &nbsp;&nbsp;"token": "github_pat_..."<br>
+        }</span><br><br>
+        Token: github.com → Settings → Developer settings → Fine-grained tokens<br>
+        → Select your repo → Contents: <strong>Read &amp; Write</strong>
+      </div>
+      <button class="btn" style="font-size:8px;padding:5px 10px;margin-bottom:6px" onclick="document.getElementById('fb-config-panel').style.display='block';this.style.display='none'">🔧 I have login.json — connect now</button>
+      <div id="fb-config-panel" style="display:none">
+        <div style="font-size:7.5px;color:var(--muted);margin-bottom:5px">Enter username + repo name — app fetches your token from login.json:</div>
+        <div style="display:grid;gap:5px;margin-bottom:8px">
+          <input id="gh-owner" class="inp" placeholder="GitHub username (e.g. prasanth123)" style="font-size:9px;padding:6px 8px">
+          <input id="gh-repo"  class="inp" placeholder="Repo name (e.g. market-radar)" style="font-size:9px;padding:6px 8px">
+        </div>
+        <button class="btn" style="font-size:8px;padding:6px 12px;background:rgba(0,200,100,0.1);border-color:rgba(0,200,100,0.3);color:var(--gn);width:100%" onclick="saveGHConfig()">✅ Load login.json &amp; Connect</button>
+      </div>
+    </div>
+
+    <!-- Cloud sync status -->
+    <div id="fb-sync-status" style="font-size:8px;color:var(--muted);padding:4px 0 6px;display:none"></div>
+
+    <!-- Gap alert -->
+    <div id="bhav-gap-alert" style="display:none;background:rgba(200,33,62,0.08);border:1px solid rgba(200,33,62,0.3);border-radius:6px;padding:8px 12px;margin:4px 0;font-size:8.5px;color:var(--rd)"></div>
+
+    <!-- Calendar view -->
+    <div id="bhav-calendar" style="margin:8px 0"></div>
+
+    <!-- Upload controls -->
+    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap;align-items:center">
+      <label style="flex:1;min-width:120px">
+        <div class="btn" style="cursor:pointer;text-align:center;font-size:9px;padding:8px 10px">
+          📂 Upload CE + PE Files
+        </div>
+        <input type="file" id="bhav-file-input" multiple accept=".csv" onchange="loadBhavFiles(event)" style="display:none">
+      </label>
+      <button class="btn" style="font-size:9px;padding:8px 10px" onclick="syncFromCloud()">☁️ Sync Cloud</button>
+      <button class="btn" style="font-size:9px;padding:8px 10px;background:rgba(200,33,62,0.08);border-color:rgba(200,33,62,0.2);color:var(--rd)" onclick="if(confirm('Clear ALL bhav data? This cannot be undone.'))clearBhavData()">🗑</button>
+    </div>
+    <div id="bhav-log" style="font-size:8px;color:var(--muted);min-height:16px;margin-bottom:4px"></div>
+
+    <!-- Stats summary -->
+    <div id="bhav-status"></div>
+
+  </div><!-- /evening-content -->
 </div><!-- /p4 -->
 
 </div><!-- /panels -->
@@ -910,1270 +663,9 @@ select.inp{-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Cs
 
 <div id="toast"></div>
 
-<script>
-'use strict';
-// ═══════════════════════════════════════════════════════════════
-// MARKET RADAR v1.7.0
-// v1.5.0: PCR from score, DTE 6-7 mult, distFactorCall,
-//         DTE≤5 AVOID, VIX guard, ±5% stress test
-// v1.6.0: ATR detector index-aware, distFactorCall DTE-aware,
-//         getDteMultCall() DTE 22-30=3.00
-// v1.7.0: getDteMultBNF/getDteMultBNFCall — BNF-specific mults
-//         calibrated from 3-month NSE bhavcopy (134 records).
-//         bestStrike callBase 1.30→1.60 at DTE 22-45.
-//         distFactorCall DTE≤7: 0.72→0.62.
-//         BNF limited-data disclaimer on all expiry cards.
-// ═══════════════════════════════════════════════════════════════
 
-// ── State ─────────────────────────────────────────────────────
-let SCORE = null, DIRECTION = '', STRAT_AUTO = '';
-let RADAR_LOCKED = false, BREADTH_LOCKED = false, EVENING_LOCKED = false;
-
-// ── Weights (sum = 1.0000) ─────────────────────────────────────
-// v1.5.0: PCR removed from score (38% directional accuracy — worse than random).
-// Its 4.76% weight redistributed: +2.38% to FII (most predictive), +2.38% to GIFT gap.
-// PCR is KEPT for strike placement only (pcrPutAdj / pcrCallAdj / pcrPremAdj).
-const W = {
-  gift_gap:   0.2143,  // was 0.1905 (+0.0238 from PCR)
-  gift_trend: 0.0572,
-  sp500:      0.1619,
-  dow:        0.0571,
-  usvix:      0.0476,
-  nk:         0.0571,
-  hsi:        0.0286,
-  crude:      0.0667,
-  gold:       0.0286,
-  inr:        0.0286,
-  yld:        0.0381,
-  fii:        0.1000,  // was 0.0762 (+0.0238 from PCR)
-  close_char: 0.0381,
-  max_pain:   0.0286,
-  n50adv:     0.0190,
-  n50dma:     0.0095,
-  bnfadv:     0.0190,
-};
-
-// ── NSE Holiday Calendar 2026 ──────────────────────────────────
-const NSE_HOLIDAYS_2026 = [
-  '2026-01-01','2026-01-26','2026-03-03','2026-03-31',
-  '2026-04-03','2026-04-14','2026-05-01','2026-06-16',
-  '2026-11-09','2026-11-10','2026-11-24','2026-12-25'
-].map(s => new Date(s+'T00:00:00'));
-
-function isTradingDay(d) {
-  const day = d.getDay();
-  if (day === 0 || day === 6) return false; // weekend
-  return !NSE_HOLIDAYS_2026.some(h =>
-    h.getFullYear()===d.getFullYear() &&
-    h.getMonth()===d.getMonth() &&
-    h.getDate()===d.getDate()
-  );
-}
-
-function prevTradingDay(d) {
-  const p = new Date(d);
-  p.setDate(p.getDate() - 1);
-  while (!isTradingDay(p)) p.setDate(p.getDate() - 1);
-  return p;
-}
-
-function actualExpiry(raw) {
-  if (isTradingDay(raw)) return { d: new Date(raw), shifted: false };
-  return { d: prevTradingDay(raw), shifted: true };
-}
-
-// ── Helpers ────────────────────────────────────────────────────
-const gv  = id => { const e=document.getElementById(id); if(!e) return null; const v=parseFloat(e.value); return isNaN(v)?null:v; };
-const gvi = id => { const e=document.getElementById(id); if(!e) return null; const v=parseInt(e.value); return isNaN(v)?null:v; };
-const gs  = id => { const e=document.getElementById(id); if(!e) return null; return e.value||null; };
-const r5   = x  => Math.round(x/5)*5;      // credit rounding to nearest ₹5
-const r50  = x  => Math.round(x/50)*50;   // NF strike snapping — NSE NF strikes in multiples of 50
-const r100 = x  => Math.round(x/100)*100; // BNF strike snapping — NSE BNF strikes in multiples of 100
-const fi  = n  => Math.abs(Math.round(n)).toLocaleString('en-IN');
-const fr  = n  => '₹'+fi(n);
-const pct = (c,p)=> p>0?(c-p)/p*100:null;
-function valid(v){ return v!==null && v!==0 && !isNaN(v); }
-
-// ── Timestamp system ───────────────────────────────────────────
-const TS_KEY = 'mr140-ts';
-function getTSStore(){ try{ return JSON.parse(localStorage.getItem(TS_KEY)||'{}'); }catch{ return {}; } }
-function saveTSStore(s){ try{ localStorage.setItem(TS_KEY,JSON.stringify(s)); }catch{} }
-
-// v1.6.1: FII F&O signal handler
-function onFIIFO() {
-  const futEl = document.getElementById('fii_fut');
-  const optEl = document.getElementById('fii_opt');
-  if (futEl && futEl.value !== '') stampField('fii_fut');
-  if (optEl && optEl.value !== '') stampField('fii_opt');
-  const fut = futEl && futEl.value !== '' ? parseFloat(futEl.value) : null;
-  const opt = optEl && optEl.value !== '' ? parseFloat(optEl.value) : null;
-  const sig = document.getElementById('fii-fo-signal');
-  const hdr = document.getElementById('fii-fo-hdr');
-  const txt = document.getElementById('fii-fo-txt');
-  if (!sig) return;
-  if (fut === null && opt === null) { sig.style.display = 'none'; return; }
-  const net = (fut || 0) + (opt || 0);
-  let color = 'var(--am)', icon = '⚡', summary = '', detail = '';
-  if (opt !== null) {
-    if (opt <= -15000) {
-      color='var(--rd)'; icon='🔴'; summary='MASSIVE PUT BUYING — extreme bearish hedge';
-      detail='FII Idx Opt '+Math.round(opt).toLocaleString('en-IN')+'Cr: FII loading puts aggressively. Widen call strikes or avoid new IC entries.';
-    } else if (opt <= -5000) {
-      color='var(--am)'; icon='⚠️'; summary='Heavy put buying — bearish derivative positioning';
-      detail='FII Idx Opt '+Math.round(opt).toLocaleString('en-IN')+'Cr: Elevated put buying. Favour puts over calls on IC.';
-    } else if (opt >= 5000) {
-      color='var(--gn)'; icon='🟢'; summary='FII net call buying / put selling — bullish derivatives';
-      detail='FII Idx Opt +'+Math.round(opt).toLocaleString('en-IN')+'Cr: FII selling puts or buying calls. IC call side safer.';
-    } else {
-      color='var(--am)'; icon='💡'; summary='FII option flow moderate — no strong signal';
-      detail='FII Idx Opt '+(opt>=0?'+':'')+Math.round(opt).toLocaleString('en-IN')+'Cr: No strong directional derivatives signal.';
-    }
-  }
-  const futStr = fut!==null ? '  Fut: '+(fut>=0?'+':'')+Math.round(fut).toLocaleString('en-IN')+'Cr' : '';
-  const optStr = opt!==null ? '  Opt: '+(opt>=0?'+':'')+Math.round(opt).toLocaleString('en-IN')+'Cr' : '';
-  const netStr = '  F&O Net: '+(net>=0?'+':'')+Math.round(net).toLocaleString('en-IN')+'Cr';
-  sig.style.display = 'block';
-  sig.style.borderLeftColor = color;
-  hdr.style.color = color;
-  hdr.innerHTML = icon+' FII F&O SIGNAL — '+summary;
-  txt.innerHTML = '<span style="color:var(--muted)">'+futStr+optStr+netStr+'</span><br>'+detail;
-}
-
-function stampField(id){
-  const e=document.getElementById(id);
-  if(!e||!e.value) return;
-  const s=getTSStore();
-  s[id]={ts:Date.now(),val:e.value};
-  saveTSStore(s);
-  renderTS(id,s[id].ts);
-}
-
-function renderTS(id, ts){
-  const el=document.getElementById('ts-'+id);
-  if(!el||!ts) return;
-  const d=new Date(ts), now=new Date();
-  const sameDay=d.toDateString()===now.toDateString();
-  const hm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-  const diffDays=Math.floor((now-d)/86400000);
-  if(sameDay){ el.textContent=hm; el.className='ts fresh igrid-ts'; }
-  else if(diffDays===1){ el.textContent='yesterday ⚠'; el.className='ts stale igrid-ts'; }
-  else{ el.textContent=diffDays+'d ago'; el.className='ts old igrid-ts'; }
-}
-
-function restoreTS(){
-  const s=getTSStore();
-  Object.keys(s).forEach(id=>renderTS(id,s[id]?.ts));
-}
-
-// ── Time lock ───────────────────────────────────────────────────
-function getIST(){
-  const now=new Date();
-  const ist=new Date(now.getTime()+now.getTimezoneOffset()*60000+19800000);
-  return { h: ist.getHours(), m: ist.getMinutes(), total: ist.getHours()*60+ist.getMinutes() };
-}
-
-function checkLocks(){
-  const { total: t } = getIST();
-  const MORNING=8*60+30;
-  const EVENING=15*60+45;
-  const mornOk=t>=MORNING;
-  const eveOk=t>=EVENING;
-
-  const mBanner=document.getElementById('morning-lock');
-  if(!mornOk && !RADAR_LOCKED){
-    const ml=MORNING-t;
-    document.getElementById('morning-msg').textContent=`Opens in ${Math.floor(ml/60)}h ${ml%60}m (8:30 AM IST)`;
-    mBanner.classList.add('show');
-    setDisabled(['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
-      'max_pain_nf','max_pain_bn','close_char'], true);
-    setDisabled(['n50adv','n50dma','bnfadv'],true);
-    document.getElementById('breadth-lock').classList.add('show');
-    document.getElementById('breadth-msg').textContent=`Opens in ${Math.floor(ml/60)}h ${ml%60}m`;
-  } else {
-    mBanner.classList.remove('show');
-  }
-
-  const eBanner=document.getElementById('evening-lock');
-  const eContent=document.getElementById('evening-content');
-  if(!eveOk){
-    const el=EVENING-t;
-    document.getElementById('evening-msg').textContent=`Opens in ${Math.floor(el/60)}h ${el%60}m (3:45 PM IST)`;
-    eBanner.classList.add('show');
-    eContent.style.display='none';
-  } else {
-    eBanner.classList.remove('show');
-    eContent.style.display='block';
-  }
-
-  const mktOpen=t>=9*60+15 && t<=15*60+30;
-  document.getElementById('mkt-dot').style.background=mktOpen?'var(--gn)':'var(--rd)';
-  document.getElementById('mkt-label').textContent=mktOpen?'OPEN':'CLOSED';
-
-  // Update entry time signal
-  updateEntrySignal();
-}
-
-function setDisabled(ids, val){
-  ids.forEach(id=>{ const e=document.getElementById(id); if(e){ e.disabled=val; e.style.opacity=val?'0.4':'1'; }});
-}
-
-// ── Entry Time Signal ──────────────────────────────────────────
-function getEntrySignal(idx) {
-  const { h, m, total: mins } = getIST();
-  const OPEN  = 9*60+15;
-  const CLOSE = 15*60+30;
-
-  if (mins < OPEN || mins >= CLOSE) {
-    return { label:'MARKET CLOSED', color:'var(--muted)', dot:'var(--muted)', note:'Market hours: 09:15–15:30 IST' };
-  }
-  if (mins < 9*60+30) {
-    return { label:'🔴 AVOID', color:'var(--rd)', dot:'var(--rd)', note:'Opening volatility — IV spike 40–80%, spreads 2–3× wide' };
-  }
-  if (idx==='NF' && mins < 9*60+45) {
-    return { label:'⚠️ CAUTION', color:'var(--am)', dot:'var(--am)', note:'NF still settling — wait 5–10 min for IV to normalise' };
-  }
-  if (idx==='BNF' && mins < 10*60+15) {
-    return { label:'🔴 AVOID', color:'var(--rd)', dot:'var(--rd)', note:'BNF needs 60 min to settle — banking stocks slower' };
-  }
-  if (mins <= 11*60+30) {
-    return { label:'✅ OPTIMAL', color:'var(--gn)', dot:'var(--gn)', note:'Best window — IV normalised, spreads tight, OI reliable' };
-  }
-  if (mins <= 13*60) {
-    return { label:'✅ GOOD', color:'var(--gn)', dot:'var(--gn)', note:'Strong liquidity — OI buildup clearly visible' };
-  }
-  if (mins <= 14*60) {
-    return { label:'⚠️ NEUTRAL', color:'var(--am)', dot:'var(--am)', note:'Lunch drift — low volume, OTM spreads wider than usual' };
-  }
-  if (mins <= 15*60) {
-    return { label:'✅ GOOD', color:'var(--gn)', dot:'var(--gn)', note:'Power hour — direction confirmed, final PCR read' };
-  }
-  return { label:'🔴 AVOID', color:'var(--rd)', dot:'var(--rd)', note:'Closing gamma explosion — exit only, no new positions' };
-}
-
-function getBannerPhase() {
-  const { total: mins } = getIST();
-  if (mins < 9*60+15)  return { phase:'PRE-MARKET', color:'var(--muted)' };
-  if (mins < 9*60+30)  return { phase:'OPENING VOLATILITY', color:'var(--rd)' };
-  if (mins < 10*60+15) return { phase:'SETTLING PHASE', color:'var(--am)' };
-  if (mins <= 11*60+30)return { phase:'OPTIMAL WINDOW', color:'var(--gn)' };
-  if (mins <= 13*60)   return { phase:'MID SESSION', color:'var(--gn)' };
-  if (mins <= 14*60)   return { phase:'LUNCH DRIFT', color:'var(--am)' };
-  if (mins <= 15*60)   return { phase:'POWER HOUR', color:'var(--gn)' };
-  if (mins <= 15*60+30)return { phase:'CLOSING — AVOID', color:'var(--rd)' };
-  return { phase:'MARKET CLOSED', color:'var(--muted)' };
-}
-
-function updateEntrySignal() {
-  const { h, m } = getIST();
-  const hh = String(h).padStart(2,'0'), mm = String(m).padStart(2,'0');
-  const banner = getBannerPhase();
-  const nfSig  = getEntrySignal('NF');
-  const bnSig  = getEntrySignal('BNF');
-
-  const timeEl  = document.getElementById('entry-time');
-  const phaseEl = document.getElementById('entry-phase');
-  const dotEl   = document.getElementById('entry-dot');
-  const msgEl   = document.getElementById('entry-msg');
-  const bannerEl= document.getElementById('entry-banner');
-
-  if (timeEl)  timeEl.textContent = `${hh}:${mm}`;
-  if (phaseEl) { phaseEl.textContent = `IST · ${banner.phase}`; phaseEl.style.color = banner.color; }
-  if (dotEl)   dotEl.style.background = banner.color;
-  if (bannerEl)bannerEl.style.borderColor = banner.color + '66';
-
-  const nfSigEl   = document.getElementById('nf-entry-sig');
-  const nfNoteEl  = document.getElementById('nf-entry-note');
-  const bnSigEl   = document.getElementById('bn-entry-sig');
-  const bnNoteEl  = document.getElementById('bn-entry-note');
-
-  if (nfSigEl)  { nfSigEl.textContent = nfSig.label; nfSigEl.style.color = nfSig.color; }
-  if (nfNoteEl) nfNoteEl.textContent = nfSig.note;
-  if (bnSigEl)  { bnSigEl.textContent = bnSig.label; bnSigEl.style.color = bnSig.color; }
-  if (bnNoteEl) bnNoteEl.textContent = bnSig.note;
-}
-
-// ── onInput — called on every field change ─────────────────────
-function onInput(id){
-  stampField(id);
-  calcScore();
-  buildStrategy('NF');
-  buildStrategy('BN');
-}
-
-// ── Scoring engine ─────────────────────────────────────────────
-function scoreParam(key, val, extra){
-  switch(key){
-    case 'gift_gap':
-      return val>=0.5?2:val>=0.2?1:val>=-0.2?0:val>=-0.5?-1:-2;
-    case 'gift_trend':
-      return val>=100?2:val>=30?1:val>=-30?0:val>=-100?-1:-2;
-    case 'sp500': case 'dow':
-      return val>=1.0?2:val>=0.3?1:val>=-0.3?0:val>=-1.0?-1:-2;
-    case 'nk': case 'hsi':
-      return val>=1.5?2:val>=0.5?1:val>=-0.5?0:val>=-1.5?-1:-2;
-    case 'usvix':
-      return val<13?2:val<15?1:val<18?0:val<22?-1:-2;
-    case 'crude':
-      return val<=-1.0?2:val<=-0.3?1:val<=0.3?0:val<=1.0?-1:-2;
-    case 'gold': case 'inr': case 'yld':
-      return val<=-0.5?2:val<=0?1:val<=0.5?0:val<=1?-1:-2;
-    case 'fii':
-      return val>=2000?2:val>=200?1:val>=-200?0:val>=-2000?-1:-2;
-    case 'pcr':
-      return val>=1.5?2:val>=1.2?1:val>=1.0?0:val>=0.8?-1:-2;
-    case 'max_pain': {
-      const d=extra-val; return d>=300?2:d>=100?1:Math.abs(d)<100?0:d<=-100?-1:-2;
-    }
-    case 'close_char':
-      return val;
-    case 'n50adv':
-      return val>=40?2:val>=30?1:val>=20?0:val>=12?-1:-2;
-    case 'n50dma':
-      return val>=70?2:val>=55?1:val>=40?0:val>=25?-1:-2;
-    case 'bnfadv':
-      return val>=12?2:val>=8?1:val>=6?0:val>=4?-1:-2;
-    default: return 0;
-  }
-}
-
-function calcScore(){
-  const ev = {
-    sp500_c:gv('sp500'), dow_c:gv('dow'), usvix_c:gv('usvix'), nk_c:gv('nk'), hsi_c:gv('hsi'),
-    crude_c:gv('crude'), gold_c:gv('gold'), inr_c:gv('inr'), yld_c:gv('yld'),
-    gift_now:gv('gift_now'), nifty_prev:gv('nifty_prev'), gift_6am:gv('gift_6am'),
-    india_vix:gv('india_vix'), fii:gv('fii'),
-    // PCR kept for strike placement only — NOT used in score (v1.5.0 backtest finding)
-    pcr_nf:gv('pcr_nf'), pcr_bn:gv('pcr_bn'),
-    max_pain_nf:gv('max_pain_nf'), n50adv:gv('n50adv'), n50dma:gv('n50dma'), bnfadv:gv('bnfadv'),
-    close_char:gvi('close_char')||0,
-  };
-
-  function getEvening(key){ try{ const d=JSON.parse(localStorage.getItem('mr140-evening')||'{}'); return d[key]||null; }catch{ return null; } }
-  const sp500_p=getEvening('ev_sp500'), dow_p=getEvening('ev_dow'), usvix_p=getEvening('ev_usvix'),
-        nk_p=getEvening('ev_nk'), hsi_p=getEvening('ev_hsi'), crude_p=getEvening('ev_crude'),
-        gold_p=getEvening('ev_gold'), inr_p=getEvening('ev_inr');
-
-  const contributions = [];
-  let sc=0, usedW=0, bull=0, bear=0, neut=0;
-
-  function addParam(key, rawScore, sigLabel, wt){
-    if(rawScore===null){ contributions.push({key, s:null, sig:sigLabel, wt, skipped:true}); return; }
-    const contrib=rawScore*(wt/2);
-    sc+=contrib; usedW+=wt;
-    if(rawScore>0) bull++; else if(rawScore<0) bear++; else neut++;
-    contributions.push({key, s:rawScore, contrib, sig:sigLabel, wt});
-  }
-
-  const gapPct = (valid(ev.gift_now)&&valid(ev.nifty_prev)) ? pct(ev.gift_now,ev.nifty_prev) : null;
-  const trendPts= (valid(ev.gift_now)&&valid(ev.gift_6am)) ? ev.gift_now-ev.gift_6am : null;
-  addParam('gift_gap',   gapPct!==null?scoreParam('gift_gap',gapPct):null,
-           gapPct!==null?`${gapPct>=0?'+':''}${gapPct.toFixed(2)}%`:'—', W.gift_gap);
-  addParam('gift_trend', trendPts!==null?scoreParam('gift_trend',trendPts):null,
-           trendPts!==null?`${trendPts>=0?'+':''}${trendPts.toFixed(0)}pts`:'—', W.gift_trend);
-
-  const mkts=[
-    {key:'sp500',c:ev.sp500_c,p:sp500_p,fn:'sp500'},
-    {key:'dow',  c:ev.dow_c,  p:dow_p,  fn:'dow'},
-    {key:'nk',   c:ev.nk_c,  p:nk_p,   fn:'nk'},
-    {key:'hsi',  c:ev.hsi_c, p:hsi_p,  fn:'hsi'},
-    {key:'crude',c:ev.crude_c,p:crude_p,fn:'crude'},
-    {key:'gold', c:ev.gold_c, p:gold_p, fn:'gold'},
-    {key:'inr',  c:ev.inr_c, p:inr_p,  fn:'inr'},
-  ];
-  mkts.forEach(({key,c,p,fn})=>{
-    if(!valid(c)){ addParam(key,null,'—',W[key]); return; }
-    const changePct=valid(p)?pct(c,p):null;
-    if(changePct===null){ addParam(key,0,`${c} (no prev)`,W[key]); return; }
-    addParam(key,scoreParam(fn,changePct),`${changePct>=0?'+':''}${changePct.toFixed(2)}%`,W[key]);
-  });
-
-  if(valid(ev.usvix_c)){ addParam('usvix',scoreParam('usvix',ev.usvix_c),`VIX ${ev.usvix_c}`,W.usvix); }
-  else addParam('usvix',null,'—',W.usvix);
-
-  const yld_p=getEvening('ev_yld');
-  if(valid(ev.yld_c)){
-    const yPct=valid(yld_p)?pct(ev.yld_c,yld_p):null;
-    addParam('yld',yPct!==null?scoreParam('yld',yPct):0,
-             yPct!==null?`${yPct>=0?'+':''}${yPct.toFixed(2)}%`:`${ev.yld_c}%`,W.yld);
-  } else addParam('yld',null,'—',W.yld);
-
-  if(ev.fii!==null) addParam('fii',scoreParam('fii',ev.fii),`₹${ev.fii>=0?'+':''}${Math.round(ev.fii)}Cr`,W.fii);
-  else addParam('fii',null,'—',W.fii);
-
-  // v1.5.0: PCR removed from score — 38% directional accuracy in backtest (worse than coin flip).
-  // PCR is KEPT for strike adjustment in the strategy engine only.
-
-  const nfSpot=ev.nifty_prev||ev.gift_now;
-  if(valid(ev.max_pain_nf)&&valid(nfSpot))
-    addParam('max_pain',scoreParam('max_pain',ev.max_pain_nf,nfSpot),`Pain ${ev.max_pain_nf.toLocaleString('en-IN')}`,W.max_pain);
-  else addParam('max_pain',null,'—',W.max_pain);
-
-  addParam('close_char',ev.close_char,['Str↓↓','Mild↓','Neutral','Mild↑','Str↑↑'][ev.close_char+2],W.close_char);
-
-  if(valid(ev.n50adv)) addParam('n50adv',scoreParam('n50adv',ev.n50adv),`${ev.n50adv}/50`,W.n50adv);
-  else addParam('n50adv',null,'—',W.n50adv);
-  if(valid(ev.n50dma))  addParam('n50dma',scoreParam('n50dma',ev.n50dma),`${ev.n50dma}%`,W.n50dma);
-  else addParam('n50dma',null,'—',W.n50dma);
-  if(valid(ev.bnfadv)) addParam('bnfadv',scoreParam('bnfadv',ev.bnfadv),`${ev.bnfadv}/14`,W.bnfadv);
-  else addParam('bnfadv',null,'—',W.bnfadv);
-
-  const totalUsableW = contributions.filter(c=>c.s!==null).reduce((a,c)=>a+c.wt,0);
-  const finalScore = totalUsableW > 0 ? sc / totalUsableW : 0;
-  SCORE = Math.round(finalScore*1000)/1000;
-
-  const rbi=document.querySelector('input[name="rbi"]:checked')?.value||'neutral';
-  const liq=document.querySelector('input[name="liq"]:checked')?.value||'neutral';
-  const news=document.querySelector('input[name="news"]:checked')?.value||'none';
-  let bnfAdj=0;
-  if(rbi==='hawkish') bnfAdj-=0.2; else if(rbi==='dovish') bnfAdj+=0.15;
-  if(liq==='deficit') bnfAdj-=0.15; else if(liq==='surplus') bnfAdj+=0.1;
-  if(news==='hdfc'||news==='icici') bnfAdj-=0.3; else if(news==='both') bnfAdj-=0.5;
-
-  if(SCORE>=1.2)      { DIRECTION='STRONGLY BULLISH'; }
-  else if(SCORE>=0.4) { DIRECTION='MILDLY BULLISH'; }
-  else if(SCORE>-0.4) { DIRECTION='NEUTRAL'; }
-  else if(SCORE>-1.2) { DIRECTION='MILDLY BEARISH'; }
-  else                { DIRECTION='STRONGLY BEARISH'; }
-
-  const vix=ev.india_vix||14;
-  if(SCORE>=0.4)      STRAT_AUTO='BULL PUT SPREAD';
-  else if(SCORE<=-0.4)STRAT_AUTO='BEAR CALL SPREAD';
-  else if(vix<16)     STRAT_AUTO='LONG STRADDLE';
-  else                STRAT_AUTO='IRON CONDOR';
-
-  renderVerdict(SCORE, DIRECTION, bull, bear, neut, contributions, totalUsableW, bnfAdj, ev, vix);
-  renderBreadth();
-  buildMultiExpiry('NF');
-  buildMultiExpiry('BN');
-}
-
-// ── Verdict renderer ───────────────────────────────────────────
-function renderVerdict(score, dir, bull, bear, neut, contribs, usedW, bnfAdj, ev, vix){
-  const col=score>=0.4?'var(--gn)':score<=-0.4?'var(--rd)':'var(--am)';
-  const scoreEl=document.getElementById('v-score');
-  scoreEl.textContent=(score>=0?'+':'')+score.toFixed(3);
-  scoreEl.style.color=col;
-  document.getElementById('v-dir').textContent=dir;
-  document.getElementById('v-dir').style.color=col;
-  const pct_used=Math.round(usedW*100);
-  document.getElementById('v-conf').textContent=`${bull} bull · ${bear} bear · ${neut} neutral · ${pct_used}% data entered`;
-
-  try{
-    const prev=JSON.parse(localStorage.getItem('mr140-prevscore')||'null');
-    if(prev&&score!==null){
-      const delta=score-prev.score;
-      let dlbl;
-      if(Math.abs(delta)<0.15) dlbl='→ STABLE';
-      else if(delta>=0.4) dlbl='↑↑ STRENGTHENING';
-      else if(delta>0) dlbl='↑ IMPROVING';
-      else if(delta<=-0.4) dlbl='↓↓ WEAKENING';
-      else dlbl='↓ SOFTENING';
-      if(prev.score*score<0) dlbl='↻ REVERSING';
-      document.getElementById('delta-row').style.display='flex';
-      document.getElementById('delta-prev').textContent=(prev.score>=0?'+':'')+prev.score.toFixed(3)+' ('+prev.dir+')';
-      document.getElementById('delta-val').textContent=(delta>=0?'+':'')+delta.toFixed(3)+' '+dlbl;
-      document.getElementById('delta-val').style.color=delta>0?'var(--gn)':delta<0?'var(--rd)':'var(--muted)';
-    }
-  }catch{}
-
-  renderRecCard(score, dir, ev, vix, bnfAdj);
-
-  const container=document.getElementById('param-rows');
-  container.innerHTML='';
-  contribs.forEach(c=>{
-    const row=document.createElement('div');
-    row.className='vrow';
-    const NAMES={gift_gap:'GIFT Gap',gift_trend:'GIFT Trend',sp500:'S&P 500',dow:'DOW',
-      usvix:'US VIX',nk:'Nikkei',hsi:'Hang Seng',crude:'Brent Crude',gold:'Gold',
-      inr:'USD/INR',yld:'10Y Yield',fii:'FII Flow',close_char:'Prev Close',
-      max_pain:'Max Pain NF',n50adv:'Nifty A/D',n50dma:'200-DMA',bnfadv:'BNF A/D'};
-    const s=c.s;
-    const tag=c.skipped?'<span class="tag fl">SKIP</span>':
-      s>0?'<span class="tag up">↑</span>':s<0?'<span class="tag dn">↓</span>':'<span class="tag fl">—</span>';
-    const wPct=Math.round(c.wt*100);
-    row.innerHTML=`<div class="vrow-name">${NAMES[c.key]||c.key} <span style="color:var(--dim)">${wPct}%</span></div>
-      <div class="vrow-sig">${c.sig}</div>
-      <div style="width:8px">${tag}</div>`;
-    container.appendChild(row);
-  });
-}
-
-function renderRecCard(score, dir, ev, vix, bnfAdj){
-  const el=document.getElementById('rec-card');
-  const n50adv=ev.n50adv||25; const bnfadv=ev.bnfadv||7;
-  const nfBreadth=n50adv/50*100; const bnfBreadth=bnfadv/14*100;
-  const fii=ev.fii||0;
-  const bnfScore=bnfBreadth+bnfAdj*100-(fii<0?5:0);
-  const nfScore=nfBreadth;
-  const idx=bnfScore>nfScore?'BANK NIFTY':'NIFTY 50';
-  const idxCol=idx==='BANK NIFTY'?'var(--tl)':'var(--gn)';
-  const strategy=STRAT_AUTO;
-  const news=document.querySelector('input[name="news"]:checked')?.value||'none';
-  const warning=news==='both'?'⚠️ Both HDFC+ICICI event — consider SKIP on BNF':
-                news!=='none'?`⚠️ ${news.toUpperCase()} event today — BNF volatile`:'';
-  const reasons=[];
-  if(bnfScore>nfScore) reasons.push(`BNF breadth ${bnfadv}/14 (${bnfBreadth.toFixed(0)}%) > NF ${n50adv}/50 (${nfBreadth.toFixed(0)}%)`);
-  else reasons.push(`NF breadth ${n50adv}/50 (${nfBreadth.toFixed(0)}%) selected`);
-  if(fii<0) reasons.push(`FII selling ₹${Math.abs(fii)}Cr — cautious`);
-  // v1.5.0: PCR shown as strike guide only — not a direction signal
-  const pcrNF=ev.pcr_nf, pcrBN=ev.pcr_bn;
-  if(pcrNF||pcrBN) reasons.push(`PCR (strike guide only) — NF: ${pcrNF?pcrNF.toFixed(2):'—'} · BNF: ${pcrBN?pcrBN.toFixed(2):'—'}`);
-  reasons.push(`Strategy: ${strategy} (score ${score>=0?'+':''}${score.toFixed(2)}, VIX ${vix})`);
-  el.style.background='var(--bg2)';
-  el.style.border=`1px solid ${idxCol}33`;
-  el.innerHTML=`
-    <div class="rec-badge" style="color:${idxCol}">TRADE TODAY</div>
-    <div class="rec-index" style="color:${idxCol}">${idx}</div>
-    <div class="rec-strat">${strategy}</div>
-    ${warning?`<div style="font-size:9px;color:var(--am);margin-bottom:6px">${warning}</div>`:''}
-    <div class="rec-reasons">${reasons.join('<br>')}</div>`;
-}
-
-// ── Breadth renderer ───────────────────────────────────────────
-function renderBreadth(){
-  const n50=gv('n50adv'), dma=gv('n50dma'), bnf=gv('bnfadv');
-  if(valid(n50)){
-    const p=n50/50*100;
-    document.getElementById('nf-adv-bar').style.width=p+'%';
-    document.getElementById('nf-adv-bar').style.background=p>=60?'var(--gn)':p>=40?'var(--am)':'var(--rd)';
-    document.getElementById('nf-adv-num').textContent=Math.round(n50);
-    document.getElementById('nf-dec-num').textContent=Math.round(50-n50);
-    const lbl=n50>=40?'VERY BROAD':n50>=30?'BROAD':n50>=20?'MIXED':n50>=12?'NARROW':'HOLLOW';
-    const col=n50>=30?'var(--gn)':n50>=20?'var(--am)':'var(--rd)';
-    document.getElementById('nf-adv-tag').textContent=lbl;
-    document.getElementById('nf-adv-tag').style.color=col;
-  }
-  if(valid(dma)) document.getElementById('nf-dma-pct').textContent=Math.round(dma);
-  if(valid(bnf)){
-    const p=bnf/14*100;
-    document.getElementById('bnf-adv-bar').style.width=p+'%';
-    document.getElementById('bnf-adv-bar').style.background=p>=60?'var(--gn)':p>=40?'var(--am)':'var(--rd)';
-    document.getElementById('bnf-adv-num').textContent=Math.round(bnf);
-    document.getElementById('bnf-dec-num').textContent=Math.round(14-bnf);
-    const lbl=bnf>=12?'VERY BROAD':bnf>=8?'BROAD':bnf>=6?'SPLIT':bnf>=4?'NARROW':'HOLLOW';
-    const col=bnf>=8?'var(--gn)':bnf>=6?'var(--am)':'var(--rd)';
-    document.getElementById('bnf-adv-tag').textContent=lbl;
-    document.getElementById('bnf-adv-tag').style.color=col;
-  }
-  const n50s=valid(n50)?n50>=30?2:n50>=20?1:n50>=12?0:-1:-99;
-  const bnfs=valid(bnf)?bnf>=8?2:bnf>=6?1:bnf>=4?0:-1:-99;
-  const avg=(n50s!==-99&&bnfs!==-99)?(n50s+bnfs)/2:n50s!==-99?n50s:bnfs;
-  let msg='',col='var(--muted)';
-  if(avg>=-99){
-    if(avg>=1.5){msg='✅ FULL SIZE — broad breadth, max confidence';col='var(--gn)';}
-    else if(avg>=0.5){msg='✅ FULL SIZE — healthy breadth';col='var(--gn)';}
-    else if(avg>=-0.5){msg='⚠️ 50% SIZE — narrow breadth, reduce exposure';col='var(--am)';}
-    else{msg='🚨 25% MAX — hollow rally, consider SKIP';col='var(--rd)';}
-  }
-  const pb=document.getElementById('pos-size-box');
-  if(pb){pb.textContent=msg||'Enter breadth data above';pb.style.color=col;}
-}
-
-// ═══════════════════════════════════════════════════════════════
-// v1.5.0 STRATEGY ENGINE
-// Backtest-validated multipliers · VIX guard · ATR lag detector
-// Dual PCR strike adjustment · NSE Holiday calendar
-// ═══════════════════════════════════════════════════════════════
-
-// ── DTE multiplier — calibrated to real NSE premiums ──────────
-// v1.5.0: DTE 6-7 reduced 1.12→1.00 (backtest: real needed ~0.98, we were +14% over)
-function getDteMult(dte) {
-  if (dte <= 3)  return 0.28;   // v1.6.3: was 0.53 → DTE≤3 huge overestimate on tiny real premiums
-  if (dte <= 5)  return 0.44;   // v1.6.3: was 0.86 → DTE≤5 was +117% over
-  if (dte <= 7)  return 0.82;   // v1.6.3: was 1.00 → DTE 6-7 was +34% over
-  if (dte <= 14) return 1.51;
-  if (dte <= 21) return 2.04;
-  if (dte <= 30) return 2.50;
-  if (dte <= 45) return 3.09;
-  if (dte <= 65) return 4.41;
-  return 5.26;
-}
-
-// v1.6.0: CALL-side DTE multiplier for NF — higher for DTE 22-30.
-// v1.6.0 backtest: DTE 22-35 CALL underestimated −50.8% with shared multiplier.
-// NOTE: getDteMultCall is capped by 68% of width inside estimateCredit —
-// the actual fix for NF 22-35 CALL is the bestStrike baseMult change (v1.7.0).
-function getDteMultCall(dte) {
-  if (dte <= 3)  return 0.53;
-  if (dte <= 5)  return 0.86;
-  if (dte <= 7)  return 0.82;   // v1.6.3: was 1.00 → DTE 6-7 CALL NF was +21% over
-  if (dte <= 14) return 1.51;
-  if (dte <= 21) return 2.04;
-  if (dte <= 30) return 3.00;
-  if (dte <= 45) return 3.60;
-  if (dte <= 65) return 4.80;
-  return 5.80;
-}
-
-// v1.6.3: BNF separate DTE multipliers — reverse-engineered from 3-month real premiums.
-// BNF ATR% is 0.58–0.92% of spot (vs NF 0.33–0.55%), yielding richer premiums per ATR unit.
-// NF-calibrated multipliers systematically underestimate BNF at DTE 15+.
-// Source: 134 BNF records against real NSE bhavcopy Nov 2025–Feb 2026.
-// v1.6.3: Short DTE recalibrated — DTE≤5: 0.85→0.52 (was +60% over), DTE 6-7: 0.95→0.71 (was +33%), DTE 8-14: 1.46→1.14 (was +28%)
-// DTE 15-21+ unchanged (within ±7%). DTE 22+ handled by strike placement (2.8×ATR)
-function getDteMultBNF(dte) {
-  if (dte <= 5)  return 0.52;   // v1.6.3: was 0.85 → recalibrated (backtest +60% over)
-  if (dte <= 7)  return 0.71;   // v1.6.3: was 0.95 → recalibrated (backtest +33% over)
-  if (dte <= 14) return 1.14;   // v1.6.3: was 1.46 → recalibrated (backtest +28% over)
-  if (dte <= 21) return 2.00;   // ✅ unchanged — backtest +7%
-  if (dte <= 30) return 3.28;   // ✅ unchanged
-  if (dte <= 45) return 4.00;
-  if (dte <= 65) return 4.15;
-  return 5.00;
-}
-
-// v1.6.3: Short DTE recalibrated — DTE≤5: 0.80→0.50 (was +50% over), DTE 6-7: 0.95→0.71 (was +26%), DTE 8-14: 1.94→1.47 (was +25%)
-// DTE 15-21+ unchanged (within ±14%)
-function getDteMultBNFCall(dte) {
-  if (dte <= 5)  return 0.50;   // v1.6.3: was 0.80 → recalibrated (backtest +50% over)
-  if (dte <= 7)  return 0.71;   // v1.6.3: was 0.95 → recalibrated (backtest +26% over)
-  if (dte <= 14) return 1.47;   // v1.6.3: was 1.94 → recalibrated (backtest +25% over)
-  if (dte <= 21) return 3.44;   // ✅ unchanged — backtest −14%
-  if (dte <= 30) return 5.09;   // ✅ unchanged
-  if (dte <= 45) return 6.00;
-  if (dte <= 65) return 7.56;
-  return 8.50;
-}
-
-function getVixMult(vix) {
-  if (vix < 12) return 0.55;
-  if (vix < 14) return 0.78;
-  if (vix < 16) return 1.00;
-  if (vix < 18) return 1.22;
-  return 1.45;
-}
-
-// FIX 1: Cap credit at 68% of width — prevents negative R:R
-// v1.6.0: separate put/call base credits using their respective DTE multipliers
-// v1.7.0: BNF uses its own multiplier set (getDteMultBNF/getDteMultBNFCall)
-//         calibrated from 3-month NSE bhavcopy (134 BNF records)
-function estimateCredit(width, dte, vix, isNF) {
-  const vm   = getVixMult(vix);
-  const putM = isNF ? getDteMult(dte)     : getDteMultBNF(dte);
-  const calM = isNF ? getDteMultCall(dte) : getDteMultBNFCall(dte);
-  const rawP = r5(width * 0.38 * putM * vm);
-  const rawC = r5(width * 0.38 * calM * vm);
-  const maxAllowed = r5(width * 0.68);
-  const midP = Math.min(rawP, maxAllowed);
-  const midC = Math.min(rawC, maxAllowed);
-  return {
-    mid: midP, midCall: midC,
-    min: r5(midP * 0.80), max: r5(midP * 1.22),
-    capped: rawP > maxAllowed || rawC > maxAllowed
-  };
-}
-
-function distFactor(distAtr) {
-  if (distAtr <= 1.0) return 1.15;
-  if (distAtr <= 1.5) return 1.00;
-  if (distAtr <= 2.0) return 0.82;
-  return 0.65;
-}
-
-// v1.5.0: call side uses relaxed dist penalty at 1.4-2.0×ATR
-// v1.6.0: made DTE-aware — DTE≤7 uses tighter factor because near-expiry call decays faster
-// v1.7.0: DTE≤7 factor tightened 0.72→0.62 (backtest: DTE 6-7 CALL still +13.9% over)
-function distFactorCall(distAtr, dte) {
-  if (distAtr <= 1.0) return 1.15;
-  if (distAtr <= 1.5) return 1.00;
-  if (distAtr <= 2.0) return (dte <= 7) ? 0.62 : 0.90;  // v1.7.0: was 0.72 at DTE≤7
-  return 0.65;
-}
-
-// FIX 2: PCR adjustment scoped to DTE ≤ 30 only
-function pcrPutAdj(pcr, dte) {
-  if (!pcr || dte > 30) return 0.0;   // far expiry — no PCR adjustment
-  if (pcr >= 1.5) return -0.15;
-  if (pcr >= 1.2) return -0.10;
-  if (pcr >= 1.0) return  0.00;
-  if (pcr >= 0.8) return +0.10;
-  return +0.20;
-}
-
-function pcrCallAdj(pcr, dte) {
-  if (!pcr || dte > 30) return 0.0;
-  if (pcr >= 1.5) return +0.10;
-  if (pcr >= 1.2) return +0.05;
-  if (pcr >= 1.0) return  0.00;
-  if (pcr >= 0.8) return -0.10;
-  return -0.20;
-}
-
-function pcrPremAdj(pcr, dte) {
-  if (!pcr || dte > 30) return 1.0;   // no premium adjustment for far expiry
-  if (pcr >= 1.5) return 1.12;
-  if (pcr >= 1.2) return 1.06;
-  if (pcr >= 1.0) return 1.00;
-  if (pcr >= 0.8) return 0.94;
-  return 0.88;
-}
-
-// FIX 3: Win probability scales with actual ATR distance
-function winProb(dte, distAtr) {
-  const dm = dte<=3?1.05 : dte<=7?1.0 : dte<=14?0.95 : dte<=21?0.92 : 0.88;
-  const fm = distAtr>=2.5?1.15 : distAtr>=2.0?1.10 : distAtr>=1.5?1.02 : distAtr>=1.0?0.88 : 0.72;
-  return Math.min(92, Math.max(48, Math.round(72 * dm * fm)));
-}
-
-function starRating(rr, wp) {
-  if (rr <= 1.5 && wp >= 72) return 5;
-  if (rr <= 2.0 && wp >= 65) return 4;
-  if (rr <= 3.0)              return 3;
-  if (rr <= 4.0)              return 2;
-  return 1;
-}
-
-function estimateStraddle(price, dte, vix){
-  const vm=vix<12?0.6:vix<14?0.8:vix<16?1.0:vix<18?1.3:1.6;
-  const unit=r5(price*(vix/100)*Math.sqrt(dte/365)*0.4*2);
-  return {unit, min:r5(unit*0.82), max:r5(unit*1.18)};
-}
-
-// ── Expiry calendar with NSE holiday fallback ──────────────────
-function getExpiries(idx){
-  const isNF = idx==='NF';
-  const today = new Date();
-  today.setHours(0,0,0,0);
-  const expiries = [];
-  const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-  function fmt(d){ return String(d.getDate()).padStart(2,'0')+' '+months[d.getMonth()]; }
-
-  if(isNF){
-    // NF: weekly every Tuesday with holiday fallback
-    const d = new Date(today);
-    d.setDate(d.getDate()+1);
-    while(expiries.length < 5){
-      if(d.getDay()===2){
-        const { d: actD, shifted } = actualExpiry(new Date(d));
-        if(actD > today){
-          const dte = Math.round((actD-today)/86400000);
-          expiries.push({ label:fmt(actD), dte, type:'Weekly', shifted, d:new Date(actD) });
-        }
-      }
-      d.setDate(d.getDate()+1);
-    }
-  } else {
-    // BNF: last Tuesday of each month with holiday fallback
-    let year=today.getFullYear(), month=today.getMonth();
-    let found=0;
-    while(found<4){
-      const last = new Date(year, month+1, 0);
-      while(last.getDay()!==2) last.setDate(last.getDate()-1);
-      const { d: actD, shifted } = actualExpiry(new Date(last));
-      if(actD > today){
-        const dte = Math.round((actD-today)/86400000);
-        expiries.push({ label:fmt(actD), dte, type:'Monthly', shifted, d:new Date(actD) });
-        found++;
-      }
-      month++;
-      if(month>11){month=0; year++;}
-      if(year>2026) break; // safety
-    }
-  }
-  return expiries;
-}
-
-// ── DTE conviction label ───────────────────────────────────────
-function dteConviction(dte){
-  if(dte<=5)  return {label:'🚫 Expiry Week', note:'Premiums ₹5–₹30 — too low for meaningful credit. EXIT existing positions only. No new entries.', cls:'near'};
-  if(dte<=7)  return {label:'⚡ Near-term', note:'Max theta decay. Enter only if direction is very clear. Plan exit by day 2.', cls:'near'};
-  if(dte<=21) return {label:'⭐ Optimal',   note:'Best balance of credit and time buffer. Recommended entry window.', cls:'opt'};
-  if(dte<=45) return {label:'📅 Mid-term',  note:'Rich premium. Good for Iron Condor. More time to manage.', cls:'mid'};
-  return      {label:'🗓️ Far-term',         note:'Strikes placed 4×ATR from spot. Very rich premium. Wide buffer. Ideal for monthly IC. Low daily theta — plan exit at 25–30 DTE.', cls:'far'};
-}
-
-// v1.5.0: Best strike with VIX guard — when VIX > 15 force ≥2.0× ATR buffer
-// v1.7.0: Separate call baseMult — calls at DTE 22-45 use 1.60 (was 1.30).
-// Backtest: call strikes at 1.2×ATR placed too close to spot → premium ₹280-400
-// vs ₹135 cap. Moving to 1.6×ATR yields premium ₹130-190 — within model range.
-function bestStrike(price, atr, dte, vix, isBearSide, oiWall, pcr, isNF){
-  const round = isNF ? r50 : r100;  // NF→nearest 50, BNF→nearest 100 (NSE strike grid)
-  // Put base multipliers (unchanged)
-  // v1.6.3: DTE 22-35→2.8×ATR, DTE 36+→4.0×ATR so real premium at those distances ≈ cap
-  // At 2.8×ATR: distFactor=0.65 → estimate ~₹110-130 (vs real ₹130-180 ✅)
-  // NF strikes snap to nearest 50 (r50), BNF to nearest 100 (r100)
-  const putBase  = dte<=7?2.0 : dte<=21?1.5 : dte<=35?2.8 : 4.0;
-  const callBase = dte<=7?2.0 : dte<=21?1.5 : dte<=35?2.8 : 4.0;
-  const baseMult = isBearSide ? callBase : putBase;
-  const pcrAdj   = isBearSide ? pcrCallAdj(pcr, dte) : pcrPutAdj(pcr, dte);
-  let mult       = baseMult + pcrAdj;
-
-  // VIX guard: if India VIX > 15, force minimum 2.0× ATR — overrides PCR and OI
-  if (vix > 15 && mult < 2.0) mult = 2.0;
-
-  const stdStrike = round(isBearSide ? price+atr*mult : price-atr*mult);
-
-  if(!oiWall) return {strike:stdStrike, reason:`${mult.toFixed(2)}×ATR${vix>15?' (VIX guard)':dte>30?' (std, no PCR adj)':' (PCR adj)'}`, isOI:false, mult};
-
-  const oiDist = Math.abs(oiWall-price)/atr;
-  if(isBearSide){
-    if(oiWall>stdStrike && oiDist>=1.0)
-      return {strike:round(oiWall), reason:`OI call wall at ${round(oiWall).toLocaleString('en-IN')} (${oiDist.toFixed(1)}×ATR)`, isOI:true, mult:oiDist};
-    return {strike:stdStrike, reason:`ATR ${mult.toFixed(2)}× safer than OI wall${vix>15?' · VIX guard active':''}`, isOI:false, mult};
-  } else {
-    if(oiWall<stdStrike && oiDist>=1.0)
-      return {strike:round(oiWall), reason:`OI put wall at ${round(oiWall).toLocaleString('en-IN')} (${oiDist.toFixed(1)}×ATR)`, isOI:true, mult:oiDist};
-    return {strike:stdStrike, reason:`ATR ${mult.toFixed(2)}× buffer${vix>15?' · VIX guard active':''}`, isOI:false, mult};
-  }
-}
-
-// ── Per-expiry card builder ────────────────────────────────────
-function buildExpiryCard(expiry, price, atr, lot, lots, vix, width, score, oiCall, oiPut, idx, pcr){
-  const {label, dte, type, shifted} = expiry;
-  const conv  = dteConviction(dte);
-  const isNF  = idx==='NF';
-  const isBull=score>=0.4, isBear=score<=-0.4, isNeutral=!isBull&&!isBear;
-
-  const callBest = bestStrike(price, atr, dte, vix, true,  oiCall, pcr, isNF);
-  const putBest  = bestStrike(price, atr, dte, vix, false, oiPut,  pcr, isNF);
-  const callBuy  = isNF ? r50(callBest.strike + width) : r100(callBest.strike + width);
-  const putBuy   = isNF ? r50(putBest.strike  - width) : r100(putBest.strike  - width);
-
-  const callDist = (callBest.strike-price)/atr;
-  const putDist  = (price-putBest.strike)/atr;
-  const pa       = pcrPremAdj(pcr, dte);
-
-  const crBase  = estimateCredit(width, dte, vix, isNF);
-  // v1.7.0: call uses crBase.midCall (BNF-specific or NF-specific mults) + DTE-aware distFactorCall
-  const callMid = Math.min(r5(crBase.midCall * distFactorCall(callDist, dte) / Math.max(pa,1)), r5(width*0.68));
-  const putMid  = Math.min(r5(crBase.mid     * distFactor(putDist)           * pa),             r5(width*0.68));
-  const callMin = r5(callMid*0.80), callMax = r5(callMid*1.22);
-  const putMin  = r5(putMid*0.80),  putMax  = r5(putMid*1.22);
-
-  const callMaxP = callMid*lot*lots, callMaxL = (width-callMid)*lot*lots;
-  const putMaxP  = putMid*lot*lots,  putMaxL  = (width-putMid)*lot*lots;
-
-  // FIX 1: R:R always valid since credit ≤ 68% of width
-  const callRR = callMid>0 ? (width-callMid)/callMid : 99;
-  const putRR  = putMid>0  ? (width-putMid)/putMid   : 99;
-
-  // FIX 3: Win prob uses actual distance
-  const callWP = winProb(dte, callDist);
-  const putWP  = winProb(dte, putDist);
-  const callSt = starRating(callRR, callWP);
-  const putSt  = starRating(putRR,  putWP);
-
-  const icTotal = (callMid+putMid)*lot*lots;
-  const icMaxL  = Math.max(callMaxL, putMaxL);
-  const sd      = estimateStraddle(price, dte, vix);
-  const sdTotal = sd.unit*lot*lots;
-
-  const callPrimary = isBear||isNeutral;
-  const putPrimary  = isBull||isNeutral;
-  const convColor   = conv.cls==='near'?'var(--rd)':conv.cls==='opt'?'var(--gn)':conv.cls==='mid'?'var(--am)':'var(--tl)';
-  const f  = n => Math.round(n).toLocaleString('en-IN');
-  const fv = n => '₹'+f(n);
-  const shiftNote = shifted ? ` <span style="color:var(--am);font-size:7.5px">⚠️ Holiday shifted</span>` : '';
-
-  return `
-  <div class="expiry-card" id="ec-${idx}-${dte}">
-    <div class="ec-hdr" onclick="toggleExpiry('ec-${idx}-${dte}')">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div>
-          <div style="font-size:14px;font-weight:800;color:var(--text);font-family:var(--font-mono)">${label}${shiftNote}</div>
-          <div style="font-size:8px;color:var(--muted);margin-top:1px">${type} · ${dte} DTE${pcr?` · PCR ${pcr.toFixed(2)}`:''}${dte>30?' · Std ATR (no PCR adj)':''}</div>
-        </div>
-        <span class="tag" style="background:${convColor}22;color:${convColor};border:1px solid ${convColor}44">${conv.label}</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <div style="text-align:right">
-          <div style="font-size:8px;color:var(--muted)">IC CREDIT</div>
-          <div style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--gn)">${fv(icTotal)}</div>
-        </div>
-        <div class="ec-chevron">▼</div>
-      </div>
-    </div>
-
-    <div class="ec-body">
-      <div class="ec-note">${conv.note}</div>
-      ${dte<=5?`<div style="background:#ff3b3022;border:1px solid var(--rd);border-radius:6px;margin:0 14px 10px;padding:10px 12px;font-size:9px;color:var(--rd);font-weight:700;letter-spacing:0.5px">🚫 EXPIRY WEEK — DO NOT OPEN NEW POSITIONS<br><span style="font-weight:400;color:var(--muted)">Real premiums ₹5–₹30 at DTE ≤5. Estimates shown below are illustrative only. Use this card to CLOSE or ADJUST existing spreads.</span></div>`:''}
-      ${!isNF?`<div style="background:#8b5cf622;border:1px solid #8b5cf6;border-radius:6px;margin:0 14px 10px;padding:8px 12px;font-size:8px;color:#a78bfa;font-weight:600;letter-spacing:0.3px">📊 BANK NIFTY — CALIBRATED FROM 3-MONTH DATA (n=3 expiries)<br><span style="font-weight:400;color:var(--muted)">BNF multipliers use real NSE premiums Nov 2025–Feb 2026. Win rate statistics need 6+ months for statistical validity. Use IC win% as directional guide only.</span></div>`:''}
-
-      <!-- CALL SIDE -->
-      <div class="ec-section-hdr">
-        <div style="display:flex;align-items:center;gap:6px">
-          <div style="width:3px;height:14px;background:var(--rd);border-radius:2px"></div>
-          <div>
-            <div style="font-size:9px;font-weight:700;color:var(--rd)">BEAR CALL SPREAD</div>
-            <div style="font-size:8px;color:var(--muted)">Sell ${f(callBest.strike)} CE / Buy ${f(callBuy)} CE</div>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px">
-          ${callPrimary?'<span class="tag dn">✅ PRIMARY</span>':'<span class="tag fl">REFERENCE</span>'}
-          <span style="font-size:11px">${'⭐'.repeat(callSt)}${'☆'.repeat(5-callSt)}</span>
-        </div>
-      </div>
-      <div style="font-size:8px;color:${callBest.isOI?'var(--am)':'var(--muted)'};padding:2px 14px 6px">
-        ${callBest.isOI?'🎯 ':''}${callBest.reason} · dist ${callDist.toFixed(2)}×ATR
-      </div>
-      <div class="mini-grid">
-        <div class="mg-item"><div class="mg-lbl">CREDIT/UNIT</div><div class="mg-val gn">₹${callMin}–${callMax}</div></div>
-        <div class="mg-item"><div class="mg-lbl">MAX PROFIT</div><div class="mg-val gn">${fv(callMaxP)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">MAX LOSS</div><div class="mg-val rd">${fv(callMaxL)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">R:R · WIN%</div><div class="mg-val am">${callRR.toFixed(1)} · ${callWP}%</div></div>
-      </div>
-      <div class="exit-row">
-        <div class="exit-item"><span style="color:var(--gn)">✅ Exit</span> ${fv(callMaxP*0.4)}</div>
-        <div class="exit-item"><span style="color:var(--rd)">🛑 SL</span> ${fv(callMaxP*0.8)}</div>
-      </div>
-
-      <!-- PUT SIDE -->
-      <div class="ec-section-hdr" style="margin-top:10px">
-        <div style="display:flex;align-items:center;gap:6px">
-          <div style="width:3px;height:14px;background:var(--gn);border-radius:2px"></div>
-          <div>
-            <div style="font-size:9px;font-weight:700;color:var(--gn)">BULL PUT SPREAD</div>
-            <div style="font-size:8px;color:var(--muted)">Sell ${f(putBest.strike)} PE / Buy ${f(putBuy)} PE</div>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px">
-          ${putPrimary?'<span class="tag up">✅ PRIMARY</span>':'<span class="tag fl">REFERENCE</span>'}
-          <span style="font-size:11px">${'⭐'.repeat(putSt)}${'☆'.repeat(5-putSt)}</span>
-        </div>
-      </div>
-      <div style="font-size:8px;color:${putBest.isOI?'var(--am)':'var(--muted)'};padding:2px 14px 6px">
-        ${putBest.isOI?'🎯 ':''}${putBest.reason} · dist ${putDist.toFixed(2)}×ATR
-      </div>
-      <div class="mini-grid">
-        <div class="mg-item"><div class="mg-lbl">CREDIT/UNIT</div><div class="mg-val gn">₹${putMin}–${putMax}</div></div>
-        <div class="mg-item"><div class="mg-lbl">MAX PROFIT</div><div class="mg-val gn">${fv(putMaxP)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">MAX LOSS</div><div class="mg-val rd">${fv(putMaxL)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">R:R · WIN%</div><div class="mg-val am">${putRR.toFixed(1)} · ${putWP}%</div></div>
-      </div>
-      <div class="exit-row">
-        <div class="exit-item"><span style="color:var(--gn)">✅ Exit</span> ${fv(putMaxP*0.4)}</div>
-        <div class="exit-item"><span style="color:var(--rd)">🛑 SL</span> ${fv(putMaxP*0.8)}</div>
-      </div>
-
-      <!-- IRON CONDOR -->
-      <div class="ec-section-hdr" style="margin-top:10px">
-        <div style="display:flex;align-items:center;gap:6px">
-          <div style="width:3px;height:14px;background:var(--am);border-radius:2px"></div>
-          <div>
-            <div style="font-size:9px;font-weight:700;color:var(--am)">IRON CONDOR (BOTH LEGS)</div>
-            <div style="font-size:8px;color:var(--muted)">${f(putBest.strike)}/${f(putBuy)} PE + ${f(callBest.strike)}/${f(callBuy)} CE</div>
-          </div>
-        </div>
-        ${isNeutral?'<span class="tag am">✅ IDEAL</span>':''}
-      </div>
-      <div class="mini-grid">
-        <div class="mg-item"><div class="mg-lbl">TOTAL CREDIT</div><div class="mg-val gn">${fv(icTotal)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">MAX LOSS</div><div class="mg-val rd">${fv(icMaxL)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">EXIT PROFIT</div><div class="mg-val am">${fv(icTotal*0.40)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">STOP LOSS</div><div class="mg-val am">${fv(icTotal*0.80)}</div></div>
-      </div>
-      ${(()=>{
-        // v1.5.0: ±5% stress test — shows outcome if spot makes a 5% move by expiry
-        const spotDown5 = price * 0.95;
-        const spotUp5   = price * 1.05;
-        const putBreached  = spotDown5 < putBest.strike;
-        const callBreached = spotUp5   > callBest.strike;
-        const putStressLoss  = putBreached  ? fv(putMaxL)  : '✅ Safe';
-        const callStressLoss = callBreached ? fv(callMaxL) : '✅ Safe';
-        const putStressCol   = putBreached  ? 'var(--rd)'  : 'var(--gn)';
-        const callStressCol  = callBreached ? 'var(--rd)'  : 'var(--gn)';
-        return `<div style="margin:8px 14px 0;background:var(--bg3);border-radius:6px;padding:8px 10px">
-          <div style="font-size:7.5px;letter-spacing:1px;color:var(--muted);margin-bottom:5px">±5% STRESS TEST — IF SPOT MAKES BIG MOVE BY EXPIRY</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-            <div><div style="font-size:7.5px;color:var(--muted)">Spot −5% → ${Math.round(spotDown5).toLocaleString('en-IN')}</div><div style="font-size:10px;font-weight:700;color:${putStressCol}">${putStressLoss}</div><div style="font-size:7.5px;color:var(--muted)">${putBreached?'Put side breached':'Put side intact'}</div></div>
-            <div><div style="font-size:7.5px;color:var(--muted)">Spot +5% → ${Math.round(spotUp5).toLocaleString('en-IN')}</div><div style="font-size:10px;font-weight:700;color:${callStressCol}">${callStressLoss}</div><div style="font-size:7.5px;color:var(--muted)">${callBreached?'Call side breached':'Call side intact'}</div></div>
-          </div>
-        </div>`;
-      })()}
-      ${isBull?'<div class="ec-bias-note gn">📊 Bullish bias — put leg safer. Widen call side for extra buffer.</div>':isBear?'<div class="ec-bias-note rd">📊 Bearish bias — call leg safer. Widen put side for extra buffer.</div>':'<div class="ec-bias-note am">📊 Neutral — both legs equally valid for Iron Condor.</div>'}
-
-      ${(isNeutral && vix<16)?`
-      <!-- STRADDLE (neutral + low VIX) -->
-      <div class="ec-section-hdr" style="margin-top:10px">
-        <div style="display:flex;align-items:center;gap:6px">
-          <div style="width:3px;height:14px;background:var(--pu);border-radius:2px"></div>
-          <div>
-            <div style="font-size:9px;font-weight:700;color:var(--pu)">LONG STRADDLE (LOW VIX)</div>
-            <div style="font-size:8px;color:var(--muted)">Buy ${r5(price).toLocaleString('en-IN')} CE + ${r5(price).toLocaleString('en-IN')} PE</div>
-          </div>
-        </div>
-        <span class="tag pu">VIX ${vix}</span>
-      </div>
-      <div class="mini-grid">
-        <div class="mg-item"><div class="mg-lbl">COST/UNIT</div><div class="mg-val am">₹${sd.min}–${sd.max}</div></div>
-        <div class="mg-item"><div class="mg-lbl">TOTAL COST</div><div class="mg-val am">${fv(sdTotal)}</div></div>
-        <div class="mg-item"><div class="mg-lbl">BEP UP</div><div class="mg-val gn">${(r5(price)+sd.unit).toLocaleString('en-IN')}</div></div>
-        <div class="mg-item"><div class="mg-lbl">BEP DOWN</div><div class="mg-val gn">${(r5(price)-sd.unit).toLocaleString('en-IN')}</div></div>
-      </div>`:''}
-
-    </div>
-  </div>`;
-}
-
-// ── Main multi-expiry builder ──────────────────────────────────
-function buildMultiExpiry(idx){
-  const isNF  = idx==='NF';
-  const price = gv(isNF?'nf_price':'bn_price');
-  const atr   = gv(isNF?'nf_atr':'bn_atr');
-  const lot   = gv(isNF?'nf_lot':'bn_lot');
-  const lots  = gv(isNF?'nf_lots':'bn_lots')||1;
-  const oiCall= gv(isNF?'nf_oi_call':'bn_oi_call');
-  const oiPut = gv(isNF?'nf_oi_put':'bn_oi_put');
-  const vix   = gv('india_vix')||14;
-  const score = SCORE||0;
-
-  // v1.4.0: use index-specific PCR
-  const pcr   = isNF ? gv('pcr_nf') : gv('pcr_bn');
-
-  const out = document.getElementById((isNF?'nf':'bn')+'-multi-output');
-  if(!out) return;
-
-  if(!price||!atr||!lot){
-    out.innerHTML=`<div class="info-box" style="margin-top:10px">Enter Spot Price, ATR and Lot Size above — expiry cards appear automatically</div>`;
-    return;
-  }
-
-  const expiries = getExpiries(idx);
-  const width    = isNF ? 200 : 400;
-  const isBull=score>=0.4, isBear=score<=-0.4, isNeutral=!isBull&&!isBear;
-  const dirColor=isBull?'var(--gn)':isBear?'var(--rd)':'var(--am)';
-  const dirIcon=isBull?'🟢':isBear?'🔴':'🟡';
-
-  // v1.6.0: Volatility warnings — VIX guard and ATR lag detector
-  const vixHigh = vix > 15;
-  const atrPct  = atr / price * 100;
-  // v1.6.0 fix: index-aware absolute thresholds (was a single 0.55% that fired 62% of the time)
-  // NF normal ATR range: 0.40–1.5%. BNF normal: 0.65–2.0%.
-  // Warn only when genuinely compressed — i.e. well below the low-end of each index's normal band.
-  const atrThreshold = isNF ? 0.38 : 0.30;   // NF: <0.38%, BNF: <0.30% (v1.6.3: was 0.62 — fired 62% of days)
-  const atrLow = atrPct < atrThreshold;
-  // Also warn when ATR seems unusually HIGH vs VIX (possible spike the user hasn't updated yet)
-  // Expected ATR% ≈ VIX/100 * sqrt(1/252) * 100 * ~1.2 (intraday factor)
-  const expectedAtrPct = (vix / 100) * Math.sqrt(1 / 252) * 100 * 1.2;
-  const atrSpike = atrPct > expectedAtrPct * 1.8;  // ATR > 1.8× what VIX implies
-
-  let warningBanners = '';
-  if (vixHigh) {
-    warningBanners += `<div style="margin:8px 14px 0;background:#ff3b3018;border:1px solid var(--rd);border-radius:6px;padding:10px 12px">
-      <div style="font-size:9px;font-weight:700;color:var(--rd);letter-spacing:0.5px">⚠️ HIGH VIX — VOLATILITY GUARD ACTIVE</div>
-      <div style="font-size:8.5px;color:var(--muted);margin-top:3px">India VIX ${vix} > 15. All strikes forced to minimum 2.0× ATR buffer. IC win rate drops to ~25% in high-VIX trending markets. Consider reducing position size or skipping IC strategy.</div>
-    </div>`;
-  }
-  if (atrLow) {
-    warningBanners += `<div style="margin:8px 14px 0;background:#ff990018;border:1px solid var(--am);border-radius:6px;padding:10px 12px">
-      <div style="font-size:9px;font-weight:700;color:var(--am);letter-spacing:0.5px">⚠️ VERY LOW ATR — VERIFY YOUR INPUT</div>
-      <div style="font-size:8.5px;color:var(--muted);margin-top:3px">ATR ${atr} = ${atrPct.toFixed(2)}% of spot — unusually compressed for ${isNF?'Nifty':'Bank Nifty'} (normal >${atrThreshold}%). Ensure ATR-14 is freshly computed. If market moved sharply recently, ATR-14 may lag by 5–7 days — widen strikes manually.</div>
-    </div>`;
-  }
-  if (atrSpike) {
-    warningBanners += `<div style="margin:8px 14px 0;background:#ff990018;border:1px solid var(--am);border-radius:6px;padding:10px 12px">
-      <div style="font-size:9px;font-weight:700;color:var(--am);letter-spacing:0.5px">⚠️ ATR/VIX MISMATCH — POSSIBLE VOLATILITY SPIKE</div>
-      <div style="font-size:8.5px;color:var(--muted);margin-top:3px">ATR ${atr} (${atrPct.toFixed(2)}%) is ${(atrPct/expectedAtrPct).toFixed(1)}× what VIX ${vix} implies. Market may have spiked recently. Double-check entry — strikes may be tighter than actual volatility requires.</div>
-    </div>`;
-  }
-
-  let html=`
-  <div style="margin:10px 14px 0;background:var(--bg3);border-radius:var(--r);padding:10px 14px;border-left:3px solid ${dirColor}">
-    <div style="font-size:8px;letter-spacing:1.5px;color:var(--muted);margin-bottom:3px">MARKET DIRECTION → AUTO STRATEGY</div>
-    <div style="font-size:13px;font-weight:700;color:${dirColor}">${dirIcon} ${DIRECTION||'ENTER RADAR DATA'} (${score>=0?'+':''}${score.toFixed(2)})</div>
-    <div style="font-size:9px;color:var(--muted);margin-top:2px">${isNF?'Nifty 50':'Bank Nifty'} ${price.toLocaleString('en-IN')} · ATR ${atr} (${atrPct.toFixed(2)}%) · VIX ${vix}${pcr?' · PCR '+pcr.toFixed(2)+' (strike guide)':''}</div>
-    ${oiCall||oiPut?`<div style="font-size:8.5px;color:var(--am);margin-top:3px">OI walls active — ${oiCall?'Call '+oiCall.toLocaleString('en-IN'):''}${oiCall&&oiPut?' · ':''}${oiPut?'Put '+oiPut.toLocaleString('en-IN'):''}</div>`:''}
-  </div>
-  ${warningBanners}
-  <div style="font-size:8px;color:var(--muted);padding:8px 14px">Showing ${expiries.length} expiries · tap any card to expand · ✅ = verdict-recommended side · Holiday-adjusted dates</div>`;
-
-  expiries.forEach(exp => {
-    html += buildExpiryCard(exp, price, atr, lot, lots, vix, width, score, oiCall, oiPut, idx, pcr);
-  });
-
-  out.innerHTML = html;
-
-  setTimeout(()=>{
-    const first = document.querySelector(`#ec-${idx}-${expiries[0]?.dte}`);
-    if(first) first.classList.add('open');
-  }, 50);
-}
-
-function toggleExpiry(id){
-  document.getElementById(id)?.classList.toggle('open');
-}
-
-function buildStrategy(idx){ buildMultiExpiry(idx); }
-
-// ── Tab navigation ─────────────────────────────────────────────
-function go(n){
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('on',i===n));
-  document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('on',i===n));
-  if(n===2) calcScore();
-  if(n===3){ buildMultiExpiry('NF'); buildMultiExpiry('BN'); updateEntrySignal(); }
-  if(n===4) checkLocks();
-}
-
-function switchStrat(n){
-  document.querySelectorAll('.strat-tab').forEach((t,i)=>t.classList.toggle('on',i===n));
-  document.querySelectorAll('.strat-page').forEach((p,i)=>p.classList.toggle('on',i===n));
-}
-
-// ── Save / Lock / Edit ─────────────────────────────────────────
-function saveRadar(){
-  const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
-    'max_pain_nf','max_pain_bn','close_char'];
-  const data={};
-  radarFlds.forEach(f=>{ const e=document.getElementById(f); if(e&&e.value!=='') data[f]=e.value; stampField(f); });
-  try{
-    localStorage.setItem('mr140-radar',JSON.stringify(data));
-    localStorage.setItem('mr140-prevscore',JSON.stringify({score:SCORE,dir:DIRECTION,ts:Date.now()}));
-    RADAR_LOCKED=true;
-    setDisabled(radarFlds,true);
-    document.getElementById('btn-save-radar').style.display='none';
-    document.getElementById('btn-edit-radar').style.display='inline-flex';
-    document.getElementById('radar-status').textContent='Saved ✅';
-    toast('💾 Radar saved & locked');
-  }catch{ toast('❌ Save failed'); }
-}
-
-function editRadar(){
-  RADAR_LOCKED=false;
-  const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
-    'max_pain_nf','max_pain_bn','close_char'];
-  setDisabled(radarFlds,false);
-  document.getElementById('btn-save-radar').style.display='inline-flex';
-  document.getElementById('btn-edit-radar').style.display='none';
-  document.getElementById('radar-status').textContent='Edit mode — re-save when done';
-  toast('✏️ Edit mode');
-}
-
-function saveBreadth(){
-  const flds=['n50adv','n50dma','bnfadv'];
-  const data={};
-  flds.forEach(f=>{ const e=document.getElementById(f); if(e) data[f]=e.value; stampField(f); });
-  try{
-    localStorage.setItem('mr140-breadth',JSON.stringify(data));
-    BREADTH_LOCKED=true;
-    setDisabled(flds,true);
-    document.getElementById('btn-save-breadth').style.display='none';
-    document.getElementById('btn-edit-breadth').style.display='inline-flex';
-    toast('💾 Breadth saved');
-  }catch{ toast('❌ Save failed'); }
-}
-
-function editBreadth(){
-  BREADTH_LOCKED=false;
-  const flds=['n50adv','n50dma','bnfadv'];
-  setDisabled(flds,false);
-  document.getElementById('btn-save-breadth').style.display='inline-flex';
-  document.getElementById('btn-edit-breadth').style.display='none';
-  toast('✏️ Edit mode');
-}
-
-function saveEvening(){
-  const flds=['ev_sp500','ev_dow','ev_usvix','ev_nk','ev_hsi','ev_crude','ev_gold','ev_inr',
-    'ev_indiavix','ev_fii','ev_fii_opt','ev_pcr_nf','ev_pcr_bn','ev_nifty','ev_bnf','ev_n50adv','ev_bnfadv','ev_mpnf','ev_mpbn'];
-  const data={};
-  flds.forEach(f=>{ const e=document.getElementById(f); if(e) data[f]=e.value; stampField(f); });
-  try{
-    localStorage.setItem('mr140-evening',JSON.stringify(data));
-    EVENING_LOCKED=true;
-    setDisabled(flds,true);
-    document.getElementById('btn-save-evening').style.display='none';
-    document.getElementById('btn-edit-evening').style.display='inline-flex';
-    if(document.getElementById('btn-lock-bottom')) document.getElementById('btn-lock-bottom').style.display='none';
-    toast('🔒 Evening data locked — delta ready for tomorrow');
-  }catch{ toast('❌ Save failed'); }
-}
-
-function editEvening(){
-  EVENING_LOCKED=false;
-  const flds=['ev_sp500','ev_dow','ev_usvix','ev_nk','ev_hsi','ev_crude','ev_gold','ev_inr',
-    'ev_indiavix','ev_fii','ev_fii_opt','ev_pcr_nf','ev_pcr_bn','ev_nifty','ev_bnf','ev_n50adv','ev_bnfadv','ev_mpnf','ev_mpbn'];
-  setDisabled(flds,false);
-  document.getElementById('btn-save-evening').style.display='inline-flex';
-  document.getElementById('btn-edit-evening').style.display='none';
-  if(document.getElementById('btn-lock-bottom')) document.getElementById('btn-lock-bottom').style.display='flex';
-  toast('✏️ Edit mode');
-}
-
-function saveChecklist(){
-  const rbi=document.querySelector('input[name="rbi"]:checked')?.value||'neutral';
-  const liq=document.querySelector('input[name="liq"]:checked')?.value||'neutral';
-  const news=document.querySelector('input[name="news"]:checked')?.value||'none';
-  try{ localStorage.setItem('mr140-checklist',JSON.stringify({rbi,liq,news})); }catch{}
-  ['hawkish','neutral','dovish'].forEach(v=>document.getElementById('rbi-'+v)?.classList.toggle('checked',v===rbi));
-  ['deficit','neutral','surplus'].forEach(v=>document.getElementById('liq-'+v)?.classList.toggle('checked',v===liq));
-  ['none','hdfc','icici','both'].forEach(v=>document.getElementById('news-'+v)?.classList.toggle('checked',v===news));
-}
-
-function loadChecklist(){
-  try{
-    const d=JSON.parse(localStorage.getItem('mr140-checklist')||'null');
-    if(!d) return;
-    const r=document.querySelector(`input[name="rbi"][value="${d.rbi}"]`);
-    const l=document.querySelector(`input[name="liq"][value="${d.liq}"]`);
-    const n=document.querySelector(`input[name="news"][value="${d.news}"]`);
-    if(r) r.checked=true; if(l) l.checked=true; if(n) n.checked=true;
-    saveChecklist();
-  }catch{}
-}
-
-// ── State persistence ──────────────────────────────────────────
-function saveState(){
-  const allFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
-    'max_pain_nf','max_pain_bn','close_char','n50adv','n50dma','bnfadv',
-    'nf_price','nf_atr','pcr_nf','nf_lot','nf_lots','nf_oi_call','nf_oi_put',
-    'bn_price','bn_atr','pcr_bn','bn_lot','bn_lots','bn_oi_call','bn_oi_put'];
-  const s={};
-  allFlds.forEach(f=>{ const e=document.getElementById(f); if(e) s[f]=e.value; });
-  try{ localStorage.setItem('mr140-state',JSON.stringify(s)); }catch{}
-}
-
-function loadState(){
-  try{
-    const s=JSON.parse(localStorage.getItem('mr140-state')||'{}');
-    Object.keys(s).forEach(f=>{ const e=document.getElementById(f); if(e&&s[f]!=='undefined') e.value=s[f]; });
-  }catch{}
-  const radar=localStorage.getItem('mr140-radar');
-  if(radar){
-    RADAR_LOCKED=true;
-    const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','max_pain_nf','max_pain_bn','close_char'];
-    setDisabled(radarFlds,true);
-    document.getElementById('btn-save-radar').style.display='none';
-    document.getElementById('btn-edit-radar').style.display='inline-flex';
-    document.getElementById('radar-status').textContent='Saved ✅ (from last session)';
-  }
-  const breadth=localStorage.getItem('mr140-breadth');
-  if(breadth){
-    BREADTH_LOCKED=true;
-    setDisabled(['n50adv','n50dma','bnfadv'],true);
-    document.getElementById('btn-save-breadth').style.display='none';
-    document.getElementById('btn-edit-breadth').style.display='inline-flex';
-  }
-}
-
-// ── Toast ──────────────────────────────────────────────────────
-let _tt;
-function toast(m){
-  const e=document.getElementById('toast'); e.textContent=m; e.classList.add('show');
-  clearTimeout(_tt); _tt=setTimeout(()=>e.classList.remove('show'),2500);
-}
-
-document.addEventListener('input',()=>{ setTimeout(saveState,500); });
-
-if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
-
-// ── Init ──────────────────────────────────────────────────────
-loadState();
-onFIIFO();
-loadChecklist();
-restoreTS();
-checkLocks();
-setInterval(checkLocks, 60000);       // time lock refresh
-setInterval(updateEntrySignal, 60000); // entry signal refresh every minute
-calcScore();
-renderBreadth();
-buildMultiExpiry('NF');
-buildMultiExpiry('BN');
-updateEntrySignal();
-</script>
+<!-- Scripts: bhav.js must load before app.js (provides bhav functions) -->
+<script src="bhav.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
