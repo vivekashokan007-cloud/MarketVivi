@@ -202,19 +202,28 @@ function _ghHeaders(cfg) {
 
 async function _ghGet(path) {
   const cfg = getGHConfig(); if (!cfg) return null;
-  try {
-    const res = await fetch(
-      `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${path}`,
-      { headers: _ghHeaders(cfg) }
-    );
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const d = await res.json();
-    return {
-      data: JSON.parse(atob(d.content.replace(/\n/g, ''))),
-      sha:  d.sha,
-    };
-  } catch(e) { console.warn('ghGet:', path, e.message); return null; }
+  const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${path}`;
+
+  // Try with token first (needed for writes/SHA); fall back to no-auth for public repo reads
+  const attempts = [
+    { headers: _ghHeaders(cfg) },
+    { headers: { 'Accept': 'application/vnd.github.v3+json' } }  // no-auth fallback
+  ];
+
+  for (const opts of attempts) {
+    try {
+      const res = await fetch(url, opts);
+      if (res.status === 404) return null;
+      if (!res.ok) continue;  // try next attempt
+      const d = await res.json();
+      if (!d.content) continue;
+      return {
+        data: JSON.parse(atob(d.content.replace(/\n/g, ''))),
+        sha:  d.sha,
+      };
+    } catch(e) { console.warn('ghGet attempt:', path, e.message); }
+  }
+  return null;
 }
 
 async function _ghPut(path, content, sha) {
