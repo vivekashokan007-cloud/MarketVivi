@@ -186,6 +186,8 @@ function checkLocks(){
 
   // Radar (morning lock): only open on trading days after 8:30am
   const mornOk = !isWeekend && t>=MORNING;
+  // Breadth: optimal entry 9:45–10:15 AM after opening volatility settles
+  const BREADTH_OPEN = 9*60+45;
   // Smarts (evening lock): open on trading days after 3:45pm
   //   AND stays open all weekend (Sat + Sun) so Friday data can be entered anytime
   const eveOk  = isWeekend || t>=EVENING;
@@ -200,9 +202,17 @@ function checkLocks(){
       'max_pain_nf','max_pain_bn','close_char'], true);
     setDisabled(['n50adv','n50dma','bnfadv'],true);
     document.getElementById('breadth-lock').classList.add('show');
-    document.getElementById('breadth-msg').textContent=`Opens in ${Math.floor(ml/60)}h ${ml%60}m`;
+    document.getElementById('breadth-msg').textContent=`Opens in ${Math.floor(ml/60)}h ${ml%60}m (8:30 AM IST)`;
+  } else if(!isWeekend && t < BREADTH_OPEN && !BREADTH_LOCKED){
+    // Market open but breadth data not yet reliable — show breadth lock only
+    mBanner.classList.remove('show');
+    document.getElementById('breadth-lock').classList.add('show');
+    const bl = BREADTH_OPEN - t;
+    document.getElementById('breadth-msg').textContent=`Enter after 9:45 AM (${Math.floor(bl/60)}h ${bl%60}m)`;
+    setDisabled(['n50adv','n50dma','bnfadv'],true);
   } else {
     mBanner.classList.remove('show');
+    if(!BREADTH_LOCKED) document.getElementById('breadth-lock').classList.remove('show');
   }
 
   const eBanner=document.getElementById('evening-lock');
@@ -1112,6 +1122,11 @@ function buildCommand() {
         goState='go'; goIcon='⚡'; goLabel='EVENT PLAY — LONG STRADDLE + STRANGLE';
         goReason=`Neutral score + ${eventFlag.toUpperCase()} event + VIX ${vix} (very low IV). Buying volatility before event is optimal.`;
         primaryStrat='STRADDLE'; altStrat='IC';
+      } else if (vix < 11 && Math.abs(score) <= 0.10) {
+        // Iron Butterfly: VIX < 11 + dead neutral — max premium from ATM body
+        goState='go'; goIcon='🦋'; goLabel='TRADE TODAY — IRON BUTTERFLY';
+        goReason=`Score ${score>=0?'+':''}${score.toFixed(2)} (dead neutral), VIX ${vix} (very low) — ATM body gives 2–3× IC credit. Nifty must pin near ${Math.round(price/50)*50}.`;
+        primaryStrat='IRON_BUTTERFLY'; altStrat='IC';
       } else if (vix >= 15) {
         goState='caution'; goIcon='🟡'; goLabel='CAUTION — IC WITH WIDER STRIKES';
         goReason=`Neutral score but VIX ${vix} elevated. Widen strike buffer by 50–100pts. Consider 50% position size.`;
@@ -1312,6 +1327,116 @@ function buildCommand() {
       <div class="stress-side"><div class="stress-scenario">Spot +5% → ${f(Math.round(up5))}</div><div class="stress-result ${callBreach?'breach':'safe'}">${callBreach?'⚠️ CALL BREACHED':'✅ Safe'}</div><div style="font-size:7.5px;color:var(--muted);margin-top:2px">${callBreach?'Call side at risk of max loss':'Buffer: '+f(callBest.strike-price)+'pts'}</div></div>
     </div>
   </div>`;
+
+  // ── Iron Butterfly card (credit, dead neutral, VIX < 11) ───────
+  const renderIronButterfly = (isAlt) => {
+    const ibWidth   = 200;
+    const bodyStr   = Math.round(price / 50) * 50;  // nearest 50 = ATM
+    const wingCall  = bodyStr + ibWidth;             // 24,850
+    const wingPut   = bodyStr - ibWidth;             // 24,450
+
+    // Credit: use straddle estimate for ATM body, subtract wing cost
+    const sd       = estimateStraddle(price, bestExp.dte, vix);
+    const wingCost = estimateCredit(ibWidth, bestExp.dte, vix, true);  // wing debit
+    const netUnit  = Math.max(r5(sd.unit - wingCost.mid * 2), 10);    // net credit/unit
+    const netMin   = r5(netUnit * 0.80);
+    const netMax   = r5(netUnit * 1.22);
+    const lots_    = 1;
+    const netTotal = netUnit * NF_LOT * lots_;
+    const maxLoss  = (ibWidth - netUnit) * NF_LOT * lots_;
+    const bepUp    = bodyStr + netUnit;
+    const bepDn    = bodyStr - netUnit;
+
+    const bodyMn   = moneyness(bodyStr, price, true);  // ATM always
+    const wCallMn  = moneyness(wingCall, price, true);
+    const wPutMn   = moneyness(wingPut,  price, false);
+
+    const fv = n => '₹' + Math.round(n).toLocaleString('en-IN');
+    const f  = n => Math.round(n).toLocaleString('en-IN');
+
+    return `
+  <div class="cmd-card" style="${isAlt?'opacity:0.85':''}">
+    <div class="cmd-hdr">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="cmd-expiry" style="font-size:15px">${bestExp.label}</div>
+          ${isAlt ? '<span class="tag fl" style="font-size:7px">ALTERNATIVE</span>' : '<span class="tag" style="background:rgba(94,61,179,0.12);color:var(--pu);border:1px solid rgba(94,61,179,0.3);font-size:7px">🦋 PRIMARY</span>'}
+        </div>
+        <div class="cmd-dte">${bestExp.dte} DTE · IRON BUTTERFLY · Net Credit</div>
+      </div>
+      <div class="cmd-credit-box">
+        <div class="cmd-credit-lbl">CREDIT</div>
+        <div class="cmd-credit-val">${fv(netTotal)}</div>
+        <div class="cmd-credit-range">₹${netMin}–${netMax}/unit</div>
+      </div>
+    </div>
+
+    <!-- 4 legs -->
+    <div style="padding:12px 14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <!-- Body Call -->
+      <div class="cmd-leg call">
+        <div class="cmd-leg-type">SELL · CALL BODY</div>
+        <div class="cmd-leg-sell">${f(bodyStr)} CE ${mnBadge(bodyMn)}</div>
+        <div class="cmd-leg-narration" style="color:var(--rd);font-size:8px;">ATM — maximum premium</div>
+      </div>
+      <!-- Body Put -->
+      <div class="cmd-leg put">
+        <div class="cmd-leg-type">SELL · PUT BODY</div>
+        <div class="cmd-leg-sell">${f(bodyStr)} PE ${mnBadge(bodyMn)}</div>
+        <div class="cmd-leg-narration" style="color:var(--gn);font-size:8px;">ATM — maximum premium</div>
+      </div>
+      <!-- Wing Call -->
+      <div style="background:rgba(200,33,62,0.03);border:1px solid rgba(200,33,62,0.15);border-radius:8px;padding:10px 12px;">
+        <div class="cmd-leg-type" style="color:var(--muted);">BUY · CALL WING</div>
+        <div class="cmd-leg-sell" style="font-size:13px;color:var(--muted)">${f(wingCall)} CE ${mnBadge(wCallMn)}</div>
+        <div style="font-size:8px;color:var(--muted);margin-top:3px">+${ibWidth}pt hedge</div>
+      </div>
+      <!-- Wing Put -->
+      <div style="background:rgba(0,127,95,0.03);border:1px solid rgba(0,127,95,0.15);border-radius:8px;padding:10px 12px;">
+        <div class="cmd-leg-type" style="color:var(--muted);">BUY · PUT WING</div>
+        <div class="cmd-leg-sell" style="font-size:13px;color:var(--muted)">${f(wingPut)} PE ${mnBadge(wPutMn)}</div>
+        <div style="font-size:8px;color:var(--muted);margin-top:3px">−${ibWidth}pt hedge</div>
+      </div>
+    </div>
+
+    <!-- Key metrics -->
+    <div class="cmd-stats">
+      <div class="cmd-stat"><div class="cmd-stat-lbl">MAX PROFIT</div><div class="cmd-stat-val" style="color:var(--gn)">${fv(netTotal)}</div></div>
+      <div class="cmd-stat"><div class="cmd-stat-lbl">MAX LOSS</div><div class="cmd-stat-val" style="color:var(--rd)">${fv(maxLoss)}</div></div>
+      <div class="cmd-stat"><div class="cmd-stat-lbl">PROFIT ZONE</div><div class="cmd-stat-val" style="color:var(--am);font-size:10px">${f(bepDn)}–${f(bepUp)}</div></div>
+    </div>
+
+    <!-- Breakevens callout -->
+    <div style="padding:8px 14px;background:rgba(94,61,179,0.05);border-top:1px solid var(--border);">
+      <div style="font-size:7.5px;color:var(--muted);margin-bottom:4px;letter-spacing:1px;text-transform:uppercase;">Breakeven Points</div>
+      <div style="display:flex;justify-content:space-between;">
+        <div style="text-align:center;">
+          <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:var(--rd)">${f(bepDn)}</div>
+          <div style="font-size:7.5px;color:var(--muted)">Lower BEP</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:var(--pu)">${f(bodyStr)}</div>
+          <div style="font-size:7.5px;color:var(--muted)">Max Profit PIN</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:var(--gn)">${f(bepUp)}</div>
+          <div style="font-size:7.5px;color:var(--muted)">Upper BEP</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Exit rules -->
+    <div class="cmd-exits">
+      <div class="cmd-exit profit"><div class="cmd-exit-lbl">✅ Take Profit</div><div class="cmd-exit-val" style="color:var(--gn)">${fv(netTotal*0.40)}</div><div style="font-size:7.5px;color:var(--muted);margin-top:2px">40% of credit</div></div>
+      <div class="cmd-exit loss"><div class="cmd-exit-lbl">🛑 Stop Loss</div><div class="cmd-exit-val" style="color:var(--rd)">${fv(netTotal*0.80)}</div><div style="font-size:7.5px;color:var(--muted);margin-top:2px">80% of credit — hard exit</div></div>
+    </div>
+
+    <!-- Warning note -->
+    <div style="padding:8px 14px;font-size:8.5px;color:var(--am);border-top:1px solid var(--border);line-height:1.6;">
+      ⚠️ <strong>Profit zone is tight</strong> — Nifty must stay between ${f(bepDn)}–${f(bepUp)} (±${netUnit}pts from body). If Nifty moves more than ${netUnit}pts from ${f(bodyStr)}, exit immediately. Do not let this become max loss.
+    </div>
+  </div>`;
+  };
 
   // ── Bull Put Spread card (credit, bullish) ─────────────────
   const renderBullPut = (isAlt) => {
@@ -1607,12 +1732,13 @@ function buildCommand() {
   // Select primary card renderer
   const primaryCard = () => {
     switch(primaryStrat) {
-      case 'IC':           return renderIC();
-      case 'BULL_PUT':     return renderBullPut(false);
-      case 'BULL_CALL':    return renderBullCall(false);
-      case 'BEAR_CALL':    return renderBearCall(false);
-      case 'BEAR_PUT':     return renderBearPut(false);
-      case 'STRADDLE':     return renderStraddle();
+      case 'IC':               return renderIC();
+      case 'IRON_BUTTERFLY':   return renderIronButterfly(false);
+      case 'BULL_PUT':         return renderBullPut(false);
+      case 'BULL_CALL':        return renderBullCall(false);
+      case 'BEAR_CALL':        return renderBearCall(false);
+      case 'BEAR_PUT':         return renderBearPut(false);
+      case 'STRADDLE':         return renderStraddle();
       default: return '';
     }
   };
@@ -1621,19 +1747,20 @@ function buildCommand() {
   const altCard = () => {
     if (!altStrat) return '';
     switch(altStrat) {
-      case 'IC':           return renderIC();
-      case 'BULL_PUT':     return renderBullPut(true);
-      case 'BULL_CALL':    return renderBullCall(true);
-      case 'BEAR_CALL':    return renderBearCall(true);
-      case 'BEAR_PUT':     return renderBearPut(true);
-      case 'STRADDLE':     return renderStraddle();
+      case 'IC':               return renderIC();
+      case 'IRON_BUTTERFLY':   return renderIronButterfly(true);
+      case 'BULL_PUT':         return renderBullPut(true);
+      case 'BULL_CALL':        return renderBullCall(true);
+      case 'BEAR_CALL':        return renderBearCall(true);
+      case 'BEAR_PUT':         return renderBearPut(true);
+      case 'STRADDLE':         return renderStraddle();
       default: return '';
     }
   };
 
   const altLabel = () => {
     if (!altStrat) return '';
-    const names = {IC:'Iron Condor',BULL_PUT:'Bull Put Spread',BULL_CALL:'Bull Call Spread',BEAR_CALL:'Bear Call Spread',BEAR_PUT:'Bear Put Spread',STRADDLE:'Straddle/Strangle'};
+    const names = {IC:'Iron Condor', IRON_BUTTERFLY:'Iron Butterfly', BULL_PUT:'Bull Put Spread', BULL_CALL:'Bull Call Spread', BEAR_CALL:'Bear Call Spread', BEAR_PUT:'Bear Put Spread', STRADDLE:'Straddle/Strangle'};
     return names[altStrat] || altStrat;
   };
 
@@ -1876,6 +2003,12 @@ function buildExpiryCard(expiry, price, atr, lot, lots, vix, width, score, oiCal
   const putDist  = (price-putBest.strike)/atr;
   const pa       = pcrPremAdj(pcr, dte);
 
+  // v2.2.1: moneyness labels for all four strikes
+  const callSellMn = moneyness(callBest.strike, price, true);
+  const callBuyMn  = moneyness(callBuy,         price, true);
+  const putSellMn  = moneyness(putBest.strike,  price, false);
+  const putBuyMn   = moneyness(putBuy,          price, false);
+
   const crBase  = estimateCredit(width, dte, vix, isNF);
   // v1.7.0: call uses crBase.midCall (BNF-specific or NF-specific mults) + DTE-aware distFactorCall
   const callMid = Math.min(r5(crBase.midCall * distFactorCall(callDist, dte) / Math.max(pa,1)), r5(width*0.68));
@@ -1938,7 +2071,7 @@ function buildExpiryCard(expiry, price, atr, lot, lots, vix, width, score, oiCal
           <div style="width:3px;height:14px;background:var(--rd);border-radius:2px"></div>
           <div>
             <div style="font-size:9px;font-weight:700;color:var(--rd)">BEAR CALL SPREAD</div>
-            <div style="font-size:8px;color:var(--muted)">Sell ${f(callBest.strike)} CE / Buy ${f(callBuy)} CE</div>
+            <div style="font-size:8px;color:var(--muted)">Sell ${f(callBest.strike)} CE ${mnBadge(callSellMn)} / Buy ${f(callBuy)} CE ${mnBadge(callBuyMn)}</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
@@ -1966,7 +2099,7 @@ function buildExpiryCard(expiry, price, atr, lot, lots, vix, width, score, oiCal
           <div style="width:3px;height:14px;background:var(--gn);border-radius:2px"></div>
           <div>
             <div style="font-size:9px;font-weight:700;color:var(--gn)">BULL PUT SPREAD</div>
-            <div style="font-size:8px;color:var(--muted)">Sell ${f(putBest.strike)} PE / Buy ${f(putBuy)} PE</div>
+            <div style="font-size:8px;color:var(--muted)">Sell ${f(putBest.strike)} PE ${mnBadge(putSellMn)} / Buy ${f(putBuy)} PE ${mnBadge(putBuyMn)}</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
@@ -2076,6 +2209,8 @@ function saveRadar(){
   const data={};
   radarFlds.forEach(f=>{ const e=document.getElementById(f); if(e&&e.value!=='') data[f]=e.value; stampField(f); });
   try{
+    // v2.2.1: stamp save date so tomorrow morning we know it's stale
+    data._savedDate = new Date().toDateString();
     localStorage.setItem('mr140-radar',JSON.stringify(data));
     localStorage.setItem('mr140-prevscore',JSON.stringify({score:SCORE,dir:DIRECTION,ts:Date.now()}));
     RADAR_LOCKED=true;
@@ -2192,9 +2327,12 @@ function loadChecklist(){
 
 // ── State persistence ──────────────────────────────────────────
 function saveState(){
+  // v2.2.1: close_char intentionally excluded — it is managed exclusively
+  // by saveRadar() (when locked) and auto-fill from evening data (fresh morning).
+  // Including it here caused the auto-fill to be overwritten on every keystroke.
   const allFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
     'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii',
-    'max_pain_nf','max_pain_bn','close_char','n50adv','n50dma','bnfadv',
+    'max_pain_nf','max_pain_bn','n50adv','n50dma','bnfadv',
     'nf_price','nf_atr','pcr_nf','nf_lot','nf_lots','nf_oi_call','nf_oi_put','nf_maxpain','event_flag','strat_vix',
     'bn_price','bn_atr','pcr_bn','bn_lot','bn_lots','bn_oi_call','bn_oi_put','bn_maxpain'];
   const s={};
@@ -2207,36 +2345,57 @@ function loadState(){
     const s=JSON.parse(localStorage.getItem('mr140-state')||'{}');
     Object.keys(s).forEach(f=>{ const e=document.getElementById(f); if(e&&s[f]!=='undefined') e.value=s[f]; });
   }catch{}
-  const radar=localStorage.getItem('mr140-radar');
-  if(radar){
+
+  const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
+    'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','max_pain_nf','max_pain_bn','close_char'];
+
+  const radarRaw = localStorage.getItem('mr140-radar');
+  const radarData = radarRaw ? JSON.parse(radarRaw) : null;
+
+  // v2.2.1: Check if radar save is from TODAY or a previous day
+  const savedDate   = radarData?._savedDate || null;
+  const todayDate   = new Date().toDateString();
+  const isSameDay   = savedDate === todayDate;
+
+  if(radarData && isSameDay){
+    // Same day — restore locked state as normal
+    // Populate fields from radar save (authoritative source)
+    radarFlds.forEach(f=>{ const e=document.getElementById(f); if(e&&radarData[f]!=null) e.value=radarData[f]; });
     RADAR_LOCKED=true;
-    const radarFlds=['sp500','dow','usvix','nk','hsi','crude','gold','inr','yld',
-      'gift_now','nifty_prev','gift_6am','india_vix','fii','fii_fut','fii_opt','dii','max_pain_nf','max_pain_bn','close_char'];
     setDisabled(radarFlds,true);
     document.getElementById('btn-save-radar').style.display='none';
     document.getElementById('btn-edit-radar').style.display='inline-flex';
-    document.getElementById('radar-status').textContent='Saved ✅ (from last session)';
+    document.getElementById('radar-status').textContent='Saved ✅ (from this morning)';
+
   } else {
-    // ── v2.2.1: Pre-fill close_char from last evening lock ─────
-    // Only when Radar is NOT yet locked (fresh morning session).
-    // Evening lock computed this from advances + FII — saves manual lookup.
+    // Different day OR no radar save — fresh morning session
+    // Clear stale radar lock so user enters today's data fresh
+    if(radarData && !isSameDay){
+      localStorage.removeItem('mr140-radar');
+      // Also clear stale breadth lock — it's a new day
+      localStorage.removeItem('mr140-breadth');
+    }
+
+    // v2.2.1: Auto-fill close_char from last evening lock
+    // This is the ONLY place close_char gets set on a fresh morning.
+    // It is excluded from saveState() so nothing can overwrite it.
     try{
       const acc = JSON.parse(localStorage.getItem('mr140-autoclosechar')||'null');
       if(acc && typeof acc.val === 'number'){
         const el = document.getElementById('close_char');
         if(el){
           el.value = String(acc.val);
-          // Show auto-fill note under the field
-          const labels = {2:'Strong ↑↑', 1:'Mild ↑', 0:'Neutral', '-1':'Mild ↓', '-2':'Weak ↓↓'};
+          const labels = {'2':'Strong ↑↑','1':'Mild ↑','0':'Neutral','-1':'Mild ↓','-2':'Weak ↓↓'};
           const note = document.getElementById('ts-close_char');
           if(note){
-            note.textContent = `Auto: ${labels[acc.val]||acc.val} (${acc.adv} adv, FII ${acc.fii>=0?'+':''}${acc.fii}Cr)`;
-            note.className = 'ts fresh';
+            note.textContent = `Auto: ${labels[String(acc.val)]||acc.val} · ${acc.adv} adv, FII ${acc.fii>=0?'+':''}${acc.fii}Cr`;
+            note.className='ts fresh';
           }
         }
       }
     }catch{}
   }
+
   const breadth=localStorage.getItem('mr140-breadth');
   if(breadth){
     BREADTH_LOCKED=true;
