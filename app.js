@@ -733,28 +733,36 @@ function capitalMetrics(midPerUnit, widthPts, lotSize, marginPerLot) {
 // Formula: credit = WIDTH × 0.38 × mult × vixMult × distFactor
 // K = 200 × 0.38 × 0.78 = 59.28 (at VIX 13.5)
 // mult = real_median_put / K
+// ── NF PUT DTE multipliers — recalibrated v2.4.0 ──────────────
+// Calibrated on 32 IC-viable days (Jan–Mar 2026) using NSE EWMA ATR strikes
+// NSE EWMA ATR ≈ 280 pts → CE sell ≈ +370 pts from spot (vs +505 pts old)
+// Fallback (no FOVOLT): old stddev ATR → old multipliers still in use via bhavATR()
 function getDteMult(dte) {
-  if (dte <= 5)  return 0.10;   // Real ₹6  → est ₹6   ✅ (was 0.44, +240% over)
-  if (dte <= 7)  return 0.20;   // Real ₹12 → est ₹12  ✅ (was 0.82, +180% over)
-  if (dte <= 10) return 0.30;   // Real ₹18 → est ₹18  ✅ (was 1.47, +186% over)
-  if (dte <= 14) return 0.39;   // Real ₹23 → est ₹23  ✅ (was 1.47, +186% over)
-  if (dte <= 21) return 0.54;   // Real ₹32 → est ₹32  ✅ (was 1.94, +160% over)
-  if (dte <= 35) return 0.69;   // Real ₹41 → est ₹41  ✅ (was 3.09, +139% over)
-  if (dte <= 45) return 0.90;
-  return 1.10;
+  if (dte <= 2)  return 0.14;   // extrapolated — DTE<3 rare for weekly entry
+  if (dte <= 4)  return 0.176;  // calibrated n=9 (DTE 3+4 cluster)
+  if (dte <= 5)  return 0.256;  // calibrated n=6
+  if (dte <= 7)  return 0.332;  // calibrated n=12 (DTE 6+7)
+  if (dte <= 10) return 0.480;  // calibrated n=5 (DTE 8, scaled for 9-10)
+  if (dte <= 14) return 0.560;  // extrapolated
+  if (dte <= 21) return 0.680;  // extrapolated
+  if (dte <= 35) return 0.820;
+  if (dte <= 45) return 1.000;
+  return 1.200;
 }
 
-// ── NF CALL DTE multipliers — calls are structurally more expensive in NF ──
-// Call mult always > put mult (structural put/call skew in NF)
+// ── NF CALL DTE multipliers — recalibrated v2.4.0 ─────────────
+// Calls slightly more expensive than puts at NSE ATR strikes (reduced skew vs old)
 function getDteMultCall(dte) {
-  if (dte <= 5)  return 0.13;   // Real ₹8  → est ₹8   ✅
-  if (dte <= 7)  return 0.27;   // Real ₹16 → est ₹16  ✅
-  if (dte <= 10) return 0.37;   // Real ₹22 → est ₹22  ✅
-  if (dte <= 14) return 0.61;   // Real ₹36 → est ₹36  ✅ (largest asymmetry bucket)
-  if (dte <= 21) return 0.89;   // Real ₹53 → est ₹53  ✅
-  if (dte <= 35) return 1.20;   // Real ₹71 → est ₹71  ✅
-  if (dte <= 45) return 1.45;
-  return 1.75;
+  if (dte <= 2)  return 0.18;   // extrapolated
+  if (dte <= 4)  return 0.231;  // calibrated n=9
+  if (dte <= 5)  return 0.306;  // calibrated n=6
+  if (dte <= 7)  return 0.403;  // calibrated n=12
+  if (dte <= 10) return 0.580;  // calibrated n=5 (scaled for 9-10)
+  if (dte <= 14) return 0.680;  // extrapolated
+  if (dte <= 21) return 0.820;  // extrapolated
+  if (dte <= 35) return 1.000;
+  if (dte <= 45) return 1.250;
+  return 1.500;
 }
 
 // v1.6.3: BNF separate DTE multipliers — reverse-engineered from 3-month real premiums.

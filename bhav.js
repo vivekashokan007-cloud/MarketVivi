@@ -422,6 +422,15 @@ async function renderBhavCalendar() {
   const expected = nseTradingDays(from, today);
   if (!expected.length) { el.innerHTML = ''; return; }
 
+  // Build set of dates that also have FOVOLT (nse_dv) data
+  const volDates = new Set();
+  expected.forEach(dk => {
+    try {
+      const d = JSON.parse(localStorage.getItem(BHAV_PFX + dk) || 'null');
+      if (d?.nse_dv) volDates.add(dk);
+    } catch(e) {}
+  });
+
   const MONTH = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const DAY   = ['Su','Mo','Tu','We','Th','Fr','Sa'];
 
@@ -433,18 +442,22 @@ async function renderBhavCalendar() {
     byMonth[mk].push(dk);
   });
 
-  const total = expected.length;
-  const done  = expected.filter(dk => uploaded.has(dk)).length;
-  const pct   = total ? Math.round(done / total * 100) : 0;
-  const barC  = pct >= 90 ? 'var(--gn)' : pct >= 70 ? 'var(--am)' : 'var(--rd)';
+  const total    = expected.length;
+  const done     = expected.filter(dk => uploaded.has(dk)).length;
+  const volDone  = expected.filter(dk => uploaded.has(dk) && volDates.has(dk)).length;
+  const pct      = total ? Math.round(done / total * 100) : 0;
+  const barC     = pct >= 90 ? 'var(--gn)' : pct >= 70 ? 'var(--am)' : 'var(--rd)';
 
   let html =
     `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:4px 0">` +
-    `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">` +
+    `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">` +
     `<div style="font-size:7.5px;font-weight:700;letter-spacing:1px;color:var(--muted);text-transform:uppercase">NSE Calendar — Nov 25 onwards</div>` +
     `<div style="font-size:9px;font-weight:700;color:${barC}">${done}/${total} (${pct}%)</div></div>` +
-    `<div style="height:3px;background:var(--bg3);border-radius:2px;margin-bottom:8px;overflow:hidden">` +
-    `<div style="height:100%;width:${pct}%;background:${barC};border-radius:2px"></div></div>`;
+    `<div style="height:3px;background:var(--bg3);border-radius:2px;margin-bottom:4px;overflow:hidden">` +
+    `<div style="height:100%;width:${pct}%;background:${barC};border-radius:2px"></div></div>` +
+    `<div style="font-size:7px;color:var(--muted);margin-bottom:8px">` +
+    `⚡ FOVOLT: <span style="color:` + (volDone > 0 ? 'var(--tl)' : 'var(--muted)') + `">${volDone} day${volDone !== 1 ? 's' : ''} with NSE ATR</span>` +
+    ` &nbsp;·&nbsp; Bhav-only days use Vol Proxy fallback</div>`;
 
   Object.keys(byMonth).sort().slice(-4).forEach(mk => {
     const [yr, mo] = mk.split('-');
@@ -458,17 +471,28 @@ async function renderBhavCalendar() {
       `<div style="display:flex;flex-wrap:wrap;gap:2px">`;
 
     days.forEach(dk => {
-      const d    = _dkToDate(dk);
-      const isUp = uploaded.has(dk), isTd = _dk(today) === dk;
-      const bg   = isUp ? 'rgba(0,200,100,0.13)'  : isTd ? 'rgba(255,165,0,0.13)'  : 'rgba(200,33,62,0.08)';
-      const bc   = isUp ? 'rgba(0,200,100,0.3)'   : isTd ? 'rgba(255,165,0,0.45)'  : 'rgba(200,33,62,0.22)';
-      const col  = isUp ? 'var(--gn)' : isTd ? 'var(--am)' : 'var(--rd)';
-      const ic   = isUp ? '✓' : isTd ? '·' : '✗';
+      const d      = _dkToDate(dk);
+      const isTd   = _dk(today) === dk;
+      const hasBhav = uploaded.has(dk);
+      const hasVol  = volDates.has(dk);
+
+      // 4 states: both (teal), bhav-only (green), today (amber), missing (red)
+      let bg, bc, col, ic, titleSuffix;
+      if (isTd && !hasBhav) {
+        bg = 'rgba(255,165,0,0.13)'; bc = 'rgba(255,165,0,0.45)'; col = 'var(--am)'; ic = '·'; titleSuffix = 'Today';
+      } else if (hasBhav && hasVol) {
+        bg = 'rgba(0,110,150,0.10)'; bc = 'rgba(0,110,150,0.35)'; col = 'var(--tl)'; ic = '⚡'; titleSuffix = '✅ Bhav + FOVOLT';
+      } else if (hasBhav) {
+        bg = 'rgba(0,200,100,0.10)'; bc = 'rgba(0,200,100,0.28)'; col = 'var(--gn)'; ic = '✓'; titleSuffix = '✅ Bhav · ⚠️ FOVOLT missing';
+      } else {
+        bg = 'rgba(200,33,62,0.08)'; bc = 'rgba(200,33,62,0.22)'; col = 'var(--rd)'; ic = '✗'; titleSuffix = '❌ Missing — tap to upload';
+      }
+
       html +=
         `<div style="background:${bg};border:1px solid ${bc};border-radius:3px;` +
-        `padding:2px 4px;text-align:center;min-width:26px;cursor:${isUp ? 'default' : 'pointer'}" ` +
-        `title="${DAY[d.getDay()]} ${d.getDate()}-${MONTH[+mo-1]} ${isUp ? '✅ Uploaded' : '❌ Missing — tap to upload'}" ` +
-        `onclick="${isUp ? '' : 'triggerBhavUpload()'}">` +
+        `padding:2px 4px;text-align:center;min-width:26px;cursor:${hasBhav ? 'default' : 'pointer'}" ` +
+        `title="${DAY[d.getDay()]} ${d.getDate()}-${MONTH[+mo-1]} · ${titleSuffix}" ` +
+        `onclick="${hasBhav ? '' : 'triggerBhavUpload()'}">` +
         `<div style="font-size:5.5px;color:${col}">${DAY[d.getDay()]}</div>` +
         `<div style="font-family:var(--font-mono);font-size:7.5px;font-weight:700;color:${col}">${d.getDate()}</div>` +
         `<div style="font-size:5.5px;color:${col}">${ic}</div></div>`;
@@ -477,9 +501,10 @@ async function renderBhavCalendar() {
   });
 
   html +=
-    `<div style="display:flex;gap:10px;margin-top:4px;font-size:7px;color:var(--muted)">` +
-    `<span><span style="color:var(--gn)">✓</span> Uploaded</span>` +
-    `<span><span style="color:var(--rd)">✗</span> Missing (tap)</span>` +
+    `<div style="display:flex;gap:10px;margin-top:4px;font-size:7px;color:var(--muted);flex-wrap:wrap">` +
+    `<span><span style="color:var(--tl)">⚡</span> Bhav + FOVOLT</span>` +
+    `<span><span style="color:var(--gn)">✓</span> Bhav only</span>` +
+    `<span><span style="color:var(--rd)">✗</span> Missing</span>` +
     `<span><span style="color:var(--am)">·</span> Today</span></div></div>`;
 
   el.innerHTML = html;
@@ -491,20 +516,67 @@ function triggerBhavUpload() {
 }
 
 // ── CSV parse + save ───────────────────────────────────────────
+// ── FOVOLT parser — NSE Daily Volatility file ─────────────────
+// File: FOVOLT_DDMMYYYY.csv  (NSE → F&O → Daily Volatility)
+// Extracts NIFTY applicable daily vol (col M) → stored as nse_dv in day JSON
+// ATR = spot × nse_dv × 1.5  (NSE EWMA λ=0.995, same as SPAN margin)
+async function parseFovoltCSV(text, fname) {
+  // Extract date from filename: FOVOLT_DDMMYYYY.csv
+  const match = fname.match(/FOVOLT_(\d{2})(\d{2})(\d{4})\.csv/i);
+  if (!match) { console.warn('FOVOLT: unexpected filename format:', fname); return 0; }
+  const dk = match[3] + match[2] + match[1];  // YYYYMMDD
+
+  const lines = text.split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(v => v.trim());
+    if (cols.length < 15 || cols[1]?.trim() !== 'NIFTY') continue;
+
+    // Col M (index 14) = Applicable Daily Volatility = max(underlying vol, futures vol)
+    const appl_dv = parseFloat(cols[14]);
+    if (isNaN(appl_dv) || appl_dv <= 0 || appl_dv > 0.1) continue; // sanity: 0–10% daily
+
+    // Merge nse_dv into existing day JSON (bhav may already be uploaded)
+    let dayData = null;
+    try { dayData = JSON.parse(localStorage.getItem(BHAV_PFX + dk) || 'null'); } catch(e) {}
+    if (!dayData) dayData = { uploaded_at: Date.now() };  // stub if no bhav yet
+    dayData.nse_dv = appl_dv;
+
+    const log = document.getElementById('bhav-log');
+    if (log) {
+      const atrPts = dayData.spot ? Math.round(dayData.spot * appl_dv * 1.5) : '—';
+      log.textContent = 'FOVOLT ' + dk + ': daily vol=' + (appl_dv*100).toFixed(4) + '% → ATR≈' + atrPts + ' pts';
+    }
+    await bhavSave(dk, dayData);
+    return 1;
+  }
+  console.warn('FOVOLT: NIFTY row not found in', fname);
+  return 0;
+}
 function loadBhavFiles(evt) {
   const files = Array.from(evt.target.files); if (!files.length) return;
   const log = document.getElementById('bhav-log');
   if (log) log.textContent = 'Reading ' + files.length + ' file(s)...';
-  let done = 0, totalRec = 0;
+  let done = 0, bhavRec = 0, volDays = 0;
   files.forEach(file => {
     const r = new FileReader();
     r.onload = async e => {
-      const rec = await parseBhavCSV(e.target.result, file.name);
-      totalRec += rec; done++;
+      // Route by filename: FOVOLT_*.csv → vol parser, everything else → bhav parser
+      if (/^FOVOLT_/i.test(file.name)) {
+        const n = await parseFovoltCSV(e.target.result, file.name);
+        volDays += n;
+      } else {
+        const rec = await parseBhavCSV(e.target.result, file.name);
+        bhavRec += rec;
+      }
+      done++;
       if (done === files.length) {
-        if (log) log.textContent = '✅ ' + totalRec.toLocaleString() + ' records stored';
+        const parts = [];
+        if (bhavRec) parts.push(bhavRec.toLocaleString() + ' bhav records');
+        if (volDays) parts.push(volDays + ' vol day' + (volDays > 1 ? 's' : ''));
+        const msg = parts.length ? '✅ ' + parts.join(' + ') + ' stored' : '⚠️ No data recognised';
+        if (log) log.textContent = msg;
         updateBhavStatus(); renderBhavCalendar(); checkBhavGaps(); buildCommand();
-        showToast('Bhav updated — ' + totalRec.toLocaleString() + ' records');
+        if (bhavRec || volDays) showToast(parts.join(' + ') + ' saved');
       }
     };
     r.onerror = () => { if (log) log.textContent = '❌ Failed: ' + file.name; };
@@ -633,6 +705,11 @@ async function parseBhavCSV(text, fname) {
     });
     delete data.pe_oi; delete data.ce_oi;
     delete data.oi_max_pe; delete data.oi_max_ce;
+    // Preserve nse_dv if FOVOLT was uploaded before bhav for this day
+    try {
+      const prev = JSON.parse(localStorage.getItem(BHAV_PFX + dk) || 'null');
+      if (prev?.nse_dv) data.nse_dv = prev.nse_dv;
+    } catch(e) {}
     if (log) log.textContent = 'Saving ' + dk + ' → data/' + dk + '.json...';
     await bhavSave(dk, data);
   }
@@ -661,6 +738,20 @@ function bhavIC(callSell, callBuy, putSell, putBuy, expiryDate) {
 
 function bhavATR() {
   const dates = JSON.parse(localStorage.getItem(BHAV_IDX) || '[]');
+  if (!dates.length) return null;
+
+  // ── Prefer NSE EWMA ATR from FOVOLT (most accurate — same as SPAN margin)
+  // Uses latest day that has both spot and nse_dv
+  for (let i = dates.length - 1; i >= Math.max(0, dates.length - 5); i--) {
+    try {
+      const d = JSON.parse(localStorage.getItem(BHAV_PFX + dates[i]) || 'null');
+      if (d?.nse_dv && d?.spot) {
+        return Math.round(d.spot * d.nse_dv * 1.5);
+      }
+    } catch(e) {}
+  }
+
+  // ── Fallback: rolling 14-day stddev × 1.5 (used before FOVOLT available)
   if (dates.length < 5) return null;
   const spots = dates.slice(-14)
     .map(dk => { try { const d = JSON.parse(localStorage.getItem(BHAV_PFX + dk) || 'null'); return d ? d.spot : null; } catch(e) { return null; } })
@@ -668,6 +759,18 @@ function bhavATR() {
   if (spots.length < 5) return null;
   const mean = spots.reduce((a, b) => a + b, 0) / spots.length;
   return Math.round(Math.sqrt(spots.reduce((a, b) => a + (b - mean) ** 2, 0) / spots.length) * 1.5);
+}
+
+// Returns true if latest ATR is from NSE EWMA (FOVOLT), false if fallback stddev
+function bhavATRIsNSE() {
+  const dates = JSON.parse(localStorage.getItem(BHAV_IDX) || '[]');
+  for (let i = dates.length - 1; i >= Math.max(0, dates.length - 5); i--) {
+    try {
+      const d = JSON.parse(localStorage.getItem(BHAV_PFX + dates[i]) || 'null');
+      if (d?.nse_dv && d?.spot) return true;
+    } catch(e) {}
+  }
+  return false;
 }
 
 function bhavPCR(expiryDate) {
@@ -935,8 +1038,11 @@ async function updateBhavStatus() {
     return;
   }
   const atr = bhavATR(), label = bhavLatestLabel(), d = _bhavLatestData();
-  const opts = d ? Object.keys(d.opts).length : 0;
+  const opts = d ? Object.keys(d.opts || {}).length : 0;
   const cfg  = getGHConfig();
+  const isNSE = bhavATRIsNSE();
+  const atrLabel = isNSE ? 'NSE ATR ⚡' : 'Vol Proxy';
+  const atrCol   = isNSE ? 'var(--tl)' : 'var(--am)';
   el.innerHTML =
     `<div style="background:var(--bg2);border:1px solid rgba(0,200,100,0.2);border-radius:6px;padding:8px 12px;margin:4px 0">` +
     `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:6px">` +
@@ -944,8 +1050,8 @@ async function updateBhavStatus() {
     `<div style="font-family:var(--font-mono);font-size:15px;font-weight:800;color:var(--tl)">${dates.length}</div></div>` +
     `<div style="text-align:center"><div style="font-size:6.5px;color:var(--muted);text-transform:uppercase">Latest</div>` +
     `<div style="font-size:8px;font-weight:700;color:var(--gn);margin-top:3px">${label}</div></div>` +
-    `<div style="text-align:center"><div style="font-size:6.5px;color:var(--muted);text-transform:uppercase">Vol Proxy</div>` +
-    `<div style="font-family:var(--font-mono);font-size:15px;font-weight:800;color:${atr ? 'var(--am)' : 'var(--muted)'}">` + (atr || '—') + `</div></div>` +
+    `<div style="text-align:center"><div style="font-size:6.5px;color:var(--muted);text-transform:uppercase">${atrLabel}</div>` +
+    `<div style="font-family:var(--font-mono);font-size:15px;font-weight:800;color:${atrCol}">` + (atr || '—') + `</div></div>` +
     `<div style="text-align:center"><div style="font-size:6.5px;color:var(--muted);text-transform:uppercase">Storage</div>` +
     `<div style="font-size:8px;font-weight:700;color:${cfg ? 'var(--gn)' : 'var(--am)'};margin-top:3px">${cfg ? '☁️ GitHub' : '💾 Local'}</div></div></div>` +
     `<div style="font-size:7.5px;color:var(--gn);text-align:center;padding-top:4px;border-top:1px solid var(--border)">` +
