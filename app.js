@@ -16,6 +16,7 @@
 
 // ── State ─────────────────────────────────────────────────────
 let SCORE = null, DIRECTION = '', STRAT_AUTO = '';
+let RECOMMENDED_INDEX = 'NF';  // set by renderRecCard, consumed by buildCommand
 let DRIFT = null; // bhav overnight shift signal — set in buildCommand()
 let RADAR_LOCKED = false, BREADTH_LOCKED = false, EVENING_LOCKED = false;
 let ANALYSIS_VIX = null;  // v2.2.0: VIX at time of last Analyse tap
@@ -620,6 +621,7 @@ function renderRecCard(score, dir, ev, vix, bnfAdj){
   const bnfScore=bnfBreadth+bnfAdj*100-(fii<0?5:0);
   const nfScore=nfBreadth;
   const idx=bnfScore>nfScore?'BANK NIFTY':'NIFTY 50';
+  RECOMMENDED_INDEX = idx==='BANK NIFTY' ? 'BNF' : 'NF';
   const idxCol=idx==='BANK NIFTY'?'var(--tl)':'var(--gn)';
   const strategy=STRAT_AUTO;
   const news=document.querySelector('input[name="news"]:checked')?.value||'none';
@@ -1166,6 +1168,12 @@ function buildCommand() {
   const expiries = getExpiries('NF');
   const bestExp  = pickBestExpiry(expiries);
 
+  // ── BS Engine: adaptive delta strikes + expected range ──────
+  const bsR     = (gv('yld') || 6.5) / 100;
+  const bsSpots = (typeof bsGetSpots === 'function') ? bsGetSpots(true) : [];
+  const bs = (typeof bsAnalyse === 'function' && price && vix && bestExp)
+    ? bsAnalyse(price, vix, bsR, bestExp.dte, bsSpots, true, score) : null;
+
   // ── Direction & strategy selection ─────────────────────────
   const dirCat  = directionCategory(effectiveScore);
   const isBull  = dirCat === 'STRONG_BULL' || dirCat === 'MILD_BULL';
@@ -1264,8 +1272,19 @@ function buildCommand() {
 
   // ── IC calculations (always — used for IC path + alternatives) ─
   const width    = 200;
-  const callBest = bestStrike(price, atr, bestExp?.dte||14, vix, true,  oiCall, pcr, true);
-  const putBest  = bestStrike(price, atr, bestExp?.dte||14, vix, false, oiPut,  pcr, true);
+  // Strike selection: BS adaptive delta+BB → OI wall override → ATR fallback
+  const _bsCallBase = bs?.combinedStrikes?.call || null;
+  const _bsPutBase  = bs?.combinedStrikes?.put  || null;
+  const callBest = _bsCallBase
+    ? (oiCall && r50(oiCall) > _bsCallBase
+        ? {strike:r50(oiCall), reason:`OI wall ${f(r50(oiCall))}`, isOI:true}
+        : {strike:_bsCallBase, reason:`BS Δ${(bs.strikes?.call?.delta_actual||bs.targetDelta?.call||0.15).toFixed(2)}+BB`, isOI:false})
+    : bestStrike(price, atr, bestExp?.dte||14, vix, true,  oiCall, pcr, true);
+  const putBest = _bsPutBase
+    ? (oiPut && r50(oiPut) < _bsPutBase
+        ? {strike:r50(oiPut), reason:`OI wall ${f(r50(oiPut))}`, isOI:true}
+        : {strike:_bsPutBase, reason:`BS Δ${(bs.strikes?.put?.delta_actual||bs.targetDelta?.put||0.15).toFixed(2)}+BB`, isOI:false})
+    : bestStrike(price, atr, bestExp?.dte||14, vix, false, oiPut,  pcr, true);
   const callBuy  = r50(callBest.strike + width);
   const putBuy   = r50(putBest.strike  - width);
   const callDist = (callBest.strike - price) / atr;
@@ -2035,6 +2054,51 @@ function buildCommand() {
   </div>` : '';
 
   out.innerHTML = vixCompHtml + `
+
+  <!-- Verdict Alignment Banner — shows when Verdict recommends BNF but Strategy is NF -->
+  ${RECOMMENDED_INDEX === 'BNF' ? `
+  <div style="background:rgba(0,110,150,0.08);border:1px solid rgba(0,110,150,0.30);border-radius:8px;margin:10px 14px 0;padding:10px 14px;display:flex;align-items:center;gap:10px">
+    <div style="font-size:20px;flex-shrink:0">🏦</div>
+    <div>
+      <div style="font-size:10px;font-weight:800;color:var(--tl);letter-spacing:0.5px">VERDICT RECOMMENDS BANK NIFTY</div>
+      <div style="font-size:8.5px;color:var(--muted);margin-top:2px">Nifty 50 shown here · Scroll to Bank Nifty section below for BNF strategy</div>
+    </div>
+  </div>` : ''}
+
+  <!-- BS Expected Range Strip — always shown when BS available -->
+  ${bs?.expectedMove ? `
+  <div style="background:rgba(0,110,150,0.05);border:1px solid rgba(0,110,150,0.18);border-radius:8px;margin:10px 14px 0;padding:10px 12px">
+    <div style="font-size:7px;letter-spacing:1.5px;color:var(--tl);font-weight:700;margin-bottom:6px">⚡ BS EXPECTED RANGE · ${bs.dte} DTE · VIX ${bs.vix}</div>
+    <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:4px;align-items:center;margin-bottom:6px">
+      <div style="background:rgba(0,127,95,0.08);border:1px solid rgba(0,127,95,0.25);border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:7px;color:var(--gn);letter-spacing:0.5px;margin-bottom:1px">1σ LOWER · 68%</div>
+        <div style="font-family:var(--font-mono);font-size:14px;font-weight:800;color:var(--gn)">${bs.expectedMove.one_sigma.lower.toLocaleString('en-IN')}</div>
+      </div>
+      <div style="text-align:center;padding:0 4px">
+        <div style="font-size:7px;color:var(--muted)">MOVE</div>
+        <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:var(--am)">±${bs.expectedMove.move_pts}</div>
+        <div style="font-size:7px;color:var(--muted)">${bs.expectedMove.move_pct}%</div>
+      </div>
+      <div style="background:rgba(200,33,62,0.06);border:1px solid rgba(200,33,62,0.20);border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:7px;color:var(--rd);letter-spacing:0.5px;margin-bottom:1px">1σ UPPER · 68%</div>
+        <div style="font-family:var(--font-mono);font-size:14px;font-weight:800;color:var(--rd)">${bs.expectedMove.one_sigma.upper.toLocaleString('en-IN')}</div>
+      </div>
+    </div>
+    <div style="font-size:8px;color:var(--muted);margin-bottom:4px">2σ danger zone: ${bs.expectedMove.two_sigma.lower.toLocaleString('en-IN')} – ${bs.expectedMove.two_sigma.upper.toLocaleString('en-IN')}</div>
+    ${bs.skew?.callIV && bs.skew?.putIV ? `
+    <div style="display:flex;gap:8px;font-size:8px;color:var(--muted);margin-bottom:4px">
+      <span>Call IV: <strong style="color:var(--rd);font-family:var(--font-mono)">${bs.skew.callIV}%</strong></span>
+      <span>Put IV: <strong style="color:var(--gn);font-family:var(--font-mono)">${bs.skew.putIV}%</strong></span>
+      <span style="color:var(--am)">Put premium: +${bs.skew.skewSpread} VIX pts</span>
+    </div>` : ''}
+    ${bs.combinedStrikes?.callSafe !== null ? `
+    <div style="display:flex;gap:10px;font-size:8px">
+      <span style="color:${bs.combinedStrikes.callSafe ? 'var(--gn)' : 'var(--am)'}">Call ${bs.combinedStrikes.callSafe ? '✅ beyond 1σ' : '⚠️ inside 1σ'}</span>
+      <span style="color:${bs.combinedStrikes.putSafe  ? 'var(--gn)' : 'var(--am)'}">Put ${bs.combinedStrikes.putSafe ? '✅ beyond 1σ' : '⚠️ inside 1σ'}</span>
+      ${bs.probProfit ? `<span style="color:var(--muted);margin-left:auto">P(profit): ${bs.probProfit}%</span>` : ''}
+      <span style="color:var(--muted)">Confidence: <strong style="color:${bs.confidence==='HIGH'?'var(--gn)':bs.confidence==='MEDIUM'?'var(--am)':'var(--rd)'}">${bs.confidence}</strong></span>
+    </div>` : ''}
+  </div>` : ''}
 
   <!-- GO/NO-GO Banner -->
   <div class="go-banner ${goState}">
