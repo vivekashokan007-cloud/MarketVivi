@@ -26,6 +26,7 @@
     </div>
   </div>
   <div class="hright">
+    <div id="db-sync-badge" style="font-size:8px;color:var(--muted);font-family:var(--font-mono)"></div>
     <div class="mkt-dot" id="mkt-dot"></div>
     <div class="ver" id="mkt-label">—</div>
   </div>
@@ -38,6 +39,7 @@
   <div class="tab"    id="t3" onclick="go(3)">📋 STRATEGY</div>
   <div class="tab"    id="t4" onclick="go(4)">🌙 SMARTS</div>
   <div class="tab"    id="t5" onclick="go(5)">📒 TRADES</div>
+  <div class="tab"    id="t6" onclick="go(6)">📂 DATA</div>
 </nav>
 
 <div class="panels">
@@ -668,58 +670,6 @@
       <button class="btn btn-lock" id="btn-lock-bottom" onclick="saveEvening()">🔒 LOCK EVENING DATA</button>
     </div>
 
-    <!-- ══ BHAV COPY ENGINE ═══════════════════════════════════ -->
-    <div class="sec tl" style="margin-top:4px">📊 Bhav Copy — Option Data Engine</div>
-
-    <!-- GitHub config notice -->
-    <div id="fb-config-notice" style="display:none;background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.3);border-radius:6px;padding:10px 12px;margin:6px 0;font-size:8.5px;line-height:1.8">
-      ⚙️ <strong>One-time setup</strong> — create <code>login.json</code> in your repo. App fetches credentials from it automatically. You never type your token again.
-      <div style="background:var(--bg3);border-radius:5px;padding:8px 10px;margin:6px 0;font-size:7.5px;color:var(--muted);line-height:1.8">
-        <strong style="color:var(--text)">Create login.json in your repo root:</strong><br>
-        <span style="color:var(--tl);font-family:var(--font-mono)">{<br>
-        &nbsp;&nbsp;"owner": "your-username",<br>
-        &nbsp;&nbsp;"repo":&nbsp;&nbsp;"market-radar",<br>
-        &nbsp;&nbsp;"token": "github_pat_..."<br>
-        }</span><br><br>
-        Token: github.com → Settings → Developer settings → Fine-grained tokens<br>
-        → Select your repo → Contents: <strong>Read &amp; Write</strong>
-      </div>
-      <button class="btn" style="font-size:8px;padding:5px 10px;margin-bottom:6px" onclick="document.getElementById('fb-config-panel').style.display='block';this.style.display='none'">🔧 I have login.json — connect now</button>
-      <div id="fb-config-panel" style="display:none">
-        <div style="font-size:7.5px;color:var(--muted);margin-bottom:5px">Enter username + repo name — app fetches your token from login.json:</div>
-        <div style="display:grid;gap:5px;margin-bottom:8px">
-          <input id="gh-owner" class="inp" placeholder="GitHub username (e.g. prasanth123)" style="font-size:9px;padding:6px 8px">
-          <input id="gh-repo"  class="inp" placeholder="Repo name (e.g. market-radar)" style="font-size:9px;padding:6px 8px">
-        </div>
-        <button class="btn" style="font-size:8px;padding:6px 12px;background:rgba(0,200,100,0.1);border-color:rgba(0,200,100,0.3);color:var(--gn);width:100%" onclick="saveGHConfig()">✅ Load login.json &amp; Connect</button>
-      </div>
-    </div>
-
-    <!-- Cloud sync status -->
-    <div id="fb-sync-status" style="font-size:8px;color:var(--muted);padding:4px 0 6px;display:none"></div>
-
-    <!-- Gap alert -->
-    <div id="bhav-gap-alert" style="display:none;background:rgba(200,33,62,0.08);border:1px solid rgba(200,33,62,0.3);border-radius:6px;padding:8px 12px;margin:4px 0;font-size:8.5px;color:var(--rd)"></div>
-
-    <!-- Calendar view -->
-    <div id="bhav-calendar" style="margin:8px 0"></div>
-
-    <!-- Upload controls -->
-    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap;align-items:center">
-      <label style="flex:1;min-width:120px">
-        <div class="btn" style="cursor:pointer;text-align:center;font-size:9px;padding:8px 10px">
-          📂 Upload Bhav + FOVOLT
-        </div>
-        <input type="file" id="bhav-file-input" multiple accept=".csv" onchange="loadBhavFiles(event)" style="display:none">
-      </label>
-      <button class="btn" style="font-size:9px;padding:8px 10px" onclick="syncFromCloud()">☁️ Sync Cloud</button>
-      <button class="btn" style="font-size:9px;padding:8px 10px;background:rgba(200,33,62,0.08);border-color:rgba(200,33,62,0.2);color:var(--rd)" onclick="if(confirm('Clear ALL bhav data? This cannot be undone.'))clearBhavData()">🗑</button>
-    </div>
-    <div id="bhav-log" style="font-size:8px;color:var(--muted);min-height:16px;margin-bottom:4px"></div>
-
-    <!-- Stats summary -->
-    <div id="bhav-status"></div>
-
   </div><!-- /evening-content -->
 </div><!-- /p4 -->
 
@@ -800,6 +750,61 @@
   </div>
 
 </div><!-- /p5 -->
+
+<!-- ═══════════════ PANEL 6: DATA (always unlocked) ═══════════ -->
+<div class="panel" id="p6">
+
+  <div class="sec tl" style="margin-top:4px">☁️ Supabase + GitHub Sync</div>
+  <div id="fb-sync-status" style="font-size:8px;color:var(--muted);padding:6px 14px;display:none"></div>
+
+  <!-- GitHub config notice -->
+  <div id="fb-config-notice" style="display:none;background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.3);border-radius:6px;padding:10px 12px;margin:6px 14px;font-size:8.5px;line-height:1.8">
+    ⚙️ <strong>One-time setup</strong> — create <code>login.json</code> in your repo root with GitHub credentials. App fetches it automatically on every load.
+    <div style="background:var(--bg3);border-radius:5px;padding:8px 10px;margin:6px 0;font-size:7.5px;color:var(--muted);line-height:1.8">
+      <span style="color:var(--tl);font-family:var(--font-mono)">{<br>
+      &nbsp;&nbsp;"owner": "vivekashokan007-cloud",<br>
+      &nbsp;&nbsp;"repo":&nbsp;&nbsp;"MarketVivi",<br>
+      &nbsp;&nbsp;"token": "github_pat_..."<br>
+      }</span><br><br>
+      Token: github.com → Settings → Developer settings → Fine-grained tokens → Contents: <strong>Read &amp; Write</strong>
+    </div>
+    <button class="btn" style="font-size:8px;padding:5px 10px;margin-bottom:6px" onclick="document.getElementById('fb-config-panel').style.display='block';this.style.display='none'">🔧 Connect now</button>
+    <div id="fb-config-panel" style="display:none">
+      <div style="display:grid;gap:5px;margin-bottom:8px">
+        <input id="gh-owner" class="inp" placeholder="GitHub username" style="font-size:9px;padding:6px 8px">
+        <input id="gh-repo"  class="inp" placeholder="Repo name"       style="font-size:9px;padding:6px 8px">
+      </div>
+      <button class="btn" style="font-size:8px;padding:6px 12px;background:rgba(0,200,100,0.1);border-color:rgba(0,200,100,0.3);color:var(--gn);width:100%" onclick="saveGHConfig()">✅ Load login.json &amp; Connect</button>
+    </div>
+  </div>
+
+  <!-- Bhav upload section -->
+  <div class="sec gn" style="margin-top:8px">📊 Bhav Copy Upload</div>
+  <div class="info-box">Upload NSE udiff bhavcopy CSV + FOVOLT volatility files. Select all files at once — any date range, any order. App processes them sequentially and writes to both GitHub and Supabase. <strong>Always unlocked</strong> — upload any time.</div>
+
+  <!-- Gap alert -->
+  <div id="bhav-gap-alert" style="display:none;background:rgba(200,33,62,0.08);border:1px solid rgba(200,33,62,0.3);border-radius:6px;padding:8px 12px;margin:4px 14px;font-size:8.5px;color:var(--rd)"></div>
+
+  <!-- Upload controls -->
+  <div style="display:flex;gap:8px;margin:8px 14px;flex-wrap:wrap;align-items:center">
+    <label style="flex:1;min-width:140px">
+      <div class="btn btn-primary" style="cursor:pointer;text-align:center;font-size:10px;padding:10px 12px">
+        📂 Upload Bhav + FOVOLT Files
+      </div>
+      <input type="file" id="bhav-file-input" multiple accept=".csv" onchange="loadBhavFiles(event)" style="display:none">
+    </label>
+    <button class="btn" style="font-size:9px;padding:8px 10px" onclick="syncFromCloud()">☁️ GitHub Sync</button>
+    <button class="btn" style="font-size:9px;padding:8px 10px;background:rgba(200,33,62,0.08);border-color:rgba(200,33,62,0.2);color:var(--rd)" onclick="if(confirm('Clear ALL local bhav cache? GitHub data is safe.'))clearBhavData()">🗑 Clear Cache</button>
+  </div>
+
+  <div id="bhav-log" style="font-size:8px;color:var(--muted);min-height:16px;margin:0 14px 4px"></div>
+  <div id="bhav-status" style="padding:0 0 8px"></div>
+
+  <!-- Calendar view -->
+  <div class="sec am">Upload Calendar</div>
+  <div id="bhav-calendar" style="margin:8px 0"></div>
+
+</div><!-- /p6 -->
 
 </div><!-- /panels -->
 </div><!-- /app -->

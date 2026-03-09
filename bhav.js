@@ -547,42 +547,124 @@ async function parseFovoltCSV(text, fname) {
       log.textContent = 'FOVOLT ' + dk + ': daily vol=' + (appl_dv*100).toFixed(4) + '% → ATR≈' + atrPts + ' pts';
     }
     await bhavSave(dk, dayData);
+
+    // ── v3.0: update Supabase rows for this day with ann_vol ──
+    if (typeof getDB === 'function' && dayData.spot) {
+      const tradeDate = dk.slice(0,4)+'-'+dk.slice(4,6)+'-'+dk.slice(6,8);
+      const annVol = +(appl_dv * Math.sqrt(252) * 100).toFixed(4);
+      const db = getDB();
+      if (db) {
+        db.from('bhav_options')
+          .update({ ann_vol: annVol })
+          .eq('trade_date', tradeDate)
+          .then(({ error }) => { if (error) console.warn('FOVOLT supabase update:', error.message); });
+      }
+    }
     return 1;
   }
   console.warn('FOVOLT: NIFTY row not found in', fname);
   return 0;
 }
+// ── v3.0: Bulk upload — sequential with progress bar ──────────
+// Handles any mix of udiff bhav + FOVOLT files in any order.
+// Processes one file at a time → progress bar → Supabase write per day.
 function loadBhavFiles(evt) {
-  const files = Array.from(evt.target.files); if (!files.length) return;
-  const log = document.getElementById('bhav-log');
-  if (log) log.textContent = 'Reading ' + files.length + ' file(s)...';
-  let done = 0, bhavRec = 0, volDays = 0;
-  files.forEach(file => {
+  const files = Array.from(evt.target.files);
+  if (!files.length) return;
+  evt.target.value = '';
+
+  // Sort: bhav files first (by date from filename), then FOVOLT
+  // This ensures bhav data exists before FOVOLT enriches it
+  const bhavFiles  = files.filter(f => !/^FOVOLT_/i.test(f.name))
+                          .sort((a, b) => a.name.localeCompare(b.name));
+  const fovFiles   = files.filter(f => /^FOVOLT_/i.test(f.name))
+                          .sort((a, b) => a.name.localeCompare(b.name));
+  const ordered    = [...bhavFiles, ...fovFiles];
+  const total      = ordered.length;
+
+  // Show progress bar
+  _bhavProgressShow(total);
+
+  let done = 0, bhavRec = 0, volDays = 0, dbRows = 0;
+
+  // Read file as text (Promise wrapper)
+  const readFile = f => new Promise((res, rej) => {
     const r = new FileReader();
-    r.onload = async e => {
-      // Route by filename: FOVOLT_*.csv → vol parser, everything else → bhav parser
-      if (/^FOVOLT_/i.test(file.name)) {
-        const n = await parseFovoltCSV(e.target.result, file.name);
-        volDays += n;
-      } else {
-        const rec = await parseBhavCSV(e.target.result, file.name);
-        bhavRec += rec;
+    r.onload  = e => res(e.target.result);
+    r.onerror = () => rej(new Error('Read failed: ' + f.name));
+    r.readAsText(f);
+  });
+
+  // Process sequentially
+  (async () => {
+    for (const file of ordered) {
+      try {
+        _bhavProgressUpdate(done, total, file.name);
+        const text = await readFile(file);
+        if (/^FOVOLT_/i.test(file.name)) {
+          const n = await parseFovoltCSV(text, file.name);
+          volDays += n;
+        } else {
+          const result = await parseBhavCSV(text, file.name);
+          bhavRec += result.count || 0;
+          dbRows  += result.dbRows || 0;
+        }
+      } catch(e) {
+        console.warn('loadBhavFiles error:', file.name, e.message);
       }
       done++;
-      if (done === files.length) {
-        const parts = [];
-        if (bhavRec) parts.push(bhavRec.toLocaleString() + ' bhav records');
-        if (volDays) parts.push(volDays + ' vol day' + (volDays > 1 ? 's' : ''));
-        const msg = parts.length ? '✅ ' + parts.join(' + ') + ' stored' : '⚠️ No data recognised';
-        if (log) log.textContent = msg;
-        updateBhavStatus(); renderBhavCalendar(); checkBhavGaps(); buildCommand();
-        if (bhavRec || volDays) showToast(parts.join(' + ') + ' saved');
-      }
-    };
-    r.onerror = () => { if (log) log.textContent = '❌ Failed: ' + file.name; };
-    r.readAsText(file);
-  });
-  evt.target.value = '';
+      _bhavProgressUpdate(done, total, done < total ? ordered[done]?.name : null);
+    }
+
+    // Done
+    const parts = [];
+    if (bhavRec) parts.push(bhavRec.toLocaleString() + ' bhav records');
+    if (volDays) parts.push(volDays + ' vol day' + (volDays > 1 ? 's' : ''));
+    if (dbRows)  parts.push(dbRows.toLocaleString() + ' rows → Supabase');
+    const msg = parts.length ? '✅ ' + parts.join(' + ') : '⚠️ No data recognised';
+    _bhavProgressDone(msg);
+    updateBhavStatus(); renderBhavCalendar(); checkBhavGaps(); buildCommand();
+    if (parts.length) showToast(msg);
+  })();
+}
+
+// Progress bar helpers
+function _bhavProgressShow(total) {
+  let el = document.getElementById('bhav-progress-wrap');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'bhav-progress-wrap';
+    el.style.cssText = 'margin:6px 0;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px 12px';
+    const logEl = document.getElementById('bhav-log');
+    if (logEl) logEl.parentNode.insertBefore(el, logEl);
+  }
+  el.style.display = 'block';
+  el.innerHTML =
+    `<div style="font-size:9px;font-weight:700;color:var(--tl);margin-bottom:5px" id="bhav-prog-label">⏳ Processing 0 / ${total} files...</div>` +
+    `<div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden">` +
+    `<div id="bhav-prog-bar" style="height:100%;width:0%;background:var(--tl);border-radius:3px;transition:width 0.3s"></div></div>` +
+    `<div style="font-size:7.5px;color:var(--muted);margin-top:4px;font-family:var(--font-mono)" id="bhav-prog-file"></div>`;
+}
+
+function _bhavProgressUpdate(done, total, currentFile) {
+  const lbl = document.getElementById('bhav-prog-label');
+  const bar = document.getElementById('bhav-prog-bar');
+  const fil = document.getElementById('bhav-prog-file');
+  const pct = Math.round(done / total * 100);
+  if (lbl) lbl.textContent = `⏳ Processing ${done} / ${total} files... (${pct}%)`;
+  if (bar) bar.style.width = pct + '%';
+  if (fil && currentFile) fil.textContent = currentFile;
+}
+
+function _bhavProgressDone(msg) {
+  const lbl = document.getElementById('bhav-prog-label');
+  const bar = document.getElementById('bhav-prog-bar');
+  const fil = document.getElementById('bhav-prog-file');
+  if (lbl) { lbl.textContent = msg; lbl.style.color = 'var(--gn)'; }
+  if (bar) { bar.style.width = '100%'; bar.style.background = 'var(--gn)'; }
+  if (fil) fil.textContent = '';
+  const log = document.getElementById('bhav-log');
+  if (log) log.textContent = msg;
 }
 
 async function parseBhavCSV(text, fname) {
@@ -687,6 +769,7 @@ async function parseBhavCSV(text, fname) {
   }
 
   const log = document.getElementById('bhav-log');
+  let dbRows = 0;
   for (const [dk, data] of Object.entries(byDate)) {
     // Compute PCR per expiry
     data.pcr = {};
@@ -695,7 +778,7 @@ async function parseBhavCSV(text, fname) {
       const pe = data.pe_oi[ek] || 0, ce = data.ce_oi[ek] || 0;
       if (ce > 0) data.pcr[ek] = +(pe / ce).toFixed(3);
     });
-    // Compute OI walls per expiry: { [ek]: { ce: strike, pe: strike } }
+    // Compute OI walls per expiry
     data.oi_walls = {};
     eks.forEach(ek => {
       data.oi_walls[ek] = {
@@ -710,13 +793,39 @@ async function parseBhavCSV(text, fname) {
       const prev = JSON.parse(localStorage.getItem(BHAV_PFX + dk) || 'null');
       if (prev?.nse_dv) data.nse_dv = prev.nse_dv;
     } catch(e) {}
-    if (log) log.textContent = 'Saving ' + dk + ' → data/' + dk + '.json...';
+    if (log) log.textContent = 'Saving ' + dk + '...';
     await bhavSave(dk, data);
+
+    // ── v3.0: also write individual option rows to Supabase ───
+    if (typeof dbSaveBhav === 'function' && data.opts) {
+      const tradeDate = dk.slice(0,4)+'-'+dk.slice(4,6)+'-'+dk.slice(6,8);
+      const spot = data.spot;
+      const annVol = data.nse_dv ? +(data.nse_dv * Math.sqrt(252) * 100).toFixed(4) : null;
+      const rows = [];
+      for (const [key, price] of Object.entries(data.opts)) {
+        // key format: TYPE_STRIKE_EXPIRYDK (e.g. CE_24000_20260310)
+        const parts = key.split('_');
+        if (parts.length < 3) continue;
+        const optType    = parts[0];   // CE or PE
+        const strike     = parseInt(parts[1]);
+        const expiryDK   = parts[2];   // YYYYMMDD
+        const expiryDate = expiryDK.slice(0,4)+'-'+expiryDK.slice(4,6)+'-'+expiryDK.slice(6,8);
+        // DTE = calendar days from trade date to expiry
+        const tD = new Date(tradeDate), eD = new Date(expiryDate);
+        const dte = Math.round((eD - tD) / 86400000);
+        if (dte < 0 || dte > 90) continue; // skip invalid
+        const otm_pct = spot ? +((strike - spot) / spot).toFixed(5) : null;
+        rows.push({ trade_date: tradeDate, option_type: optType, strike, expiry_date: expiryDate,
+                    close_price: price, spot, dte, otm_pct, ann_vol: annVol });
+      }
+      if (rows.length) {
+        dbSaveBhav(rows).then(r => { if (r.ok) dbRows += r.inserted || 0; });
+      }
+    }
   }
-  // After upload: refresh UI, auto-fill Strategy tab, update gap banner
   updateBhavStatus(); renderBhavCalendar(); checkBhavGaps();
   bhavGapBanner(); bhavAutoFill();
-  return count;
+  return { count, dbRows };
 }
 
 // ── Lookup helpers — used by app.js buildCommand ───────────────

@@ -2431,6 +2431,7 @@ function go(n){
   if(n===3) updateEntrySignal();
   if(n===4) checkLocks();
   if(n===5){ dbShowStatus(); loadTradeHistory(); }
+  if(n===6){ updateBhavStatus(); renderBhavCalendar(); checkBhavGaps(); }
 }
 
 function switchStrat(n){
@@ -2455,17 +2456,25 @@ function saveRadar(){
     document.getElementById('btn-edit-radar').style.display='inline-flex';
     document.getElementById('radar-status').textContent='Saved ✅';
     toast('💾 Radar saved & locked');
-    // ── v3.0: also persist to Supabase ──
-    if(typeof dbSaveRadar === 'function'){
-      dbSaveRadar({
-        ...data,
-        score: SCORE,
-        direction: DIRECTION,
-        strat_auto: STRAT_AUTO,
-        rbi:  document.querySelector('input[name="rbi"]:checked')?.value||'neutral',
-        liq:  document.querySelector('input[name="liq"]:checked')?.value||'neutral',
-        news: document.querySelector('input[name="news"]:checked')?.value||'none',
-      }).then(r=>{ if(!r.ok) console.warn('[db] saveRadar error:', r.error); });
+    // ── v3.1: persist full radar + score + checklist to daily_data ──
+    if(typeof dbSaveDailyData === 'function'){
+      const rbi  = document.querySelector('input[name="rbi"]:checked')?.value||'neutral';
+      const liq  = document.querySelector('input[name="liq"]:checked')?.value||'neutral';
+      const news = document.querySelector('input[name="news"]:checked')?.value||'none';
+      const n = v => (v===''||v===undefined||v===null) ? null : parseFloat(v)||null;
+      dbSaveDailyData({
+        sp500:n(data.sp500), dow:n(data.dow), us_vix:n(data.usvix),
+        nikkei:n(data.nk), hang_seng:n(data.hsi), crude:n(data.crude),
+        gold:n(data.gold), usd_inr:n(data.inr), us_10y_yield:n(data.yld),
+        gift_now:n(data.gift_now), gift_6am:n(data.gift_6am), nifty_prev:n(data.nifty_prev),
+        india_vix:n(data.india_vix), fii_cash:n(data.fii), fii_fut:n(data.fii_fut),
+        fii_opt:n(data.fii_opt), dii_cash:n(data.dii),
+        max_pain_nf:n(data.max_pain_nf), max_pain_bn:n(data.max_pain_bn),
+        close_char:data.close_char!==undefined?parseInt(data.close_char):null,
+        radar_locked_at: new Date().toISOString(),
+        direction_score:SCORE, direction_label:DIRECTION, strategy_auto:STRAT_AUTO,
+        rbi_stance:rbi, liquidity:liq, news_event:news,
+      }).then(r=>{ if(!r.ok) console.warn('[db] saveRadar daily_data:', r.error); });
     }
   }catch{ toast('❌ Save failed'); }
 }
@@ -2493,6 +2502,14 @@ function saveBreadth(){
     document.getElementById('btn-save-breadth').style.display='none';
     document.getElementById('btn-edit-breadth').style.display='inline-flex';
     toast('💾 Breadth saved');
+    // v3.1: sync to Supabase daily_data
+    if(typeof dbSaveDailyData==='function'){
+      const n=v=>v===''?null:parseFloat(v)||null;
+      dbSaveDailyData({
+        n50_advances:n(data.n50adv), n50_dma_pct:n(data.n50dma), bnf_advances:n(data.bnfadv),
+        breadth_locked_at: new Date().toISOString(),
+      });
+    }
   }catch{ toast('❌ Save failed'); }
 }
 
@@ -2537,6 +2554,21 @@ function saveEvening(){
     }
 
     toast('🔒 Evening data locked — delta ready for tomorrow');
+    // v3.1: sync to Supabase daily_data
+    if(typeof dbSaveDailyData==='function'){
+      const n=v=>v===''?null:parseFloat(v)||null;
+      dbSaveDailyData({
+        ev_sp500:n(data.ev_sp500), ev_dow:n(data.ev_dow), ev_usvix:n(data.ev_usvix),
+        ev_nk:n(data.ev_nk), ev_hsi:n(data.ev_hsi), ev_crude:n(data.ev_crude),
+        ev_gold:n(data.ev_gold), ev_inr:n(data.ev_inr),
+        ev_india_vix:n(data.ev_indiavix), ev_fii:n(data.ev_fii), ev_fii_opt:n(data.ev_fii_opt),
+        ev_pcr_nf:n(data.ev_pcr_nf), ev_pcr_bn:n(data.ev_pcr_bn),
+        ev_nifty:n(data.ev_nifty), ev_bnf:n(data.ev_bnf),
+        ev_n50adv:n(data.ev_n50adv), ev_bnfadv:n(data.ev_bnfadv),
+        ev_mpnf:n(data.ev_mpnf), ev_mpbn:n(data.ev_mpbn),
+        evening_locked_at: new Date().toISOString(),
+      });
+    }
   }catch{ toast('❌ Save failed'); }
 }
 
@@ -2559,6 +2591,10 @@ function saveChecklist(){
   ['hawkish','neutral','dovish'].forEach(v=>document.getElementById('rbi-'+v)?.classList.toggle('checked',v===rbi));
   ['deficit','neutral','surplus'].forEach(v=>document.getElementById('liq-'+v)?.classList.toggle('checked',v===liq));
   ['none','hdfc','icici','both'].forEach(v=>document.getElementById('news-'+v)?.classList.toggle('checked',v===news));
+  // v3.1: sync to Supabase (fire-and-forget)
+  if(typeof dbSaveDailyData==='function'){
+    dbSaveDailyData({ rbi_stance:rbi, liquidity:liq, news_event:news });
+  }
 }
 
 function loadChecklist(){
@@ -2776,6 +2812,27 @@ function toast(m){
 
 document.addEventListener('input',()=>{ setTimeout(saveState,500); });
 
+// v3.1: auto-save strategy inputs to Supabase (2s debounce after last change)
+let _stratSaveTimer = null;
+function _scheduleStratSave() {
+  clearTimeout(_stratSaveTimer);
+  _stratSaveTimer = setTimeout(() => {
+    if(typeof dbSaveDailyData !== 'function') return;
+    const n = id => { const v=document.getElementById(id)?.value; return v===''||v==null?null:parseFloat(v)||null; };
+    dbSaveDailyData({
+      nf_spot:n('nf_price'), nf_atr:n('nf_atr'), nf_pcr:n('pcr_nf'),
+      nf_oi_call:n('nf_oi_call'), nf_oi_put:n('nf_oi_put'), nf_maxpain:n('nf_maxpain'),
+      bn_spot:n('bn_price'), bn_atr:n('bn_atr'), bn_pcr:n('pcr_bn'),
+      bn_oi_call:n('bn_oi_call'), bn_oi_put:n('bn_oi_put'), bn_maxpain:n('bn_maxpain'),
+    });
+  }, 2000);
+}
+// Hook into strategy input fields
+['nf_price','nf_atr','pcr_nf','nf_oi_call','nf_oi_put','nf_maxpain',
+ 'bn_price','bn_atr','pcr_bn','bn_oi_call','bn_oi_put','bn_maxpain'].forEach(id => {
+  document.getElementById(id)?.addEventListener('input', _scheduleStratSave);
+});
+
 if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
 // ── Init ──────────────────────────────────────────────────────
@@ -2792,5 +2849,5 @@ updateEntrySignal();
 updateBhavStatus();
 loadFBConfig();
 setTimeout(()=>{ renderBhavCalendar(); checkBhavGaps(); }, 500);
-// v3.0: Supabase connection check on load
-setTimeout(()=>{ if(typeof dbShowStatus==='function') dbShowStatus(); }, 1000);
+// v3.1: auto-sync from Supabase on every load (today + yesterday)
+setTimeout(()=>{ if(typeof dbAutoSync==='function') dbAutoSync(); }, 800);
