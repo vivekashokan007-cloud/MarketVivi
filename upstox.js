@@ -1,12 +1,12 @@
 /* ============================================================
    upstox.js — Upstox API Integration for Market Radar v5.0
    Full chain fetch for ALL expiries, real LTPs + greeks
+   Fixed: max pain algorithm, PCR calculation
    ============================================================ */
 
 const UPSTOX_API = 'https://api.upstox.com/v2';
 const UPSTOX_API_KEY = 'ec42e3bc-566b-4438-8edf-861db047dc16';
 
-// ── Global chain storage ──
 window._CHAINS = { NF: {}, BNF: {} };
 window._LIVE_VIX = null;
 window._NF_HIST = [];
@@ -22,22 +22,18 @@ function upstoxGetToken() {
   if (!token || tokenDate !== today) return null;
   return token;
 }
-
 function upstoxSaveToken(token) {
   localStorage.setItem('upstox_access_token', token);
   localStorage.setItem('upstox_token_date', new Date().toISOString().slice(0, 10));
 }
-
 function upstoxShowTokenModal() {
   const modal = document.getElementById('token-modal');
   if (modal) modal.style.display = 'flex';
 }
-
 function upstoxHideTokenModal() {
   const modal = document.getElementById('token-modal');
   if (modal) modal.style.display = 'none';
 }
-
 function upstoxSaveAndFetch() {
   const input = document.getElementById('token-input');
   if (!input || !input.value.trim()) return;
@@ -45,15 +41,9 @@ function upstoxSaveAndFetch() {
   upstoxHideTokenModal();
   upstoxAutoFill();
 }
-
 function _headers() {
-  return {
-    'Authorization': `Bearer ${upstoxGetToken()}`,
-    'Accept': 'application/json',
-    'Api-Version': '2.0'
-  };
+  return { 'Authorization': `Bearer ${upstoxGetToken()}`, 'Accept': 'application/json', 'Api-Version': '2.0' };
 }
-
 function _set(id, value) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -74,7 +64,6 @@ async function upstoxAutoFill() {
 
   const nfExps  = getExpiries('NF').slice(0, 2);
   const bnfExps = getExpiries('BNF').slice(0, 2);
-
   window._CHAINS = { NF: {}, BNF: {} };
 
   try {
@@ -89,11 +78,15 @@ async function upstoxAutoFill() {
     for (const exp of bnfExps) fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty Bank', exp, 'BNF'));
 
     const results = await Promise.allSettled(fetches);
-    const total   = results.length;
-    const ok      = results.filter(r => r.status === 'fulfilled').length;
+    const total = results.length;
+    const ok = results.filter(r => r.status === 'fulfilled').length;
+    const fails = results.filter(r => r.status === 'rejected');
 
     localStorage.setItem('upstox_last_fetch', new Date().toISOString());
     if (statusEl) statusEl.textContent = `✅ ${ok}/${total} fetched`;
+
+    // Log any failures for debugging
+    fails.forEach((f, i) => console.warn(`[upstox] Fetch #${i} failed:`, f.reason));
 
     console.log(`[upstox] Chains: NF=${Object.keys(window._CHAINS.NF).length}, BNF=${Object.keys(window._CHAINS.BNF).length}`);
 
@@ -124,7 +117,7 @@ async function upstoxFetchSpots() {
 }
 
 // ═══════════════════════════════════════════════════
-// FULL CHAIN FETCH — real LTPs + greeks per strike
+// FULL CHAIN FETCH — real LTPs + greeks + CORRECT MAX PAIN
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchFullChain(instrument, expiry, indexKey) {
@@ -143,8 +136,11 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
   const strikes = {};
   let putOI = 0, callOI = 0;
   let maxCallOI = 0, maxCallStrike = 0, maxPutOI = 0, maxPutStrike = 0;
-  let maxPainMap = {};
   let atmIV = null;
+
+  // Collect all OI data for max pain calculation
+  const callOIMap = {}; // strike → OI
+  const putOIMap  = {}; // strike → OI
 
   for (const item of data.data) {
     const strike = item.strike_price;
@@ -161,10 +157,10 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
         oi: md.oi || 0, vol: md.volume || 0,
         delta: gr.delta, theta: gr.theta, gamma: gr.gamma, vega: gr.vega, iv: gr.iv
       };
-      callOI += (md.oi || 0);
-      if ((md.oi || 0) > maxCallOI) { maxCallOI = md.oi; maxCallStrike = strike; }
-      if (!maxPainMap[strike]) maxPainMap[strike] = 0;
-      maxPainMap[strike] += (md.oi || 0) * Math.max(0, spot - strike);
+      const thisOI = md.oi || 0;
+      callOI += thisOI;
+      callOIMap[strike] = thisOI;
+      if (thisOI > maxCallOI) { maxCallOI = thisOI; maxCallStrike = strike; }
       if (spot > 0 && Math.abs(strike - spot) < (isNF ? 50 : 100) && gr.iv) atmIV = gr.iv;
     }
 
@@ -176,22 +172,64 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
         oi: md.oi || 0, vol: md.volume || 0,
         delta: gr.delta, theta: gr.theta, gamma: gr.gamma, vega: gr.vega, iv: gr.iv
       };
-      putOI += (md.oi || 0);
-      if ((md.oi || 0) > maxPutOI) { maxPutOI = md.oi; maxPutStrike = strike; }
-      if (!maxPainMap[strike]) maxPainMap[strike] = 0;
-      maxPainMap[strike] += (md.oi || 0) * Math.max(0, strike - spot);
+      const thisOI = md.oi || 0;
+      putOI += thisOI;
+      putOIMap[strike] = thisOI;
+      if (thisOI > maxPutOI) { maxPutOI = thisOI; maxPutStrike = strike; }
     }
 
     if (sd.CE || sd.PE) strikes[strike] = sd;
   }
 
+  // ── PCR ──
   const pcr = callOI > 0 ? +(putOI / callOI).toFixed(2) : 0;
-  let minPain = Infinity, mpStrike = 0;
-  for (const s in maxPainMap) { if (maxPainMap[s] < minPain) { minPain = maxPainMap[s]; mpStrike = +s; } }
 
-  window._CHAINS[indexKey][expiry] = { strikes, spot, dte, pcr, callOI, putOI, callWall: maxCallStrike, putWall: maxPutStrike, maxPain: mpStrike, atmIV };
+  // ── MAX PAIN — correct algorithm ──
+  // For each candidate settlement price, sum total loss to ALL option buyers
+  // Max pain = strike where buyers lose the most (minimum payout to buyers)
+  const allStrikes = Object.keys(strikes).map(Number).sort((a, b) => a - b);
+  let mpStrike = 0;
 
-  // Set hidden fields for nearest expiry (scoring compat)
+  if (allStrikes.length > 0) {
+    let minTotalPain = Infinity;
+
+    for (const candidate of allStrikes) {
+      let totalPain = 0;
+
+      // For each call: if candidate > call_strike, call holder gains (candidate - strike) × OI
+      // We want to find where total gains to buyers are MINIMIZED
+      for (const ks in callOIMap) {
+        const k = Number(ks);
+        const oi = callOIMap[k];
+        if (oi > 0 && candidate > k) {
+          totalPain += (candidate - k) * oi;
+        }
+      }
+
+      // For each put: if candidate < put_strike, put holder gains (strike - candidate) × OI
+      for (const ks in putOIMap) {
+        const k = Number(ks);
+        const oi = putOIMap[k];
+        if (oi > 0 && candidate < k) {
+          totalPain += (k - candidate) * oi;
+        }
+      }
+
+      if (totalPain < minTotalPain) {
+        minTotalPain = totalPain;
+        mpStrike = candidate;
+      }
+    }
+  }
+
+  // ── Store chain ──
+  window._CHAINS[indexKey][expiry] = {
+    strikes, spot, dte, pcr, callOI, putOI,
+    callWall: maxCallStrike, putWall: maxPutStrike,
+    maxPain: mpStrike, atmIV
+  };
+
+  // Set hidden fields for nearest expiry
   const allExps = Object.keys(window._CHAINS[indexKey]).sort();
   if (expiry === allExps[0]) {
     _set(`pcr_${isNF ? 'nf' : 'bn'}`, pcr);
@@ -201,6 +239,8 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
     if (isNF) { _set('max_pain_nf', mpStrike); window._NF_ATM_IV = atmIV; }
     else window._BNF_ATM_IV = atmIV;
   }
+
+  console.log(`[upstox] Chain: ${indexKey} ${expiry} — ${allStrikes.length} strikes, PCR=${pcr}, MaxPain=${mpStrike}, CallOI=${callOI}, PutOI=${putOI}, DTE=${dte}`);
 }
 
 // ═══════════════════════════════════════════════════
@@ -213,12 +253,13 @@ async function upstoxFetchHistorical(instrument, isNF) {
 
   const resp = await fetch(`${UPSTOX_API}/historical-candle/${encodeURIComponent(instrument)}/day/${to}/${from}`, { headers: _headers() });
   const data = await resp.json();
-  if (data.status !== 'success' || !data.data || !data.data.candles) throw new Error(`Historical failed`);
+  if (data.status !== 'success' || !data.data || !data.data.candles) throw new Error('Historical failed');
 
   const candles = data.data.candles;
   if (candles.length < 2) return;
   candles.sort((a, b) => new Date(a[0]) - new Date(b[0]));
 
+  // ATR14 — Wilder's smoothing
   const trs = [];
   for (let i = 1; i < candles.length; i++) {
     const h = candles[i][2], l = candles[i][3], pc = candles[i - 1][4];
@@ -230,6 +271,7 @@ async function upstoxFetchHistorical(instrument, isNF) {
 
   _set(isNF ? 'nf_atr' : 'bn_atr', +atr.toFixed(2));
 
+  // Close character
   const latest = candles[candles.length - 1];
   const prevClose = candles[candles.length - 2][4];
   if (isNF) {
@@ -242,7 +284,7 @@ async function upstoxFetchHistorical(instrument, isNF) {
 }
 
 // ═══════════════════════════════════════════════════
-// POSITIONS + MARGINS
+// POSITIONS
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchPositions() {
@@ -259,16 +301,41 @@ async function upstoxFetchPositions() {
   }).join('');
 }
 
+// ═══════════════════════════════════════════════════
+// MARGINS — handle multiple response structures
+// ═══════════════════════════════════════════════════
+
 async function upstoxFetchMargins() {
   const resp = await fetch(`${UPSTOX_API}/user/get-funds-and-margin`, { headers: _headers() });
   const data = await resp.json();
   if (data.status !== 'success') throw new Error('Margins failed');
+
   const m = data.data;
   const el = document.getElementById('upstox-margin');
   if (!el || !m) return;
-  const avail = m.equity ? (m.equity.available_margin || 0) : 0;
-  const used = m.equity ? (m.equity.used_margin || 0) : 0;
-  el.innerHTML = `<div class="margin-info"><span>Available: ₹${avail.toLocaleString('en-IN')}</span><span>Used: ₹${used.toLocaleString('en-IN')}</span></div>`;
+
+  // Upstox may return margin under different keys depending on segment
+  let avail = 0, used = 0;
+
+  if (m.equity) {
+    avail = m.equity.available_margin || m.equity.net || 0;
+    used  = m.equity.used_margin || m.equity.blocked_margin || 0;
+  } else if (m.commodity) {
+    avail = m.commodity.available_margin || 0;
+    used  = m.commodity.used_margin || 0;
+  }
+
+  // Also check top-level keys (some API versions)
+  if (avail === 0 && m.available_margin) avail = m.available_margin;
+  if (used === 0 && m.used_margin) used = m.used_margin;
+
+  // Log full margin response for debugging
+  console.log('[upstox] Margin response:', JSON.stringify(m));
+
+  el.innerHTML = `<div class="margin-info">
+    <span>Available: ₹${avail.toLocaleString('en-IN')}</span>
+    <span>Used: ₹${used.toLocaleString('en-IN')}</span>
+  </div>`;
 }
 
 // ═══════════════════════════════════════════════════

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
@@ -18,9 +18,13 @@
     <div class="header-title">⚡ MARKET RADAR</div>
     <div class="header-version">v5.0 — Real-Time Engine</div>
   </div>
-  <div>
+  <div style="text-align:right">
     <div id="upstox-status" class="header-status">—</div>
     <div id="upstox-margin" class="header-status"></div>
+    <div class="theme-toggle" id="theme-toggle">
+      <span class="theme-icon" id="theme-icon">🌙</span>
+      <span id="theme-label">Dark</span>
+    </div>
   </div>
 </div>
 
@@ -60,24 +64,24 @@
   <div class="section-title">FII Flow</div>
   <div class="input-group">
     <label>FII Cash ₹Cr</label>
-    <input type="number" id="fii" step="1" placeholder="Auto from Upstox">
+    <input type="number" id="fii" step="1" placeholder="Enter from NSDL/moneycontrol">
     <span id="ts-fii" class="ts-badge"></span>
   </div>
   <div class="input-group">
     <label>FII Futures ₹Cr</label>
-    <input type="number" id="fii_fut" step="1" placeholder="FII futures net">
+    <input type="number" id="fii_fut" step="1" placeholder="Enter from NSDL">
     <span id="ts-fii_fut" class="ts-badge"></span>
   </div>
   <div class="input-group">
     <label>FII Options ₹Cr</label>
-    <input type="number" id="fii_opt" step="1" placeholder="FII options net">
+    <input type="number" id="fii_opt" step="1" placeholder="Enter from NSDL">
     <span id="ts-fii_opt" class="ts-badge"></span>
   </div>
 
   <div class="section-title">Option Chain</div>
   <div class="input-group">
     <label>NF Max Pain</label>
-    <input type="number" id="max_pain_nf" step="1" placeholder="Auto from Upstox">
+    <input type="number" id="max_pain_nf" step="1" placeholder="Auto from chain">
     <span id="ts-max_pain_nf" class="ts-badge"></span>
   </div>
   <div class="input-group">
@@ -148,7 +152,6 @@
     <div class="pos-empty">No data — fetch first</div>
   </div>
 
-  <!-- Hidden inputs (auto-filled by upstox.js) -->
   <div id="hidden-inputs">
     <input type="number" id="nf_price">
     <input type="number" id="bn_price">
@@ -184,7 +187,7 @@
   <div id="evening-section" class="evening-grid">
     <div class="input-group">
       <label>Evening FII ₹Cr</label>
-      <input type="number" id="ev_fii" step="1" placeholder="Final FII cash figure">
+      <input type="number" id="ev_fii" step="1" placeholder="Final FII from NSDL">
     </div>
     <div class="input-group">
       <label>NF Close</label>
@@ -252,6 +255,40 @@
 <script src="bs.js"></script>
 <script src="app.js"></script>
 <script src="upstox.js"></script>
+
+<!-- THEME TOGGLE SCRIPT -->
+<script>
+(function() {
+  const KEY = 'mr_theme';
+  const html = document.documentElement;
+  const saved = localStorage.getItem(KEY) || 'dark';
+  html.setAttribute('data-theme', saved);
+
+  function updateToggleUI(theme) {
+    const icon = document.getElementById('theme-icon');
+    const label = document.getElementById('theme-label');
+    if (icon) icon.textContent = theme === 'dark' ? '🌙' : '☀️';
+    if (label) label.textContent = theme === 'dark' ? 'Dark' : 'Light';
+    // Update meta theme color
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#d4a853' : '#b8862d';
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    updateToggleUI(saved);
+    const toggle = document.getElementById('theme-toggle');
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        const current = html.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : 'dark';
+        html.setAttribute('data-theme', next);
+        localStorage.setItem(KEY, next);
+        updateToggleUI(next);
+      });
+    }
+  });
+})();
+</script>
 
 </body>
 </html>
