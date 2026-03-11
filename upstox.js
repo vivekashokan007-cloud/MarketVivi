@@ -127,6 +127,18 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
   const data = await resp.json();
   if (data.status !== 'success' || !data.data) throw new Error(`Chain failed: ${indexKey} ${expiry}`);
 
+  // Store raw sample for debug inspection
+  if (!window._RAW_CHAIN_SAMPLE) window._RAW_CHAIN_SAMPLE = {};
+  const rawItems = Array.isArray(data.data) ? data.data : [];
+  window._RAW_CHAIN_SAMPLE[`${indexKey}_${expiry}`] = {
+    isArray: Array.isArray(data.data),
+    type: typeof data.data,
+    length: rawItems.length,
+    topKeys: Array.isArray(data.data) ? null : Object.keys(data.data).slice(0, 10),
+    firstItem: rawItems.length > 0 ? JSON.parse(JSON.stringify(rawItems[0])) : data.data,
+    sampleKeys: rawItems.length > 0 ? Object.keys(rawItems[0]) : []
+  };
+
   const isNF = indexKey === 'NF';
   const spot = gv(isNF ? 'nf_price' : 'bn_price') || 0;
   const today = new Date(); today.setHours(0,0,0,0);

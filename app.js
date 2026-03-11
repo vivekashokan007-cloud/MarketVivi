@@ -1296,6 +1296,19 @@ function showDebug() {
     out += `  ${id} = ${gv(id)}\n`;
   });
 
+  // Raw chain API response structure
+  if (window._RAW_CHAIN_SAMPLE) {
+    out += '\n--- RAW API RESPONSE ---\n';
+    for (const key in window._RAW_CHAIN_SAMPLE) {
+      const s = window._RAW_CHAIN_SAMPLE[key];
+      out += `\n[${key}]\n`;
+      out += `  isArray=${s.isArray} type=${s.type} length=${s.length}\n`;
+      if (s.topKeys) out += `  topKeys: ${JSON.stringify(s.topKeys)}\n`;
+      out += `  sampleKeys: ${JSON.stringify(s.sampleKeys)}\n`;
+      out += `  firstItem: ${JSON.stringify(s.firstItem).substring(0, 500)}\n`;
+    }
+  }
+
   el.textContent = out;
 }
 
