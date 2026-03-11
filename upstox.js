@@ -132,6 +132,8 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
   const today = new Date(); today.setHours(0,0,0,0);
   const expDate = new Date(expiry); expDate.setHours(0,0,0,0);
   const dte = Math.max(1, Math.round((expDate - today) / 86400000));
+  // Trading days (excludes weekends + NSE holidays) — for VIX-based expected move
+  const tdte = typeof tradingDaysTo === 'function' ? tradingDaysTo(expiry) : dte;
 
   const strikes = {};
   let putOI = 0, callOI = 0;
@@ -224,7 +226,7 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
 
   // ── Store chain ──
   window._CHAINS[indexKey][expiry] = {
-    strikes, spot, dte, pcr, callOI, putOI,
+    strikes, spot, dte, tradingDte: tdte, pcr, callOI, putOI,
     callWall: maxCallStrike, putWall: maxPutStrike,
     maxPain: mpStrike, atmIV
   };
@@ -334,7 +336,7 @@ async function upstoxFetchMargins() {
 
   el.innerHTML = `<div class="margin-info">
     <span>Available: ₹${avail.toLocaleString('en-IN')}</span>
-    <span>Used: ₹${used.toLocaleString('en-IN')}</span>
+    <span> | Used: ₹${used.toLocaleString('en-IN')}</span>
   </div>`;
 }
 

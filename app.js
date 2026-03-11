@@ -71,6 +71,20 @@ function daysTo(target) {
   return Math.max(1, Math.round((t - now) / 86400000));
 }
 
+// Count actual trading days between now and target (excludes weekends + NSE holidays)
+function tradingDaysTo(target) {
+  const now = new Date(); now.setHours(0,0,0,0);
+  const t = new Date(target); t.setHours(0,0,0,0);
+  let count = 0;
+  const d = new Date(now);
+  d.setDate(d.getDate() + 1); // start from tomorrow
+  while (d <= t) {
+    if (isTradingDay(d)) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return Math.max(1, count);
+}
+
 function directionCategory(score) {
   if (score >= 1.2) return 'STRONG_BULL';
   if (score >= 0.4) return 'MILD_BULL';
@@ -293,6 +307,7 @@ function evaluateAllStrategies(bias, vix) {
 
       const spot = chain.spot;
       const dte = chain.dte;
+      const tradingDte = chain.tradingDte || dte;
       const strikeKeys = Object.keys(chain.strikes).map(Number).sort((a,b) => a - b);
       if (strikeKeys.length < 4) continue;
 
@@ -306,7 +321,7 @@ function evaluateAllStrategies(bias, vix) {
         const candidates = buildCandidates(stratType, chain, atm, spot, width, step, strikeKeys, isNF);
 
         for (const cand of candidates) {
-          const setup = evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, lotSize, marginPerLot, width, chain, vix);
+          const setup = evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix);
           if (setup && setup.viable) {
             setup.compositeScore = scoreSetup(setup, bias, vix);
             setups.push(setup);
@@ -451,7 +466,7 @@ function buildCandidates(stratType, chain, atm, spot, width, step, strikeKeys, i
   return candidates.slice(0, 5); // Cap at 5 candidates per strategy type
 }
 
-function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, lotSize, marginPerLot, width, chain, vix) {
+function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix) {
   const legs = cand.legs;
   const isCredit = ['BULL_PUT','BEAR_CALL','IRON_CONDOR'].includes(stratType);
   const isNF = indexKey === 'NF';
@@ -531,7 +546,7 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, lotSize, ma
     }
   } else if (stratType === 'LONG_STRADDLE' || stratType === 'LONG_STRANGLE') {
     // Need big move — lower base probability
-    const em = bsExpectedMove(spot, vix || 14, dte);
+    const em = bsExpectedMove(spot, vix || 14, tradingDte);
     const beDist = Math.abs(breakevens[1] - spot);
     probProfit = beDist < em.one_sigma ? 0.40 : 0.25;
   } else {
@@ -566,6 +581,7 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, lotSize, ma
     isNF,
     expiry,
     dte,
+    tradingDte,
     spot,
     legs,
     netPremium: +netPremium.toFixed(2),
@@ -738,7 +754,7 @@ function renderStrategyCard(setup, index) {
     <div class="sc-rank">#${index + 1}</div>
     <div class="sc-header">
       <div class="sc-name">${setup.stratLabel}</div>
-      <div class="sc-index">${setup.indexKey} · ${setup.expiry} · DTE ${setup.dte}</div>
+      <div class="sc-index">${setup.indexKey} · ${setup.expiry} · DTE ${setup.dte} (${setup.tradingDte}T)</div>
     </div>
     <div class="sc-legs">${legStr}</div>
     <div class="sc-metrics">
@@ -788,7 +804,7 @@ function openDrawer(setup) {
     <div class="dm-row"><span>P(Profit)</span><span>${setup.probProfit}%</span></div>
     <div class="dm-row"><span>R:R Ratio</span><span>1:${setup.rr}</span></div>
     <div class="dm-row"><span>Breakeven${setup.breakevens.length > 1 ? 's' : ''}</span><span>${setup.breakevens.join(' / ')}</span></div>
-    <div class="dm-row"><span>DTE</span><span>${setup.dte} (${dteConviction(setup.dte)})</span></div>
+    <div class="dm-row"><span>DTE</span><span>${setup.dte} cal / ${setup.tradingDte} trading (${dteConviction(setup.dte)})</span></div>
     <div class="dm-row"><span>Lots</span><span>${setup.lots}</span></div>
     <div class="dm-row"><span>${setup.isCredit ? 'Net Credit' : 'Net Debit'}</span><span>₹${Math.abs(setup.netPremium).toFixed(2)}</span></div>
     <div class="dm-row"><span>Spread %</span><span>${setup.avgSpreadPct}%</span></div>
@@ -1122,6 +1138,7 @@ function lockBreadth() {
 function lockEvening() {
   const data = {};
   ['ev_fii','ev_nf_close','ev_bnf_close','ev_indiavix'].forEach(id => { data[id] = gv(id); });
+  data._lock_date = new Date().toISOString().slice(0, 10);
   localStorage.setItem('mr140-evening', JSON.stringify(data));
   const evVix = gv('ev_indiavix');
   if (valid(evVix)) localStorage.setItem('mr_ev_indiavix', evVix);
@@ -1159,7 +1176,13 @@ function restoreSavedState() {
 
   const today = new Date().toISOString().slice(0, 10);
   const lastLock = localStorage.getItem('mr_lock_date');
-  if (lastLock !== today) { RADAR_LOCKED = false; BREADTH_LOCKED = false; localStorage.setItem('mr_lock_date', today); }
+  if (lastLock !== today) {
+    RADAR_LOCKED = false;
+    BREADTH_LOCKED = false;
+    EVENING_LOCKED = false;
+    localStorage.setItem('mr_lock_date', today);
+    // Yesterday's VIX baseline is preserved in mr_ev_indiavix — not cleared
+  }
 
   renderLockState();
   restoreAllTS();
@@ -1201,11 +1224,79 @@ async function handleBhavUpload() {
 // ═══════════════════════════════════════════════════
 
 function renderEveningSection() {
+  const today = new Date().toISOString().slice(0, 10);
   try {
     const evening = JSON.parse(localStorage.getItem('mr140-evening') || 'null');
-    if (evening) { EVENING_LOCKED = true; for (const id in evening) { const el = document.getElementById(id); if (el && evening[id] !== null) el.value = evening[id]; } }
+    if (evening) {
+      // Restore values into fields
+      for (const id in evening) {
+        if (id.startsWith('_')) continue; // skip metadata
+        const el = document.getElementById(id);
+        if (el && evening[id] !== null) el.value = evening[id];
+      }
+      // Only re-lock if it was locked TODAY (new day = fresh evening entry)
+      if (evening._lock_date === today) {
+        EVENING_LOCKED = true;
+      }
+    }
   } catch(e) {}
   renderLockState();
+}
+
+// ═══════════════════════════════════════════════════
+// DEBUG — visible chain inspection
+// ═══════════════════════════════════════════════════
+
+function showDebug() {
+  const el = document.getElementById('debug-output');
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  if (el.style.display === 'none') return;
+
+  let out = '=== CHAIN DEBUG ===\n\n';
+
+  for (const idx of ['NF', 'BNF']) {
+    const chains = window._CHAINS[idx];
+    out += `--- ${idx} ---\n`;
+    out += `Expiries: ${JSON.stringify(Object.keys(chains))}\n`;
+
+    for (const exp in chains) {
+      const c = chains[exp];
+      const strikeKeys = Object.keys(c.strikes || {});
+      out += `\n[${exp}] DTE=${c.dte} TradingDTE=${c.tradingDte || '?'} Spot=${c.spot}\n`;
+      out += `  PCR=${c.pcr} MaxPain=${c.maxPain}\n`;
+      out += `  CallOI=${c.callOI} PutOI=${c.putOI}\n`;
+      out += `  CallWall=${c.callWall} PutWall=${c.putWall}\n`;
+      out += `  Strikes loaded: ${strikeKeys.length}\n`;
+
+      // Show first 3 strikes with full data
+      const sample = strikeKeys.slice(0, 3);
+      for (const sk of sample) {
+        const s = c.strikes[sk];
+        if (s.CE) out += `  ${sk} CE: LTP=${s.CE.ltp} OI=${s.CE.oi} Δ=${s.CE.delta} θ=${s.CE.theta} IV=${s.CE.iv}\n`;
+        if (s.PE) out += `  ${sk} PE: LTP=${s.PE.ltp} OI=${s.PE.oi} Δ=${s.PE.delta} θ=${s.PE.theta} IV=${s.PE.iv}\n`;
+      }
+
+      // Show ATM area (closest to spot)
+      if (c.spot && strikeKeys.length > 0) {
+        const atm = strikeKeys.reduce((b, s) => Math.abs(+s - c.spot) < Math.abs(+b - c.spot) ? s : b);
+        const atmData = c.strikes[atm];
+        out += `  ATM(${atm}):\n`;
+        if (atmData.CE) out += `    CE: LTP=${atmData.CE.ltp} OI=${atmData.CE.oi} Δ=${atmData.CE.delta}\n`;
+        if (atmData.PE) out += `    PE: LTP=${atmData.PE.ltp} OI=${atmData.PE.oi} Δ=${atmData.PE.delta}\n`;
+      }
+    }
+    out += '\n';
+  }
+
+  // Also show raw hidden field values
+  out += '--- HIDDEN FIELDS ---\n';
+  ['nf_price','bn_price','india_vix','nf_atr','bn_atr','pcr_nf','pcr_bn',
+   'max_pain_nf','nf_oi_call','nf_oi_put','nf_maxpain','bn_maxpain'].forEach(id => {
+    out += `  ${id} = ${gv(id)}\n`;
+  });
+
+  el.textContent = out;
 }
 
 // ═══════════════════════════════════════════════════
@@ -1229,6 +1320,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const bhavBtn = document.getElementById('btn-bhav-upload');
   if (bhavBtn) bhavBtn.addEventListener('click', handleBhavUpload);
+
+  const debugBtn = document.getElementById('btn-debug');
+  if (debugBtn) debugBtn.addEventListener('click', showDebug);
 
   initInputListeners();
   initDrawer();

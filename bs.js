@@ -82,9 +82,10 @@ function bsIV(mktPrice, S, K, r, T, isCall) {
   return sigma;
 }
 
-// ── Expected Move ──
-function bsExpectedMove(spot, vix, dte) {
-  const t = dte / 365;
+// ── Expected Move (uses TRADING days ÷ 252, not calendar ÷ 365) ──
+// VIX is annualized over ~252 trading days, so conversion must match
+function bsExpectedMove(spot, vix, tradingDte) {
+  const t = tradingDte / 252;
   const one_sigma = spot * (vix / 100) * Math.sqrt(t);
   return { one_sigma, two_sigma: one_sigma * 2 };
 }
