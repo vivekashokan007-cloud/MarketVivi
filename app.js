@@ -32,8 +32,8 @@ let ANALYSIS_VIX = null;
 let _RANKED_SETUPS = [];
 
 const W = {
-  india_vix: 0.22, pcr_nf: 0.16, fii: 0.15, gift_gap: 0.15,
-  close_char: 0.10, max_pain: 0.08, gift_trend: 0.05,
+  india_vix: 0.25, pcr_nf: 0.18, fii: 0.15, gift_gap: 0.15,
+  close_char: 0.10, max_pain: 0.08,
   n50adv: 0.04, bnfadv: 0.03, n50dma: 0.02
 };
 
@@ -107,13 +107,17 @@ function restoreAllTS() { const ts = getTS(); for (const id in ts) renderTS(id, 
 
 function calcScore() {
   const signals = {};
-  const gift_gap = gv('gift_gap'), gift_trend = gv('gift_trend');
   const india_vix = gv('india_vix'), fii = gv('fii'), pcr_nf = gv('pcr_nf');
   const close_char = gv('close_char'), max_pain = gv('max_pain_nf'), nf_spot = gv('nf_price');
   const n50adv = gv('n50adv'), n50dma = gv('n50dma'), bnfadv = gv('bnfadv');
+  const nifty_prev = gv('nifty_prev');
 
-  if (valid(gift_gap))   signals.gift_gap   = Math.max(-1, Math.min(1, gift_gap / 1.5));
-  if (valid(gift_trend)) signals.gift_trend = Math.max(-1, Math.min(1, gift_trend / 0.5));
+  // Auto-calculate gap from spot vs previous close
+  if (valid(nf_spot) && valid(nifty_prev) && nifty_prev > 0) {
+    const gap = ((nf_spot - nifty_prev) / nifty_prev) * 100;
+    signals.gift_gap = Math.max(-1, Math.min(1, gap / 1.5));
+  }
+
   if (valid(india_vix))  { signals.india_vix = Math.max(-1, Math.min(1, -(india_vix - 14) / 6)); ANALYSIS_VIX = india_vix; }
   if (valid(fii))        signals.fii        = Math.max(-1, Math.min(1, fii / 2000));
   if (valid(pcr_nf))     signals.pcr_nf     = Math.max(-1, Math.min(1, (pcr_nf - 1.0) / 0.5));
@@ -249,6 +253,10 @@ function buildCandidates(stratType, chain, atm, spot, width, step, strikeKeys, i
 function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix) {
   const legs = cand.legs;
   const isCredit = ['BULL_PUT','BEAR_CALL','IRON_CONDOR'].includes(stratType);
+
+  // Reject legs with ₹0 LTP — can't execute at zero
+  for (const leg of legs) { if (leg.data.ltp <= 0 && leg.action === 'BUY') return null; }
+
   let netPremium = 0, netDelta = 0, netTheta = 0, netGamma = 0, netVega = 0;
 
   for (const leg of legs) {
@@ -268,47 +276,28 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
   let maxProfit, maxLoss, breakevens = [];
   const safeLots = Math.max(1, Math.floor(CAPITAL / marginPerLot));
 
-  // ── Target & Stop Loss ──
-  let targetPremium, stopPremium, targetProfit, stopLoss;
-
   if (stratType === 'BULL_PUT') {
     maxProfit = netPremium * lotSize * safeLots;
     maxLoss = (width - netPremium) * lotSize * safeLots;
     breakevens = [legs[0].strike - netPremium];
-    targetPremium = netPremium * 0.5; // Buy back at 50% of credit
-    stopPremium = netPremium * 2;     // Stop at 2× credit
-    targetProfit = targetPremium * lotSize * safeLots;
-    stopLoss = (stopPremium - netPremium) * lotSize * safeLots;
   } else if (stratType === 'BEAR_CALL') {
     maxProfit = netPremium * lotSize * safeLots;
     maxLoss = (width - netPremium) * lotSize * safeLots;
     breakevens = [legs[0].strike + netPremium];
-    targetPremium = netPremium * 0.5;
-    stopPremium = netPremium * 2;
-    targetProfit = targetPremium * lotSize * safeLots;
-    stopLoss = (stopPremium - netPremium) * lotSize * safeLots;
   } else if (stratType === 'IRON_CONDOR') {
     maxProfit = netPremium * lotSize * safeLots;
     maxLoss = (width - netPremium) * lotSize * safeLots;
     const callSell = legs.find(l => l.type === 'CE' && l.action === 'SELL');
     const putSell = legs.find(l => l.type === 'PE' && l.action === 'SELL');
     breakevens = [putSell.strike - netPremium, callSell.strike + netPremium];
-    targetPremium = netPremium * 0.5;
-    stopPremium = netPremium * 2;
-    targetProfit = targetPremium * lotSize * safeLots;
-    stopLoss = (stopPremium - netPremium) * lotSize * safeLots;
   } else if (stratType === 'BULL_CALL') {
     maxProfit = (width - absPremium) * lotSize * safeLots;
     maxLoss = absPremium * lotSize * safeLots;
     breakevens = [legs[0].strike + absPremium];
-    targetProfit = maxProfit * 0.5; // Take 50% of max profit
-    stopLoss = maxLoss * 0.5;       // Stop at 50% of debit lost
   } else if (stratType === 'BEAR_PUT') {
     maxProfit = (width - absPremium) * lotSize * safeLots;
     maxLoss = absPremium * lotSize * safeLots;
     breakevens = [legs[0].strike - absPremium];
-    targetProfit = maxProfit * 0.5;
-    stopLoss = maxLoss * 0.5;
   } else if (stratType === 'LONG_STRADDLE' || stratType === 'LONG_STRANGLE') {
     maxLoss = absPremium * lotSize * safeLots;
     const em = bsExpectedMove(spot, vix || 14, tradingDte);
@@ -320,13 +309,23 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
       const callK = legs.find(l => l.type === 'CE').strike;
       breakevens = [putK - absPremium, callK + absPremium];
     }
-    targetProfit = maxLoss * 0.4; // Take profit when position is +40%
-    stopLoss = maxLoss * 0.4;     // Stop when 40% of premium eroded without move
   }
 
+  // ── REJECT: credit > width (negative max loss = impossible) ──
+  if (maxLoss <= 0) return null;
+
+  // ── REJECT: max loss > CAPITAL ──
   if (maxLoss > CAPITAL) return null;
 
   const rr = maxProfit / Math.max(maxLoss, 1);
+
+  // ── REJECT: R:R below 1.5 — not worth the risk ──
+  if (rr < 1.5) return null;
+
+  // ── Target / Stop Loss: 50% of max profit / 50% of max loss ──
+  // Exit R:R = target/SL = (maxProfit/2)/(maxLoss/2) = same as strategy R:R ≥ 1.5
+  let targetProfit = maxProfit * 0.5;
+  let stopLoss = maxLoss * 0.5;
   let probProfit = 0.50;
   if (isCredit) {
     const soldLeg = legs.find(l => l.action === 'SELL');
@@ -410,7 +409,19 @@ function buildCommand() {
   const isGo = ranked.length > 0;
   html += `<div class="gonogo ${isGo?'go':'nogo'}"><div class="gonogo-label">${isGo?'✅ GO':'🚫 NO-GO'}</div><div class="gonogo-strategy">${isGo?`${ranked.length} viable setups`:'No viable setups'}</div><div class="gonogo-meta">VIX: ${vix||'—'} | Bias: ${q1.biasConf} ${q1.bias}</div></div>`;
   html += renderQ1Card(q1);
-  if (ranked.length > 0) { html += '<div class="section-title">TOP STRATEGIES — Real-Time</div>'; ranked.slice(0, 5).forEach((s, i) => { html += renderStrategyCard(s, i); }); }
+  if (ranked.length > 0) {
+    html += '<div class="section-title">TOP STRATEGIES — Real-Time</div>';
+    // Diversity: max 3 of same strategy type in top 5
+    const shown = [], typeCounts = {};
+    for (const s of ranked) {
+      if (shown.length >= 5) break;
+      typeCounts[s.stratType] = (typeCounts[s.stratType] || 0) + 1;
+      if (typeCounts[s.stratType] > 3) continue;
+      shown.push(s);
+    }
+    shown.forEach((s, i) => { html += renderStrategyCard(s, i); });
+    _RANKED_SETUPS = shown; // Only keep displayed setups for drawer
+  }
   panel.innerHTML = html;
   document.querySelectorAll('.strat-card').forEach((card, i) => { card.addEventListener('click', () => openDrawer(_RANKED_SETUPS[i])); });
 }
@@ -503,8 +514,12 @@ function drawPayoffChart(setup) {
     pnl += setup.netPremium; pnl *= setup.lotSize * setup.lots;
     points.push({x:s,y:pnl}); if (pnl < yMin) yMin = pnl; if (pnl > yMax) yMax = pnl;
   }
+  // Ensure zero line is visible and target/SL lines are within range
   if (yMin > 0) yMin = -Math.abs(yMax)*0.2; if (yMax < 0) yMax = Math.abs(yMin)*0.2;
-  const yP = Math.max(Math.abs(yMax),Math.abs(yMin))*0.15; yMin -= yP; yMax += yP;
+  // Extend to include target and SL lines
+  if (setup.targetProfit && setup.targetProfit > yMax) yMax = setup.targetProfit * 1.15;
+  if (setup.stopLoss && -setup.stopLoss < yMin) yMin = -setup.stopLoss * 1.15;
+  const yP = Math.max(Math.abs(yMax),Math.abs(yMin))*0.1; yMin -= yP; yMax += yP;
   const tx = x => pad.left + ((x-xMin)/(xMax-xMin))*plotW;
   const ty = y => pad.top + plotH - ((y-yMin)/(yMax-yMin))*plotH;
   ctx.clearRect(0, 0, CW, CH);
@@ -568,7 +583,7 @@ function go(n) { document.querySelectorAll('.tab').forEach(t=>t.classList.remove
 // SOFT TOGGLE LOCKS
 // ═══════════════════════════════════════════════════
 
-function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['gift_gap','gift_trend','india_vix','fii','close_char','max_pain_nf','nf_price','bn_price'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-radar',JSON.stringify(d)); RADAR_LOCKED=true; } renderLockState(); }
+function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','close_char','max_pain_nf','nf_price','bn_price','nifty_prev'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-radar',JSON.stringify(d)); RADAR_LOCKED=true; } renderLockState(); }
 function toggleBreadth() { if (BREADTH_LOCKED) { BREADTH_LOCKED = false; } else { const d={}; ['n50adv','n50dma','bnfadv'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-breadth',JSON.stringify(d)); BREADTH_LOCKED=true; } renderLockState(); }
 function toggleEvening() { if (EVENING_LOCKED) { EVENING_LOCKED = false; } else { const d={}; ['ev_fii','ev_nf_close','ev_bnf_close','ev_indiavix'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-evening',JSON.stringify(d)); const v=gv('ev_indiavix'); if(valid(v)) localStorage.setItem('mr_ev_indiavix',v); EVENING_LOCKED=true; } renderLockState(); }
 function renderLockState() { [['btn-lock-radar',RADAR_LOCKED,'🔒 Locked','🔓 Lock Morning Data'],['btn-lock-breadth',BREADTH_LOCKED,'🔒 Locked','🔓 Lock Breadth'],['btn-lock-evening',EVENING_LOCKED,'🔒 Locked','🔓 Lock Evening']].forEach(([id,locked,lt,ut])=>{ const el=document.getElementById(id); if(el) el.textContent=locked?lt:ut; }); }
