@@ -370,6 +370,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (saveBtn) saveBtn.addEventListener('click', upstoxSaveAndFetch);
   const fetchBtn = document.getElementById('btn-fetch-upstox');
   if (fetchBtn) fetchBtn.addEventListener('click', upstoxAutoFill);
-  if (upstoxGetToken()) setTimeout(upstoxAutoFill, 500);
+  // Auto-prompt token if expired or missing
+  if (upstoxGetToken()) {
+    setTimeout(upstoxAutoFill, 500);
+  } else {
+    setTimeout(upstoxShowTokenModal, 300);
+  }
   console.log('[upstox.js] v5.0 — expiry discovery + full chain mode');
 });
