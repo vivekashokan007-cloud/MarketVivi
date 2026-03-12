@@ -203,7 +203,7 @@ function computeDirectionalBias() {
 const STRATEGY_TYPES = ['BULL_PUT','BEAR_CALL','IRON_CONDOR','BULL_CALL','BEAR_PUT','LONG_STRADDLE','LONG_STRANGLE'];
 const STRAT_LABELS = { BULL_PUT:'Bull Put Spread', BEAR_CALL:'Bear Call Spread', IRON_CONDOR:'Iron Condor', BULL_CALL:'Bull Call Spread', BEAR_PUT:'Bear Put Spread', LONG_STRADDLE:'Long Straddle', LONG_STRANGLE:'Long Strangle' };
 
-function evaluateAllStrategies(bias, vix) {
+function evaluateAllStrategies(bias, vix, biasConf) {
   const setups = [];
   for (const indexKey of ['NF','BNF']) {
     const chains = window._CHAINS[indexKey]; if (!chains || !Object.keys(chains).length) continue;
@@ -221,7 +221,15 @@ function evaluateAllStrategies(bias, vix) {
         const candidates = buildCandidates(stratType, chain, atm, spot, width, step, strikeKeys, isNF);
         for (const cand of candidates) {
           const setup = evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix);
-          if (setup) { setup.compositeScore = scoreSetup(setup, bias, vix, chain); setups.push(setup); }
+          if (setup) {
+            const baseScore = scoreSetup(setup, bias, vix, chain);
+            const varsityMult = getVarsityMultiplier(stratType, biasConf || 'Neutral', bias, vix);
+            setup.baseScore = baseScore;
+            setup.varsityMult = varsityMult;
+            setup.varsityTier = getVarsityTierLabel(varsityMult);
+            setup.compositeScore = +(baseScore * varsityMult).toFixed(2);
+            if (varsityMult > 0) setups.push(setup);
+          }
         }
       }
     }
@@ -376,7 +384,7 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
 function scoreSetup(setup, bias, vix, chain) {
   const evScore = Math.max(0, Math.min(40, setup.evPerRupee * 400));
   const probScore = (setup.probProfit / 100) * 20;
-  const biasScore = getBiasAlignment(setup.stratType, bias) * 15;
+  // biasScore REMOVED — Varsity multiplier handles bias alignment post-score
   const capEff = setup.maxProfit / Math.max(setup.marginUsed, 1);
   const capScore = Math.min(10, capEff * 50);
   const liqScore = Math.max(0, 5 - setup.avgSpreadPct);
@@ -387,12 +395,54 @@ function scoreSetup(setup, bias, vix, chain) {
   if (atmIV > 0 && setup.isCredit && atmIV > liveVix * 1.05) ivScore = 3;
   else if (atmIV > 0 && !setup.isCredit && atmIV < liveVix * 0.95) ivScore = 3;
   const dteScore = dteConviction(setup.dte) === 'SWEET SPOT' ? 2 : dteConviction(setup.dte) === 'ACCEPTABLE' ? 1 : 0;
-  return +(evScore + probScore + biasScore + capScore + liqScore + dirScore + ivScore + dteScore).toFixed(2);
+  return +(evScore + probScore + capScore + liqScore + dirScore + ivScore + dteScore).toFixed(2);
 }
 
-function getBiasAlignment(stratType, bias) {
-  const map = { BULL:{BULL_PUT:1,BULL_CALL:1,IRON_CONDOR:0.5,LONG_STRADDLE:0.3,LONG_STRANGLE:0.3,BEAR_CALL:0,BEAR_PUT:0}, BEAR:{BEAR_CALL:1,BEAR_PUT:1,IRON_CONDOR:0.5,LONG_STRADDLE:0.3,LONG_STRANGLE:0.3,BULL_PUT:0,BULL_CALL:0}, NEUTRAL:{IRON_CONDOR:1,LONG_STRADDLE:0.6,LONG_STRANGLE:0.6,BULL_PUT:0.5,BEAR_CALL:0.5,BULL_CALL:0.4,BEAR_PUT:0.4} };
-  return (map[bias] && map[bias][stratType]) || 0.3;
+// ═══════════════════════════════════════════════════
+// VARSITY FRAMEWORK — Strategy-Bias Multiplier
+// Zerodha Varsity: bias determines which strategies
+// are PRIMARY, SECONDARY, or MARGINAL. EV only ranks
+// within the appropriate tier.
+// ═══════════════════════════════════════════════════
+
+function getVarsityMultiplier(stratType, biasConf, bias, vix) {
+  // Build outlook from bias + confidence
+  const outlook = bias === 'NEUTRAL' ? 'NEUTRAL' :
+    (biasConf === 'Strong' ? 'STRONG_' : 'MILD_') + bias;
+
+  // Tier multipliers: 1.0 = primary, 0.65 = secondary, 0.35 = marginal
+  const tiers = {
+    STRONG_BULL: { BULL_CALL:1.0, BULL_PUT:0.65, IRON_CONDOR:0.35, LONG_STRADDLE:0.35, LONG_STRANGLE:0.35 },
+    MILD_BULL:   { BULL_PUT:1.0,  BULL_CALL:0.65, IRON_CONDOR:0.65, LONG_STRADDLE:0.35, LONG_STRANGLE:0.35 },
+    NEUTRAL:     { IRON_CONDOR:1.0, LONG_STRADDLE:0.70, LONG_STRANGLE:0.70, BULL_PUT:0.50, BEAR_CALL:0.50, BULL_CALL:0.45, BEAR_PUT:0.45 },
+    MILD_BEAR:   { BEAR_CALL:1.0, BEAR_PUT:0.65, IRON_CONDOR:0.65, LONG_STRADDLE:0.35, LONG_STRANGLE:0.35 },
+    STRONG_BEAR: { BEAR_PUT:1.0,  BEAR_CALL:0.65, IRON_CONDOR:0.35, LONG_STRADDLE:0.35, LONG_STRANGLE:0.35 }
+  };
+
+  const tierMap = tiers[outlook] || tiers.NEUTRAL;
+  let mult = tierMap[stratType] !== undefined ? tierMap[stratType] : 0.35;
+
+  // VIX fine-tuning
+  const safeVix = vix || 14;
+  const isCredit = ['BULL_PUT','BEAR_CALL','IRON_CONDOR'].includes(stratType);
+  const isLong = ['LONG_STRADDLE','LONG_STRANGLE'].includes(stratType);
+
+  // High VIX (≥20): credit premiums are fat → slight boost to credit Tier 1/2
+  if (safeVix >= 20 && isCredit && mult >= 0.65) mult = Math.min(1.0, mult + 0.05);
+  // Very high VIX (≥24): extra credit boost
+  if (safeVix >= 24 && isCredit && mult >= 0.65) mult = Math.min(1.0, mult + 0.05);
+  // Low VIX (≤13): long strategies benefit from cheap options
+  if (safeVix <= 13 && isLong) mult = Math.min(1.0, mult + 0.10);
+  // High VIX penalizes longs (expensive premium, likely to decay)
+  if (safeVix >= 20 && isLong) mult = Math.max(0.20, mult - 0.10);
+
+  return mult;
+}
+
+function getVarsityTierLabel(mult) {
+  if (mult >= 0.95) return '★ Primary';
+  if (mult >= 0.60) return '◆ Secondary';
+  return '○ Marginal';
 }
 
 // ═══════════════════════════════════════════════════
@@ -405,7 +455,7 @@ async function buildCommand() {
   const hasChains = (Object.keys(window._CHAINS.NF).length + Object.keys(window._CHAINS.BNF).length) > 0;
   if (!hasChains) { panel.innerHTML = '<div class="cmd-placeholder">Fetch Upstox data to see strategy recommendations</div>'; return; }
   const q1 = computeDirectionalBias();
-  const ranked = evaluateAllStrategies(q1.bias, vix);
+  const ranked = evaluateAllStrategies(q1.bias, vix, q1.biasConf);
   _RANKED_SETUPS = ranked;
   if (valid(vix) && vix >= 28) { panel.innerHTML = `<div class="gonogo nogo"><div class="gonogo-label">🚫 AVOID ALL</div><div class="gonogo-reason">VIX ≥ 28</div></div>${renderQ1Card(q1)}`; return; }
 
@@ -495,9 +545,10 @@ function renderStrategyCard(setup, index) {
     const price = l.action === 'SELL' ? (l.data.bid || l.data.ltp) : (l.data.ask || l.data.ltp);
     return `${l.action} ${l.strike} ${l.type} (${moneyLabel(l.strike, setup.spot, l.type)}) @₹${price.toFixed(0)}`;
   }).join(' | ');
+  const tierColor = setup.varsityMult >= 0.95 ? '#5cb85c' : setup.varsityMult >= 0.60 ? '#d4a853' : '#8a7d6f';
   return `<div class="strat-card" data-idx="${index}">
     <div class="sc-rank">#${index+1}</div>
-    <div class="sc-header"><div class="sc-name">${setup.stratLabel}</div><div class="sc-index">${setup.indexKey} · ${setup.expiry} · DTE ${setup.dte} (${setup.tradingDte}T)</div></div>
+    <div class="sc-header"><div class="sc-name">${setup.stratLabel} <span style="font-size:10px;color:${tierColor};margin-left:6px">${setup.varsityTier || ''}</span></div><div class="sc-index">${setup.indexKey} · ${setup.expiry} · DTE ${setup.dte} (${setup.tradingDte}T)</div></div>
     <div class="sc-legs">${legStr}</div>
     <div class="sc-metrics">
       <div class="sc-metric"><span class="sc-label">Max Profit</span><span class="sc-val profit">₹${setup.maxProfit.toLocaleString('en-IN')}</span></div>
@@ -506,7 +557,7 @@ function renderStrategyCard(setup, index) {
       <div class="sc-metric"><span class="sc-label">P(Profit)</span><span class="sc-val">${setup.probProfit}%</span></div>
     </div>
     <div class="sc-targets">🎯 Target: ₹${setup.targetProfit.toLocaleString('en-IN')} | 🛑 SL: ₹${setup.stopLoss.toLocaleString('en-IN')}</div>
-    <div class="sc-greeks">Δ ${setup.netDelta} · θ ${setup.netTheta} · γ ${setup.netGamma} · ν ${setup.netVega}</div>
+    <div class="sc-greeks">Δ ${setup.netDelta.toFixed(4)} · θ ${setup.netTheta.toFixed(2)} · γ ${setup.netGamma.toFixed(4)} · ν ${setup.netVega.toFixed(2)}</div>
     <div class="sc-score">EV: ₹${setup.ev.toLocaleString('en-IN')} | Score: ${setup.compositeScore}${setup.requiredMargin ? ' | Margin: ₹'+Math.round(setup.requiredMargin).toLocaleString('en-IN') : ''}</div>
     <div class="sc-tap">Tap for payoff chart ▾</div>
   </div>`;
@@ -524,10 +575,10 @@ function openDrawer(setup) {
   document.getElementById('drawer-title').textContent = `${setup.stratLabel} — ${setup.indexKey} ${setup.expiry}`;
   drawPayoffChart(setup);
   document.getElementById('drawer-metrics').innerHTML = `
-    <div class="dm-row"><span>Delta</span><span>${setup.netDelta}</span></div>
-    <div class="dm-row"><span>Theta</span><span>${setup.netTheta}</span></div>
-    <div class="dm-row"><span>Gamma</span><span>${setup.netGamma}</span></div>
-    <div class="dm-row"><span>Vega</span><span>${setup.netVega}</span></div>
+    <div class="dm-row"><span>Delta</span><span>${setup.netDelta.toFixed(4)}</span></div>
+    <div class="dm-row"><span>Theta</span><span>${setup.netTheta.toFixed(2)}</span></div>
+    <div class="dm-row"><span>Gamma</span><span>${setup.netGamma.toFixed(4)}</span></div>
+    <div class="dm-row"><span>Vega</span><span>${setup.netVega.toFixed(2)}</span></div>
     <div class="dm-divider"></div>
     <div class="dm-row"><span>Max Profit</span><span class="profit">₹${setup.maxProfit.toLocaleString('en-IN')}</span></div>
     <div class="dm-row"><span>Max Loss</span><span class="loss">₹${setup.maxLoss.toLocaleString('en-IN')}</span></div>
@@ -542,6 +593,7 @@ function openDrawer(setup) {
     <div class="dm-row"><span>Lots</span><span>${setup.lots}</span></div>
     <div class="dm-row"><span>${setup.isCredit?'Net Credit':'Net Debit'}</span><span>₹${Math.abs(setup.netPremium).toFixed(2)}</span></div>
     <div class="dm-row"><span>Spread %</span><span>${setup.avgSpreadPct}%</span></div>
+    <div class="dm-row"><span>Varsity Tier</span><span>${setup.varsityTier || '—'} (×${(setup.varsityMult||0).toFixed(2)})</span></div>
     ${setup.requiredMargin ? `<div class="dm-row"><span>Required Margin</span><span>₹${Math.round(setup.requiredMargin).toLocaleString('en-IN')}</span></div>` : ''}
     <div class="dm-divider"></div>
     <div class="dm-legs-title">Legs (execution prices)</div>
