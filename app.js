@@ -260,8 +260,10 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
   let netPremium = 0, netDelta = 0, netTheta = 0, netGamma = 0, netVega = 0;
 
   for (const leg of legs) {
+    // Use bid for SELL (what you'll actually get), ask for BUY (what you'll actually pay)
+    const execPrice = leg.action === 'SELL' ? (leg.data.bid || leg.data.ltp) : (leg.data.ask || leg.data.ltp);
     const premMult = leg.action === 'SELL' ? 1 : -1;
-    netPremium += premMult * leg.data.ltp;
+    netPremium += premMult * execPrice;
     const gMult = leg.action === 'SELL' ? -1 : 1;
     if (leg.data.delta != null) netDelta += gMult * leg.data.delta;
     if (leg.data.theta != null) netTheta += gMult * leg.data.theta;
@@ -274,7 +276,7 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
 
   const absPremium = Math.abs(netPremium);
   let maxProfit, maxLoss, breakevens = [];
-  const safeLots = Math.max(1, Math.floor(CAPITAL / marginPerLot));
+  const safeLots = 1; // Fixed 1 lot until confidence grows
 
   if (stratType === 'BULL_PUT') {
     maxProfit = netPremium * lotSize * safeLots;
@@ -396,7 +398,7 @@ function getBiasAlignment(stratType, bias) {
 // COMMAND TAB RENDER
 // ═══════════════════════════════════════════════════
 
-function buildCommand() {
+async function buildCommand() {
   const panel = document.getElementById('command-output'); if (!panel) return;
   const vix = gv('india_vix') || gv('strat_vix');
   const hasChains = (Object.keys(window._CHAINS.NF).length + Object.keys(window._CHAINS.BNF).length) > 0;
@@ -405,22 +407,44 @@ function buildCommand() {
   const ranked = evaluateAllStrategies(q1.bias, vix);
   _RANKED_SETUPS = ranked;
   if (valid(vix) && vix >= 28) { panel.innerHTML = `<div class="gonogo nogo"><div class="gonogo-label">🚫 AVOID ALL</div><div class="gonogo-reason">VIX ≥ 28</div></div>${renderQ1Card(q1)}`; return; }
+
+  // Show loading while checking margins
+  panel.innerHTML = '<div class="cmd-placeholder">Checking margins for top strategies...</div>';
+
+  // Check margin for top 10 strategies via Upstox API
+  const availMargin = window._AVAILABLE_MARGIN || CAPITAL;
+  const top10 = ranked.slice(0, 10);
+  for (const setup of top10) {
+    const marginResult = typeof upstoxCheckMargin === 'function' ? await upstoxCheckMargin(setup.legs) : null;
+    if (marginResult && marginResult.ok && marginResult.required > 0) {
+      setup.requiredMargin = marginResult.required;
+      setup.marginOk = marginResult.required <= availMargin;
+    } else {
+      // Fallback estimate: IC=2.5× spread margin, others=1.5×
+      const isIC = setup.stratType === 'IRON_CONDOR';
+      setup.requiredMargin = setup.marginUsed * (isIC ? 2.5 : 1.5);
+      setup.marginOk = setup.requiredMargin <= availMargin;
+    }
+  }
+
+  // Filter: only executable strategies
+  const affordable = top10.filter(s => s.marginOk);
+
   let html = '';
-  const isGo = ranked.length > 0;
-  html += `<div class="gonogo ${isGo?'go':'nogo'}"><div class="gonogo-label">${isGo?'✅ GO':'🚫 NO-GO'}</div><div class="gonogo-strategy">${isGo?`${ranked.length} viable setups`:'No viable setups'}</div><div class="gonogo-meta">VIX: ${vix||'—'} | Bias: ${q1.biasConf} ${q1.bias}</div></div>`;
+  const isGo = affordable.length > 0;
+  html += `<div class="gonogo ${isGo?'go':'nogo'}"><div class="gonogo-label">${isGo?'✅ GO':'🚫 NO-GO'}</div><div class="gonogo-strategy">${isGo?`${affordable.length} executable (of ${ranked.length} viable)`:'No setups fit margin ₹'+availMargin.toLocaleString('en-IN')}</div><div class="gonogo-meta">VIX: ${vix||'—'} | Bias: ${q1.biasConf} ${q1.bias}</div></div>`;
   html += renderQ1Card(q1);
-  if (ranked.length > 0) {
+  if (affordable.length > 0) {
     html += '<div class="section-title">TOP STRATEGIES — Real-Time</div>';
-    // Diversity: max 3 of same strategy type in top 5
     const shown = [], typeCounts = {};
-    for (const s of ranked) {
+    for (const s of affordable) {
       if (shown.length >= 5) break;
       typeCounts[s.stratType] = (typeCounts[s.stratType] || 0) + 1;
       if (typeCounts[s.stratType] > 3) continue;
       shown.push(s);
     }
     shown.forEach((s, i) => { html += renderStrategyCard(s, i); });
-    _RANKED_SETUPS = shown; // Only keep displayed setups for drawer
+    _RANKED_SETUPS = shown;
   }
   panel.innerHTML = html;
   document.querySelectorAll('.strat-card').forEach((card, i) => { card.addEventListener('click', () => openDrawer(_RANKED_SETUPS[i])); });
@@ -431,7 +455,10 @@ function renderQ1Card(q1) {
 }
 
 function renderStrategyCard(setup, index) {
-  const legStr = setup.legs.map(l => `${l.action} ${l.strike} ${l.type} (${moneyLabel(l.strike, setup.spot, l.type)})`).join(' | ');
+  const legStr = setup.legs.map(l => {
+    const price = l.action === 'SELL' ? (l.data.bid || l.data.ltp) : (l.data.ask || l.data.ltp);
+    return `${l.action} ${l.strike} ${l.type} (${moneyLabel(l.strike, setup.spot, l.type)}) @₹${price.toFixed(0)}`;
+  }).join(' | ');
   return `<div class="strat-card" data-idx="${index}">
     <div class="sc-rank">#${index+1}</div>
     <div class="sc-header"><div class="sc-name">${setup.stratLabel}</div><div class="sc-index">${setup.indexKey} · ${setup.expiry} · DTE ${setup.dte} (${setup.tradingDte}T)</div></div>
@@ -444,7 +471,7 @@ function renderStrategyCard(setup, index) {
     </div>
     <div class="sc-targets">🎯 Target: ₹${setup.targetProfit.toLocaleString('en-IN')} | 🛑 SL: ₹${setup.stopLoss.toLocaleString('en-IN')}</div>
     <div class="sc-greeks">Δ ${setup.netDelta} · θ ${setup.netTheta} · γ ${setup.netGamma} · ν ${setup.netVega}</div>
-    <div class="sc-score">EV: ₹${setup.ev.toLocaleString('en-IN')} | Score: ${setup.compositeScore}</div>
+    <div class="sc-score">EV: ₹${setup.ev.toLocaleString('en-IN')} | Score: ${setup.compositeScore}${setup.requiredMargin ? ' | Margin: ₹'+Math.round(setup.requiredMargin).toLocaleString('en-IN') : ''}</div>
     <div class="sc-tap">Tap for payoff chart ▾</div>
   </div>`;
 }
@@ -479,9 +506,14 @@ function openDrawer(setup) {
     <div class="dm-row"><span>Lots</span><span>${setup.lots}</span></div>
     <div class="dm-row"><span>${setup.isCredit?'Net Credit':'Net Debit'}</span><span>₹${Math.abs(setup.netPremium).toFixed(2)}</span></div>
     <div class="dm-row"><span>Spread %</span><span>${setup.avgSpreadPct}%</span></div>
+    ${setup.requiredMargin ? `<div class="dm-row"><span>Required Margin</span><span>₹${Math.round(setup.requiredMargin).toLocaleString('en-IN')}</span></div>` : ''}
     <div class="dm-divider"></div>
-    <div class="dm-legs-title">Legs</div>
-    ${setup.legs.map(l => `<div class="dm-leg">${l.action} ${setup.indexKey} ${setup.expiry} ${l.strike} ${l.type} <span style="opacity:0.6">(${moneyLabel(l.strike, setup.spot, l.type)})</span> @ ₹${l.data.ltp.toFixed(2)}</div>`).join('')}
+    <div class="dm-legs-title">Legs (execution prices)</div>
+    ${setup.legs.map(l => {
+      const price = l.action === 'SELL' ? (l.data.bid || l.data.ltp) : (l.data.ask || l.data.ltp);
+      const tag = l.action === 'SELL' ? 'bid' : 'ask';
+      return `<div class="dm-leg">${l.action} ${setup.indexKey} ${setup.expiry} ${l.strike} ${l.type} <span style="opacity:0.6">(${moneyLabel(l.strike, setup.spot, l.type)})</span> @ ₹${price.toFixed(2)} <span style="opacity:0.4">${tag}</span></div>`;
+    }).join('')}
   `;
   backdrop.classList.add('show'); drawer.classList.add('show');
 }

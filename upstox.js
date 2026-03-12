@@ -41,7 +41,12 @@ function upstoxSaveAndFetch() {
   upstoxAutoFill();
 }
 function _headers() {
-  return { 'Authorization': `Bearer ${upstoxGetToken()}`, 'Accept': 'application/json', 'Api-Version': '2.0' };
+  return { 'Authorization': `Bearer ${upstoxGetToken()}`, 'Accept': 'application/json', 'Api-Version': '2.0', 'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache' };
+}
+function _bust(url) {
+  // Cache-buster: append timestamp to prevent browser caching
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_t=${Date.now()}`;
 }
 function _set(id, value) {
   const el = document.getElementById(id);
@@ -55,7 +60,7 @@ function _set(id, value) {
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchExpiries(instrument) {
-  const resp = await fetch(`${UPSTOX_API}/option/contract?instrument_key=${encodeURIComponent(instrument)}`, { headers: _headers() });
+  const resp = await fetch(_bust(`${UPSTOX_API}/option/contract?instrument_key=${encodeURIComponent(instrument)}`), { headers: _headers() });
   const data = await resp.json();
   if (data.status !== 'success' || !data.data) throw new Error(`Expiry fetch failed: ${instrument}`);
 
@@ -144,7 +149,7 @@ async function upstoxAutoFill() {
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchSpots() {
-  const resp = await fetch(`${UPSTOX_API}/market-quote/quotes?instrument_key=NSE_INDEX|Nifty 50,NSE_INDEX|Nifty Bank,NSE_INDEX|India VIX`, { headers: _headers() });
+  const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=NSE_INDEX|Nifty 50,NSE_INDEX|Nifty Bank,NSE_INDEX|India VIX`), { headers: _headers() });
   const data = await resp.json();
   if (data.status !== 'success') throw new Error('Spots fetch failed');
 
@@ -164,7 +169,7 @@ async function upstoxFetchSpots() {
 async function upstoxFetchFullChain(instrument, expiry, indexKey) {
   if (!expiry) return;
 
-  const resp = await fetch(`${UPSTOX_API}/option/chain?instrument_key=${encodeURIComponent(instrument)}&expiry_date=${expiry}`, { headers: _headers() });
+  const resp = await fetch(_bust(`${UPSTOX_API}/option/chain?instrument_key=${encodeURIComponent(instrument)}&expiry_date=${expiry}`), { headers: _headers() });
   const data = await resp.json();
 
   // Store raw sample for debug
@@ -215,7 +220,8 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
         oi:    md.oi || md.open_interest || md.openInterest || 0,
         vol:   md.volume || md.traded_volume || 0,
         delta: gr.delta, theta: gr.theta, gamma: gr.gamma, vega: gr.vega,
-        iv:    gr.iv || gr.implied_volatility || gr.impliedVolatility || null
+        iv:    gr.iv || gr.implied_volatility || gr.impliedVolatility || null,
+        instrument_key: callData.instrument_key || null
       };
       const thisOI = sd.CE.oi;
       callOI += thisOI;
@@ -236,7 +242,8 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
         oi:    md.oi || md.open_interest || md.openInterest || 0,
         vol:   md.volume || md.traded_volume || 0,
         delta: gr.delta, theta: gr.theta, gamma: gr.gamma, vega: gr.vega,
-        iv:    gr.iv || gr.implied_volatility || gr.impliedVolatility || null
+        iv:    gr.iv || gr.implied_volatility || gr.impliedVolatility || null,
+        instrument_key: putData.instrument_key || null
       };
       const thisOI = sd.PE.oi;
       putOI += thisOI;
@@ -298,7 +305,7 @@ async function upstoxFetchHistorical(instrument, isNF) {
   const to = new Date().toISOString().slice(0, 10);
   const from = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
 
-  const resp = await fetch(`${UPSTOX_API}/historical-candle/${encodeURIComponent(instrument)}/day/${to}/${from}`, { headers: _headers() });
+  const resp = await fetch(_bust(`${UPSTOX_API}/historical-candle/${encodeURIComponent(instrument)}/day/${to}/${from}`), { headers: _headers() });
   const data = await resp.json();
   if (data.status !== 'success' || !data.data || !data.data.candles) throw new Error('Historical failed');
 
@@ -333,7 +340,7 @@ async function upstoxFetchHistorical(instrument, isNF) {
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchPositions() {
-  const resp = await fetch(`${UPSTOX_API}/portfolio/short-term-positions`, { headers: _headers() });
+  const resp = await fetch(_bust(`${UPSTOX_API}/portfolio/short-term-positions`), { headers: _headers() });
   const data = await resp.json();
   if (data.status !== 'success') throw new Error('Positions failed');
   const positions = data.data || [];
@@ -355,7 +362,7 @@ async function upstoxFetchPositions() {
 }
 
 async function upstoxFetchMargins() {
-  const resp = await fetch(`${UPSTOX_API}/user/get-funds-and-margin`, { headers: _headers() });
+  const resp = await fetch(_bust(`${UPSTOX_API}/user/get-funds-and-margin`), { headers: _headers() });
   const data = await resp.json();
   if (data.status !== 'success') throw new Error('Margins failed');
   const m = data.data;
@@ -365,8 +372,44 @@ async function upstoxFetchMargins() {
   if (m.equity) { avail = m.equity.available_margin || m.equity.net || 0; used = m.equity.used_margin || m.equity.blocked_margin || 0; }
   if (avail === 0 && m.available_margin) avail = m.available_margin;
   if (used === 0 && m.used_margin) used = m.used_margin;
-  console.log('[upstox] Margin response:', JSON.stringify(m));
+  // Store globally for strategy filtering
+  window._AVAILABLE_MARGIN = avail;
+  console.log('[upstox] Margin:', avail, 'used:', used);
   el.innerHTML = `<div class="margin-info"><span>Available: ₹${avail.toLocaleString('en-IN')}</span><span> | Used: ₹${used.toLocaleString('en-IN')}</span></div>`;
+}
+
+// ═══════════════════════════════════════════════════
+// MARGIN CALCULATOR API — check if strategy fits capital
+// ═══════════════════════════════════════════════════
+
+async function upstoxCheckMargin(legs) {
+  // Build instruments array for Upstox margin API
+  try {
+    const instruments = legs.map(l => ({
+      instrument_key: l.data.instrument_key || '',
+      quantity: l.action === 'SELL' ? -(l.qty || 1) : (l.qty || 1),
+      transaction_type: l.action === 'SELL' ? 'SELL' : 'BUY',
+      product: 'D'
+    })).filter(i => i.instrument_key);
+
+    if (!instruments.length) return null;
+
+    const resp = await fetch(_bust(`${UPSTOX_API}/charges/margin`), {
+      method: 'POST',
+      headers: { ..._headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruments })
+    });
+    const data = await resp.json();
+    if (data.status === 'success' && data.data) {
+      const required = data.data.required_margin || data.data.total_margin || data.data.margin || 0;
+      console.log('[upstox] Margin check:', required);
+      return { ok: true, required: required };
+    }
+    return null;
+  } catch(e) {
+    console.warn('[upstox] Margin API failed:', e.message);
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════
