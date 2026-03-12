@@ -419,14 +419,22 @@ async function buildCommand() {
   const toCheck = [...nfRanked, ...bnfRanked];
 
   for (const setup of toCheck) {
-    const marginResult = typeof upstoxCheckMargin === 'function' ? await upstoxCheckMargin(setup.legs) : null;
+    const marginResult = typeof upstoxCheckMargin === 'function' ? await upstoxCheckMargin(setup.legs, setup.lotSize) : null;
     if (marginResult && marginResult.ok && marginResult.required > 0) {
       setup.requiredMargin = marginResult.required;
       setup.marginOk = marginResult.required <= availMargin;
     } else {
-      // Fallback estimate: IC=2.5× spread margin, others=1.5×
+      // Conservative fallback when API fails (SPAN ≈ width × lotSize × multiplier)
       const isIC = setup.stratType === 'IRON_CONDOR';
-      setup.requiredMargin = setup.marginUsed * (isIC ? 2.5 : 1.5);
+      const isCredit = setup.isCredit;
+      if (isIC) {
+        setup.requiredMargin = setup.width * setup.lotSize * 9;
+      } else if (isCredit) {
+        setup.requiredMargin = setup.width * setup.lotSize * 6;
+      } else {
+        // Debit strategies: margin = premium paid + buffer
+        setup.requiredMargin = setup.maxLoss * 1.5;
+      }
       setup.marginOk = setup.requiredMargin <= availMargin;
     }
   }

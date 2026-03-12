@@ -382,17 +382,21 @@ async function upstoxFetchMargins() {
 // MARGIN CALCULATOR API — check if strategy fits capital
 // ═══════════════════════════════════════════════════
 
-async function upstoxCheckMargin(legs) {
+async function upstoxCheckMargin(legs, lotSize) {
   // Build instruments array for Upstox margin API
   try {
+    const qty = lotSize || 1;
     const instruments = legs.map(l => ({
       instrument_key: l.data.instrument_key || '',
-      quantity: l.action === 'SELL' ? -(l.qty || 1) : (l.qty || 1),
+      quantity: qty,
       transaction_type: l.action === 'SELL' ? 'SELL' : 'BUY',
       product: 'D'
     })).filter(i => i.instrument_key);
 
-    if (!instruments.length) return null;
+    if (!instruments.length) {
+      console.warn('[upstox] Margin check skipped — no instrument_keys on legs');
+      return null;
+    }
 
     const resp = await fetch(_bust(`${UPSTOX_API}/charges/margin`), {
       method: 'POST',
@@ -400,11 +404,13 @@ async function upstoxCheckMargin(legs) {
       body: JSON.stringify({ instruments })
     });
     const data = await resp.json();
+    console.log('[upstox] Margin API response:', JSON.stringify(data).substring(0, 500));
     if (data.status === 'success' && data.data) {
       const required = data.data.required_margin || data.data.total_margin || data.data.margin || 0;
       console.log('[upstox] Margin check:', required);
       return { ok: true, required: required };
     }
+    console.warn('[upstox] Margin API non-success:', data.status, data.message || '');
     return null;
   } catch(e) {
     console.warn('[upstox] Margin API failed:', e.message);
