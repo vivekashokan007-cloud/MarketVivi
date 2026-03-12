@@ -330,13 +330,7 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
 
   const rr = maxProfit / Math.max(maxLoss, 1);
 
-  // ── REJECT: R:R below 1.5 — not worth the risk ──
-  if (rr < 1.5) return null;
-
-  // ── Target / Stop Loss: 50% of max profit / 50% of max loss ──
-  // Exit R:R = target/SL = (maxProfit/2)/(maxLoss/2) = same as strategy R:R ≥ 1.5
-  let targetProfit = maxProfit * 0.5;
-  let stopLoss = maxLoss * 0.5;
+  // ── Probability calculation (needed before filter) ──
   let probProfit = 0.50;
   if (isCredit) {
     const soldLeg = legs.find(l => l.action === 'SELL');
@@ -351,6 +345,33 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
     if (buyLeg && buyLeg.data.delta != null) probProfit = Math.abs(buyLeg.data.delta);
   }
 
+  // ── EV calculation (needed before filter) ──
+  const ev = (probProfit * maxProfit) - ((1 - probProfit) * maxLoss);
+
+  // ── SPLIT FILTER: credit vs debit ──
+  if (isCredit) {
+    // Credit spreads: R:R is structurally <1 (small credit, large risk)
+    // Filter by: probability of keeping premium + positive expected value
+    if (probProfit < 0.35) return null;   // Need >35% win rate
+    if (ev <= 0) return null;              // Must be +EV
+  } else {
+    // Debit spreads/straddles/strangles: R:R must justify the premium spent
+    if (rr < 1.5) return null;
+  }
+
+  // ── Target / Stop Loss ──
+  let targetProfit, stopLoss;
+  if (isCredit) {
+    // Credit: target = 50% of max profit (exit early, don't hold to expiry)
+    // SL = 1× credit received (risk the same as you collected)
+    targetProfit = maxProfit * 0.50;
+    stopLoss = maxProfit * 1.0;
+  } else {
+    // Debit: target = 50% of max profit, SL = 50% of max loss
+    targetProfit = maxProfit * 0.50;
+    stopLoss = maxLoss * 0.50;
+  }
+
   let totalSpread = 0, spreadLegs = 0;
   for (const leg of legs) { if (leg.data.bid && leg.data.ask && leg.data.ask > 0) { totalSpread += (leg.data.ask - leg.data.bid) / leg.data.ask; spreadLegs++; } }
   const avgSpreadPct = spreadLegs > 0 ? totalSpread / spreadLegs : 0.05;
@@ -358,7 +379,6 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
   if (isCredit && creditRatio < 0.05) return null;
   if (!isCredit && stratType !== 'LONG_STRADDLE' && stratType !== 'LONG_STRANGLE' && absPremium > width * 0.85) return null;
 
-  const ev = (probProfit * maxProfit) - ((1 - probProfit) * maxLoss);
   const marginUsed = marginPerLot * safeLots;
   const evPerRupee = ev / Math.max(marginUsed, 1);
 
