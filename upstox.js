@@ -343,19 +343,45 @@ async function upstoxFetchHistorical(instrument, isNF) {
 async function upstoxFetchPositions() {
   const resp = await fetch(_bust(`${UPSTOX_API}/portfolio/short-term-positions`), { headers: _headers() });
   const data = await resp.json();
-  if (data.status !== 'success') throw new Error('Positions failed');
-  const positions = data.data || [];
+  if (data.status !== 'success') throw new Error('Positions failed: ' + (data.message || ''));
+
+  // Flexible parsing — Upstox may return array directly or nested
+  let positions = [];
+  if (Array.isArray(data.data)) {
+    positions = data.data;
+  } else if (data.data && Array.isArray(data.data.positions)) {
+    positions = data.data.positions;
+  } else if (data.data && typeof data.data === 'object') {
+    // Could be keyed by instrument
+    positions = Object.values(data.data).flat().filter(p => p && typeof p === 'object');
+  }
 
   // Store globally for strategy detection
   window._UPSTOX_POSITIONS = positions;
 
-  // Render raw legs in POSITIONS tab
+  // Debug: show raw response in positions tab
   const el = document.getElementById('upstox-positions');
   if (!el) return;
-  if (!positions.length) { el.innerHTML = '<div class="pos-empty">No open positions</div>'; return; }
-  el.innerHTML = positions.map(p => {
-    const pnl = p.pnl || 0;
-    return `<div class="pos-row"><span class="pos-symbol">${p.tradingsymbol||p.trading_symbol||'—'}</span><span class="pos-qty">Qty: ${p.quantity||p.net_quantity||0}</span><span class="pos-avg">Avg: ₹${(p.average_price||p.buy_price||0).toFixed(2)}</span><span class="${pnl>=0?'pnl-profit':'pnl-loss'}">P&L: ₹${pnl.toFixed(2)}</span></div>`;
+
+  // Show raw API debug first
+  const rawKeys = data.data ? (Array.isArray(data.data) ? `array[${data.data.length}]` : `object{${Object.keys(data.data).slice(0,5).join(',')}}`) : 'null';
+  const firstItem = positions.length > 0 ? JSON.stringify(positions[0]).substring(0, 300) : 'empty';
+  const debugHtml = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
+    <b>API Debug:</b> data.data=${rawKeys} | positions=${positions.length}<br>
+    <b>First:</b> ${firstItem}
+  </div>`;
+
+  if (!positions.length) {
+    el.innerHTML = debugHtml + '<div class="pos-empty">No open positions</div>';
+    return;
+  }
+
+  el.innerHTML = debugHtml + positions.map(p => {
+    const sym = p.tradingsymbol || p.trading_symbol || p.instrument_token || p.instrument_key || '—';
+    const qty = p.quantity || p.net_quantity || p.day_buy_quantity - p.day_sell_quantity || 0;
+    const pnl = p.pnl || p.realised || p.unrealised || 0;
+    const avg = p.average_price || p.buy_price || p.sell_price || p.buy_avg || 0;
+    return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${qty}</span><span class="pos-avg">Avg: ₹${(+avg).toFixed(2)}</span><span class="${pnl>=0?'pnl-profit':'pnl-loss'}">P&L: ₹${(+pnl).toFixed(2)}</span></div>`;
   }).join('');
 
   // Trigger strategy detection in app.js
