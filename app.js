@@ -1552,6 +1552,18 @@ async function renderPositionsTab() {
       const pnlClass = (pos.current_pnl || 0) >= 0 ? 'profit' : 'loss';
       const legStr = (pos.legs || []).map(l => `${l.action} ${l.strike} ${l.type}`).join(' | ');
       const peakStr = pos.peak_pnl ? ` · Peak: ₹${pos.peak_pnl.toLocaleString('en-IN')}` : '';
+      // P&L debug: show chain lookup status
+      const debugKey = `${pos.index_key}_${pos.expiry}`;
+      const dbgChain = window._CHAINS && window._CHAINS[pos.index_key] && window._CHAINS[pos.index_key][pos.expiry];
+      const dbgPosChain = (window._POSITION_CHAINS || {})[`${pos.index_key}|${pos.expiry}`];
+      let pnlDebug = `Chain:${dbgChain?'✅':'❌'} PosChain:${dbgPosChain?'✅':'❌'}`;
+      if (pos.legs) {
+        for (const l of pos.legs) {
+          const cLtp = dbgChain && dbgChain.strikes && dbgChain.strikes[l.strike] && dbgChain.strikes[l.strike][l.type] ? dbgChain.strikes[l.strike][l.type].ltp : '?';
+          const pLtp = dbgPosChain && dbgPosChain.strikeLTPs ? (dbgPosChain.strikeLTPs[`${l.strike}_${l.type}`] || '?') : '?';
+          pnlDebug += ` | ${l.strike}${l.type}: chain=${cLtp} pos=${pLtp} entry=${l.entry_ltp||'?'}`;
+        }
+      }
       return `<div class="pos-card">
         <div class="pos-card-header">
           <span class="pos-strat-name">${STRAT_LABELS[pos.strategy_type] || pos.strategy_type}</span>
@@ -1563,6 +1575,7 @@ async function renderPositionsTab() {
           <span>P&L: <span class="${pnlClass}">₹${(pos.current_pnl||0).toLocaleString('en-IN')}</span>${peakStr}</span>
           <span>Target: ₹${(pos.target_profit||0).toLocaleString('en-IN')} | SL: ₹${(pos.stop_loss||0).toLocaleString('en-IN')}</span>
         </div>
+        <div style="font-size:9px;color:var(--text-dim);margin-top:4px;word-break:break-all">${pnlDebug}</div>
       </div>`;
     }).join('');
   }
