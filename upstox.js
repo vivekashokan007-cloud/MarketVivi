@@ -341,34 +341,62 @@ async function upstoxFetchHistorical(instrument, isNF) {
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchPositions() {
-  const resp = await fetch(_bust(`${UPSTOX_API}/portfolio/short-term-positions`), { headers: _headers() });
-  const data = await resp.json();
-  if (data.status !== 'success') throw new Error('Positions failed: ' + (data.message || ''));
+  // Try multiple endpoints — Upstox may serve F&O positions differently
+  const endpoints = [
+    '/portfolio/short-term-positions',
+    '/portfolio/positions'
+  ];
 
-  // Flexible parsing — Upstox may return array directly or nested
   let positions = [];
-  if (Array.isArray(data.data)) {
-    positions = data.data;
-  } else if (data.data && Array.isArray(data.data.positions)) {
-    positions = data.data.positions;
-  } else if (data.data && typeof data.data === 'object') {
-    // Could be keyed by instrument
-    positions = Object.values(data.data).flat().filter(p => p && typeof p === 'object');
+  let usedEndpoint = '';
+  let rawDebug = '';
+
+  for (const ep of endpoints) {
+    try {
+      const resp = await fetch(_bust(`${UPSTOX_API}${ep}`), { headers: _headers() });
+      const data = await resp.json();
+      rawDebug += `${ep}: status=${data.status} type=${typeof data.data} `;
+
+      if (data.status === 'success' && data.data) {
+        let found = [];
+        if (Array.isArray(data.data)) {
+          found = data.data;
+          rawDebug += `array[${found.length}] `;
+        } else if (typeof data.data === 'object') {
+          // Could be keyed or nested
+          const keys = Object.keys(data.data);
+          rawDebug += `obj{${keys.slice(0,5).join(',')}} `;
+          if (Array.isArray(data.data.positions)) {
+            found = data.data.positions;
+          } else {
+            found = keys.flatMap(k => Array.isArray(data.data[k]) ? data.data[k] : [data.data[k]]).filter(p => p && typeof p === 'object' && (p.tradingsymbol || p.trading_symbol || p.instrument_key));
+          }
+          rawDebug += `parsed[${found.length}] `;
+        }
+
+        if (found.length > 0) {
+          positions = found;
+          usedEndpoint = ep;
+          rawDebug += '✅ ';
+          break;
+        }
+      }
+    } catch(e) {
+      rawDebug += `${ep}: ERROR ${e.message} `;
+    }
   }
 
-  // Store globally for strategy detection
+  // Store globally
   window._UPSTOX_POSITIONS = positions;
 
-  // Debug: show raw response in positions tab
+  // Render debug + raw legs
   const el = document.getElementById('upstox-positions');
   if (!el) return;
 
-  // Show raw API debug first
-  const rawKeys = data.data ? (Array.isArray(data.data) ? `array[${data.data.length}]` : `object{${Object.keys(data.data).slice(0,5).join(',')}}`) : 'null';
-  const firstItem = positions.length > 0 ? JSON.stringify(positions[0]).substring(0, 300) : 'empty';
   const debugHtml = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
-    <b>API Debug:</b> data.data=${rawKeys} | positions=${positions.length}<br>
-    <b>First:</b> ${firstItem}
+    <b>Endpoints:</b> ${rawDebug}<br>
+    <b>Used:</b> ${usedEndpoint || 'none'} | <b>Count:</b> ${positions.length}<br>
+    ${positions.length > 0 ? '<b>First:</b> ' + JSON.stringify(positions[0]).substring(0, 400) : '<b>All empty</b>'}
   </div>`;
 
   if (!positions.length) {
@@ -378,13 +406,13 @@ async function upstoxFetchPositions() {
 
   el.innerHTML = debugHtml + positions.map(p => {
     const sym = p.tradingsymbol || p.trading_symbol || p.instrument_token || p.instrument_key || '—';
-    const qty = p.quantity || p.net_quantity || p.day_buy_quantity - p.day_sell_quantity || 0;
+    const qty = p.quantity || p.net_quantity || 0;
     const pnl = p.pnl || p.realised || p.unrealised || 0;
     const avg = p.average_price || p.buy_price || p.sell_price || p.buy_avg || 0;
     return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${qty}</span><span class="pos-avg">Avg: ₹${(+avg).toFixed(2)}</span><span class="${pnl>=0?'pnl-profit':'pnl-loss'}">P&L: ₹${(+pnl).toFixed(2)}</span></div>`;
   }).join('');
 
-  // Trigger strategy detection in app.js
+  // Trigger strategy detection
   if (typeof detectAndLogPositions === 'function') detectAndLogPositions(positions);
 }
 
