@@ -137,6 +137,32 @@ async function upstoxAutoFill() {
     fails.forEach(f => console.warn('[upstox] Fetch failed:', f.reason));
     console.log(`[upstox] Chains: NF=${Object.keys(window._CHAINS.NF).length}, BNF=${Object.keys(window._CHAINS.BNF).length}`);
 
+    // ── Post-fetch: reconstruct positions from trade book if positions API empty ──
+    // This runs AFTER chains are loaded so parseUpstoxSymbol can match expiries
+    const trades = window._UPSTOX_TRADE_BOOK || [];
+    if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
+      console.log('[upstox] Positions empty — reconstructing from trade book (chains loaded)');
+      const synthPositions = reconstructPositionsFromTrades(trades);
+      if (synthPositions.length > 0) {
+        window._UPSTOX_POSITIONS = synthPositions;
+        const el = document.getElementById('upstox-positions');
+        if (el) {
+          const chainKeys = [...Object.keys(window._CHAINS.NF), ...Object.keys(window._CHAINS.BNF)];
+          el.innerHTML = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
+            <b>Source:</b> Trade Book (${trades.length} fills → ${synthPositions.length} legs)<br>
+            <b>Chains:</b> ${chainKeys.join(', ')}<br>
+            <b>First:</b> ${JSON.stringify(synthPositions[0]).substring(0, 300)}
+          </div>` + synthPositions.map(p => {
+            const sym = p.tradingsymbol || '—';
+            return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${p.quantity}</span><span class="pos-avg">Avg: ₹${(+p.average_price).toFixed(2)}</span></div>`;
+          }).join('');
+        }
+        if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
+      }
+    }
+    // Trigger exit matching
+    if (trades.length > 0 && typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
+
     calcScore();
     buildCommand();
   } catch(e) {
@@ -483,37 +509,9 @@ async function upstoxFetchTradeBook() {
   if (data.status !== 'success') throw new Error('Trade book failed');
   const trades = data.data || [];
 
-  // Store globally for exit matching in app.js
+  // Store globally — reconstruction happens AFTER chains are loaded
   window._UPSTOX_TRADE_BOOK = trades;
   console.log(`[upstox] Trade book: ${trades.length} fills today`);
-
-  // If positions API returned empty but trade book has fills,
-  // reconstruct positions from trade book
-  if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
-    console.log('[upstox] Positions empty — reconstructing from trade book');
-    const synthPositions = reconstructPositionsFromTrades(trades);
-    if (synthPositions.length > 0) {
-      window._UPSTOX_POSITIONS = synthPositions;
-      // Re-render positions tab
-      const el = document.getElementById('upstox-positions');
-      if (el) {
-        const debugHtml = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
-          <b>Source:</b> Reconstructed from Trade Book (${trades.length} fills → ${synthPositions.length} legs)<br>
-          <b>First:</b> ${JSON.stringify(synthPositions[0]).substring(0, 300)}
-        </div>`;
-        el.innerHTML = debugHtml + synthPositions.map(p => {
-          const sym = p.tradingsymbol || '—';
-          const pnl = p.pnl || 0;
-          return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${p.quantity}</span><span class="pos-avg">Avg: ₹${(+p.average_price).toFixed(2)}</span><span class="${pnl>=0?'pnl-profit':'pnl-loss'}">P&L: ₹${(+pnl).toFixed(2)}</span></div>`;
-        }).join('');
-      }
-      // Trigger strategy detection
-      if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
-    }
-  }
-
-  // Trigger exit matching in app.js
-  if (typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
 }
 
 function reconstructPositionsFromTrades(trades) {
@@ -589,6 +587,18 @@ async function upstoxLightFetch() {
     await upstoxFetchSpots();
     await upstoxFetchPositions();
     await upstoxFetchTradeBook();
+
+    // Reconstruct from trade book if positions empty (strategy trades)
+    const trades = window._UPSTOX_TRADE_BOOK || [];
+    if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
+      const synthPositions = reconstructPositionsFromTrades(trades);
+      if (synthPositions.length > 0) {
+        window._UPSTOX_POSITIONS = synthPositions;
+        if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
+      }
+    }
+    // Exit matching
+    if (trades.length > 0 && typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
 
     // Smart chain fetch: ONLY for expiries with open positions
     // Store in _POSITION_CHAINS (NOT _CHAINS) to avoid touching SIGNAL/COMMAND
