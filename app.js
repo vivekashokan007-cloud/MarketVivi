@@ -1549,9 +1549,45 @@ async function renderPositionsTab() {
   } else {
     openEl.innerHTML = detected.map(pos => {
       const meta = ALERT_META[pos.recommendation] || ALERT_META.HOLD;
-      const pnlClass = (pos.current_pnl || 0) >= 0 ? 'profit' : 'loss';
+      let livePnl = pos.current_pnl || 0;
       const legStr = (pos.legs || []).map(l => `${l.action} ${l.strike} ${l.type}`).join(' | ');
-      const peakStr = pos.peak_pnl ? ` · Peak: ₹${pos.peak_pnl.toLocaleString('en-IN')}` : '';
+
+      // ── Compute live P&L directly from chain data ──
+      const fullChain = window._CHAINS && window._CHAINS[pos.index_key] && window._CHAINS[pos.index_key][pos.expiry];
+      const posChainData = (window._POSITION_CHAINS || {})[`${pos.index_key}|${pos.expiry}`];
+      const lotSize = pos.index_key === 'NF' ? NF_LOT_SIZE : BNF_LOT;
+      const lots = pos.lots || 1;
+
+      if (pos.legs && pos.legs.length > 0) {
+        let calcPnl = 0;
+        let foundAll = true;
+        for (const leg of pos.legs) {
+          let currentLtp = 0;
+          // Try full chain first
+          if (fullChain && fullChain.strikes && fullChain.strikes[leg.strike]) {
+            const sd = fullChain.strikes[leg.strike];
+            if (leg.type === 'PE' && sd.PE) currentLtp = sd.PE.ltp || 0;
+            if (leg.type === 'CE' && sd.CE) currentLtp = sd.CE.ltp || 0;
+          }
+          // Try position chain
+          if (currentLtp === 0 && posChainData && posChainData.strikeLTPs) {
+            currentLtp = posChainData.strikeLTPs[`${leg.strike}_${leg.type}`] || 0;
+          }
+          if (currentLtp > 0 && leg.entry_ltp > 0) {
+            const mult = leg.action === 'BUY' ? 1 : -1;
+            calcPnl += mult * (currentLtp - leg.entry_ltp);
+          } else {
+            foundAll = false;
+          }
+        }
+        if (foundAll) {
+          livePnl = +(calcPnl * lotSize * lots).toFixed(0);
+        }
+      }
+
+      const pnlClass = livePnl >= 0 ? 'profit' : 'loss';
+      const peakPnl = Math.max(pos.peak_pnl || 0, livePnl);
+      const peakStr = peakPnl > 0 ? ` · Peak: ₹${peakPnl.toLocaleString('en-IN')}` : '';
       // P&L debug: show chain lookup status
       const debugKey = `${pos.index_key}_${pos.expiry}`;
       const dbgChain = window._CHAINS && window._CHAINS[pos.index_key] && window._CHAINS[pos.index_key][pos.expiry];
@@ -1572,7 +1608,7 @@ async function renderPositionsTab() {
         <div class="pos-card-index">${pos.index_key} · ${pos.expiry} · DTE ${daysTo(pos.expiry)}</div>
         <div class="pos-card-legs">${legStr}</div>
         <div class="pos-card-pnl">
-          <span>P&L: <span class="${pnlClass}">₹${(pos.current_pnl||0).toLocaleString('en-IN')}</span>${peakStr}</span>
+          <span>P&L: <span class="${pnlClass}">₹${livePnl.toLocaleString('en-IN')}</span>${peakStr}</span>
           <span>Target: ₹${(pos.target_profit||0).toLocaleString('en-IN')} | SL: ₹${(pos.stop_loss||0).toLocaleString('en-IN')}</span>
         </div>
         <div style="font-size:9px;color:var(--text-dim);margin-top:4px;word-break:break-all">${pnlDebug}</div>
