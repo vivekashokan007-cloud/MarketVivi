@@ -487,8 +487,78 @@ async function upstoxFetchTradeBook() {
   window._UPSTOX_TRADE_BOOK = trades;
   console.log(`[upstox] Trade book: ${trades.length} fills today`);
 
+  // If positions API returned empty but trade book has fills,
+  // reconstruct positions from trade book
+  if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
+    console.log('[upstox] Positions empty — reconstructing from trade book');
+    const synthPositions = reconstructPositionsFromTrades(trades);
+    if (synthPositions.length > 0) {
+      window._UPSTOX_POSITIONS = synthPositions;
+      // Re-render positions tab
+      const el = document.getElementById('upstox-positions');
+      if (el) {
+        const debugHtml = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
+          <b>Source:</b> Reconstructed from Trade Book (${trades.length} fills → ${synthPositions.length} legs)<br>
+          <b>First:</b> ${JSON.stringify(synthPositions[0]).substring(0, 300)}
+        </div>`;
+        el.innerHTML = debugHtml + synthPositions.map(p => {
+          const sym = p.tradingsymbol || '—';
+          const pnl = p.pnl || 0;
+          return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${p.quantity}</span><span class="pos-avg">Avg: ₹${(+p.average_price).toFixed(2)}</span><span class="${pnl>=0?'pnl-profit':'pnl-loss'}">P&L: ₹${(+pnl).toFixed(2)}</span></div>`;
+        }).join('');
+      }
+      // Trigger strategy detection
+      if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
+    }
+  }
+
   // Trigger exit matching in app.js
   if (typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
+}
+
+function reconstructPositionsFromTrades(trades) {
+  // Group fills by tradingsymbol → calculate net qty and avg price
+  const bySymbol = {};
+  for (const t of trades) {
+    const sym = t.tradingsymbol || t.trading_symbol || '';
+    if (!sym) continue;
+    if (!bySymbol[sym]) bySymbol[sym] = { buys: [], sells: [] };
+    const qty = Math.abs(t.quantity || 0);
+    const price = t.price || t.average_price || 0;
+    if (t.transaction_type === 'BUY') {
+      bySymbol[sym].buys.push({ qty, price });
+    } else {
+      bySymbol[sym].sells.push({ qty, price });
+    }
+  }
+
+  const positions = [];
+  for (const sym in bySymbol) {
+    const { buys, sells } = bySymbol[sym];
+    const totalBuyQty = buys.reduce((s, b) => s + b.qty, 0);
+    const totalSellQty = sells.reduce((s, b) => s + b.qty, 0);
+    const netQty = totalBuyQty - totalSellQty;
+
+    if (netQty === 0) continue; // Fully closed
+
+    const avgPrice = netQty > 0
+      ? buys.reduce((s, b) => s + b.qty * b.price, 0) / totalBuyQty
+      : sells.reduce((s, b) => s + b.qty * b.price, 0) / totalSellQty;
+
+    positions.push({
+      tradingsymbol: sym,
+      trading_symbol: sym,
+      quantity: netQty,
+      net_quantity: netQty,
+      average_price: +avgPrice.toFixed(2),
+      buy_price: netQty > 0 ? +avgPrice.toFixed(2) : 0,
+      sell_price: netQty < 0 ? +avgPrice.toFixed(2) : 0,
+      pnl: 0 // Can't calculate without current LTP
+    });
+  }
+
+  console.log(`[upstox] Reconstructed ${positions.length} positions from trade book`);
+  return positions;
 }
 
 // ═══════════════════════════════════════════════════
