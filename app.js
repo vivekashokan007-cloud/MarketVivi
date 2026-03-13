@@ -771,7 +771,6 @@ function parseUpstoxSymbol(sym) {
   if (type !== 'CE' && type !== 'PE') return null;
   const numPart = rest.slice(0, -2);
 
-  // Month name map
   const MONTHS = {JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12};
 
   // Try format: YY + MonthName + Strike (e.g., "26MAR54200")
@@ -781,20 +780,41 @@ function parseUpstoxSymbol(sym) {
     const mm = MONTHS[monthMatch[2]];
     const strike = parseFloat(monthMatch[3]);
     if (!mm || isNaN(strike)) return null;
-    // For month-name format, day = last Thursday (expiry day)
-    // Calculate last Thursday of the month for BNF, or find nearest Thursday for NF
     const year = 2000 + yy;
-    const lastDay = new Date(year, mm, 0); // Last day of month
-    let dd = lastDay.getDate();
-    while (lastDay.getDay() !== 4) { lastDay.setDate(lastDay.getDate() - 1); dd = lastDay.getDate(); }
-    const expiry = `${year}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+
+    // Match against known chain expiries instead of calculating
+    const chainExps = Object.keys((window._CHAINS && window._CHAINS[indexKey]) || {}).sort();
+    let expiry = null;
+    for (const exp of chainExps) {
+      const d = new Date(exp);
+      if (d.getFullYear() === year && (d.getMonth() + 1) === mm) { expiry = exp; break; }
+    }
+    // If no chain match, try a reasonable guess but mark it for correction
+    if (!expiry) {
+      // Use last day of month as placeholder — will be corrected on next fetch
+      const lastDay = new Date(year, mm, 0);
+      expiry = `${year}-${String(mm).padStart(2,'0')}-${String(lastDay.getDate()).padStart(2,'0')}`;
+    }
     return { indexKey, expiry, strike, type };
   }
 
-  // Try format: YYMDD or YYMMDD + Strike (e.g., "2633054200")
+  // Try format: YYMDD or YYMMDD + Strike (e.g., "2633054200" or "26D1754200")
   if (numPart.length >= 7) {
-    const expStr = numPart.slice(0, 5);
-    const strikeStr = numPart.slice(5);
+    // Try month name embedded: YY + single letter month code + DD
+    const dayMatch = numPart.match(/^(\d{2})(\d)(\d{2})(\d+)$/);
+    if (dayMatch) {
+      const yy = parseInt(dayMatch[1]);
+      const mm = parseInt(dayMatch[2]);
+      const dd = parseInt(dayMatch[3]);
+      const strike = parseFloat(dayMatch[4]);
+      if (!isNaN(mm) && !isNaN(dd) && !isNaN(strike) && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+        const expiry = `20${yy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+        return { indexKey, expiry, strike, type };
+      }
+    }
+    // Try YYMMDD format
+    const expStr = numPart.slice(0, numPart.length <= 9 ? 5 : 6);
+    const strikeStr = numPart.slice(expStr.length);
     const strike = parseFloat(strikeStr);
     if (isNaN(strike)) return null;
     const yy = parseInt(expStr.slice(0, 2));
@@ -919,8 +939,21 @@ async function detectAndLogPositions(rawPositions) {
       return a.strike - b.strike;
     });
 
-    // Check if already in Supabase
-    const existing = await dbFindOpenTrade(indexKey, expiry, legs[0].strike, legs[0].type, legs[0].action);
+    // Check if already in Supabase — match by legs, flexible on expiry
+    let existing = await dbFindOpenTrade(indexKey, expiry, legs[0].strike, legs[0].type, legs[0].action);
+
+    // If not found, try without expiry filter (expiry might be wrong in DB)
+    if (!existing && typeof dbFindOpenTradeByLegs === 'function') {
+      existing = await dbFindOpenTradeByLegs(indexKey, legs[0].strike, legs[0].type, legs[0].action);
+      // Auto-correct expiry if found with wrong one
+      if (existing && existing.expiry !== expiry) {
+        console.log(`[positions] Auto-correcting expiry: ${existing.expiry} → ${expiry}`);
+        if (typeof dbUpdateTrade === 'function') {
+          await dbUpdateTrade(existing.id, { expiry: expiry });
+          existing.expiry = expiry;
+        }
+      }
+    }
 
     if (!existing) {
       // New trade — insert to Supabase

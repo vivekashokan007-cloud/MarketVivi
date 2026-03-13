@@ -91,6 +91,7 @@ async function dbUpdateTrade(id, updates) {
   if (updates.target_profit != null) row.target_profit = updates.target_profit;
   if (updates.stop_loss != null) row.stop_loss = updates.stop_loss;
   if (updates.peak_pnl != null) row.peak_pnl = updates.peak_pnl;
+  if (updates.expiry) row.expiry = updates.expiry;
 
   const { error } = await db.from('trade_log').update(row).eq('id', id);
   return error ? { ok: false, error: error.message } : { ok: true };
@@ -163,6 +164,25 @@ async function dbFindOpenTrade(indexKey, expiry, leg1Strike, leg1Type, leg1Actio
     .eq('status', 'OPEN')
     .eq('index_key', indexKey)
     .eq('expiry', expiry)
+    .eq('leg1_strike', leg1Strike)
+    .eq('leg1_type', leg1Type)
+    .eq('leg1_action', leg1Action)
+    .limit(1)
+    .single();
+
+  if (error || !data) return null;
+  return data;
+}
+
+// Flexible finder — matches by legs without requiring exact expiry
+async function dbFindOpenTradeByLegs(indexKey, leg1Strike, leg1Type, leg1Action) {
+  const db = getDB();
+  if (!db) return null;
+
+  const { data, error } = await db.from('trade_log')
+    .select('*')
+    .eq('status', 'OPEN')
+    .eq('index_key', indexKey)
     .eq('leg1_strike', leg1Strike)
     .eq('leg1_type', leg1Type)
     .eq('leg1_action', leg1Action)
