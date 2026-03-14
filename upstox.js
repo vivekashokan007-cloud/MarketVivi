@@ -113,22 +113,18 @@ async function upstoxAutoFill() {
     console.log(`[upstox] Using NF expiries: ${nfExps.join(', ')}`);
     console.log(`[upstox] Using BNF expiries: ${bnfExps.join(', ')}`);
 
-    // Step 3: Build remaining fetches
+    // Step 3: Build remaining fetches (SIGNAL data only — no positions/tradebook)
     const fetches = [
       upstoxFetchHistorical('NSE_INDEX|Nifty 50', true),
       upstoxFetchHistorical('NSE_INDEX|Nifty Bank', false),
-      upstoxFetchPositions(),
-      upstoxFetchMargins(),
-      upstoxFetchTradeBook()
+      upstoxFetchMargins()
     ];
     for (const exp of nfExps)  fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty 50', exp, 'NF'));
     for (const exp of bnfExps) fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty Bank', exp, 'BNF'));
 
     const results = await Promise.allSettled(fetches);
-    // Total = spots(1) + expiry_fetches(2) + historical(2) + positions(1) + margins(1) + chains(up to 4)
-    const chainCount = nfExps.length + bnfExps.length;
     const total = 1 + 2 + results.length; // spots + expiry lookups + rest
-    const ok = results.filter(r => r.status === 'fulfilled').length + 3; // +3 for spots + 2 expiry fetches that already completed
+    const ok = results.filter(r => r.status === 'fulfilled').length + 3; // +3 for spots + 2 expiry fetches
     const fails = results.filter(r => r.status === 'rejected');
 
     localStorage.setItem('upstox_last_fetch', new Date().toISOString());
@@ -136,23 +132,6 @@ async function upstoxAutoFill() {
 
     fails.forEach(f => console.warn('[upstox] Fetch failed:', f.reason));
     console.log(`[upstox] Chains: NF=${Object.keys(window._CHAINS.NF).length}, BNF=${Object.keys(window._CHAINS.BNF).length}`);
-
-    // ── Post-fetch: reconstruct positions from trade book if positions API empty ──
-    // This runs AFTER chains are loaded so parseUpstoxSymbol can match expiries
-    const trades = window._UPSTOX_TRADE_BOOK || [];
-    if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
-      console.log('[upstox] Positions empty — reconstructing from trade book');
-      const synthPositions = reconstructPositionsFromTrades(trades);
-      if (synthPositions.length > 0) {
-        window._UPSTOX_POSITIONS = synthPositions;
-        if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
-      }
-    } else if (window._UPSTOX_POSITIONS && window._UPSTOX_POSITIONS.length > 0) {
-      // Positions API returned data — detect directly
-      if (typeof detectAndLogPositions === 'function') detectAndLogPositions(window._UPSTOX_POSITIONS);
-    }
-    // Trigger exit matching
-    if (trades.length > 0 && typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
 
     calcScore();
     buildCommand();
@@ -506,6 +485,89 @@ function reconstructPositionsFromTrades(trades) {
 }
 
 // ═══════════════════════════════════════════════════
+// POSITIONS SYNC — Separate from SIGNAL fetch
+// Detects trades, matches exits, starts auto-tracking
+// ═══════════════════════════════════════════════════
+
+async function upstoxSyncPositions() {
+  const token = upstoxGetToken();
+  if (!token) { upstoxShowTokenModal(); return; }
+
+  const statusEl = document.getElementById('sync-status');
+  if (statusEl) statusEl.textContent = '🔄 Syncing with Upstox...';
+
+  try {
+    // Step 1: Fresh spot prices
+    await upstoxFetchSpots();
+
+    // Step 2: Fetch positions API + trade book
+    await upstoxFetchPositions();
+    await upstoxFetchTradeBook();
+
+    // Step 3: Fetch chains for open trade expiries (needed for live P&L + thesis)
+    const openTrades = typeof dbGetOpenTrades === 'function' ? await dbGetOpenTrades() : [];
+    const neededExpiries = new Set();
+    for (const t of openTrades) {
+      if (t.index_key && t.expiry) neededExpiries.add(`${t.index_key}|${t.expiry}`);
+    }
+    // Also parse trade book symbols for any new trades
+    const trades = window._UPSTOX_TRADE_BOOK || [];
+    for (const t of trades) {
+      const sym = t.tradingsymbol || t.trading_symbol || '';
+      const parsed = typeof parseUpstoxSymbol === 'function' ? parseUpstoxSymbol(sym) : null;
+      if (parsed) neededExpiries.add(`${parsed.indexKey}|${parsed.expiry}`);
+    }
+
+    for (const key of neededExpiries) {
+      const [indexKey, expiry] = key.split('|');
+      const instrument = indexKey === 'NF' ? 'NSE_INDEX|Nifty 50' : 'NSE_INDEX|Nifty Bank';
+      try {
+        await upstoxFetchFullChain(instrument, expiry, indexKey);
+      } catch(e) {
+        console.warn(`[sync] Chain fetch failed for ${key}:`, e.message);
+      }
+    }
+
+    // Step 4: Reconstruct positions from trade book if positions API empty
+    let positions = window._UPSTOX_POSITIONS || [];
+    if (positions.length === 0 && trades.length > 0) {
+      console.log('[sync] Positions API empty — reconstructing from trade book');
+      positions = reconstructPositionsFromTrades(trades);
+      window._UPSTOX_POSITIONS = positions;
+    }
+
+    // Step 5: Detect and log new/updated positions
+    if (positions.length > 0 && typeof detectAndLogPositions === 'function') {
+      await detectAndLogPositions(positions);
+    }
+
+    // Step 6: Match trade book exits against open trades
+    if (trades.length > 0 && typeof matchTradeBookExits === 'function') {
+      await matchTradeBookExits(trades);
+    }
+
+    // Step 7: Start auto-fetch for live P&L tracking during market hours
+    if (isMarketHours()) startAutoFetch();
+
+    // Step 8: Re-render positions tab
+    if (typeof renderPositionsTab === 'function') await renderPositionsTab();
+
+    // Update sync status
+    const ts = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    if (statusEl) {
+      statusEl.textContent = isMarketHours()
+        ? `🔒 Synced · Auto-tracking (${ts})`
+        : `✅ Synced (${ts}) · Market closed`;
+    }
+    console.log('[sync] Position sync complete');
+
+  } catch(e) {
+    console.error('[sync] Error:', e);
+    if (statusEl) statusEl.textContent = `❌ Sync failed: ${e.message}`;
+  }
+}
+
+// ═══════════════════════════════════════════════════
 // LIGHTWEIGHT AUTO-FETCH — Positions only, no SIGNAL/COMMAND update
 // Runs every 5 mins during market hours (9:15-15:30 IST)
 // ═══════════════════════════════════════════════════
@@ -610,10 +672,10 @@ async function upstoxLightFetch() {
     if (typeof renderPositionsTab === 'function') renderPositionsTab();
 
     // Step 6: Show auto-fetch timestamp
-    const tsEl = document.getElementById('auto-fetch-ts');
+    const tsEl = document.getElementById('sync-status');
     if (tsEl) {
       const ts = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-      tsEl.textContent = `Auto-fetch: ${ts}`;
+      tsEl.textContent = `🔒 Auto-tracking · Updated ${ts}`;
     }
 
     console.log('[auto] Light fetch complete');
@@ -650,19 +712,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveBtn = document.getElementById('btn-save-token');
   if (saveBtn) saveBtn.addEventListener('click', upstoxSaveAndFetch);
   const fetchBtn = document.getElementById('btn-fetch-upstox');
-  if (fetchBtn) fetchBtn.addEventListener('click', () => {
-    upstoxAutoFill();
-    // Start auto-fetch after first manual fetch
-    if (isMarketHours()) startAutoFetch();
-  });
+  if (fetchBtn) fetchBtn.addEventListener('click', () => upstoxAutoFill());
+  const syncBtn = document.getElementById('btn-sync-positions');
+  if (syncBtn) syncBtn.addEventListener('click', () => upstoxSyncPositions());
   // Auto-prompt token if expired or missing
   if (upstoxGetToken()) {
-    setTimeout(() => {
-      upstoxAutoFill();
-      if (isMarketHours()) startAutoFetch();
-    }, 500);
+    setTimeout(() => upstoxAutoFill(), 500);
   } else {
     setTimeout(upstoxShowTokenModal, 300);
   }
-  console.log('[upstox.js] v5.0 — Phase 3: auto-fetch + trade book');
+  console.log('[upstox.js] v5.0 — Phase 3.1: SIGNAL/POSITIONS separation');
 });

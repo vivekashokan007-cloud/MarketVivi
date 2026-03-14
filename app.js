@@ -1248,25 +1248,7 @@ async function fireNotification(title, body, tag) {
 let _lastRoutineNotif = 0; // timestamp of last routine notification
 const ROUTINE_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
-function renderAlertBanner(alerts) {
-  const el = document.getElementById('alert-banner');
-  if (!el) return;
 
-  if (!alerts || !alerts.length) {
-    el.style.display = 'none';
-    el.innerHTML = '';
-    return;
-  }
-
-  alerts.sort((a, b) => b.priority - a.priority);
-  const top = alerts[0];
-  const bannerClass = ALERT_META[top.rec] ? ALERT_META[top.rec].banner : '';
-
-  el.className = `alert-banner ${bannerClass}`;
-  el.style.display = 'block';
-  el.innerHTML = alerts.map(a => `<div class="alert-banner-row">${a.title}<br><span class="alert-banner-detail">${a.body}</span></div>`).join('');
-  el.onclick = () => go(2); // Tap → POSITIONS tab
-}
 
 // ═══════════════════════════════════════════════════
 // THESIS CHECK — Chain-aware smart exits
@@ -1495,67 +1477,72 @@ async function renderPositionsTab() {
   const histEl = document.getElementById('positions-history');
   if (!openEl) return;
 
-  // Render open positions
-  const detected = window._DETECTED_POSITIONS || [];
-  if (detected.length === 0) {
-    openEl.innerHTML = '<div class="cmd-placeholder">No open positions detected</div>';
-  } else {
-    openEl.innerHTML = detected.map(pos => {
-      const meta = ALERT_META[pos.recommendation] || ALERT_META.HOLD;
-      let livePnl = pos.current_pnl || 0;
+  // ── Supabase is the source of truth — always query open trades ──
+  const openTrades = typeof dbGetOpenTrades === 'function' ? await dbGetOpenTrades() : [];
 
-      // Build legs array from either format
-      let legs = pos.legs || [];
-      if (legs.length === 0) {
-        // Reconstruct from flat Supabase fields
-        for (let i = 1; i <= 4; i++) {
-          if (pos[`leg${i}_strike`]) {
-            legs.push({
-              strike: pos[`leg${i}_strike`],
-              type: pos[`leg${i}_type`],
-              action: pos[`leg${i}_action`],
-              entry_ltp: pos[`leg${i}_entry_ltp`] || 0
-            });
-          }
+  if (!openTrades.length) {
+    openEl.innerHTML = '<div class="cmd-placeholder">No active positions</div>';
+  } else {
+    openEl.innerHTML = openTrades.map((trade, idx) => {
+      const meta = ALERT_META[trade.recommendation] || ALERT_META.HOLD;
+
+      // Build legs from flat Supabase fields
+      const legs = [];
+      for (let i = 1; i <= 4; i++) {
+        if (trade[`leg${i}_strike`]) {
+          legs.push({ strike: trade[`leg${i}_strike`], type: trade[`leg${i}_type`], action: trade[`leg${i}_action`], entry_ltp: trade[`leg${i}_entry_ltp`] || 0 });
         }
       }
 
       const legStr = legs.map(l => `${l.action} ${l.strike} ${l.type}`).join(' | ');
 
-      // ── Compute live P&L from ANY available chain source ──
-      livePnl = computeLivePnL(pos, legs);
+      // Live P&L from chains if available, else Supabase stored value
+      let livePnl = computeLivePnL(trade, legs);
+      if (livePnl === 0 && trade.current_pnl) livePnl = trade.current_pnl;
 
       const pnlClass = livePnl >= 0 ? 'profit' : 'loss';
-      const peakPnl = Math.max(pos.peak_pnl || 0, livePnl);
+      const peakPnl = Math.max(trade.peak_pnl || 0, livePnl);
       const peakStr = peakPnl > 0 ? ` · Peak: ₹${peakPnl.toLocaleString('en-IN')}` : '';
-      const target = pos.target_profit || 0;
+      const target = trade.target_profit || 0;
+      const sl = trade.stop_loss || 0;
       const pct = target > 0 ? Math.round((livePnl / target) * 100) : 0;
+      const dte = daysTo(trade.expiry);
+      const stratName = STRAT_LABELS[trade.strategy_type] || trade.strategy_type;
+
+      // Thesis check (returns default if no chain data)
+      const thesis = checkThesis(trade);
+      const thesisHTML = renderThesisDetails(trade, thesis, legs);
+
       return `<div class="pos-card">
         <div class="pos-card-header">
-          <span class="pos-strat-name">${STRAT_LABELS[pos.strategy_type] || pos.strategy_type}</span>
+          <span class="pos-strat-name">${stratName}</span>
           <span class="pos-rec ${meta.css}">${meta.label}</span>
         </div>
-        <div class="pos-card-index">${pos.index_key} · ${pos.expiry} · DTE ${daysTo(pos.expiry)}</div>
+        <div class="pos-card-index">${trade.index_key} · ${trade.expiry} · DTE ${dte}</div>
         <div class="pos-card-legs">${legStr}</div>
         <div class="pos-card-pnl">
           <span>P&L: <span class="${pnlClass}">₹${livePnl.toLocaleString('en-IN')}</span> (${pct}%)${peakStr}</span>
-          <span>Target: ₹${(pos.target_profit||0).toLocaleString('en-IN')} | SL: ₹${(pos.stop_loss||0).toLocaleString('en-IN')}</span>
+          <span>Target: ₹${target.toLocaleString('en-IN')} | SL: ₹${sl.toLocaleString('en-IN')}</span>
+        </div>
+        <div class="pos-card-toggle" data-idx="${idx}">▼ Details</div>
+        <div class="pos-card-details" id="pos-details-${idx}" style="display:none">
+          ${thesisHTML}
         </div>
       </div>`;
     }).join('');
 
-    // ── Sync banner with live P&L (same source as card) ──
-    const bannerAlerts = detected.map(pos => {
-      const pnl = computeLivePnL(pos);
-      const rec = pos.recommendation || 'HOLD';
-      const meta = ALERT_META[rec] || ALERT_META.HOLD;
-      const stratName = STRAT_LABELS[pos.strategy_type] || pos.strategy_type;
-      const target = pos.target_profit || 0;
-      const pct = target > 0 ? Math.round((pnl / target) * 100) : 0;
-      const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + pnl.toLocaleString('en-IN');
-      return { title: `${meta.icon} ${meta.label} — ${stratName} ${pos.index_key}`, body: `P&L ${pnlStr} (${pct}% of target) · DTE ${daysTo(pos.expiry)}`, priority: meta.priority, rec };
+    // Bind expandable toggle clicks
+    document.querySelectorAll('.pos-card-toggle').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = el.dataset.idx;
+        const details = document.getElementById(`pos-details-${idx}`);
+        if (details) {
+          const isOpen = details.style.display !== 'none';
+          details.style.display = isOpen ? 'none' : 'block';
+          el.textContent = isOpen ? '▼ Details' : '▲ Close';
+        }
+      });
     });
-    renderAlertBanner(bannerAlerts);
   }
 
   // Render recent trade history from Supabase
@@ -1578,6 +1565,45 @@ async function renderPositionsTab() {
   } catch(e) {
     histEl.innerHTML = '<div class="cmd-placeholder">Could not load trade history</div>';
   }
+}
+
+// ── Thesis details for expandable position card ──
+function renderThesisDetails(trade, thesis, legs) {
+  let html = '<div class="pos-thesis">';
+
+  // Thesis health section
+  html += '<div class="pos-thesis-title">Thesis Health</div>';
+  if (thesis.signals.length > 0) {
+    html += thesis.signals.map(s => {
+      const icon = thesis.severity >= 2 ? '🔴' : '⚠️';
+      return `<div class="pos-thesis-signal">${icon} ${s}</div>`;
+    }).join('');
+    html += `<div class="pos-thesis-severity">Severity: ${thesis.severity}/3 — ${thesis.intact ? 'Thesis intact' : 'Thesis weakening'}</div>`;
+  } else {
+    // No chain data available (weekend/pre-sync)
+    const hasChainData = (window._CHAINS && window._CHAINS[trade.index_key] && window._CHAINS[trade.index_key][trade.expiry]) || (window._POSITION_CHAINS && window._POSITION_CHAINS[`${trade.index_key}|${trade.expiry}`]);
+    if (hasChainData) {
+      html += '<div class="pos-thesis-signal">✅ All checks passed — thesis intact</div>';
+    } else {
+      html += '<div class="pos-thesis-signal">⏳ Sync for live thesis check</div>';
+    }
+  }
+
+  // Entry snapshot
+  html += '<div class="pos-thesis-title" style="margin-top:8px">Entry Snapshot</div>';
+  html += `<div class="pos-entry-row">Entry spot: ${trade.entry_spot ? trade.entry_spot.toLocaleString('en-IN') : '—'} | VIX: ${trade.entry_vix || '—'}</div>`;
+  html += `<div class="pos-entry-row">Entry premium: ₹${trade.entry_premium || '—'} | Lots: ${trade.lots || 1}</div>`;
+  html += `<div class="pos-entry-row">Max profit: ₹${(trade.max_profit||0).toLocaleString('en-IN')} | Max loss: ₹${(trade.max_loss||0).toLocaleString('en-IN')}</div>`;
+  html += `<div class="pos-entry-row">Entered: ${trade.entry_date || '—'}${trade.entry_pcr ? ' | Entry PCR: '+trade.entry_pcr : ''}</div>`;
+
+  // Legs with entry prices
+  html += '<div class="pos-thesis-title" style="margin-top:8px">Legs</div>';
+  for (const leg of legs) {
+    html += `<div class="pos-entry-row">${leg.action} ${trade.index_key} ${leg.strike} ${leg.type} @ ₹${(leg.entry_ltp||0).toFixed(2)}</div>`;
+  }
+
+  html += '</div>';
+  return html;
 }
 
 // ═══════════════════════════════════════════════════

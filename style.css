@@ -321,6 +321,36 @@ html, body {
 .pos-card-index { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 .pos-card-legs { font-size: 11px; color: var(--text); margin-bottom: 6px; }
 .pos-card-pnl { font-size: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; }
+
+/* ── Expandable card toggle + details ── */
+.pos-card-toggle {
+  font-size: 11px; color: var(--text-dim); text-align: center;
+  padding: 6px 0 2px; cursor: pointer; user-select: none;
+  transition: color 0.2s;
+}
+.pos-card-toggle:active { color: var(--amber); }
+
+.pos-card-details { padding: 0 0 4px; }
+
+.pos-thesis { padding: 10px 0 4px; border-top: 1px solid var(--border); }
+.pos-thesis-title {
+  font-size: 11px; font-weight: bold; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+}
+.pos-thesis-signal { font-size: 12px; padding: 2px 0; }
+.pos-thesis-severity {
+  font-size: 11px; color: var(--text-dim); margin-top: 4px;
+  padding-top: 4px; border-top: 1px dashed var(--border);
+}
+.pos-entry-row { font-size: 12px; color: var(--text-dim); padding: 1px 0; }
+
+/* ── SYNC button ── */
+.btn-sync {
+  width: 100%; margin: 12px 0 4px; font-weight: bold; font-size: 13px;
+  background: rgba(91,192,222,0.15); border-color: var(--blue); color: var(--blue);
+}
+[data-theme="light"] .btn-sync { color: #1a6080; background: rgba(41,128,185,0.10); }
+.sync-status { font-size: 11px; color: var(--text-dim); text-align: center; margin-bottom: 8px; min-height: 16px; }
 .hist-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; gap: 4px; }
 .hist-strat { font-weight: 600; color: var(--amber); flex: 1; }
 .hist-index { color: var(--text-dim); }
