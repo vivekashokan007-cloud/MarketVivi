@@ -1031,8 +1031,6 @@ async function detectAndLogPositions(rawPositions) {
   // Store and render
   window._DETECTED_POSITIONS = detected;
   renderPositionsTab();
-  // Smart alerts + notifications
-  checkAndNotify(detected);
   // Phase 3: auto-expire past trades + refresh journal
   await autoExpireOpenTrades();
   renderJournalTab();
@@ -1250,52 +1248,6 @@ async function fireNotification(title, body, tag) {
 let _lastRoutineNotif = 0; // timestamp of last routine notification
 const ROUTINE_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
-function checkAndNotify(positions) {
-  if (!positions || !positions.length) return;
-
-  const alerts = [];
-  const now = Date.now();
-
-  for (const pos of positions) {
-    const rec = pos.recommendation || 'HOLD';
-    const meta = ALERT_META[rec];
-    if (!meta) continue;
-
-    const stratName = STRAT_LABELS[pos.strategy_type] || pos.strategy_type;
-    // Use shared live P&L calculator
-    const pnl = computeLivePnL(pos);
-    const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + pnl.toLocaleString('en-IN');
-    const target = pos.target_profit || 0;
-    const pct = target > 0 ? Math.round((pnl / target) * 100) : 0;
-
-    alerts.push({
-      title: `${meta.icon} ${meta.label} — ${stratName} ${pos.index_key}`,
-      body: `P&L ${pnlStr} (${pct}% of target) · DTE ${daysTo(pos.expiry)}`,
-      priority: meta.priority,
-      rec: rec
-    });
-  }
-
-  if (alerts.length === 0) return;
-
-  alerts.sort((a, b) => b.priority - a.priority);
-  const top = alerts[0];
-
-  // Urgent alerts (EXIT_NOW, EXIT_EARLY, BOOK_PROFIT) → fire IMMEDIATELY
-  if (top.priority >= 3) {
-    fireNotification(top.title, top.body, `mr-urgent-${top.rec}`);
-  }
-  // Routine status (HOLD, TRAIL) → fire every 30 minutes
-  else if (now - _lastRoutineNotif >= ROUTINE_INTERVAL) {
-    const routineBody = alerts.map(a => `${a.title}: ${a.body}`).join('\n');
-    fireNotification('⚡ Market Radar — Position Update', routineBody, 'mr-routine');
-    _lastRoutineNotif = now;
-  }
-
-  // Banner always updates on every check
-  renderAlertBanner(alerts);
-}
-
 function renderAlertBanner(alerts) {
   const el = document.getElementById('alert-banner');
   if (!el) return;
@@ -1419,10 +1371,8 @@ function checkThesis(trade) {
 async function checkThesisAndNotify(openTrades) {
   if (!openTrades || !openTrades.length) return;
 
-  const alerts = [];
-
   for (const trade of openTrades) {
-    // ── Calculate live P&L using shared function ──
+    // Calculate live P&L using shared function
     const livePnl = computeLivePnL(trade);
     const prevPeak = trade.peak_pnl || 0;
     const newPeak = Math.max(prevPeak, livePnl);
@@ -1430,7 +1380,7 @@ async function checkThesisAndNotify(openTrades) {
     trade.peak_pnl = newPeak;
 
     // Update Supabase with fresh P&L
-    if (livePnl !== 0 && typeof dbUpdateTrade === 'function') {
+    if (typeof dbUpdateTrade === 'function') {
       const liveSpot = (window._POSITION_CHAINS || {})[`${trade.index_key}|${trade.expiry}`]?.spot || gv(trade.index_key === 'NF' ? 'nf_price' : 'bn_price');
       const rec = computeRecommendation(trade, livePnl, liveSpot, trade.expiry);
       trade.recommendation = rec;
@@ -1440,53 +1390,11 @@ async function checkThesisAndNotify(openTrades) {
         peak_pnl: +newPeak.toFixed(0),
         recommendation: rec
       });
-      console.log(`[thesis] Live P&L: ${trade.strategy_type} ${trade.index_key} ₹${livePnl} (peak: ₹${newPeak})`);
-    }
-
-    const thesis = checkThesis(trade);
-    const pnl = livePnl;
-    const target = trade.target_profit || 0;
-    const stratName = STRAT_LABELS[trade.strategy_type] || trade.strategy_type;
-    const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + pnl.toLocaleString('en-IN');
-
-    if (thesis.severity >= 2) {
-      // Thesis breaking
-      if (pnl > 0) {
-        // Profitable but thesis breaking → BOOK PROFIT
-        alerts.push({
-          title: `🟢 BOOK PROFIT — ${stratName} ${trade.index_key}`,
-          body: `${pnlStr} · Thesis weakening: ${thesis.signals.join('; ')}`,
-          priority: 3, rec: 'BOOK_PROFIT'
-        });
-      } else {
-        // Losing AND thesis breaking → EXIT EARLY
-        alerts.push({
-          title: `🟠 EXIT EARLY — ${stratName} ${trade.index_key}`,
-          body: `${pnlStr} · Thesis broken: ${thesis.signals.join('; ')}`,
-          priority: 4, rec: 'EXIT_EARLY'
-        });
-      }
-    } else if (thesis.severity === 1 && pnl < 0) {
-      // Thesis weakening + losing → warn
-      alerts.push({
-        title: `🟡 WATCH — ${stratName} ${trade.index_key}`,
-        body: `${pnlStr} · ${thesis.signals.join('; ')}`,
-        priority: 2, rec: 'TRAIL'
-      });
-    }
-    // thesis.severity === 0 + P&L dropping → noise, HOLD (no alert)
-
-    // Always add a HOLD alert for routine notifications
-    if (!alerts.find(a => a.rec !== 'HOLD')) {
-      alerts.push({
-        title: `⚪ HOLD — ${stratName} ${trade.index_key}`,
-        body: `P&L ${pnlStr}${target > 0 ? ` (${Math.round((pnl / target) * 100)}% of target)` : ''} · DTE ${daysTo(trade.expiry)}`,
-        priority: 0, rec: 'HOLD'
-      });
+      console.log(`[auto] P&L: ${trade.strategy_type} ${trade.index_key} ₹${livePnl} (peak: ₹${newPeak}) → ${rec}`);
     }
   }
 
-  // Update _DETECTED_POSITIONS with fresh P&L for POSITIONS tab
+  // Update _DETECTED_POSITIONS with fresh data for card + banner rendering
   if (window._DETECTED_POSITIONS) {
     for (const det of window._DETECTED_POSITIONS) {
       const match = openTrades.find(t => t.id === det.id || (t.index_key === det.index_key && t.expiry === det.expiry));
@@ -1496,11 +1404,43 @@ async function checkThesisAndNotify(openTrades) {
         det.recommendation = match.recommendation;
       }
     }
-    renderPositionsTab();
   }
 
-  // Fire notifications using smart timing
-  checkAndNotify(openTrades);
+  // Fire notifications (market hours only)
+  if (typeof isMarketHours === 'function' && !isMarketHours()) return;
+
+  const now = Date.now();
+  for (const trade of openTrades) {
+    const rec = trade.recommendation || 'HOLD';
+    const meta = ALERT_META[rec];
+    if (!meta) continue;
+
+    const pnl = trade.current_pnl || 0;
+    const target = trade.target_profit || 0;
+    const pct = target > 0 ? Math.round((pnl / target) * 100) : 0;
+    const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + pnl.toLocaleString('en-IN');
+    const stratName = STRAT_LABELS[trade.strategy_type] || trade.strategy_type;
+    const body = `P&L ${pnlStr} (${pct}% of target) · DTE ${daysTo(trade.expiry)}`;
+
+    // Urgent (EXIT_NOW, EXIT_EARLY, BOOK_PROFIT) → IMMEDIATE
+    if (meta.priority >= 3) {
+      fireNotification(`${meta.icon} ${meta.label} — ${stratName} ${trade.index_key}`, body, `mr-urgent-${rec}`);
+    }
+  }
+
+  // Routine notification every 30 minutes for HOLD/TRAIL
+  if (now - _lastRoutineNotif >= ROUTINE_INTERVAL) {
+    const trade = openTrades[0];
+    const pnl = trade.current_pnl || 0;
+    const target = trade.target_profit || 0;
+    const pct = target > 0 ? Math.round((pnl / target) * 100) : 0;
+    const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + pnl.toLocaleString('en-IN');
+    const stratName = STRAT_LABELS[trade.strategy_type] || trade.strategy_type;
+    const rec = trade.recommendation || 'HOLD';
+    const meta = ALERT_META[rec] || ALERT_META.HOLD;
+    fireNotification(`${meta.icon} ${meta.label} — ${stratName} ${trade.index_key}`, `P&L ${pnlStr} (${pct}%) · DTE ${daysTo(trade.expiry)}`, 'mr-routine');
+    _lastRoutineNotif = now;
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -1526,15 +1466,15 @@ function computeLivePnL(trade, legs) {
   let calcPnl = 0, foundAll = true;
   for (const leg of legs) {
     let currentLtp = 0;
-    // Try full chain
-    if (fullChain && fullChain.strikes && fullChain.strikes[leg.strike]) {
+    // Try position chain FIRST (fresh from auto-fetch every 5 min)
+    if (posChainData && posChainData.strikeLTPs) {
+      currentLtp = posChainData.strikeLTPs[`${leg.strike}_${leg.type}`] || 0;
+    }
+    // Fallback to full chain (from last manual fetch)
+    if (currentLtp === 0 && fullChain && fullChain.strikes && fullChain.strikes[leg.strike]) {
       const sd = fullChain.strikes[leg.strike];
       if (leg.type === 'PE' && sd.PE) currentLtp = sd.PE.ltp || 0;
       if (leg.type === 'CE' && sd.CE) currentLtp = sd.CE.ltp || 0;
-    }
-    // Try position chain
-    if (currentLtp === 0 && posChainData && posChainData.strikeLTPs) {
-      currentLtp = posChainData.strikeLTPs[`${leg.strike}_${leg.type}`] || 0;
     }
     if (currentLtp > 0 && leg.entry_ltp > 0) {
       const mult = leg.action === 'BUY' ? 1 : -1;

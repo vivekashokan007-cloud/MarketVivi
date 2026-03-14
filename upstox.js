@@ -141,24 +141,15 @@ async function upstoxAutoFill() {
     // This runs AFTER chains are loaded so parseUpstoxSymbol can match expiries
     const trades = window._UPSTOX_TRADE_BOOK || [];
     if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
-      console.log('[upstox] Positions empty — reconstructing from trade book (chains loaded)');
+      console.log('[upstox] Positions empty — reconstructing from trade book');
       const synthPositions = reconstructPositionsFromTrades(trades);
       if (synthPositions.length > 0) {
         window._UPSTOX_POSITIONS = synthPositions;
-        const el = document.getElementById('upstox-positions');
-        if (el) {
-          const chainKeys = [...Object.keys(window._CHAINS.NF), ...Object.keys(window._CHAINS.BNF)];
-          el.innerHTML = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
-            <b>Source:</b> Trade Book (${trades.length} fills → ${synthPositions.length} legs)<br>
-            <b>Chains:</b> ${chainKeys.join(', ')}<br>
-            <b>First:</b> ${JSON.stringify(synthPositions[0]).substring(0, 300)}
-          </div>` + synthPositions.map(p => {
-            const sym = p.tradingsymbol || '—';
-            return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${p.quantity}</span><span class="pos-avg">Avg: ₹${(+p.average_price).toFixed(2)}</span></div>`;
-          }).join('');
-        }
         if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
       }
+    } else if (window._UPSTOX_POSITIONS && window._UPSTOX_POSITIONS.length > 0) {
+      // Positions API returned data — detect directly
+      if (typeof detectAndLogPositions === 'function') detectAndLogPositions(window._UPSTOX_POSITIONS);
     }
     // Trigger exit matching
     if (trades.length > 0 && typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
@@ -367,79 +358,30 @@ async function upstoxFetchHistorical(instrument, isNF) {
 // ═══════════════════════════════════════════════════
 
 async function upstoxFetchPositions() {
-  // Try multiple endpoints — Upstox may serve F&O positions differently
-  const endpoints = [
-    '/portfolio/short-term-positions',
-    '/portfolio/positions'
-  ];
-
-  let positions = [];
-  let usedEndpoint = '';
-  let rawDebug = '';
-
-  for (const ep of endpoints) {
-    try {
-      const resp = await fetch(_bust(`${UPSTOX_API}${ep}`), { headers: _headers() });
-      const data = await resp.json();
-      rawDebug += `${ep}: status=${data.status} type=${typeof data.data} `;
-
-      if (data.status === 'success' && data.data) {
-        let found = [];
-        if (Array.isArray(data.data)) {
-          found = data.data;
-          rawDebug += `array[${found.length}] `;
-        } else if (typeof data.data === 'object') {
-          // Could be keyed or nested
-          const keys = Object.keys(data.data);
-          rawDebug += `obj{${keys.slice(0,5).join(',')}} `;
-          if (Array.isArray(data.data.positions)) {
-            found = data.data.positions;
-          } else {
-            found = keys.flatMap(k => Array.isArray(data.data[k]) ? data.data[k] : [data.data[k]]).filter(p => p && typeof p === 'object' && (p.tradingsymbol || p.trading_symbol || p.instrument_key));
-          }
-          rawDebug += `parsed[${found.length}] `;
-        }
-
-        if (found.length > 0) {
-          positions = found;
-          usedEndpoint = ep;
-          rawDebug += '✅ ';
-          break;
-        }
+  // Try positions API — may return empty for strategy-placed trades
+  try {
+    const resp = await fetch(_bust(`${UPSTOX_API}/portfolio/short-term-positions`), { headers: _headers() });
+    const data = await resp.json();
+    const positions = (data.status === 'success' && Array.isArray(data.data)) ? data.data : [];
+    window._UPSTOX_POSITIONS = positions;
+    // Render raw legs (informational only — detection happens post-fetch)
+    const el = document.getElementById('upstox-positions');
+    if (el) {
+      if (!positions.length) {
+        el.innerHTML = '<div class="pos-empty">No open positions from API</div>';
+      } else {
+        el.innerHTML = positions.map(p => {
+          const sym = p.tradingsymbol || p.trading_symbol || '—';
+          const qty = p.quantity || p.net_quantity || 0;
+          const avg = p.average_price || p.buy_price || 0;
+          return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${qty}</span><span class="pos-avg">Avg: ₹${(+avg).toFixed(2)}</span></div>`;
+        }).join('');
       }
-    } catch(e) {
-      rawDebug += `${ep}: ERROR ${e.message} `;
     }
+  } catch(e) {
+    window._UPSTOX_POSITIONS = [];
+    console.warn('[upstox] Positions fetch failed:', e.message);
   }
-
-  // Store globally
-  window._UPSTOX_POSITIONS = positions;
-
-  // Render debug + raw legs
-  const el = document.getElementById('upstox-positions');
-  if (!el) return;
-
-  const debugHtml = `<div style="font-size:10px;color:var(--text-dim);background:var(--bg-input);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
-    <b>Endpoints:</b> ${rawDebug}<br>
-    <b>Used:</b> ${usedEndpoint || 'none'} | <b>Count:</b> ${positions.length}<br>
-    ${positions.length > 0 ? '<b>First:</b> ' + JSON.stringify(positions[0]).substring(0, 400) : '<b>All empty</b>'}
-  </div>`;
-
-  if (!positions.length) {
-    el.innerHTML = debugHtml + '<div class="pos-empty">No open positions</div>';
-    return;
-  }
-
-  el.innerHTML = debugHtml + positions.map(p => {
-    const sym = p.tradingsymbol || p.trading_symbol || p.instrument_token || p.instrument_key || '—';
-    const qty = p.quantity || p.net_quantity || 0;
-    const pnl = p.pnl || p.realised || p.unrealised || 0;
-    const avg = p.average_price || p.buy_price || p.sell_price || p.buy_avg || 0;
-    return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${qty}</span><span class="pos-avg">Avg: ₹${(+avg).toFixed(2)}</span><span class="${pnl>=0?'pnl-profit':'pnl-loss'}">P&L: ₹${(+pnl).toFixed(2)}</span></div>`;
-  }).join('');
-
-  // Trigger strategy detection
-  if (typeof detectAndLogPositions === 'function') detectAndLogPositions(positions);
 }
 
 async function upstoxFetchMargins() {
@@ -583,122 +525,100 @@ async function upstoxLightFetch() {
   if (!token || !isMarketHours()) return;
 
   try {
-    // Core 3 calls: spots + positions + trade book
+    // Step 1: Fresh spot prices only
     await upstoxFetchSpots();
-    await upstoxFetchPositions();
-    await upstoxFetchTradeBook();
 
-    // Reconstruct from trade book if positions empty (strategy trades)
-    const trades = window._UPSTOX_TRADE_BOOK || [];
-    if ((!window._UPSTOX_POSITIONS || window._UPSTOX_POSITIONS.length === 0) && trades.length > 0) {
-      const synthPositions = reconstructPositionsFromTrades(trades);
-      if (synthPositions.length > 0) {
-        window._UPSTOX_POSITIONS = synthPositions;
-        if (typeof detectAndLogPositions === 'function') detectAndLogPositions(synthPositions);
-      }
+    // Step 2: Get open trades from Supabase (already detected from manual fetch)
+    if (typeof dbGetOpenTrades !== 'function') return;
+    const openTrades = await dbGetOpenTrades();
+    if (!openTrades.length) {
+      console.log('[upstox] Light fetch: no open trades');
+      return;
     }
-    // Exit matching
-    if (trades.length > 0 && typeof matchTradeBookExits === 'function') matchTradeBookExits(trades);
 
-    // Smart chain fetch: ONLY for expiries with open positions
-    // Store in _POSITION_CHAINS (NOT _CHAINS) to avoid touching SIGNAL/COMMAND
-    if (typeof dbGetOpenTrades === 'function') {
-      const openTrades = await dbGetOpenTrades();
-      if (openTrades.length > 0) {
-        // Collect unique index+expiry pairs
-        const needed = new Set();
-        for (const t of openTrades) {
-          if (t.index_key && t.expiry) needed.add(`${t.index_key}|${t.expiry}`);
-        }
+    // Step 3: Fetch position chains for open trade expiries (strikeLTPs for live P&L)
+    const needed = new Set();
+    for (const t of openTrades) {
+      if (t.index_key && t.expiry) needed.add(`${t.index_key}|${t.expiry}`);
+    }
 
-        if (!window._POSITION_CHAINS) window._POSITION_CHAINS = {};
+    if (!window._POSITION_CHAINS) window._POSITION_CHAINS = {};
 
-        for (const key of needed) {
-          const [indexKey, expiry] = key.split('|');
-          const instrument = indexKey === 'NF' ? 'NSE_INDEX|Nifty 50' : 'NSE_INDEX|Nifty Bank';
-          try {
-            // Fetch chain into _POSITION_CHAINS (separate from _CHAINS)
-            const resp = await fetch(_bust(`${UPSTOX_API}/option/chain?instrument_key=${encodeURIComponent(instrument)}&expiry_date=${expiry}`), { headers: _headers() });
-            const data = await resp.json();
-            if (data.status === 'success' && Array.isArray(data.data)) {
-              const isNF = indexKey === 'NF';
-              const spot = gv(isNF ? 'nf_price' : 'bn_price') || 0;
-              let putOI = 0, callOI = 0;
-              const sellStrikeOI = {};
-              const strikeLTPs = {}; // Strike-level LTPs for live P&L
+    for (const key of needed) {
+      const [indexKey, expiry] = key.split('|');
+      const instrument = indexKey === 'NF' ? 'NSE_INDEX|Nifty 50' : 'NSE_INDEX|Nifty Bank';
+      try {
+        const resp = await fetch(_bust(`${UPSTOX_API}/option/chain?instrument_key=${encodeURIComponent(instrument)}&expiry_date=${expiry}`), { headers: _headers() });
+        const data = await resp.json();
+        if (data.status === 'success' && Array.isArray(data.data)) {
+          const spot = gv(indexKey === 'NF' ? 'nf_price' : 'bn_price') || 0;
+          let putOI = 0, callOI = 0;
+          const sellStrikeOI = {}, strikeLTPs = {};
 
-              for (const item of data.data) {
-                const strike = item.strike_price || item.strikePrice || item.strike;
-                if (!strike) continue;
-                const callData = item.call_options || item.callOptions || item.CE;
-                const putData = item.put_options || item.putOptions || item.PE;
-                if (callData) {
-                  const md = callData.market_data || callData;
-                  callOI += md.oi || md.open_interest || 0;
-                  sellStrikeOI[`${strike}_CE`] = md.oi || md.open_interest || 0;
-                  strikeLTPs[`${strike}_CE`] = md.ltp || md.last_price || 0;
-                }
-                if (putData) {
-                  const md = putData.market_data || putData;
-                  putOI += md.oi || md.open_interest || 0;
-                  sellStrikeOI[`${strike}_PE`] = md.oi || md.open_interest || 0;
-                  strikeLTPs[`${strike}_PE`] = md.ltp || md.last_price || 0;
-                }
-              }
-
-              const pcr = callOI > 0 ? +(putOI / callOI).toFixed(2) : 0;
-
-              // Max Pain calculation
-              const allStrikes = [...new Set(data.data.map(d => d.strike_price || d.strikePrice || d.strike))].filter(Boolean).sort((a,b) => a - b);
-              let mpStrike = 0, minPain = Infinity;
-              const coiMap = {}, poiMap = {};
-              for (const item of data.data) {
-                const s = item.strike_price || item.strikePrice || item.strike;
-                if (!s) continue;
-                const cd = item.call_options || item.callOptions || item.CE;
-                const pd = item.put_options || item.putOptions || item.PE;
-                if (cd) coiMap[s] = (cd.market_data || cd).oi || (cd.market_data || cd).open_interest || 0;
-                if (pd) poiMap[s] = (pd.market_data || pd).oi || (pd.market_data || pd).open_interest || 0;
-              }
-              for (const c of allStrikes) {
-                let pain = 0;
-                for (const k in coiMap) { if (coiMap[k] > 0 && c > +k) pain += (c - +k) * coiMap[k]; }
-                for (const k in poiMap) { if (poiMap[k] > 0 && c < +k) pain += (+k - c) * poiMap[k]; }
-                if (pain < minPain) { minPain = pain; mpStrike = c; }
-              }
-
-              window._POSITION_CHAINS[key] = { pcr, maxPain: mpStrike, callOI, putOI, sellStrikeOI, strikeLTPs, spot };
-              console.log(`[upstox] Position chain: ${key} — PCR=${pcr}, MaxPain=${mpStrike}, LTPs=${Object.keys(strikeLTPs).length} strikes`);
+          for (const item of data.data) {
+            const strike = item.strike_price || item.strikePrice || item.strike;
+            if (!strike) continue;
+            const callData = item.call_options || item.callOptions || item.CE;
+            const putData = item.put_options || item.putOptions || item.PE;
+            if (callData) {
+              const md = callData.market_data || callData;
+              callOI += md.oi || md.open_interest || 0;
+              sellStrikeOI[`${strike}_CE`] = md.oi || md.open_interest || 0;
+              strikeLTPs[`${strike}_CE`] = md.ltp || md.last_price || 0;
             }
-          } catch(e) {
-            console.warn(`[upstox] Position chain fetch failed for ${key}:`, e.message);
+            if (putData) {
+              const md = putData.market_data || putData;
+              putOI += md.oi || md.open_interest || 0;
+              sellStrikeOI[`${strike}_PE`] = md.oi || md.open_interest || 0;
+              strikeLTPs[`${strike}_PE`] = md.ltp || md.last_price || 0;
+            }
           }
+
+          const pcr = callOI > 0 ? +(putOI / callOI).toFixed(2) : 0;
+
+          // Max Pain
+          const allStrikes = [...new Set(data.data.map(d => d.strike_price || d.strikePrice || d.strike))].filter(Boolean).sort((a,b) => a - b);
+          let mpStrike = 0, minPain = Infinity;
+          const coiMap = {}, poiMap = {};
+          for (const item of data.data) {
+            const s = item.strike_price || item.strikePrice || item.strike;
+            if (!s) continue;
+            const cd = item.call_options || item.callOptions || item.CE;
+            const pd = item.put_options || item.putOptions || item.PE;
+            if (cd) coiMap[s] = (cd.market_data || cd).oi || (cd.market_data || cd).open_interest || 0;
+            if (pd) poiMap[s] = (pd.market_data || pd).oi || (pd.market_data || pd).open_interest || 0;
+          }
+          for (const c of allStrikes) {
+            let pain = 0;
+            for (const k in coiMap) { if (coiMap[k] > 0 && c > +k) pain += (c - +k) * coiMap[k]; }
+            for (const k in poiMap) { if (poiMap[k] > 0 && c < +k) pain += (+k - c) * poiMap[k]; }
+            if (pain < minPain) { minPain = pain; mpStrike = c; }
+          }
+
+          window._POSITION_CHAINS[key] = { pcr, maxPain: mpStrike, callOI, putOI, sellStrikeOI, strikeLTPs, spot };
+          console.log(`[auto] Position chain: ${key} — PCR=${pcr}, LTPs=${Object.keys(strikeLTPs).length}`);
         }
-
-        // Trigger thesis check in app.js
-        if (typeof checkThesisAndNotify === 'function') checkThesisAndNotify(openTrades);
-        // Force re-render with fresh chain data
-        if (typeof renderPositionsTab === 'function') renderPositionsTab();
+      } catch(e) {
+        console.warn(`[auto] Chain fetch failed for ${key}:`, e.message);
       }
     }
 
-    // Update auto-fetch timestamp on screen
-    const afEl = document.getElementById('upstox-positions');
-    if (afEl) {
-      const now = new Date();
-      const ts = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const existingHtml = afEl.innerHTML;
-      const tsHtml = `<div style="font-size:10px;color:var(--text-dim);text-align:right;margin-top:4px">Auto-fetch: ${ts}</div>`;
-      if (existingHtml.includes('Auto-fetch:')) {
-        afEl.innerHTML = existingHtml.replace(/<div[^>]*>Auto-fetch:[^<]*<\/div>/, tsHtml);
-      } else {
-        afEl.innerHTML += tsHtml;
-      }
+    // Step 4: Thesis check + P&L update + Supabase update + notifications
+    if (typeof checkThesisAndNotify === 'function') checkThesisAndNotify(openTrades);
+
+    // Step 5: Re-render positions tab (updates card + banner with fresh P&L)
+    if (typeof renderPositionsTab === 'function') renderPositionsTab();
+
+    // Step 6: Show auto-fetch timestamp
+    const tsEl = document.getElementById('auto-fetch-ts');
+    if (tsEl) {
+      const ts = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      tsEl.textContent = `Auto-fetch: ${ts}`;
     }
 
-    console.log('[upstox] Light fetch complete');
+    console.log('[auto] Light fetch complete');
   } catch(e) {
-    console.warn('[upstox] Light fetch error:', e.message);
+    console.warn('[auto] Light fetch error:', e.message);
   }
 }
 
