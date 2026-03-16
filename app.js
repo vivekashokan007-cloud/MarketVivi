@@ -246,8 +246,14 @@ function computeDirectionalBias() {
   const vix = gv('india_vix'), yVix = parseFloat(localStorage.getItem('mr_ev_indiavix') || '0');
   if (valid(vix) && yVix > 0) { const vc = vix - yVix; if (vc < -0.3) { bullCount++; signals.push({name:'VIX Dir',vote:'BULL',val:`${vc.toFixed(2)}`}); } else if (vc > 0.3) { bearCount++; signals.push({name:'VIX Dir',vote:'BEAR',val:`+${vc.toFixed(2)}`}); } else signals.push({name:'VIX Dir',vote:'NEUTRAL',val:`${vc>0?'+':''}${vc.toFixed(2)}`}); }
 
-  // Futures premium signal (auto from chain)
-  const nfFP = window._NF_FUTURES_PREMIUM;
+  // Futures premium signal — prefer actual, fallback to synthetic
+  const nfSpotQ1 = gv('nf_price') || 0;
+  let nfFP = null;
+  if (window._NF_ACTUAL_FUTURES && nfSpotQ1 > 0) {
+    nfFP = ((window._NF_ACTUAL_FUTURES - nfSpotQ1) / nfSpotQ1) * 100;
+  } else {
+    nfFP = window._NF_FUTURES_PREMIUM;
+  }
   if (nfFP !== null && nfFP !== undefined) {
     if (nfFP > 0.05) { bullCount++; signals.push({name:'Fut Premium',vote:'BULL',val:`+${nfFP.toFixed(3)}%`}); }
     else if (nfFP < -0.05) { bearCount++; signals.push({name:'Fut Premium',vote:'BEAR',val:`${nfFP.toFixed(3)}%`}); }
@@ -278,15 +284,18 @@ function evaluateAllStrategies(bias, vix, biasConf) {
     for (const expiry in chains) {
       const chain = chains[expiry]; if (!chain.strikes || !chain.spot) continue;
       const spot = chain.spot, dte = chain.dte, tradingDte = chain.tradingDte || dte;
+      const rc = chain.riskCenter || spot; // Actual futures price or spot fallback
       const strikeKeys = Object.keys(chain.strikes).map(Number).sort((a,b) => a - b);
       if (strikeKeys.length < 4) continue;
-      const atm = strikeKeys.reduce((best, s) => Math.abs(s - spot) < Math.abs(best - spot) ? s : best, strikeKeys[0]);
+      // ATM from risk center (futures), not spot — better reflects market pricing
+      const atm = strikeKeys.reduce((best, s) => Math.abs(s - rc) < Math.abs(best - rc) ? s : best, strikeKeys[0]);
       for (const stratType of STRATEGY_TYPES) {
         if (!isStrategyAllowed(stratType, bias, vix)) continue;
-        const candidates = buildCandidates(stratType, chain, atm, spot, width, step, strikeKeys, isNF);
+        const candidates = buildCandidates(stratType, chain, atm, rc, width, step, strikeKeys, isNF);
         for (const cand of candidates) {
           const setup = evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix);
           if (setup) {
+            setup.riskCenter = rc; // Store for display
             const baseScore = scoreSetup(setup, bias, vix, chain);
             const varsityMult = getVarsityMultiplier(stratType, biasConf || 'Neutral', bias, vix);
             setup.baseScore = baseScore;
@@ -539,19 +548,35 @@ function renderFuturesPremium() {
   if (!el) return;
   const nfP = window._NF_FUTURES_PREMIUM;
   const bnfP = window._BNF_FUTURES_PREMIUM;
-  const nfF = window._NF_FUTURES_LTP;
-  const bnfF = window._BNF_FUTURES_LTP;
-  if (nfP === null && bnfP === null) { el.textContent = 'Fetch data to see futures premium'; return; }
+  const nfSynth = window._NF_FUTURES_LTP;
+  const bnfSynth = window._BNF_FUTURES_LTP;
+  const nfActual = window._NF_ACTUAL_FUTURES;
+  const bnfActual = window._BNF_ACTUAL_FUTURES;
+  if (nfP === null && bnfP === null && !nfActual && !bnfActual) { el.textContent = 'Fetch data to see futures premium'; return; }
 
   const nfSpot = gv('nf_price') || 0;
   const bnfSpot = gv('bn_price') || 0;
   const fmtP = (p) => p > 0 ? `+${p.toFixed(3)}%` : `${p.toFixed(3)}%`;
   const clsP = (p) => p > 0.05 ? 'profit' : p < -0.05 ? 'loss' : '';
-  const signal = (p) => p > 0.05 ? '↑ Bullish' : p < -0.05 ? '↓ Bearish' : '→ Neutral';
+  const signal = (p) => p > 0.05 ? '↑ Bull' : p < -0.05 ? '↓ Bear' : '→ Neutral';
 
   let html = '';
-  if (nfP !== null) html += `<div>NF: ${nfF ? nfF.toLocaleString('en-IN') : '—'} <span class="${clsP(nfP)}" style="font-weight:700">(${fmtP(nfP)})</span> <span style="opacity:0.6">${signal(nfP)}</span></div>`;
-  if (bnfP !== null) html += `<div>BNF: ${bnfF ? bnfF.toLocaleString('en-IN') : '—'} <span class="${clsP(bnfP)}" style="font-weight:700">(${fmtP(bnfP)})</span> <span style="opacity:0.6">${signal(bnfP)}</span></div>`;
+  // NF futures
+  if (nfActual && nfSpot > 0) {
+    const actPrem = ((nfActual - nfSpot) / nfSpot * 100);
+    html += `<div>NF: <b>${nfActual.toLocaleString('en-IN')}</b> <span class="${clsP(actPrem)}" style="font-weight:700">(${fmtP(actPrem)})</span> <span style="opacity:0.6">${signal(actPrem)}</span></div>`;
+    if (nfSynth) html += `<div style="font-size:10px;opacity:0.5;margin:-2px 0 2px">Synth: ${nfSynth.toLocaleString('en-IN')} (${nfP !== null ? fmtP(nfP) : '—'})</div>`;
+  } else if (nfP !== null) {
+    html += `<div>NF: ${nfSynth ? nfSynth.toLocaleString('en-IN') : '—'} <span class="${clsP(nfP)}" style="font-weight:700">(${fmtP(nfP)})</span> <span style="opacity:0.6">${signal(nfP)} · synth</span></div>`;
+  }
+  // BNF futures
+  if (bnfActual && bnfSpot > 0) {
+    const actPrem = ((bnfActual - bnfSpot) / bnfSpot * 100);
+    html += `<div>BNF: <b>${bnfActual.toLocaleString('en-IN')}</b> <span class="${clsP(actPrem)}" style="font-weight:700">(${fmtP(actPrem)})</span> <span style="opacity:0.6">${signal(actPrem)}</span></div>`;
+    if (bnfSynth) html += `<div style="font-size:10px;opacity:0.5;margin:-2px 0 2px">Synth: ${bnfSynth.toLocaleString('en-IN')} (${bnfP !== null ? fmtP(bnfP) : '—'})</div>`;
+  } else if (bnfP !== null) {
+    html += `<div>BNF: ${bnfSynth ? bnfSynth.toLocaleString('en-IN') : '—'} <span class="${clsP(bnfP)}" style="font-weight:700">(${fmtP(bnfP)})</span> <span style="opacity:0.6">${signal(bnfP)} · synth</span></div>`;
+  }
   el.innerHTML = html;
 }
 
@@ -814,7 +839,13 @@ async function logTradeFromCommand(setup) {
       entry_atm_iv: null,
       entry_fii_cash: gv('fii') || null,
       entry_close_char: gv('close_char') || null,
-      entry_futures_premium: (setup.indexKey === 'BNF' ? window._BNF_FUTURES_PREMIUM : window._NF_FUTURES_PREMIUM) || null,
+      entry_futures_premium: (() => {
+        const isBNF = setup.indexKey === 'BNF';
+        const actFut = isBNF ? window._BNF_ACTUAL_FUTURES : window._NF_ACTUAL_FUTURES;
+        const sp = setup.spot;
+        if (actFut && sp > 0) return +((actFut - sp) / sp * 100).toFixed(3);
+        return (isBNF ? window._BNF_FUTURES_PREMIUM : window._NF_FUTURES_PREMIUM) || null;
+      })(),
 
       // ── Bias + Score snapshot ──
       entry_bias: null,

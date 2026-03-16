@@ -12,10 +12,12 @@ window._NF_HIST = [];
 window._BNF_HIST = [];
 window._NF_ATM_IV = null;
 window._BNF_ATM_IV = null;
-window._NF_FUTURES_LTP = null;
+window._NF_FUTURES_LTP = null;   // Synthetic from put-call parity
 window._BNF_FUTURES_LTP = null;
 window._NF_FUTURES_PREMIUM = null;
 window._BNF_FUTURES_PREMIUM = null;
+window._NF_ACTUAL_FUTURES = null;  // Actual from Upstox futures contract
+window._BNF_ACTUAL_FUTURES = null;
 
 // ── Token Management ──
 function upstoxGetToken() {
@@ -99,6 +101,9 @@ async function upstoxAutoFill() {
     // Step 1: Fetch spots first (needed for chain filtering)
     await upstoxFetchSpots();
 
+    // Step 1b: Fetch actual futures LTP (needed for risk center in chains)
+    await upstoxFetchFutures();
+
     // Step 2: Fetch available expiries from Upstox
     let nfExps = [], bnfExps = [];
     try {
@@ -160,6 +165,48 @@ async function upstoxFetchSpots() {
     if (key.includes('Nifty 50') && !key.includes('Bank')) _set('nf_price', ltp);
     if (key.includes('Nifty Bank')) _set('bn_price', ltp);
     if (key.includes('India VIX')) { _set('india_vix', ltp); _set('strat_vix', ltp); window._LIVE_VIX = ltp; }
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// ACTUAL FUTURES LTP
+// ═══════════════════════════════════════════════════
+
+function _futuresKey(index) {
+  // Construct current month futures instrument key
+  // Format: NSE_FO|NIFTY{YY}{MON}FUT or NSE_FO|BANKNIFTY{YY}{MON}FUT
+  const now = new Date();
+  const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const yy = String(now.getFullYear()).slice(-2);
+  const mon = months[now.getMonth()];
+  const sym = index === 'NF' ? 'NIFTY' : 'BANKNIFTY';
+  return `NSE_FO|${sym}${yy}${mon}FUT`;
+}
+
+async function upstoxFetchFutures() {
+  try {
+    const nfKey = _futuresKey('NF');
+    const bnfKey = _futuresKey('BNF');
+    const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=${encodeURIComponent(nfKey)},${encodeURIComponent(bnfKey)}`), { headers: _headers() });
+    const data = await resp.json();
+    if (data.status !== 'success' || !data.data) {
+      console.warn('[upstox] Futures fetch failed — will use synthetic');
+      return;
+    }
+    for (const key in data.data) {
+      const q = data.data[key];
+      const ltp = q.last_price || (q.ohlc && q.ohlc.close);
+      if (!ltp) continue;
+      if (key.includes('BANKNIFTY')) {
+        window._BNF_ACTUAL_FUTURES = ltp;
+        console.log(`[upstox] BNF Actual Futures: ${ltp}`);
+      } else if (key.includes('NIFTY')) {
+        window._NF_ACTUAL_FUTURES = ltp;
+        console.log(`[upstox] NF Actual Futures: ${ltp}`);
+      }
+    }
+  } catch(e) {
+    console.warn('[upstox] Futures fetch error (will use synthetic):', e.message);
   }
 }
 
@@ -277,9 +324,13 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
     }
   }
 
+  // Risk center: actual futures if available, else spot
+  const actualFut = isNF ? window._NF_ACTUAL_FUTURES : window._BNF_ACTUAL_FUTURES;
+  const riskCenter = actualFut || spot;
+
   // Store chain
   window._CHAINS[indexKey][expiry] = {
-    strikes, spot, dte, tradingDte: tdte, pcr, callOI, putOI,
+    strikes, spot, riskCenter, dte, tradingDte: tdte, pcr, callOI, putOI,
     callWall: maxCallStrike, putWall: maxPutStrike,
     maxPain: mpStrike, atmIV
   };
