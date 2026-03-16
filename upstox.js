@@ -101,8 +101,8 @@ async function upstoxAutoFill() {
     // Step 1: Fetch spots first (needed for chain filtering)
     await upstoxFetchSpots();
 
-    // Step 1b: Fetch actual futures LTP (needed for risk center in chains)
-    await upstoxFetchFutures();
+    // Note: actual futures fetch deferred to Phase 6 (Upstox uses opaque numeric instrument keys)
+    // Synthetic futures from put-call parity used as riskCenter for now
 
     // Step 2: Fetch available expiries from Upstox
     let nfExps = [], bnfExps = [];
@@ -126,7 +126,8 @@ async function upstoxAutoFill() {
     const fetches = [
       upstoxFetchHistorical('NSE_INDEX|Nifty 50', true),
       upstoxFetchHistorical('NSE_INDEX|Nifty Bank', false),
-      upstoxFetchMargins()
+      upstoxFetchMargins(),
+      upstoxFetchBnfBreadth()
     ];
     for (const exp of nfExps)  fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty 50', exp, 'NF'));
     for (const exp of bnfExps) fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty Bank', exp, 'BNF'));
@@ -207,6 +208,92 @@ async function upstoxFetchFutures() {
     }
   } catch(e) {
     console.warn('[upstox] Futures fetch error (will use synthetic):', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// BNF CONSTITUENT BREADTH (auto-fetch)
+// ═══════════════════════════════════════════════════
+
+async function upstoxFetchBnfBreadth() {
+  // Only auto-fill after 9:30 IST — before that, stocks haven't moved meaningfully
+  const now = new Date();
+  const istHour = now.getUTCHours() + 5 + (now.getUTCMinutes() + 30) / 60;
+  if (istHour < 9.5) {
+    console.log('[upstox] BNF breadth: skipped — before 9:30 IST');
+    return;
+  }
+
+  try {
+    const keys = BNF_CONSTITUENTS.map(c => encodeURIComponent(c.instrument)).join(',');
+    const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=${keys}`), { headers: _headers() });
+    const data = await resp.json();
+
+    // Debug: log raw response so we can fix key format if needed
+    window._BNF_BREADTH_DEBUG = {
+      status: data.status,
+      keys_sent: BNF_CONSTITUENTS.map(c => c.instrument),
+      keys_received: data.data ? Object.keys(data.data) : [],
+      error: data.errors || data.message || null
+    };
+    console.log('[upstox] BNF breadth raw:', JSON.stringify(window._BNF_BREADTH_DEBUG));
+
+    if (data.status !== 'success' || !data.data) {
+      console.warn('[upstox] BNF breadth fetch failed:', data.message || data.errors || 'unknown');
+      return;
+    }
+
+    let autoCount = 0;
+    for (const c of BNF_CONSTITUENTS) {
+      const el = document.getElementById(c.id);
+      if (!el) continue;
+
+      // Find matching quote — match by symbol substring
+      let quote = null;
+      for (const key in data.data) {
+        const sym = c.instrument.split('|')[1];
+        if (key.includes(sym)) { quote = data.data[key]; break; }
+      }
+      if (!quote) continue;
+
+      const ltp = quote.last_price;
+      const prevClose = quote.ohlc && quote.ohlc.close;
+      if (!ltp || !prevClose) continue;
+
+      const advancing = ltp > prevClose;
+      const pctChange = ((ltp - prevClose) / prevClose * 100).toFixed(2);
+
+      // Auto-check if advancing
+      el.checked = advancing;
+
+      // Store change % for display
+      el.dataset.pct = pctChange;
+      el.dataset.ltp = ltp;
+
+      if (advancing) autoCount++;
+      console.log(`[upstox] ${c.name}: ${ltp} (${pctChange > 0 ? '+' : ''}${pctChange}%) ${advancing ? '↑' : '↓'}`);
+    }
+
+    // Update readout and labels with price data
+    if (typeof updateBnfReadout === 'function') updateBnfReadout();
+    updateBnfLabels();
+    if (typeof calcScore === 'function') calcScore();
+    console.log(`[upstox] BNF breadth: ${autoCount}/5 advancing`);
+  } catch(e) {
+    console.warn('[upstox] BNF breadth error:', e.message);
+  }
+}
+
+function updateBnfLabels() {
+  for (const c of BNF_CONSTITUENTS) {
+    const el = document.getElementById(c.id);
+    if (!el || !el.dataset.pct) continue;
+    const pct = el.dataset.pct;
+    const pctEl = el.parentElement.querySelector('.bnf-pct');
+    if (pctEl) {
+      pctEl.textContent = `${pct > 0 ? '+' : ''}${pct}%`;
+      pctEl.className = `bnf-pct ${pct > 0 ? 'profit' : 'loss'}`;
+    }
   }
 }
 
@@ -324,9 +411,17 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
     }
   }
 
-  // Risk center: actual futures if available, else spot
+  // Compute synthetic futures from ATM put-call parity (needed for riskCenter)
+  let synthFuturesLTP = null;
+  const atmForSynth = allStrikes.reduce((best, s) => Math.abs(s - spot) < Math.abs(best - spot) ? s : best, allStrikes[0]);
+  const atmDataSynth = strikes[atmForSynth];
+  if (atmDataSynth && atmDataSynth.CE && atmDataSynth.PE && atmDataSynth.CE.ltp > 0 && atmDataSynth.PE.ltp > 0) {
+    synthFuturesLTP = +(atmForSynth + (atmDataSynth.CE.ltp - atmDataSynth.PE.ltp)).toFixed(2);
+  }
+
+  // Risk center: actual futures > synthetic futures > spot
   const actualFut = isNF ? window._NF_ACTUAL_FUTURES : window._BNF_ACTUAL_FUTURES;
-  const riskCenter = actualFut || spot;
+  const riskCenter = actualFut || synthFuturesLTP || spot;
 
   // Store chain
   window._CHAINS[indexKey][expiry] = {
@@ -345,15 +440,12 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
     if (isNF) { _set('max_pain_nf', mpStrike); window._NF_ATM_IV = atmIV; }
     else window._BNF_ATM_IV = atmIV;
 
-    // Calculate synthetic futures premium from ATM put-call parity
-    const atmStrike = allStrikes.reduce((best, s) => Math.abs(s - spot) < Math.abs(best - spot) ? s : best, allStrikes[0]);
-    const atmData = strikes[atmStrike];
-    if (atmData && atmData.CE && atmData.PE && atmData.CE.ltp > 0 && atmData.PE.ltp > 0) {
-      const synthFutures = atmStrike + (atmData.CE.ltp - atmData.PE.ltp);
-      const futPremium = spot > 0 ? +((synthFutures - spot) / spot * 100).toFixed(3) : 0;
-      if (isNF) { window._NF_FUTURES_LTP = +synthFutures.toFixed(2); window._NF_FUTURES_PREMIUM = futPremium; _set('nf_fut_premium', futPremium); }
-      else { window._BNF_FUTURES_LTP = +synthFutures.toFixed(2); window._BNF_FUTURES_PREMIUM = futPremium; _set('bnf_fut_premium', futPremium); }
-      console.log(`[upstox] ${indexKey} Synth Futures: ${synthFutures.toFixed(2)} (${futPremium > 0 ? '+' : ''}${futPremium}% premium)`);
+    // Store synthetic futures premium globally
+    if (synthFuturesLTP && spot > 0) {
+      const futPremium = +((synthFuturesLTP - spot) / spot * 100).toFixed(3);
+      if (isNF) { window._NF_FUTURES_LTP = synthFuturesLTP; window._NF_FUTURES_PREMIUM = futPremium; _set('nf_fut_premium', futPremium); }
+      else { window._BNF_FUTURES_LTP = synthFuturesLTP; window._BNF_FUTURES_PREMIUM = futPremium; _set('bnf_fut_premium', futPremium); }
+      console.log(`[upstox] ${indexKey} Synth Futures: ${synthFuturesLTP} (${futPremium > 0 ? '+' : ''}${futPremium}% premium) → riskCenter: ${riskCenter}`);
     }
   }
 

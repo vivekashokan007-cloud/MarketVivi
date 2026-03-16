@@ -28,11 +28,11 @@ const NSE_HOLIDAYS_2026 = [
 
 // ── BNF Top-5 Constituent Weights (sum ≈ 79%) ──
 const BNF_CONSTITUENTS = [
-  { id: 'bnf_hdfc',  name: 'HDFC Bank', weight: 0.28 },
-  { id: 'bnf_icici', name: 'ICICI Bank', weight: 0.22 },
-  { id: 'bnf_kotak', name: 'Kotak Mah', weight: 0.12 },
-  { id: 'bnf_sbi',   name: 'SBI',        weight: 0.09 },
-  { id: 'bnf_axis',  name: 'Axis Bank',  weight: 0.08 }
+  { id: 'bnf_hdfc',  name: 'HDFC Bank', weight: 0.28, instrument: 'NSE_EQ|HDFCBANK' },
+  { id: 'bnf_icici', name: 'ICICI Bank', weight: 0.22, instrument: 'NSE_EQ|ICICIBANK' },
+  { id: 'bnf_kotak', name: 'Kotak Mah', weight: 0.12, instrument: 'NSE_EQ|KOTAKBANK' },
+  { id: 'bnf_sbi',   name: 'SBI',        weight: 0.09, instrument: 'NSE_EQ|SBIN' },
+  { id: 'bnf_axis',  name: 'Axis Bank',  weight: 0.08, instrument: 'NSE_EQ|AXISBANK' }
 ];
 
 // ── State ──
@@ -188,9 +188,9 @@ function updateBnfReadout() {
   const el = document.getElementById('bnf-weighted-readout');
   if (!el) return;
   const wb = computeBnfWeightedBreadth();
-  if (wb === null) { el.textContent = '—'; return; }
+  if (wb === null) { el.textContent = '0%'; return; }
   const cls = wb >= 50 ? 'profit' : wb <= 20 ? 'loss' : '';
-  el.innerHTML = `<span class="${cls}">${wb.toFixed(0)}%</span> weighted advance`;
+  el.innerHTML = `<span class="${cls}">${wb.toFixed(0)}%</span>`;
 }
 
 function renderVerdict() {
@@ -1051,6 +1051,8 @@ function showDebug() {
   for (const idx of ['NF','BNF']) { const chains=window._CHAINS[idx]; out+=`--- ${idx} ---\nExpiries: ${JSON.stringify(Object.keys(chains))}\n`; for (const exp in chains) { const c=chains[exp],sk=Object.keys(c.strikes||{}); out+=`\n[${exp}] DTE=${c.dte} TradingDTE=${c.tradingDte||'?'} Spot=${c.spot}\n  PCR=${c.pcr} MaxPain=${c.maxPain}\n  CallOI=${c.callOI} PutOI=${c.putOI}\n  CallWall=${c.callWall} PutWall=${c.putWall}\n  Strikes loaded: ${sk.length}\n`; const sample=sk.slice(0,3); for(const s of sample){const d=c.strikes[s];if(d.CE)out+=`  ${s} CE: LTP=${d.CE.ltp} OI=${d.CE.oi} Δ=${d.CE.delta} θ=${d.CE.theta} IV=${d.CE.iv}\n`;if(d.PE)out+=`  ${s} PE: LTP=${d.PE.ltp} OI=${d.PE.oi} Δ=${d.PE.delta} θ=${d.PE.theta} IV=${d.PE.iv}\n`;} if(c.spot&&sk.length>0){const atm=sk.reduce((b,s)=>Math.abs(+s-c.spot)<Math.abs(+b-c.spot)?s:b);const ad=c.strikes[atm];out+=`  ATM(${atm}):\n`;if(ad.CE)out+=`    CE: LTP=${ad.CE.ltp} OI=${ad.CE.oi} Δ=${ad.CE.delta}\n`;if(ad.PE)out+=`    PE: LTP=${ad.PE.ltp} OI=${ad.PE.oi} Δ=${ad.PE.delta}\n`;} } out+='\n'; }
   out+='--- HIDDEN FIELDS ---\n'; ['nf_price','bn_price','india_vix','nf_atr','bn_atr','pcr_nf','pcr_bn','max_pain_nf','nf_oi_call','nf_oi_put','nf_maxpain','bn_maxpain'].forEach(id=>{out+=`  ${id} = ${gv(id)}\n`;});
   if(window._RAW_CHAIN_SAMPLE){out+='\n--- RAW API RESPONSE ---\n';for(const key in window._RAW_CHAIN_SAMPLE){const s=window._RAW_CHAIN_SAMPLE[key];out+=`\n[${key}]\n  isArray=${s.isArray} type=${s.type} length=${s.length}\n`;if(s.topKeys)out+=`  topKeys: ${JSON.stringify(s.topKeys)}\n`;out+=`  sampleKeys: ${JSON.stringify(s.sampleKeys)}\n  firstItem: ${JSON.stringify(s.firstItem).substring(0,500)}\n`;}}
+  // BNF breadth debug
+  if(window._BNF_BREADTH_DEBUG){out+='\n--- BNF BREADTH ---\n';out+=JSON.stringify(window._BNF_BREADTH_DEBUG,null,2)+'\n';}
   el.textContent=out;
 }
 
@@ -1327,8 +1329,7 @@ async function detectAndLogPositions(rawPositions) {
   // Check for auto-close
   await autoCloseGonePositions(Object.keys(groups));
 
-  // Store and render
-  window._DETECTED_POSITIONS = detected;
+  // Render positions from Supabase (source of truth)
   renderPositionsTab();
   // Phase 3: auto-expire past trades + refresh journal
   await autoExpireOpenTrades();
@@ -2215,6 +2216,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const le=document.getElementById('btn-lock-evening'); if(le) le.addEventListener('click',toggleEvening);
   const bh=document.getElementById('btn-bhav-upload'); if(bh) bh.addEventListener('click',handleBhavUpload);
   const dbg=document.getElementById('btn-debug'); if(dbg) dbg.addEventListener('click',showDebug);
+  // BNF breadth section collapse/expand
+  const bnfTgl=document.getElementById('bnf-toggle');
+  if(bnfTgl) bnfTgl.addEventListener('click',()=>{
+    const body=document.getElementById('bnf-body'), arrow=document.getElementById('bnf-arrow');
+    if(body){const open=body.style.display!=='none';body.style.display=open?'none':'block';if(arrow)arrow.textContent=open?'▼':'▲';}
+  });
   initInputListeners(); initDrawer(); restoreSavedState(); renderEveningSection(); updateBnfReadout(); calcScore(); go(0);
   // Load positions + auto-expire + journal on startup
   renderPositionsTab();

@@ -222,17 +222,23 @@ html, body {
 .q-score-total span:first-child { flex: 1; color: var(--amber); }
 .q-score-total span:last-child { text-align: right; }
 
-/* ── BNF Constituent Grid ── */
-.bnf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+/* ── BNF Constituent Grid (collapsible) ── */
+.bnf-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
+.bnf-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.bnf-header .section-title { border: none; padding: 0; }
+.bnf-summary { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; }
+.bnf-body { margin-top: 8px; }
+.bnf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
 .bnf-label {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px;
   background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius);
   font-size: 12px; cursor: pointer; transition: all 0.2s; -webkit-tap-highlight-color: transparent;
 }
 .bnf-label:has(input:checked) { border-color: var(--green); background: var(--green-dim); }
 .bnf-label em { font-style: normal; color: var(--text-dim); font-size: 10px; }
 .bnf-chk { width: 16px; height: 16px; accent-color: var(--green); flex-shrink: 0; }
-.bnf-readout { font-size: 11px; color: var(--text-dim); text-align: center; margin-bottom: 8px; }
+.bnf-pct { margin-left: auto; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.bnf-readout { font-size: 13px; }
 
 /* ── Index Selector ── */
 .idx-selector { display: flex; gap: 8px; margin-bottom: 12px; }

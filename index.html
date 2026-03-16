@@ -112,16 +112,22 @@
     <input type="number" id="n50dma" step="0.1" placeholder="% above 200DMA">
     <span id="ts-n50dma" class="ts-badge"></span>
   </div>
-  <div class="section-title">BNF Weighted Breadth</div>
-  <div class="timing-hint">Tap advancing stocks · after 9:30 AM from NSE/Moneycontrol</div>
-  <div class="bnf-grid">
-    <label class="bnf-label"><input type="checkbox" id="bnf_hdfc" class="bnf-chk"><span>HDFC Bank <em>28%</em></span></label>
-    <label class="bnf-label"><input type="checkbox" id="bnf_icici" class="bnf-chk"><span>ICICI Bank <em>22%</em></span></label>
-    <label class="bnf-label"><input type="checkbox" id="bnf_kotak" class="bnf-chk"><span>Kotak Mah <em>12%</em></span></label>
-    <label class="bnf-label"><input type="checkbox" id="bnf_sbi" class="bnf-chk"><span>SBI <em>9%</em></span></label>
-    <label class="bnf-label"><input type="checkbox" id="bnf_axis" class="bnf-chk"><span>Axis Bank <em>8%</em></span></label>
+  <div class="bnf-section" id="bnf-section">
+    <div class="bnf-header" id="bnf-toggle">
+      <span class="section-title" style="margin:0">BNF Weighted Breadth</span>
+      <span class="bnf-summary"><span id="bnf-weighted-readout" class="bnf-readout">0%</span> <span class="q-expand" id="bnf-arrow">▼</span></span>
+    </div>
+    <div class="timing-hint">Auto from Upstox after 9:30 · tap to override</div>
+    <div class="bnf-body" id="bnf-body" style="display:none">
+      <div class="bnf-grid">
+        <label class="bnf-label"><input type="checkbox" id="bnf_hdfc" class="bnf-chk"><span>HDFC Bank <em>28%</em></span><span class="bnf-pct"></span></label>
+        <label class="bnf-label"><input type="checkbox" id="bnf_icici" class="bnf-chk"><span>ICICI Bank <em>22%</em></span><span class="bnf-pct"></span></label>
+        <label class="bnf-label"><input type="checkbox" id="bnf_kotak" class="bnf-chk"><span>Kotak Mah <em>12%</em></span><span class="bnf-pct"></span></label>
+        <label class="bnf-label"><input type="checkbox" id="bnf_sbi" class="bnf-chk"><span>SBI <em>9%</em></span><span class="bnf-pct"></span></label>
+        <label class="bnf-label"><input type="checkbox" id="bnf_axis" class="bnf-chk"><span>Axis Bank <em>8%</em></span><span class="bnf-pct"></span></label>
+      </div>
+    </div>
   </div>
-  <div id="bnf-weighted-readout" class="bnf-readout">0% weighted advance</div>
 
   <button class="btn btn-lock" id="btn-lock-radar">🔓 Lock Morning Data</button>
   <button class="btn btn-lock" id="btn-lock-breadth">🔓 Lock Breadth</button>
