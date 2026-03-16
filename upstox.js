@@ -228,7 +228,7 @@ async function upstoxFetchBnfBreadth() {
     // ISIN mapping for BNF top-5 constituents
     const ISIN = {
       HDFCBANK: 'INE040A01034', ICICIBANK: 'INE090A01021',
-      KOTAKBANK: 'INE237A01028', SBIN: 'INE062A01020', AXISBANK: 'INE238A01034'
+      KOTAKBANK: 'INE237A01034', SBIN: 'INE062A01020', AXISBANK: 'INE238A01034'
     };
     const symbols = ['HDFCBANK','ICICIBANK','KOTAKBANK','SBIN','AXISBANK'];
 
@@ -254,12 +254,15 @@ async function upstoxFetchBnfBreadth() {
     }
 
     // Debug: log what worked
+    const firstKey = data && data.data ? Object.keys(data.data)[0] : null;
+    const firstQuote = firstKey ? data.data[firstKey] : null;
     window._BNF_BREADTH_DEBUG = {
       status: data ? data.status : 'all formats failed',
       format_that_worked: usedFormat,
       formats_tried: triedFormats,
       keys_received: data && data.data ? Object.keys(data.data) : [],
-      error: data ? (data.errors || data.message || null) : 'No format returned data'
+      error: data ? (data.errors || data.message || null) : 'No format returned data',
+      sample_quote: firstQuote ? JSON.stringify(firstQuote).substring(0, 500) : null
     };
     console.log('[upstox] BNF breadth raw:', JSON.stringify(window._BNF_BREADTH_DEBUG));
 
@@ -282,9 +285,14 @@ async function upstoxFetchBnfBreadth() {
       }
       if (!quote) continue;
 
-      const ltp = quote.last_price;
-      const prevClose = quote.ohlc && quote.ohlc.close;
-      if (!ltp || !prevClose) continue;
+      // Flexible field extraction — try multiple Upstox response patterns
+      const ltp = quote.last_price || (quote.market_data && quote.market_data.ltp) || quote.ltp || 0;
+      const prevClose = (quote.ohlc && quote.ohlc.close) || quote.close_price || (quote.market_data && quote.market_data.close_price) || 0;
+      if (!ltp || !prevClose || ltp === prevClose) {
+        // If ltp equals prevClose, stock data may be stale — skip auto-check but log
+        console.log(`[upstox] ${c.name}: ltp=${ltp} prevClose=${prevClose} — skipped (same or missing)`);
+        continue;
+      }
 
       const advancing = ltp > prevClose;
       const pctChange = ((ltp - prevClose) / prevClose * 100).toFixed(2);
