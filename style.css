@@ -183,9 +183,14 @@ html, body {
 .gonogo-meta { font-size: 11px; color: var(--text-dim); }
 .gonogo-reason { font-size: 12px; color: var(--orange); margin-top: 4px; }
 
-/* ── Q1 Card ── */
+/* ── Q1 Card (expandable) ── */
 .q-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 12px; box-shadow: var(--shadow); }
-.q-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; }
+.q-header { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.q-title { font-size: 14px; font-weight: bold; margin-bottom: 2px; }
+.q-summary-inline { font-size: 12px; color: var(--amber); display: flex; justify-content: space-between; align-items: center; }
+.q-expand { font-size: 11px; color: var(--text-dim); margin-left: 8px; }
+.q-body { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.q-section-label { font-size: 11px; font-weight: 700; color: var(--amber); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
 .signal-row { display: flex; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(61,53,44,0.3); font-size: 12px; }
 .signal-name { flex: 0 0 100px; color: var(--text-dim); }
 .signal-vote { flex: 0 0 65px; font-weight: bold; text-align: center; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
@@ -195,10 +200,39 @@ html, body {
 [data-theme="light"] .vote-bull { color: #1a5c1a; }
 [data-theme="light"] .vote-bear { color: #8b1a1a; }
 .signal-val { flex: 1; text-align: right; color: var(--text-dim); font-size: 11px; }
-.q-summary { font-size: 12px; color: var(--amber); margin-top: 8px; text-align: center; }
 .bias-bull { color: var(--green); }
 .bias-bear { color: var(--red); }
 .bias-neutral { color: var(--orange); }
+
+/* ── Q1 Score Breakdown Table ── */
+.q-score-table { font-size: 11px; }
+.q-score-hdr { display: flex; gap: 4px; padding: 4px 0; border-bottom: 1px solid var(--border); font-weight: 700; color: var(--text-dim); }
+.q-score-hdr span:nth-child(1) { flex: 0 0 80px; }
+.q-score-hdr span:nth-child(2) { flex: 0 0 70px; text-align: right; }
+.q-score-hdr span:nth-child(3) { flex: 0 0 30px; text-align: right; }
+.q-score-hdr span:nth-child(4) { flex: 0 0 40px; text-align: right; }
+.q-score-hdr span:nth-child(5) { flex: 1; text-align: right; }
+.q-score-row { display: flex; gap: 4px; padding: 3px 0; border-bottom: 1px solid rgba(61,53,44,0.15); }
+.q-score-row span:nth-child(1) { flex: 0 0 80px; color: var(--text-dim); }
+.q-score-row span:nth-child(2) { flex: 0 0 70px; text-align: right; }
+.q-score-row span:nth-child(3) { flex: 0 0 30px; text-align: right; color: var(--text-dim); }
+.q-score-row span:nth-child(4) { flex: 0 0 40px; text-align: right; }
+.q-score-row span:nth-child(5) { flex: 1; text-align: right; font-weight: 600; }
+.q-score-total { display: flex; gap: 4px; padding: 6px 0 2px; border-top: 1px solid var(--amber); font-weight: 700; margin-top: 2px; }
+.q-score-total span:first-child { flex: 1; color: var(--amber); }
+.q-score-total span:last-child { text-align: right; }
+
+/* ── BNF Constituent Grid ── */
+.bnf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.bnf-label {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12px; cursor: pointer; transition: all 0.2s; -webkit-tap-highlight-color: transparent;
+}
+.bnf-label:has(input:checked) { border-color: var(--green); background: var(--green-dim); }
+.bnf-label em { font-style: normal; color: var(--text-dim); font-size: 10px; }
+.bnf-chk { width: 16px; height: 16px; accent-color: var(--green); flex-shrink: 0; }
+.bnf-readout { font-size: 11px; color: var(--text-dim); text-align: center; margin-bottom: 8px; }
 
 /* ── Index Selector ── */
 .idx-selector { display: flex; gap: 8px; margin-bottom: 12px; }

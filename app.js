@@ -1,7 +1,7 @@
 /* ============================================================
-   app.js — Market Radar v5.0 — Phase 3 Active
+   app.js — Market Radar v5.0 — Phase 5
    EV-based scoring, Varsity multiplier, split display
-   Auto-expire, trade journal, cumulative stats
+   Expandable Q1 card, weighted BNF breadth, futures premium bias
    All 7 strategies × all expiries × both indices
    ============================================================ */
 
@@ -26,11 +26,22 @@ const NSE_HOLIDAYS_2026 = [
   '2026-11-10','2026-11-24','2026-12-25'
 ];
 
+// ── BNF Top-5 Constituent Weights (sum ≈ 79%) ──
+const BNF_CONSTITUENTS = [
+  { id: 'bnf_hdfc',  name: 'HDFC Bank', weight: 0.28 },
+  { id: 'bnf_icici', name: 'ICICI Bank', weight: 0.22 },
+  { id: 'bnf_kotak', name: 'Kotak Mah', weight: 0.12 },
+  { id: 'bnf_sbi',   name: 'SBI',        weight: 0.09 },
+  { id: 'bnf_axis',  name: 'Axis Bank',  weight: 0.08 }
+];
+
 // ── State ──
 let SCORE = null, DIRECTION = '';
 let RADAR_LOCKED = false, BREADTH_LOCKED = false, EVENING_LOCKED = false;
 let ANALYSIS_VIX = null;
 let _RANKED_SETUPS = [];
+let _CALC_SCORE_DETAILS = null; // Stores per-signal breakdown for Q1 expanded view
+let _Q1_EXPANDED = false;
 
 const W = {
   india_vix: 0.25, pcr_nf: 0.18, fii: 0.15, gift_gap: 0.15,
@@ -108,33 +119,78 @@ function restoreAllTS() { const ts = getTS(); for (const id in ts) renderTS(id, 
 
 function calcScore() {
   const signals = {};
+  const rawVals = {}; // Store raw values for display
   const india_vix = gv('india_vix'), fii = gv('fii'), pcr_nf = gv('pcr_nf');
   const close_char = gv('close_char'), max_pain = gv('max_pain_nf'), nf_spot = gv('nf_price');
-  const n50adv = gv('n50adv'), n50dma = gv('n50dma'), bnfadv = gv('bnfadv');
+  const n50adv = gv('n50adv'), n50dma = gv('n50dma');
   const nifty_prev = gv('nifty_prev');
 
   // Auto-calculate gap from spot vs previous close
   if (valid(nf_spot) && valid(nifty_prev) && nifty_prev > 0) {
     const gap = ((nf_spot - nifty_prev) / nifty_prev) * 100;
     signals.gift_gap = Math.max(-1, Math.min(1, gap / 1.5));
+    rawVals.gift_gap = `${gap > 0 ? '+' : ''}${gap.toFixed(2)}%`;
   }
 
-  if (valid(india_vix))  { signals.india_vix = Math.max(-1, Math.min(1, -(india_vix - 14) / 6)); ANALYSIS_VIX = india_vix; }
-  if (valid(fii))        signals.fii        = Math.max(-1, Math.min(1, fii / 2000));
-  if (valid(pcr_nf))     signals.pcr_nf     = Math.max(-1, Math.min(1, (pcr_nf - 1.0) / 0.5));
-  if (valid(close_char)) signals.close_char = Math.max(-1, Math.min(1, close_char / 2));
-  if (valid(max_pain) && valid(nf_spot) && nf_spot > 0)
+  if (valid(india_vix))  { signals.india_vix = Math.max(-1, Math.min(1, -(india_vix - 14) / 6)); ANALYSIS_VIX = india_vix; rawVals.india_vix = india_vix.toFixed(2); }
+  if (valid(fii))        { signals.fii = Math.max(-1, Math.min(1, fii / 2000)); rawVals.fii = `₹${fii} Cr`; }
+  if (valid(pcr_nf))     { signals.pcr_nf = Math.max(-1, Math.min(1, (pcr_nf - 1.0) / 0.5)); rawVals.pcr_nf = pcr_nf.toFixed(2); }
+  if (valid(close_char)) { signals.close_char = Math.max(-1, Math.min(1, close_char / 2)); rawVals.close_char = close_char; }
+  if (valid(max_pain) && valid(nf_spot) && nf_spot > 0) {
     signals.max_pain = Math.max(-1, Math.min(1, (max_pain - nf_spot) / nf_spot * 100));
-  if (valid(n50adv)) signals.n50adv = Math.max(-1, Math.min(1, (n50adv - 25) / 15));
-  if (valid(n50dma)) signals.n50dma = Math.max(-1, Math.min(1, n50dma / 5));
-  if (valid(bnfadv)) signals.bnfadv = Math.max(-1, Math.min(1, (bnfadv - 6) / 4));
+    rawVals.max_pain = `${max_pain} (${(max_pain - nf_spot) > 0 ? '+' : ''}${(max_pain - nf_spot).toFixed(0)})`;
+  }
+  if (valid(n50adv)) { signals.n50adv = Math.max(-1, Math.min(1, (n50adv - 25) / 15)); rawVals.n50adv = `${n50adv}/50`; }
+  if (valid(n50dma)) { signals.n50dma = Math.max(-1, Math.min(1, n50dma / 5)); rawVals.n50dma = `${n50dma}%`; }
+
+  // BNF Weighted Breadth — from constituent checkboxes
+  const bnfWB = computeBnfWeightedBreadth();
+  if (bnfWB !== null) {
+    signals.bnfadv = Math.max(-1, Math.min(1, (bnfWB - 40) / 40));
+    rawVals.bnfadv = `${bnfWB.toFixed(0)}% weighted`;
+  }
 
   let wSum = 0, wTotal = 0;
-  for (const key in W) { if (signals[key] !== undefined) { wSum += signals[key] * W[key]; wTotal += W[key]; } }
-  if (wTotal === 0) { SCORE = null; DIRECTION = ''; renderVerdict(); return; }
+  const details = [];
+  for (const key in W) {
+    if (signals[key] !== undefined) {
+      const contrib = signals[key] * W[key];
+      wSum += contrib; wTotal += W[key];
+      details.push({ key, label: SIGNAL_LABELS[key] || key, raw: rawVals[key] || '—', weight: W[key], signal: +signals[key].toFixed(3), contrib: +contrib.toFixed(4) });
+    }
+  }
+  if (wTotal === 0) { SCORE = null; DIRECTION = ''; _CALC_SCORE_DETAILS = null; renderVerdict(); return; }
   SCORE = +(wSum / wTotal).toFixed(4);
   DIRECTION = directionLabel(SCORE);
+  _CALC_SCORE_DETAILS = { details, wSum, wTotal, score: SCORE };
   renderVerdict(); buildCommand();
+}
+
+// Signal labels for display
+const SIGNAL_LABELS = {
+  india_vix: 'India VIX', pcr_nf: 'PCR (NF)', fii: 'FII Cash', gift_gap: 'Gap %',
+  close_char: 'Close Char', max_pain: 'Max Pain', n50adv: 'NF Breadth', bnfadv: 'BNF Breadth', n50dma: 'NF % > 200DMA'
+};
+
+// Compute weighted BNF breadth from constituent checkboxes
+function computeBnfWeightedBreadth() {
+  let total = 0;
+  for (const c of BNF_CONSTITUENTS) {
+    const el = document.getElementById(c.id);
+    if (el && el.checked) total += c.weight * 100;
+  }
+  const firstEl = document.getElementById(BNF_CONSTITUENTS[0].id);
+  if (!firstEl) return null;
+  return total;
+}
+
+function updateBnfReadout() {
+  const el = document.getElementById('bnf-weighted-readout');
+  if (!el) return;
+  const wb = computeBnfWeightedBreadth();
+  if (wb === null) { el.textContent = '—'; return; }
+  const cls = wb >= 50 ? 'profit' : wb <= 20 ? 'loss' : '';
+  el.innerHTML = `<span class="${cls}">${wb.toFixed(0)}%</span> weighted advance`;
 }
 
 function renderVerdict() {
@@ -189,6 +245,15 @@ function computeDirectionalBias() {
   if (valid(cc)) { if (cc >= 1) { bullCount++; signals.push({name:'Close Char',vote:'BULL',val:`+${cc}`}); } else if (cc <= -1) { bearCount++; signals.push({name:'Close Char',vote:'BEAR',val:`${cc}`}); } else signals.push({name:'Close Char',vote:'NEUTRAL',val:`${cc}`}); }
   const vix = gv('india_vix'), yVix = parseFloat(localStorage.getItem('mr_ev_indiavix') || '0');
   if (valid(vix) && yVix > 0) { const vc = vix - yVix; if (vc < -0.3) { bullCount++; signals.push({name:'VIX Dir',vote:'BULL',val:`${vc.toFixed(2)}`}); } else if (vc > 0.3) { bearCount++; signals.push({name:'VIX Dir',vote:'BEAR',val:`+${vc.toFixed(2)}`}); } else signals.push({name:'VIX Dir',vote:'NEUTRAL',val:`${vc>0?'+':''}${vc.toFixed(2)}`}); }
+
+  // Futures premium signal (auto from chain)
+  const nfFP = window._NF_FUTURES_PREMIUM;
+  if (nfFP !== null && nfFP !== undefined) {
+    if (nfFP > 0.05) { bullCount++; signals.push({name:'Fut Premium',vote:'BULL',val:`+${nfFP.toFixed(3)}%`}); }
+    else if (nfFP < -0.05) { bearCount++; signals.push({name:'Fut Premium',vote:'BEAR',val:`${nfFP.toFixed(3)}%`}); }
+    else signals.push({name:'Fut Premium',vote:'NEUTRAL',val:`${nfFP > 0 ? '+' : ''}${nfFP.toFixed(3)}%`});
+  }
+
   const net = bullCount - bearCount; let bias, biasConf;
   if (net >= 3) { bias='BULL'; biasConf='Strong'; } else if (net >= 1) { bias='BULL'; biasConf='Mild'; }
   else if (net <= -3) { bias='BEAR'; biasConf='Strong'; } else if (net <= -1) { bias='BEAR'; biasConf='Mild'; }
@@ -580,10 +645,55 @@ async function buildCommand() {
   _RANKED_SETUPS = allShown;
   panel.innerHTML = html;
   document.querySelectorAll('.strat-card').forEach((card, i) => { card.addEventListener('click', () => openDrawer(_RANKED_SETUPS[i])); });
+  // Q1 card expand/collapse toggle
+  const q1Toggle = document.getElementById('q1-toggle');
+  if (q1Toggle) q1Toggle.addEventListener('click', () => {
+    _Q1_EXPANDED = !_Q1_EXPANDED;
+    const body = document.getElementById('q1-body');
+    const expand = q1Toggle.querySelector('.q-expand');
+    if (body) body.style.display = _Q1_EXPANDED ? 'block' : 'none';
+    if (expand) expand.textContent = _Q1_EXPANDED ? '▲' : '▼';
+  });
 }
 
 function renderQ1Card(q1) {
-  return `<div class="q-card"><div class="q-title">Q1: Directional Bias → <span class="bias-${q1.bias.toLowerCase()}">${q1.biasConf} ${q1.bias}</span></div><div class="q-signals">${q1.signals.map(s => `<div class="signal-row"><span class="signal-name">${s.name}</span><span class="signal-vote vote-${s.vote.toLowerCase()}">${s.vote}</span><span class="signal-val">${s.val}</span></div>`).join('')}</div><div class="q-summary">Bull: ${q1.bullCount} | Bear: ${q1.bearCount} | Net: ${q1.net>0?'+':''}${q1.net}</div></div>`;
+  const arrow = _Q1_EXPANDED ? '▲' : '▼';
+  const biasClass = q1.bias.toLowerCase();
+
+  let html = `<div class="q-card" id="q1-card">`;
+  // Collapsed header — always visible
+  html += `<div class="q-header" id="q1-toggle">`;
+  html += `<div class="q-title">Q1: Directional Bias → <span class="bias-${biasClass}">${q1.biasConf} ${q1.bias}</span></div>`;
+  html += `<div class="q-summary-inline">Bull: ${q1.bullCount} | Bear: ${q1.bearCount} | Net: ${q1.net > 0 ? '+' : ''}${q1.net} <span class="q-expand">${arrow}</span></div>`;
+  html += `</div>`;
+
+  // Expandable body
+  html += `<div class="q-body" style="display:${_Q1_EXPANDED ? 'block' : 'none'}" id="q1-body">`;
+
+  // Bias signals (Q1)
+  html += `<div class="q-section-label">Bias Signals (${q1.signals.length})</div>`;
+  html += `<div class="q-signals">`;
+  for (const s of q1.signals) {
+    html += `<div class="signal-row"><span class="signal-name">${s.name}</span><span class="signal-vote vote-${s.vote.toLowerCase()}">${s.vote}</span><span class="signal-val">${s.val}</span></div>`;
+  }
+  html += `</div>`;
+
+  // CalcScore breakdown (weighted signals)
+  if (_CALC_SCORE_DETAILS && _CALC_SCORE_DETAILS.details.length > 0) {
+    html += `<div class="q-section-label" style="margin-top:10px">Weighted Score Breakdown</div>`;
+    html += `<div class="q-score-table">`;
+    html += `<div class="q-score-hdr"><span>Signal</span><span>Raw</span><span>Wt</span><span>S</span><span>Contrib</span></div>`;
+    for (const d of _CALC_SCORE_DETAILS.details) {
+      const contribCls = d.contrib > 0 ? 'profit' : d.contrib < 0 ? 'loss' : '';
+      html += `<div class="q-score-row"><span>${d.label}</span><span>${d.raw}</span><span>${(d.weight * 100).toFixed(0)}%</span><span>${d.signal > 0 ? '+' : ''}${d.signal}</span><span class="${contribCls}">${d.contrib > 0 ? '+' : ''}${d.contrib.toFixed(4)}</span></div>`;
+    }
+    html += `<div class="q-score-total"><span>Composite</span><span colspan="3"></span><span>${SCORE > 0 ? '+' : ''}${SCORE.toFixed(4)}</span></div>`;
+    html += `</div>`;
+  }
+
+  html += `</div>`; // q-body
+  html += `</div>`; // q-card
+  return html;
 }
 
 function renderStrategyCard(setup, index) {
@@ -704,7 +814,7 @@ async function logTradeFromCommand(setup) {
       entry_atm_iv: null,
       entry_fii_cash: gv('fii') || null,
       entry_close_char: gv('close_char') || null,
-      entry_futures_premium: window._NF_FUTURES_PREMIUM || null,
+      entry_futures_premium: (setup.indexKey === 'BNF' ? window._BNF_FUTURES_PREMIUM : window._NF_FUTURES_PREMIUM) || null,
 
       // ── Bias + Score snapshot ──
       entry_bias: null,
@@ -878,19 +988,23 @@ function go(n) { document.querySelectorAll('.tab').forEach(t=>t.classList.remove
 // ═══════════════════════════════════════════════════
 
 function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','fii_fut','fii_opt','close_char','max_pain_nf','nf_price','bn_price','nifty_prev'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-radar',JSON.stringify(d)); RADAR_LOCKED=true; } renderLockState(); }
-function toggleBreadth() { if (BREADTH_LOCKED) { BREADTH_LOCKED = false; } else { const d={}; ['n50adv','n50dma','bnfadv'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-breadth',JSON.stringify(d)); BREADTH_LOCKED=true; } renderLockState(); }
+function toggleBreadth() { if (BREADTH_LOCKED) { BREADTH_LOCKED = false; } else { const d={}; ['n50adv','n50dma'].forEach(id=>{d[id]=gv(id);}); BNF_CONSTITUENTS.forEach(c=>{const el=document.getElementById(c.id);if(el)d[c.id]=el.checked;}); localStorage.setItem('mr140-breadth',JSON.stringify(d)); BREADTH_LOCKED=true; } renderLockState(); }
 function toggleEvening() { if (EVENING_LOCKED) { EVENING_LOCKED = false; } else { const d={}; ['ev_fii','ev_nf_close','ev_bnf_close','ev_indiavix'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-evening',JSON.stringify(d)); const v=gv('ev_indiavix'); if(valid(v)) localStorage.setItem('mr_ev_indiavix',v); EVENING_LOCKED=true; } renderLockState(); }
 function renderLockState() { [['btn-lock-radar',RADAR_LOCKED,'🔒 Locked','🔓 Lock Morning Data'],['btn-lock-breadth',BREADTH_LOCKED,'🔒 Locked','🔓 Lock Breadth'],['btn-lock-evening',EVENING_LOCKED,'🔒 Locked','🔓 Lock Evening']].forEach(([id,locked,lt,ut])=>{ const el=document.getElementById(id); if(el) el.textContent=locked?lt:ut; }); }
 
 function restoreSavedState() {
   try { const r=JSON.parse(localStorage.getItem('mr140-radar')||'null'); if(r){RADAR_LOCKED=true;for(const id in r){const el=document.getElementById(id);if(el&&r[id]!==null)el.value=r[id];}} } catch(e){}
-  try { const b=JSON.parse(localStorage.getItem('mr140-breadth')||'null'); if(b){BREADTH_LOCKED=true;for(const id in b){if(id.startsWith('_'))continue;const el=document.getElementById(id);if(el&&b[id]!==null)el.value=b[id];}} } catch(e){}
+  try { const b=JSON.parse(localStorage.getItem('mr140-breadth')||'null'); if(b){BREADTH_LOCKED=true;for(const id in b){if(id.startsWith('_'))continue;const el=document.getElementById(id);if(!el||b[id]===null)continue;if(el.type==='checkbox')el.checked=!!b[id];else el.value=b[id];}} } catch(e){}
   try { const e=JSON.parse(localStorage.getItem('mr140-evening')||'null'); if(e){EVENING_LOCKED=true;for(const id in e){if(id.startsWith('_'))continue;const el=document.getElementById(id);if(el&&e[id]!==null)el.value=e[id];}} } catch(e){}
   renderLockState(); restoreAllTS();
 }
 
 function onInput(e) { if(e.target&&e.target.id) stampField(e.target.id); calcScore(); }
-function initInputListeners() { document.querySelectorAll('input[type="number"],select').forEach(el=>{el.addEventListener('input',onInput);el.addEventListener('change',onInput);}); }
+function initInputListeners() {
+  document.querySelectorAll('input[type="number"],select').forEach(el=>{el.addEventListener('input',onInput);el.addEventListener('change',onInput);});
+  // BNF constituent checkboxes trigger calcScore + readout on change
+  document.querySelectorAll('.bnf-chk').forEach(el=>{el.addEventListener('change',()=>{updateBnfReadout();calcScore();});});
+}
 
 async function handleBhavUpload() { const f=document.getElementById('bhav-file'),s=document.getElementById('bhav-spot'),st=document.getElementById('bhav-status'); if(!f||!f.files.length){if(st)st.textContent='Select CSV';return;} if(st)st.textContent='Uploading...'; const r=await bhavHandleUpload(f.files,s?s.value:''); if(st)st.textContent=r.ok?`✅ ${r.contracts} contracts. GH: ${r.github?'✅':'❌ '+r.error}`:`❌ ${r.error}`; }
 function renderEveningSection() { try { const e=JSON.parse(localStorage.getItem('mr140-evening')||'null'); if(e){for(const id in e){if(id.startsWith('_'))continue;const el=document.getElementById(id);if(el&&e[id]!==null)el.value=e[id];}} } catch(e){} }
@@ -2070,9 +2184,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const le=document.getElementById('btn-lock-evening'); if(le) le.addEventListener('click',toggleEvening);
   const bh=document.getElementById('btn-bhav-upload'); if(bh) bh.addEventListener('click',handleBhavUpload);
   const dbg=document.getElementById('btn-debug'); if(dbg) dbg.addEventListener('click',showDebug);
-  initInputListeners(); initDrawer(); restoreSavedState(); renderEveningSection(); calcScore(); go(0);
+  initInputListeners(); initDrawer(); restoreSavedState(); renderEveningSection(); updateBnfReadout(); calcScore(); go(0);
   // Load positions + auto-expire + journal on startup
   renderPositionsTab();
   autoExpireOpenTrades();
-  console.log('[app.js] Market Radar v5.0 — Phase 3.1 + Trade Dissection');
+  console.log('[app.js] Market Radar v5.0 — Phase 5: Expandable Q1 + Weighted Breadth + Futures Premium Bias');
 });

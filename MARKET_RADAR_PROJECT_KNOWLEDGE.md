@@ -28,16 +28,16 @@
 - Script order: supabase CDN → db.js → bhav.js → bs.js → app.js → upstox.js
 - SW registered separately
 
-## File Structure (Phase 3.1 — Mar 14 2026)
+## File Structure (Phase 5 — Mar 16 2026)
 | File | Lines | Role |
 |------|-------|------|
-| app.js | 1746 | Scoring engine, strategy eval, Supabase-first position rendering, expandable thesis cards |
-| upstox.js | 725 | API integration, chain fetch, SYNC positions, auto-fetch position monitor |
-| style.css | 401 | UI styling, dark/light toggle, expandable cards, SYNC button |
-| index.html | 242 | 4-tab layout: SIGNAL, COMMAND, POSITIONS, CLOSE |
+| app.js | 2192 | Scoring engine, strategy eval, expandable Q1 card, weighted BNF breadth, futures premium bias, "I Took This Trade" flow, trade dissection |
+| upstox.js | 727 | API integration, chain fetch, SYNC positions, auto-fetch position monitor, synthetic futures premium |
+| style.css | 511 | Upstox-inspired purple theme, expandable Q1, BNF constituent grid, score breakdown table |
+| index.html | 257 | 4-tab layout: SIGNAL (BNF checkboxes), COMMAND, POSITIONS, CLOSE |
 | bs.js | 177 | Black-Scholes (secondary — real LTPs from Upstox are primary) |
 | bhav.js | 317 | Bhav copy upload + historical OI data |
-| db.js | 285 | Supabase CRUD: trades, stats, journal |
+| db.js | 298 | Supabase CRUD: trades, stats, journal, rich entry snapshot |
 | manifest.json | 22 | PWA manifest |
 | sw.js | 35 | Service worker for notifications |
 
@@ -45,10 +45,11 @@
 
 ### 1. Strategy Scanner (SIGNAL tab → FETCH button)
 - Fetches: spots, expiries, chains (all expiries), historical, margins
-- Updates: SIGNAL tab (bias), COMMAND tab (top 5 NF + top 5 BNF strategies)
+- Calculates: synthetic futures premium from ATM put-call parity
+- Updates: SIGNAL tab (bias, futures premium), COMMAND tab (top 5 NF + top 5 BNF strategies)
 - Does NOT fetch positions, trade book, or detect trades
 - Does NOT start auto-fetch
-- Flow: `upstoxAutoFill()` → spots → expiries → chains + historical + margins → `calcScore()` → `buildCommand()`
+- Flow: `upstoxAutoFill()` → spots → expiries → chains + historical + margins → `calcScore()` → `buildCommand()` → `renderFuturesPremium()`
 
 ### 2. Position Tracker (POSITIONS tab → SYNC button)
 - SYNC fetches: spots, positions API, trade book, position-specific chains
@@ -57,7 +58,19 @@
 - Starts auto-fetch (5 min, market hours only)
 - Flow: `upstoxSyncPositions()` → spots → positions + tradebook → chains for open trades → `detectAndLogPositions()` → `matchTradeBookExits()` → `renderPositionsTab()` → `startAutoFetch()`
 
-### 3. Auto-Fetch (runs after SYNC, market hours only)
+### 3. "I Took This Trade" Flow (COMMAND drawer → POSITIONS)
+- User taps strategy card → drawer opens → "📌 I TOOK THIS TRADE" button
+- `logTradeFromCommand()` captures FULL market snapshot:
+  - All leg execution prices (bid for SELL, ask for BUY)
+  - VIX, PCR, Max Pain, OI walls (call + put), ATM IV
+  - Total call/put OI, FII cash, Close Char
+  - Bias direction + net votes, composite score, Varsity tier
+  - Futures premium
+- Inserts to Supabase via `dbInsertTrade()`
+- Auto-switches to POSITIONS tab, starts auto-fetch
+- Future SYNC will overwrite estimated prices with actual Upstox fill prices (pending)
+
+### 4. Auto-Fetch (runs after SYNC, market hours only)
 - Fetches: spots + position-specific chains only (1-2 API calls)
 - Reads open trades from Supabase
 - Computes live P&L from `_POSITION_CHAINS` strikeLTPs
@@ -77,73 +90,49 @@
 - Banner REMOVED — alerts shown via badges on expandable position cards
 - `computeLivePnL()` is the single shared P&L calculator
 
-### POSITIONS Tab States
-1. **No trades:** "No active positions" placeholder
-2. **Supabase has OPEN trades, not synced:** Cards with last-known data from DB, SYNC button ready
-3. **Synced:** SYNC button shows "🔒 Synced · Auto-tracking" with timestamp, cards show live P&L
-
-### Expandable Position Cards
-- Collapsed: strategy name, badge (HOLD/EXIT/TRAIL), legs, P&L, target/SL
-- Expanded (tap ▼ Details): thesis health (PCR drift, MaxPain migration, OI buildup), severity score, entry snapshot (spot, VIX, premium, lots, date, entry PCR), leg details with entry prices
-- No banner — urgent alerts via PWA notifications only
-
 ## Scoring Engine
 - **9 signals, sum=1.00:** india_vix:0.25, pcr_nf:0.18, fii:0.15, gift_gap:0.15, close_char:0.10, max_pain:0.08, n50adv:0.04, bnfadv:0.03, n50dma:0.02
+- **bnfadv now uses weighted breadth** from top-5 BNF constituent checkboxes (Phase 5), not simple count
+- **calcScore details stored** in `_CALC_SCORE_DETAILS` for expandable Q1 card display
 - **Two-stage scoring:** Base score (85pts: EV/rupee×40, Prob×20, CapEff×10, Liq×5, PCR×5, IV×3, DTE×2). Then Varsity multiplier: Tier1×1.0, Tier2×0.65, Tier3×0.35
 - **VIX fine-tune:** ≥20 credit+0.05, ≥24 extra+0.05, ≤13 long+0.10, ≥20 long-0.10
 - **R:R split filter:** Credit strategies: P(Profit)>35% + EV>0. Debit: R:R≥1.5
 - **Split display:** Top 5 NF + Top 5 BNF on COMMAND tab
 
 ## Bias Engine (Q1)
-- 6 signals: FII Cash (>±500Cr), FII Derivatives (net futures+options), PCR (>1.2 bull/<0.9 bear), Max Pain gravity (spot vs MP, ±100pts), Close Char (≥+1 bull/≤-1 bear), VIX Direction (vs yesterday, ±0.3 threshold)
+- **7 signals** (was 6): FII Cash (>±500Cr), FII Derivatives (net futures+options), PCR (>1.2 bull/<0.9 bear), Max Pain gravity (spot vs MP, ±100pts), Close Char (≥+1 bull/≤-1 bear), VIX Direction (vs yesterday, ±0.3 threshold), **Futures Premium** (>+0.05% bull/<-0.05% bear — auto from chain)
 - Net votes → Strong/Mild BULL/BEAR or NEUTRAL
+- **Expandable Q1 card** (Phase 5): collapsed shows bias+net, expanded shows all 7 signals + 9 weighted score breakdown with raw values, weights, and contributions
 
-## Position Detection
-- **Upstox positions API returns EMPTY for strategy-placed trades** — this is a known Upstox limitation
-- **Solution:** Trade book reconstruction. `upstoxFetchTradeBook()` gets fills → `reconstructPositionsFromTrades()` groups by symbol → calculates net qty and avg price → feeds into `detectAndLogPositions()`
-- Reconstruction runs AFTER chains are loaded so `parseUpstoxSymbol` can match expiries against `window._CHAINS`
-- **ONLY called from SYNC button** — never from SIGNAL FETCH
+## Futures Premium Signal
+- Synthetic futures from ATM put-call parity: `synthFutures = ATM_strike + (CE_ltp - PE_ltp)`
+- Premium = `(synthFutures - spot) / spot × 100`
+- Displayed on SIGNAL tab. Stored in `window._NF_FUTURES_PREMIUM` / `window._BNF_FUTURES_PREMIUM`
+- Saved in entry snapshot as `entry_futures_premium` (uses correct index — NF or BNF)
+- **Phase 5:** Now feeds into Q1 bias engine as 7th signal
 
-## Expiry Parsing
-- Trade book uses month-name format: `BANKNIFTY26MAR54200PE`
-- `parseUpstoxSymbol` handles both `26MAR` (month name) and `26330` (numeric) formats
-- For month-name format: looks up `window._CHAINS[indexKey]` to find the actual holiday-adjusted expiry date
-- NSE holidays shift expiry dates — can't calculate "last Thursday" alone
-- `dbFindOpenTradeByLegs` provides flexible matching without requiring exact expiry, enables auto-correction
-
-## Live P&L Calculation
-- `computeLivePnL(trade, legs)` — single shared function
-- Checks `_POSITION_CHAINS` first (fresh, from auto-fetch), then `_CHAINS` (from last manual fetch)
-- Falls back to Supabase stored `current_pnl` if no chain data available
-- Calculates: `sum(action_mult × (currentLTP - entryLTP)) × lotSize × lots`
-
-## Smart Alert System (5 states)
-| State | Trigger | Color | Priority |
-|-------|---------|-------|----------|
-| EXIT_NOW | SL hit, spot breach, DTE≤3 losing | Red | 5 |
-| EXIT_EARLY | P&L dropping + thesis breaking | Orange | 4 |
-| BOOK_PROFIT | P&L≥35% target+DTE≤5, or profitable+thesis breaking | Green | 3 |
-| TRAIL | P&L>30% DTE 4-10 | Yellow | 2 |
-| HOLD | Default | Blue (#6bc5ff) | 0 |
-
-Alerts shown as badges on expandable position cards. PWA notifications for urgent states (priority ≥ 3).
-
-## Chain-Aware Thesis Checks
-- `checkThesis(trade)` compares current chain vs entry snapshot
-- **Check 1: PCR drift** — >0.15 against position direction
-- **Check 2: Max Pain migration** — moved against thesis (NF ±100, BNF ±300 threshold)
-- **Check 3: OI buildup at sell strikes** — >50% increase = adversary pressure
-- Returns severity 0-3. Exit matrix:
-  - P&L dropping + thesis intact → HOLD (noise)
-  - P&L dropping + thesis breaking → EXIT EARLY
-  - Profitable + thesis breaking → BOOK PROFIT
+## Weighted BNF Breadth (Phase 5)
+- Top 5 BNF constituents by weight: HDFC Bank (28%), ICICI Bank (22%), Kotak Mah (12%), SBI (9%), Axis Bank (8%) = 79% coverage
+- 5 checkboxes on SIGNAL tab — tap advancing stocks after 9:30 AM
+- Weighted % auto-computed: `sum(checked_weight × 100)`
+- Feeds into `bnfadv` signal: `(weightedBreadth - 40) / 40` clamped to [-1, +1]
+- Replaces old simple `bnfadv` count input (0–12)
+- Live readout below checkboxes shows weighted advance %
+- Saved/restored via breadth lock
 
 ## Supabase Schema — trade_log
-Core: id, created_at, updated_at, strategy_type, index_key, expiry, entry_date, entry_spot, entry_vix, entry_premium, max_profit, max_loss, target_profit, stop_loss, lots, status
-Legs: leg1_strike, leg1_type, leg1_action, leg1_entry_ltp, leg1_qty (×4 legs)
-Tracking: current_pnl, current_spot, current_premium, recommendation, peak_pnl
-Thesis: entry_pcr, entry_max_pain, entry_sell_oi
-Exit: actual_pnl, exit_reason, exit_date
+**Core:** id, created_at, updated_at, strategy_type, index_key, expiry, entry_date, entry_spot, entry_vix, entry_premium, max_profit, max_loss, target_profit, stop_loss, lots, status
+**Legs:** leg1_strike, leg1_type, leg1_action, leg1_entry_ltp, leg1_qty (×4 legs)
+**Tracking:** current_pnl, current_spot, current_premium, recommendation, peak_pnl
+**Thesis:** entry_pcr, entry_max_pain, entry_sell_oi
+**Rich snapshot (Phase 3.1):** entry_call_wall, entry_put_wall, entry_total_call_oi, entry_total_put_oi, entry_atm_iv, entry_fii_cash, entry_bias, entry_bias_net, entry_score, entry_varsity_tier, entry_close_char, entry_futures_premium
+**Exit:** actual_pnl, exit_premium, exit_reason, exit_date
+
+## UI Theme — Upstox-Inspired
+- **Dark:** bg #121218, cards #1e1e2d, accent #8b5cf6 (purple)
+- **Light:** bg #f5f5f9, cards #ffffff, accent #7c3aed (purple)
+- **Font:** system sans-serif (-apple-system, Segoe UI, Roboto)
+- **Chart:** orange #ef6c00 (expiry), green #22c55e (current P&L), grey #8a8a9a (spot)
 
 ## NSE Holidays 2026
 15 holidays: Jan-26, Mar-03, Mar-26, Mar-31, Apr-03, Apr-14, May-01, May-28, Jun-26, Sep-14, Oct-02, Oct-20, Nov-10, Nov-24, Dec-25
@@ -154,66 +143,47 @@ Source: NSE/CMTR/71775, Dec 12 2025. Do NOT change without new official circular
 - Varsity tier multipliers (1.0/0.65/0.35)
 - Calibrated from 274 NF + 134 BNF real observations
 
-## Phase 2 Revert Reference (SEALED Mar 12 2026)
-app.js(1058), upstox.js(437), style.css(338), index.html(220), bs.js(177), bhav.js(317), db.js(171), manifest.json(22). Total 2740 lines. If Phase 3 breaks anything critically, revert all files to this snapshot.
+## Revert References
+- **Phase 2 (SEALED Mar 12):** app.js(1058), upstox.js(437), style.css(338), index.html(220), bs.js(177), bhav.js(317), db.js(171). Total 2740 lines.
+- **Phase 3 (SEALED Mar 14):** app.js(1720), upstox.js(668), style.css(371), index.html(246), bs.js(177), bhav.js(317), db.js(285), sw.js(35). Total 3841 lines.
+- **Phase 4 (SEALED Mar 16):** app.js(2078), upstox.js(727), style.css(477), index.html(252), bs.js(177), bhav.js(317), db.js(298), sw.js(35). Total 4383 lines.
 
-## Phase 3 Revert Reference (SEALED Mar 14 2026)
-app.js(1720), upstox.js(668), style.css(371), index.html(246), bs.js(177), bhav.js(317), db.js(285), manifest.json(22), sw.js(35). Total 3841 lines. Pre-separation snapshot — banner still present, FETCH handles both SIGNAL and POSITIONS.
+## Completed Trades
+### Trade #1: BNF Bear Put Spread (Mar 13-16 2026)
+- Entry: Mar 13, BUY 54200 PE @1049.9, SELL 53700 PE @872.1
+- Bias: STRONG BEAR (-3 net, 4 bear signals)
+- P&L journey: +₹628 (Fri close) → +₹271 (Mon gap-up) → +₹933 (exit)
+- Exit: Mar 16 10:23 AM, BNF at 53,633
+- Exit reason: HDFC Bank diverging upward, spotted weighted breadth issue
+- Key insight: Unweighted advance/decline masked HDFC Bank's 28% weight impact
+
+## Bugs Fixed (Mar 10-16)
+1-24: Prior Phase 2-3 fixes
+25: POSITIONS tab empty on weekends → renderPositionsTab now queries Supabase directly
+26: FII lock bug → fii_fut and fii_opt added to toggleRadar save array
+27: Trade book only returns today's fills → "I Took This Trade" flow solves carry-over
 
 ## Roadmap
-- Phase 1 ✅ (core scoring + bias engine)
-- Phase 2 ✅ (positions tracking + HOLD/EXIT/TRAIL + Varsity multiplier + split display)
-- Phase 3 ✅ CLOSED Mar 14 2026 (auto-expire + trade journal + trade book exit matching + chain-aware thesis checks + smart notifications + auto-fetch position monitor)
-- Phase 3.1 🔧 IN PROGRESS (clean SIGNAL/POSITIONS separation + Supabase-first rendering + expandable thesis cards + banner removed + SYNC button)
-- Phase 4: Backtest engine
-- Phase 5: Recalibration dashboard (refine Varsity thresholds with real trade data)
-- Phase 6: Auto-recalibration
+- Phase 1-3 ✅ CLOSED
+- Phase 3.1 ✅ CLOSED Mar 16 2026
+- Phase 4 ✅ CLOSED Mar 16 (Trade Dissection Dashboard, dead code cleanup)
+- **Phase 5 ✅ CLOSED Mar 16** (Expandable Q1 card, weighted BNF breadth, futures premium as 7th Q1 bias signal)
+- **Phase 6:** Auto-recalibration (needs 10-15 trades)
 
-## Bugs Fixed (Mar 10-14)
-1-16: Prior Phase 2 fixes (margin, R:R filter, gamma display, etc.)
-17: Positions API empty for strategy trades → reconstruct from Trade Book
-18: Expiry NaN → parse month names (26MAR) + match against chain expiries
-19: P&L=₹0 → race condition: reconstruction ran before chains loaded → moved to post-allSettled
-20: P&L=₹0 in render → added render-time `computeLivePnL` using chain LTPs
-21: Banner shows ₹0 → `checkAndNotify` was overwriting correct banner from `renderPositionsTab`. Removed `checkAndNotify`, banner only from `renderPositionsTab`
-22: Notifications at 10 PM → added `isMarketHours()` guard
-23: `autoCloseGonePositions` with empty array was closing all Supabase trades — destructive bug. Fixed: positions API no longer triggers `detectAndLogPositions` directly
-24: `upstoxFetchPositions` was calling `detectAndLogPositions` with empty data before trade book reconstruction — removed, detection now only in post-fetch
-25: POSITIONS tab empty on weekends — `renderPositionsTab` depended on `_DETECTED_POSITIONS` (memory-only). Fixed: now queries Supabase directly, always shows stored trades.
+## Pending Items
+1. Auto-exit detection in auto-fetch (trade book check every 5 min)
+2. SYNC overwrites estimated prices with actual Upstox fills
+3. Pattern Discovery from trade dissection data (needs more trades)
+4. Signal Recalibration (Phase 6 — needs 10-15 trades)
 
-## Phase 3.1 Changes (Mar 14 2026)
-- **Clean separation:** FETCH = SIGNAL+COMMAND only. SYNC = POSITIONS only. No overlap.
-- **Supabase-first rendering:** POSITIONS tab always queries `dbGetOpenTrades()`, renders even on weekends/holidays with last-known data
-- **Expandable position cards:** Collapsed shows key metrics, tap ▼ Details for thesis health + entry snapshot + leg prices
-- **Banner removed:** No more stacked banner. Alerts via card badges + PWA push notifications
-- **SYNC button:** On POSITIONS tab, fetches trade book + positions, detects new trades, starts auto-fetch
-- **Auto-fetch only from SYNC:** FETCH button no longer triggers position monitoring
-- Files changed: app.js (1720→1746), upstox.js (668→725), style.css (371→401), index.html (246→242)
-
-## First Live Trade (Mar 13 2026)
-- BNF Bear Put Spread 54200/53700 PE, expiry Mar-30
-- Entry: BUY 54200 PE @1049.9, SELL 53700 PE @872.1
-- Bias: STRONG BEAR (-3 net, 4 bear signals)
-- Close P&L: +₹628 (13% of ₹4,833 target)
-- Peak: ₹1,323 at 2:08 PM
-- Card P&L matches Upstox exactly
-- Target ₹4,800, SL ₹2,700 set in Upstox
-- Trade carries over weekend, 17 DTE
-- Upstox shows +₹628.50 on Sat Mar 14 (market closed)
-
-## Upstox API Fields
-- Chain: `data.data[]` has expiry, strike_price, underlying_key, underlying_spot_price, call_options, put_options
-- Each option: `{instrument_key, market_data:{ltp, volume, oi, close_price, bid_price, ask_price, prev_oi}, option_greeks:{vega, theta, gamma, delta, iv, pop}}`
-- Flexible parsing tries multiple field name patterns as fallback
-- Positions API (`/portfolio/short-term-positions`) returns empty for strategy orders — use trade book instead
-- Trade book: `/order/trades/get-trades-for-day` — returns actual fills with tradingsymbol, quantity, price, transaction_type
-
-## Key Insights from Live Testing
-1. Pre-market testing is insufficient — bugs only appear with real live positions during market hours
-2. Race conditions in async code are invisible until real data flows
-3. NSE holidays break simple date calculations — always match against actual chain data
-4. Upstox strategy orders don't appear in positions API — must reconstruct from trade book
-5. Multiple code paths computing the same thing → overwrites → use ONE shared function (`computeLivePnL`)
-6. Manual fetch and auto-fetch must be completely independent — one scans strategies, other monitors positions
-7. POSITIONS tab must work independently of SIGNAL/COMMAND — Supabase is the source of truth, not in-memory state
-8. "In option trading, one's loss is someone else's profit. Smart money creates noise to shake out retail. If we only think about money, stop loss will always hit. We need to think about what the winning side is doing — not just amounts." — Vivek's thesis insight
+## Key Insights from Live Trading
+1. Bugs only appear with real live positions during market hours
+2. NSE holidays break simple date calculations
+3. Upstox strategy orders don't appear in positions API
+4. Trade book only returns today's fills
+5. Use ONE shared function for P&L (`computeLivePnL`)
+6. POSITIONS tab must work independently — Supabase is source of truth
+7. "Don't just think about money, think about what the winning side is doing"
+8. Weighted stocks dominate index direction — HDFC Bank alone is ~28% of BNF
+9. Rich entry snapshot enables meaningful post-trade dissection
+10. Trade-first → dissect → validate beats traditional backtesting for options
