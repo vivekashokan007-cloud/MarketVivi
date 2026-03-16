@@ -228,7 +228,7 @@ async function upstoxFetchBnfBreadth() {
     // ISIN mapping for BNF top-5 constituents
     const ISIN = {
       HDFCBANK: 'INE040A01034', ICICIBANK: 'INE090A01021',
-      KOTAKBANK: 'INE237A01034', SBIN: 'INE062A01020', AXISBANK: 'INE238A01034'
+      KOTAKBANK: 'INE237A01036', SBIN: 'INE062A01020', AXISBANK: 'INE238A01034'
     };
     const symbols = ['HDFCBANK','ICICIBANK','KOTAKBANK','SBIN','AXISBANK'];
 
@@ -262,7 +262,8 @@ async function upstoxFetchBnfBreadth() {
       formats_tried: triedFormats,
       keys_received: data && data.data ? Object.keys(data.data) : [],
       error: data ? (data.errors || data.message || null) : 'No format returned data',
-      sample_quote: firstQuote ? JSON.stringify(firstQuote).substring(0, 500) : null
+      sample_quote: firstQuote ? JSON.stringify(firstQuote).substring(0, 1500) : null,
+      sample_keys: firstQuote ? Object.keys(firstQuote) : null
     };
     console.log('[upstox] BNF breadth raw:', JSON.stringify(window._BNF_BREADTH_DEBUG));
 
