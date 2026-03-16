@@ -358,20 +358,7 @@ async function upstoxFetchPositions() {
     const data = await resp.json();
     const positions = (data.status === 'success' && Array.isArray(data.data)) ? data.data : [];
     window._UPSTOX_POSITIONS = positions;
-    // Render raw legs (informational only — detection happens post-fetch)
-    const el = document.getElementById('upstox-positions');
-    if (el) {
-      if (!positions.length) {
-        el.innerHTML = '<div class="pos-empty">No open positions from API</div>';
-      } else {
-        el.innerHTML = positions.map(p => {
-          const sym = p.tradingsymbol || p.trading_symbol || '—';
-          const qty = p.quantity || p.net_quantity || 0;
-          const avg = p.average_price || p.buy_price || 0;
-          return `<div class="pos-row"><span class="pos-symbol">${sym}</span><span class="pos-qty">Qty: ${qty}</span><span class="pos-avg">Avg: ₹${(+avg).toFixed(2)}</span></div>`;
-        }).join('');
-      }
-    }
+    console.log(`[upstox] Positions API: ${positions.length} positions`);
   } catch(e) {
     window._UPSTOX_POSITIONS = [];
     console.warn('[upstox] Positions fetch failed:', e.message);

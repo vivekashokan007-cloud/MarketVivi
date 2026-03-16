@@ -413,6 +413,64 @@ html, body {
 .reason-expiry { background: var(--bg-input); color: var(--text-dim); }
 .reason-manual { background: rgba(59,130,246,0.12); color: var(--blue); }
 
+/* ── Trade Dissection (Phase 4) ── */
+.journal-trade-toggle {
+  font-size: 11px; color: var(--amber); text-align: center;
+  padding: 6px 0 2px; cursor: pointer; user-select: none;
+  transition: color 0.2s;
+}
+.journal-trade-toggle:active { opacity: 0.7; }
+.journal-trade-dissection { padding: 0 0 4px; }
+
+.dissection { padding: 10px 0 4px; border-top: 1px solid var(--border); }
+.dissect-title {
+  font-size: 10px; font-weight: 700; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 10px 0 5px; padding-bottom: 3px; border-bottom: 1px solid var(--border);
+}
+.dissect-title:first-child { margin-top: 0; }
+.dissect-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; padding: 2px 0; color: var(--text);
+}
+.dissect-row span:first-child { color: var(--text-dim); }
+.dissect-row span:last-child { font-weight: 600; }
+
+.dissect-note { font-size: 10px; color: var(--text-dim); font-style: italic; padding: 4px 0; }
+
+.dissect-score-row {
+  font-size: 11px; padding: 3px 0; line-height: 1.5;
+}
+
+/* P&L Bar Visualization */
+.dissect-pnl-bar { margin: 8px 0; }
+.pnl-bar-track {
+  position: relative; height: 8px; background: var(--bg-input);
+  border-radius: 4px; overflow: visible; margin-bottom: 4px;
+}
+.pnl-bar-track.loss-track { background: var(--red-dim); }
+.pnl-bar-fill {
+  height: 100%; border-radius: 4px; transition: width 0.3s;
+}
+.profit-fill { background: var(--green); }
+.loss-fill { background: var(--red); }
+.pnl-bar-peak {
+  position: absolute; top: -3px; width: 2px; height: 14px;
+  background: var(--amber); border-radius: 1px;
+  transform: translateX(-50%);
+}
+.pnl-bar-marker {
+  position: absolute; top: 0; width: 2px; height: 8px;
+  border-radius: 1px; transform: translateX(-50%);
+}
+.target-marker { background: var(--green); opacity: 0.5; }
+.max-marker { background: var(--text-dim); opacity: 0.4; }
+.sl-marker { background: var(--red); opacity: 0.5; }
+.pnl-bar-labels {
+  display: flex; justify-content: space-between;
+  font-size: 9px; color: var(--text-dim);
+}
+
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   body { padding-bottom: env(safe-area-inset-bottom); }
   .drawer { padding-bottom: env(safe-area-inset-bottom); }

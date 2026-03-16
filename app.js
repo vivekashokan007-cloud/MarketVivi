@@ -1530,18 +1530,6 @@ async function checkThesisAndNotify(openTrades) {
     }
   }
 
-  // Update _DETECTED_POSITIONS with fresh data for card + banner rendering
-  if (window._DETECTED_POSITIONS) {
-    for (const det of window._DETECTED_POSITIONS) {
-      const match = openTrades.find(t => t.id === det.id || (t.index_key === det.index_key && t.expiry === det.expiry));
-      if (match) {
-        det.current_pnl = match.current_pnl;
-        det.peak_pnl = match.peak_pnl;
-        det.recommendation = match.recommendation;
-      }
-    }
-  }
-
   // Fire notifications (market hours only)
   if (typeof isMarketHours === 'function' && !isMarketHours()) return;
 
@@ -1859,7 +1847,7 @@ async function renderJournalTab() {
     return;
   }
 
-  tradesEl.innerHTML = closed.map(t => {
+  tradesEl.innerHTML = closed.map((t, idx) => {
     const pnl = t.actual_pnl || 0;
     const pClass = pnl >= 0 ? 'profit' : 'loss';
     const reason = t.exit_reason || 'MANUAL';
@@ -1868,6 +1856,7 @@ async function renderJournalTab() {
     for (let i = 1; i <= 4; i++) {
       if (t[`leg${i}_strike`]) legs.push(`${t[`leg${i}_action`]} ${t[`leg${i}_strike`]} ${t[`leg${i}_type`]}`);
     }
+    const dissection = renderTradeDissection(t);
     return `<div class="journal-trade">
       <div class="journal-trade-header">
         <span class="journal-trade-strat">${STRAT_LABELS[t.strategy_type] || t.strategy_type}</span>
@@ -1876,8 +1865,191 @@ async function renderJournalTab() {
       <div class="journal-trade-meta">${t.index_key} · ${t.expiry} · ${t.entry_date || '—'} → ${t.exit_date || '—'}</div>
       <div class="journal-trade-meta">${legs.join(' | ')}</div>
       <span class="journal-trade-reason ${reasonClass}">${reason}</span>
+      <div class="journal-trade-toggle" data-idx="jt-${idx}">▼ Dissect Trade</div>
+      <div class="journal-trade-dissection" id="jt-${idx}" style="display:none">
+        ${dissection}
+      </div>
     </div>`;
   }).join('');
+
+  // Bind toggle clicks for dissection
+  document.querySelectorAll('.journal-trade-toggle').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.dataset.idx;
+      const details = document.getElementById(id);
+      if (details) {
+        const isOpen = details.style.display !== 'none';
+        details.style.display = isOpen ? 'none' : 'block';
+        el.textContent = isOpen ? '▼ Dissect Trade' : '▲ Close';
+      }
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════
+// PHASE 4: TRADE DISSECTION
+// Post-trade analysis from rich entry snapshot
+// ═══════════════════════════════════════════════════
+
+function renderTradeDissection(trade) {
+  const pnl = trade.actual_pnl || 0;
+  const peak = trade.peak_pnl || 0;
+  const target = trade.target_profit || 0;
+  const maxProfit = trade.max_profit || 0;
+  const maxLoss = trade.max_loss || 0;
+  const sl = trade.stop_loss || 0;
+  const isWin = pnl > 0;
+
+  let html = '<div class="dissection">';
+
+  // ── P&L Journey ──
+  html += '<div class="dissect-title">P&L Journey</div>';
+  const pctTarget = target > 0 ? ((pnl / target) * 100).toFixed(1) : '—';
+  const pctMaxProfit = maxProfit > 0 ? ((pnl / maxProfit) * 100).toFixed(1) : '—';
+  const peakPctTarget = target > 0 ? ((peak / target) * 100).toFixed(1) : '—';
+
+  // Hold duration
+  let holdDays = '—';
+  if (trade.entry_date && trade.exit_date) {
+    const entry = new Date(trade.entry_date);
+    const exit = new Date(trade.exit_date);
+    const calDays = Math.round((exit - entry) / 86400000);
+    // Count trading days
+    let tradingDays = 0;
+    const d = new Date(entry);
+    d.setDate(d.getDate() + 1);
+    while (d <= exit) { if (isTradingDay(d)) tradingDays++; d.setDate(d.getDate() + 1); }
+    holdDays = `${calDays} cal (${tradingDays} trading)`;
+  }
+
+  html += `<div class="dissect-row"><span>Exit P&L</span><span class="${isWin ? 'profit' : 'loss'}">${pnl >= 0 ? '+' : ''}₹${pnl.toLocaleString('en-IN')}</span></div>`;
+  html += `<div class="dissect-row"><span>Peak P&L</span><span class="profit">₹${peak.toLocaleString('en-IN')}</span></div>`;
+  if (peak > 0 && pnl > 0 && pnl < peak) {
+    const leftOnTable = peak - pnl;
+    html += `<div class="dissect-row"><span>Left on table</span><span class="loss">₹${leftOnTable.toLocaleString('en-IN')}</span></div>`;
+  }
+  html += `<div class="dissect-row"><span>% of Target</span><span>${pctTarget}%</span></div>`;
+  html += `<div class="dissect-row"><span>% of Max Profit</span><span>${pctMaxProfit}%</span></div>`;
+  html += `<div class="dissect-row"><span>Peak % of Target</span><span>${peakPctTarget}%</span></div>`;
+  html += `<div class="dissect-row"><span>Hold Duration</span><span>${holdDays}</span></div>`;
+
+  // ── P&L Bar Visualization ──
+  const barMax = Math.max(maxProfit, Math.abs(maxLoss || maxProfit));
+  if (barMax > 0) {
+    const slPct = sl > 0 ? Math.min((sl / barMax) * 100, 100) : 0;
+    const pnlPct = Math.min(Math.abs(pnl) / barMax * 100, 100);
+    const peakPct = Math.min(peak / barMax * 100, 100);
+    const targetPct = target > 0 ? Math.min(target / barMax * 100, 100) : 0;
+    const maxPct = Math.min(maxProfit / barMax * 100, 100);
+
+    html += '<div class="dissect-pnl-bar">';
+    if (isWin) {
+      html += `<div class="pnl-bar-track">`;
+      html += `<div class="pnl-bar-fill profit-fill" style="width:${pnlPct}%"></div>`;
+      if (peakPct > pnlPct) html += `<div class="pnl-bar-peak" style="left:${peakPct}%" title="Peak"></div>`;
+      if (targetPct > 0) html += `<div class="pnl-bar-marker target-marker" style="left:${targetPct}%" title="Target"></div>`;
+      html += `<div class="pnl-bar-marker max-marker" style="left:${maxPct}%" title="Max"></div>`;
+      html += `</div>`;
+      html += `<div class="pnl-bar-labels"><span class="profit">₹${pnl.toLocaleString('en-IN')}</span><span>Target ₹${target.toLocaleString('en-IN')}</span><span>Max ₹${maxProfit.toLocaleString('en-IN')}</span></div>`;
+    } else {
+      html += `<div class="pnl-bar-track loss-track">`;
+      html += `<div class="pnl-bar-fill loss-fill" style="width:${pnlPct}%"></div>`;
+      if (slPct > 0) html += `<div class="pnl-bar-marker sl-marker" style="left:${slPct}%" title="SL"></div>`;
+      html += `</div>`;
+      html += `<div class="pnl-bar-labels"><span class="loss">₹${pnl.toLocaleString('en-IN')}</span><span>SL ₹${sl.toLocaleString('en-IN')}</span><span>Max Loss ₹${maxLoss.toLocaleString('en-IN')}</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  // ── Entry Conditions ──
+  const hasSnapshot = trade.entry_bias || trade.entry_score || trade.entry_call_wall || trade.entry_atm_iv;
+  html += '<div class="dissect-title">Entry Conditions</div>';
+  html += `<div class="dissect-row"><span>Entry Spot</span><span>${trade.entry_spot ? trade.entry_spot.toLocaleString('en-IN') : '—'}</span></div>`;
+  html += `<div class="dissect-row"><span>Entry VIX</span><span>${trade.entry_vix || '—'}</span></div>`;
+  html += `<div class="dissect-row"><span>Entry Premium</span><span>₹${trade.entry_premium || '—'}</span></div>`;
+  if (trade.entry_pcr) html += `<div class="dissect-row"><span>Entry PCR</span><span>${trade.entry_pcr}</span></div>`;
+  if (trade.entry_max_pain) html += `<div class="dissect-row"><span>Entry Max Pain</span><span>${trade.entry_max_pain.toLocaleString('en-IN')}</span></div>`;
+
+  if (hasSnapshot) {
+    // Rich snapshot available
+    if (trade.entry_bias) html += `<div class="dissect-row"><span>Bias</span><span>${trade.entry_bias} (net ${trade.entry_bias_net || '—'})</span></div>`;
+    if (trade.entry_score) html += `<div class="dissect-row"><span>Composite Score</span><span>${trade.entry_score}</span></div>`;
+    if (trade.entry_varsity_tier) html += `<div class="dissect-row"><span>Varsity Tier</span><span>${trade.entry_varsity_tier}</span></div>`;
+    if (trade.entry_call_wall) html += `<div class="dissect-row"><span>Call Wall</span><span>${trade.entry_call_wall.toLocaleString('en-IN')}</span></div>`;
+    if (trade.entry_put_wall) html += `<div class="dissect-row"><span>Put Wall</span><span>${trade.entry_put_wall.toLocaleString('en-IN')}</span></div>`;
+    if (trade.entry_total_call_oi && trade.entry_total_put_oi) html += `<div class="dissect-row"><span>Total OI</span><span>Call: ${(trade.entry_total_call_oi/1e6).toFixed(1)}M | Put: ${(trade.entry_total_put_oi/1e6).toFixed(1)}M</span></div>`;
+    if (trade.entry_atm_iv) html += `<div class="dissect-row"><span>ATM IV</span><span>${trade.entry_atm_iv}%</span></div>`;
+    if (trade.entry_fii_cash) html += `<div class="dissect-row"><span>FII Cash</span><span>₹${trade.entry_fii_cash.toLocaleString('en-IN')} Cr</span></div>`;
+    if (trade.entry_close_char != null) html += `<div class="dissect-row"><span>Close Char</span><span>${trade.entry_close_char}</span></div>`;
+    if (trade.entry_futures_premium != null) html += `<div class="dissect-row"><span>Futures Premium</span><span>${trade.entry_futures_premium > 0 ? '+' : ''}${trade.entry_futures_premium}%</span></div>`;
+  } else {
+    html += '<div class="dissect-note">Rich snapshot not available — trade logged before Phase 3.1</div>';
+  }
+
+  // ── Leg Details ──
+  html += '<div class="dissect-title">Legs</div>';
+  for (let i = 1; i <= 4; i++) {
+    if (trade[`leg${i}_strike`]) {
+      html += `<div class="dissect-row"><span>${trade[`leg${i}_action`]} ${trade.index_key} ${trade[`leg${i}_strike`]} ${trade[`leg${i}_type`]}</span><span>@ ₹${(trade[`leg${i}_entry_ltp`] || 0).toFixed(2)}</span></div>`;
+    }
+  }
+
+  // ── Outcome Scoring ──
+  html += '<div class="dissect-title">Trade Score Card</div>';
+
+  // Bias accuracy
+  if (trade.entry_bias) {
+    const biasDir = trade.entry_bias.includes('BEAR') ? 'BEAR' : trade.entry_bias.includes('BULL') ? 'BULL' : 'NEUTRAL';
+    const isCredit = ['BULL_PUT','BEAR_CALL','IRON_CONDOR'].includes(trade.strategy_type);
+    const isDebitBear = trade.strategy_type === 'BEAR_PUT';
+    const isDebitBull = trade.strategy_type === 'BULL_CALL';
+
+    let biasCorrect = false;
+    if (isWin) {
+      // Win = bias was correct for the strategy type
+      biasCorrect = true;
+    } else if (biasDir === 'BEAR' && (isDebitBear || trade.strategy_type === 'BEAR_CALL')) {
+      biasCorrect = pnl > -sl * 0.3; // Mild loss on correct bias = timing issue
+    }
+    html += `<div class="dissect-score-row">${biasCorrect ? '✅' : '❌'} Bias: ${trade.entry_bias} — ${biasCorrect ? 'direction correct' : 'direction wrong'}</div>`;
+  }
+
+  // Target achievement
+  if (target > 0) {
+    const targetPct = (pnl / target) * 100;
+    const icon = targetPct >= 80 ? '✅' : targetPct >= 30 ? '⚠️' : '❌';
+    html += `<div class="dissect-score-row">${icon} Target: ${targetPct.toFixed(0)}% achieved (₹${pnl.toLocaleString('en-IN')} of ₹${target.toLocaleString('en-IN')})</div>`;
+  }
+
+  // Risk management
+  if (sl > 0) {
+    const slHit = pnl <= -sl;
+    html += `<div class="dissect-score-row">${slHit ? '❌' : '✅'} Risk: ${slHit ? 'SL hit' : 'SL not hit'} (limit ₹${sl.toLocaleString('en-IN')})</div>`;
+  }
+
+  // Exit efficiency (did we leave money on the table?)
+  if (peak > 0 && pnl > 0) {
+    const captureRate = ((pnl / peak) * 100).toFixed(0);
+    const icon = captureRate >= 70 ? '✅' : captureRate >= 40 ? '⚠️' : '❌';
+    html += `<div class="dissect-score-row">${icon} Capture: ${captureRate}% of peak (peak ₹${peak.toLocaleString('en-IN')}, exited ₹${pnl.toLocaleString('en-IN')})</div>`;
+  }
+
+  // Hold timing
+  if (trade.entry_date && trade.exit_date) {
+    const entry = new Date(trade.entry_date);
+    const exit = new Date(trade.exit_date);
+    const expiry = trade.expiry ? new Date(trade.expiry) : null;
+    if (expiry) {
+      const totalDte = Math.round((expiry - entry) / 86400000);
+      const usedDte = Math.round((exit - entry) / 86400000);
+      const pctUsed = totalDte > 0 ? ((usedDte / totalDte) * 100).toFixed(0) : '—';
+      const icon = isWin ? (usedDte <= totalDte * 0.5 ? '✅' : '⚠️') : (usedDte >= totalDte * 0.8 ? '❌' : '⚠️');
+      html += `<div class="dissect-score-row">${icon} Timing: used ${usedDte}/${totalDte} DTE (${pctUsed}%)</div>`;
+    }
+  }
+
+  html += '</div>';
+  return html;
 }
 
 // ═══════════════════════════════════════════════════
@@ -1902,5 +2074,5 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load positions + auto-expire + journal on startup
   renderPositionsTab();
   autoExpireOpenTrades();
-  console.log('[app.js] Market Radar v5.0 — Phase 3 Active');
+  console.log('[app.js] Market Radar v5.0 — Phase 3.1 + Trade Dissection');
 });
