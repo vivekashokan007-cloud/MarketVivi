@@ -51,7 +51,20 @@ async function dbInsertTrade(trade) {
     // Thesis snapshot — for chain-aware smart exits
     entry_pcr: trade.entry_pcr || null,
     entry_max_pain: trade.entry_max_pain || null,
-    entry_sell_oi: trade.entry_sell_oi || null
+    entry_sell_oi: trade.entry_sell_oi || null,
+    // Rich entry snapshot — full market context
+    entry_call_wall: trade.entry_call_wall || null,
+    entry_put_wall: trade.entry_put_wall || null,
+    entry_total_call_oi: trade.entry_total_call_oi || null,
+    entry_total_put_oi: trade.entry_total_put_oi || null,
+    entry_atm_iv: trade.entry_atm_iv || null,
+    entry_fii_cash: trade.entry_fii_cash || null,
+    entry_bias: trade.entry_bias || null,
+    entry_bias_net: trade.entry_bias_net || null,
+    entry_score: trade.entry_score || null,
+    entry_varsity_tier: trade.entry_varsity_tier || null,
+    entry_close_char: trade.entry_close_char || null,
+    entry_futures_premium: trade.entry_futures_premium || null
   };
 
   // Flatten legs 1-4

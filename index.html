@@ -43,6 +43,7 @@
   <div id="debug-output" style="display:none;font-size:11px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;color:var(--text-dim)"></div>
 
   <div class="section-title">India VIX</div>
+  <div class="timing-hint">Auto from Upstox · updates live</div>
   <div class="input-group">
     <label>India VIX</label>
     <input type="number" id="india_vix" step="0.01" placeholder="Auto from Upstox">
@@ -50,6 +51,7 @@
   </div>
 
   <div class="section-title">FII Flow</div>
+  <div class="timing-hint">Enter after 6 PM from NSDL/Moneycontrol · previous day's data</div>
   <div class="input-group">
     <label>FII Cash ₹Cr</label>
     <input type="number" id="fii" step="1" placeholder="Enter from NSDL/moneycontrol">
@@ -67,6 +69,7 @@
   </div>
 
   <div class="section-title">Option Chain</div>
+  <div class="timing-hint">Auto from Upstox · updates on FETCH</div>
   <div class="input-group">
     <label>NF Max Pain</label>
     <input type="number" id="max_pain_nf" step="1" placeholder="Auto from chain">
@@ -78,7 +81,12 @@
     <span id="ts-pcr_nf" class="ts-badge"></span>
   </div>
 
+  <div class="section-title">Futures Premium</div>
+  <div class="timing-hint">Synthetic from put-call parity · updates on FETCH</div>
+  <div id="futures-premium-display" class="futures-premium">Fetch data to see futures premium</div>
+
   <div class="section-title">Previous Day</div>
+  <div class="timing-hint">Auto from Upstox historical</div>
   <div class="input-group">
     <label>Close Char</label>
     <select id="close_char">
@@ -93,6 +101,7 @@
   </div>
 
   <div class="section-title">Market Breadth</div>
+  <div class="timing-hint">Enter from NSE market pulse · after 9:30 AM</div>
   <div class="input-group">
     <label>NF50 Advances</label>
     <input type="number" id="n50adv" step="1" min="0" max="50" placeholder="0–50">
@@ -128,6 +137,7 @@
     <input type="number" id="nf_oi_put"><input type="number" id="bn_oi_call">
     <input type="number" id="bn_oi_put"><input type="number" id="nf_maxpain">
     <input type="number" id="bn_maxpain">
+    <input type="number" id="nf_fut_premium"><input type="number" id="bnf_fut_premium">
   </div>
 </div>
 

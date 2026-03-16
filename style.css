@@ -103,6 +103,24 @@ html, body {
 
 /* ── Inputs ── */
 .input-group { display: flex; align-items: center; margin-bottom: 8px; gap: 8px; }
+
+.timing-hint { font-size: 10px; color: var(--text-dim); margin: -4px 0 6px; opacity: 0.7; font-style: italic; }
+
+.futures-premium {
+  font-size: 12px; color: var(--text-dim); padding: 8px 10px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 12px;
+}
+
+/* ── Trade Log Button (in drawer) ── */
+.btn-log-trade {
+  width: 100%; margin-top: 12px; padding: 12px; font-weight: 700;
+  background: rgba(139,92,246,0.12); border: 1px solid var(--amber);
+  color: var(--amber); border-radius: var(--radius); font-size: 13px;
+  cursor: pointer; transition: all 0.2s; font-family: var(--font);
+}
+.btn-log-trade:active { transform: scale(0.97); background: rgba(139,92,246,0.25); }
+.log-trade-status { font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 6px; min-height: 16px; }
 .input-group label { flex: 0 0 100px; font-size: 12px; color: var(--text-dim); }
 .input-group input, .input-group select {
   flex: 1; padding: 8px 10px; background: var(--bg-input); border: 1px solid var(--border);

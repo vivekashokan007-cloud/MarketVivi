@@ -12,6 +12,10 @@ window._NF_HIST = [];
 window._BNF_HIST = [];
 window._NF_ATM_IV = null;
 window._BNF_ATM_IV = null;
+window._NF_FUTURES_LTP = null;
+window._BNF_FUTURES_LTP = null;
+window._NF_FUTURES_PREMIUM = null;
+window._BNF_FUTURES_PREMIUM = null;
 
 // ── Token Management ──
 function upstoxGetToken() {
@@ -289,6 +293,17 @@ async function upstoxFetchFullChain(instrument, expiry, indexKey) {
     _set(`${isNF ? 'nf' : 'bn'}_maxpain`, mpStrike);
     if (isNF) { _set('max_pain_nf', mpStrike); window._NF_ATM_IV = atmIV; }
     else window._BNF_ATM_IV = atmIV;
+
+    // Calculate synthetic futures premium from ATM put-call parity
+    const atmStrike = allStrikes.reduce((best, s) => Math.abs(s - spot) < Math.abs(best - spot) ? s : best, allStrikes[0]);
+    const atmData = strikes[atmStrike];
+    if (atmData && atmData.CE && atmData.PE && atmData.CE.ltp > 0 && atmData.PE.ltp > 0) {
+      const synthFutures = atmStrike + (atmData.CE.ltp - atmData.PE.ltp);
+      const futPremium = spot > 0 ? +((synthFutures - spot) / spot * 100).toFixed(3) : 0;
+      if (isNF) { window._NF_FUTURES_LTP = +synthFutures.toFixed(2); window._NF_FUTURES_PREMIUM = futPremium; _set('nf_fut_premium', futPremium); }
+      else { window._BNF_FUTURES_LTP = +synthFutures.toFixed(2); window._BNF_FUTURES_PREMIUM = futPremium; _set('bnf_fut_premium', futPremium); }
+      console.log(`[upstox] ${indexKey} Synth Futures: ${synthFutures.toFixed(2)} (${futPremium > 0 ? '+' : ''}${futPremium}% premium)`);
+    }
   }
 
   console.log(`[upstox] Chain: ${indexKey} ${expiry} — ${allStrikes.length} strikes, PCR=${pcr}, MaxPain=${mpStrike}, CallOI=${callOI}, PutOI=${putOI}, DTE=${dte}/${tdte}T`);

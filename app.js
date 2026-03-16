@@ -466,11 +466,37 @@ function getVarsityTierLabel(mult) {
 }
 
 // ═══════════════════════════════════════════════════
+// FUTURES PREMIUM DISPLAY
+// ═══════════════════════════════════════════════════
+
+function renderFuturesPremium() {
+  const el = document.getElementById('futures-premium-display');
+  if (!el) return;
+  const nfP = window._NF_FUTURES_PREMIUM;
+  const bnfP = window._BNF_FUTURES_PREMIUM;
+  const nfF = window._NF_FUTURES_LTP;
+  const bnfF = window._BNF_FUTURES_LTP;
+  if (nfP === null && bnfP === null) { el.textContent = 'Fetch data to see futures premium'; return; }
+
+  const nfSpot = gv('nf_price') || 0;
+  const bnfSpot = gv('bn_price') || 0;
+  const fmtP = (p) => p > 0 ? `+${p.toFixed(3)}%` : `${p.toFixed(3)}%`;
+  const clsP = (p) => p > 0.05 ? 'profit' : p < -0.05 ? 'loss' : '';
+  const signal = (p) => p > 0.05 ? '↑ Bullish' : p < -0.05 ? '↓ Bearish' : '→ Neutral';
+
+  let html = '';
+  if (nfP !== null) html += `<div>NF: ${nfF ? nfF.toLocaleString('en-IN') : '—'} <span class="${clsP(nfP)}" style="font-weight:700">(${fmtP(nfP)})</span> <span style="opacity:0.6">${signal(nfP)}</span></div>`;
+  if (bnfP !== null) html += `<div>BNF: ${bnfF ? bnfF.toLocaleString('en-IN') : '—'} <span class="${clsP(bnfP)}" style="font-weight:700">(${fmtP(bnfP)})</span> <span style="opacity:0.6">${signal(bnfP)}</span></div>`;
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════
 // COMMAND TAB RENDER
 // ═══════════════════════════════════════════════════
 
 async function buildCommand() {
   const panel = document.getElementById('command-output'); if (!panel) return;
+  renderFuturesPremium();
   const vix = gv('india_vix') || gv('strat_vix');
   const hasChains = (Object.keys(window._CHAINS.NF).length + Object.keys(window._CHAINS.BNF).length) > 0;
   if (!hasChains) { panel.innerHTML = '<div class="cmd-placeholder">Fetch Upstox data to see strategy recommendations</div>'; return; }
@@ -587,9 +613,9 @@ function renderStrategyCard(setup, index) {
 // BOTTOM DRAWER
 // ═══════════════════════════════════════════════════
 
-let _drawerOpen = false;
+let _drawerOpen = false, _drawerSetup = null;
 function openDrawer(setup) {
-  if (!setup) return; _drawerOpen = true;
+  if (!setup) return; _drawerOpen = true; _drawerSetup = setup;
   const drawer = document.getElementById('payoff-drawer'), backdrop = document.getElementById('drawer-backdrop');
   if (!drawer || !backdrop) return;
   document.getElementById('drawer-title').textContent = `${setup.stratLabel} — ${setup.indexKey} ${setup.expiry}`;
@@ -622,10 +648,138 @@ function openDrawer(setup) {
       const tag = l.action === 'SELL' ? 'bid' : 'ask';
       return `<div class="dm-leg">${l.action} ${setup.indexKey} ${setup.expiry} ${l.strike} ${l.type} <span style="opacity:0.6">(${moneyLabel(l.strike, setup.spot, l.type)})</span> @ ₹${price.toFixed(2)} <span style="opacity:0.4">${tag}</span></div>`;
     }).join('')}
+    <div class="dm-divider"></div>
+    <button class="btn btn-log-trade" id="btn-log-trade">📌 I TOOK THIS TRADE</button>
+    <div id="log-trade-status" class="log-trade-status"></div>
   `;
+  // Bind log trade button
+  const logBtn = document.getElementById('btn-log-trade');
+  if (logBtn) logBtn.addEventListener('click', () => logTradeFromCommand(_drawerSetup));
   backdrop.classList.add('show'); drawer.classList.add('show');
 }
-function closeDrawer() { _drawerOpen = false; const d = document.getElementById('payoff-drawer'), b = document.getElementById('drawer-backdrop'); if (d) d.classList.remove('show'); if (b) b.classList.remove('show'); }
+function closeDrawer() { _drawerOpen = false; _drawerSetup = null; const d = document.getElementById('payoff-drawer'), b = document.getElementById('drawer-backdrop'); if (d) d.classList.remove('show'); if (b) b.classList.remove('show'); }
+
+// ═══════════════════════════════════════════════════
+// LOG TRADE FROM COMMAND — "I Took This Trade"
+// Captures full market snapshot at entry time
+// ═══════════════════════════════════════════════════
+
+async function logTradeFromCommand(setup) {
+  if (!setup) return;
+  const statusEl = document.getElementById('log-trade-status');
+
+  // Confirmation
+  const stratName = setup.stratLabel || setup.stratType;
+  const legStr = setup.legs.map(l => `${l.action} ${l.strike} ${l.type}`).join(' | ');
+  if (!confirm(`Log trade?\n\n${stratName} — ${setup.indexKey} ${setup.expiry}\n${legStr}\n\nThis will start position tracking.`)) return;
+
+  if (statusEl) statusEl.textContent = 'Logging trade...';
+
+  try {
+    // Build trade object with FULL snapshot
+    const trade = {
+      strategy_type: setup.stratType,
+      index_key: setup.indexKey,
+      expiry: setup.expiry,
+      entry_spot: setup.spot,
+      entry_vix: gv('india_vix') || window._LIVE_VIX || null,
+      entry_premium: +Math.abs(setup.netPremium).toFixed(2),
+      max_profit: setup.maxProfit,
+      max_loss: setup.maxLoss,
+      target_profit: setup.targetProfit,
+      stop_loss: setup.stopLoss,
+      lots: setup.lots || 1,
+
+      // ── Legs ──
+      leg1: null, leg2: null, leg3: null, leg4: null,
+
+      // ── Rich entry snapshot ──
+      entry_pcr: null,
+      entry_max_pain: null,
+      entry_sell_oi: null,
+      entry_call_wall: null,
+      entry_put_wall: null,
+      entry_total_call_oi: null,
+      entry_total_put_oi: null,
+      entry_atm_iv: null,
+      entry_fii_cash: gv('fii') || null,
+      entry_close_char: gv('close_char') || null,
+      entry_futures_premium: window._NF_FUTURES_PREMIUM || null,
+
+      // ── Bias + Score snapshot ──
+      entry_bias: null,
+      entry_bias_net: null,
+      entry_score: setup.compositeScore || null,
+      entry_varsity_tier: setup.varsityTier || null
+    };
+
+    // Populate legs from setup
+    for (let i = 0; i < Math.min(setup.legs.length, 4); i++) {
+      const l = setup.legs[i];
+      const price = l.action === 'SELL' ? (l.data.bid || l.data.ltp) : (l.data.ask || l.data.ltp);
+      trade[`leg${i + 1}`] = {
+        strike: l.strike,
+        type: l.type,
+        action: l.action,
+        entry_ltp: +price.toFixed(2),
+        qty: setup.lotSize || (setup.indexKey === 'NF' ? NF_LOT_SIZE : BNF_LOT)
+      };
+    }
+
+    // Populate chain snapshot from _CHAINS
+    const chain = window._CHAINS && window._CHAINS[setup.indexKey] && window._CHAINS[setup.indexKey][setup.expiry];
+    if (chain) {
+      trade.entry_pcr = chain.pcr || null;
+      trade.entry_max_pain = chain.maxPain || null;
+      trade.entry_call_wall = chain.callWall || null;
+      trade.entry_put_wall = chain.putWall || null;
+      trade.entry_total_call_oi = chain.callOI || null;
+      trade.entry_total_put_oi = chain.putOI || null;
+      trade.entry_atm_iv = chain.atmIV || null;
+
+      // OI at sell strike(s)
+      const sellLegs = setup.legs.filter(l => l.action === 'SELL');
+      if (sellLegs.length > 0 && chain.strikes) {
+        let totalSellOI = 0;
+        for (const sl of sellLegs) {
+          const sd = chain.strikes[sl.strike];
+          if (sd && sd[sl.type]) totalSellOI += sd[sl.type].oi || 0;
+        }
+        trade.entry_sell_oi = totalSellOI;
+      }
+    }
+
+    // Populate bias snapshot
+    const q1 = computeDirectionalBias();
+    if (q1) {
+      trade.entry_bias = `${q1.biasConf} ${q1.bias}`;
+      trade.entry_bias_net = q1.net;
+    }
+
+    // Insert to Supabase
+    const result = await dbInsertTrade(trade);
+    if (result.ok) {
+      console.log(`[trade] Logged: ${setup.stratType} ${setup.indexKey} ${setup.expiry} — Score: ${setup.compositeScore}`);
+      if (statusEl) statusEl.textContent = '✅ Trade logged! Switching to POSITIONS...';
+
+      // Close drawer, switch to POSITIONS tab, render, start auto-fetch
+      setTimeout(async () => {
+        closeDrawer();
+        go(2); // POSITIONS tab
+        await renderPositionsTab();
+        if (typeof isMarketHours === 'function' && isMarketHours() && typeof startAutoFetch === 'function') {
+          startAutoFetch();
+        }
+      }, 800);
+    } else {
+      if (statusEl) statusEl.textContent = `❌ Failed: ${result.error}`;
+      console.error('[trade] Insert failed:', result.error);
+    }
+  } catch (e) {
+    console.error('[trade] Error:', e);
+    if (statusEl) statusEl.textContent = `❌ Error: ${e.message}`;
+  }
+}
 
 // ═══════════════════════════════════════════════════
 // PAYOFF CHART
@@ -723,7 +877,7 @@ function go(n) { document.querySelectorAll('.tab').forEach(t=>t.classList.remove
 // SOFT TOGGLE LOCKS
 // ═══════════════════════════════════════════════════
 
-function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','close_char','max_pain_nf','nf_price','bn_price','nifty_prev'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-radar',JSON.stringify(d)); RADAR_LOCKED=true; } renderLockState(); }
+function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','fii_fut','fii_opt','close_char','max_pain_nf','nf_price','bn_price','nifty_prev'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-radar',JSON.stringify(d)); RADAR_LOCKED=true; } renderLockState(); }
 function toggleBreadth() { if (BREADTH_LOCKED) { BREADTH_LOCKED = false; } else { const d={}; ['n50adv','n50dma','bnfadv'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-breadth',JSON.stringify(d)); BREADTH_LOCKED=true; } renderLockState(); }
 function toggleEvening() { if (EVENING_LOCKED) { EVENING_LOCKED = false; } else { const d={}; ['ev_fii','ev_nf_close','ev_bnf_close','ev_indiavix'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-evening',JSON.stringify(d)); const v=gv('ev_indiavix'); if(valid(v)) localStorage.setItem('mr_ev_indiavix',v); EVENING_LOCKED=true; } renderLockState(); }
 function renderLockState() { [['btn-lock-radar',RADAR_LOCKED,'🔒 Locked','🔓 Lock Morning Data'],['btn-lock-breadth',BREADTH_LOCKED,'🔒 Locked','🔓 Lock Breadth'],['btn-lock-evening',EVENING_LOCKED,'🔒 Locked','🔓 Lock Evening']].forEach(([id,locked,lt,ut])=>{ const el=document.getElementById(id); if(el) el.textContent=locked?lt:ut; }); }
@@ -1595,6 +1749,12 @@ function renderThesisDetails(trade, thesis, legs) {
   html += `<div class="pos-entry-row">Entry premium: ₹${trade.entry_premium || '—'} | Lots: ${trade.lots || 1}</div>`;
   html += `<div class="pos-entry-row">Max profit: ₹${(trade.max_profit||0).toLocaleString('en-IN')} | Max loss: ₹${(trade.max_loss||0).toLocaleString('en-IN')}</div>`;
   html += `<div class="pos-entry-row">Entered: ${trade.entry_date || '—'}${trade.entry_pcr ? ' | Entry PCR: '+trade.entry_pcr : ''}</div>`;
+  if (trade.entry_bias) html += `<div class="pos-entry-row">Bias: ${trade.entry_bias} (net ${trade.entry_bias_net || '—'})</div>`;
+  if (trade.entry_score) html += `<div class="pos-entry-row">Score: ${trade.entry_score} | Tier: ${trade.entry_varsity_tier || '—'}</div>`;
+  if (trade.entry_call_wall || trade.entry_put_wall) html += `<div class="pos-entry-row">OI Walls: Call ${trade.entry_call_wall || '—'} | Put ${trade.entry_put_wall || '—'}</div>`;
+  if (trade.entry_atm_iv) html += `<div class="pos-entry-row">ATM IV: ${trade.entry_atm_iv}%</div>`;
+  if (trade.entry_fii_cash) html += `<div class="pos-entry-row">FII Cash: ₹${trade.entry_fii_cash} Cr</div>`;
+  if (trade.entry_futures_premium != null) html += `<div class="pos-entry-row">Futures Premium: ${trade.entry_futures_premium > 0 ? '+' : ''}${trade.entry_futures_premium}%</div>`;
 
   // Legs with entry prices
   html += '<div class="pos-thesis-title" style="margin-top:8px">Legs</div>';
