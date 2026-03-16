@@ -274,6 +274,7 @@ async function upstoxFetchBnfBreadth() {
     }
 
     let autoCount = 0;
+    let weightedPct = 0, weightMatched = 0;
     for (const c of BNF_CONSTITUENTS) {
       const el = document.getElementById(c.id);
       if (!el) continue;
@@ -298,15 +299,21 @@ async function upstoxFetchBnfBreadth() {
       }
 
       const advancing = ltp > prevClose;
-      const pctChange = ((ltp - prevClose) / prevClose * 100).toFixed(2);
+      const pctChange = ((ltp - prevClose) / prevClose * 100);
 
       el.checked = advancing;
-      el.dataset.pct = pctChange;
+      el.dataset.pct = pctChange.toFixed(2);
       el.dataset.ltp = ltp;
 
       if (advancing) autoCount++;
-      console.log(`[upstox] ${c.name}: ${ltp} (${pctChange > 0 ? '+' : ''}${pctChange}%) ${advancing ? '↑' : '↓'}`);
+      // Accumulate weighted % change for adversarial Control Index
+      weightedPct += pctChange * c.weight;
+      weightMatched += c.weight;
+      console.log(`[upstox] ${c.name}: ${ltp} (${pctChange > 0 ? '+' : ''}${pctChange.toFixed(2)}%) ${advancing ? '↑' : '↓'}`);
     }
+
+    // Store live weighted breadth for adversarial engine
+    window._BNF_LIVE_BREADTH = { weightedPct: weightMatched > 0 ? +(weightedPct / weightMatched).toFixed(3) : 0, weightMatched: +weightMatched.toFixed(2) };
 
     if (typeof updateBnfReadout === 'function') updateBnfReadout();
     updateBnfLabels();

@@ -868,6 +868,7 @@ async function logTradeFromCommand(setup) {
       entry_pcr: null,
       entry_max_pain: null,
       entry_sell_oi: null,
+      entry_buy_oi: null,
       entry_call_wall: null,
       entry_put_wall: null,
       entry_total_call_oi: null,
@@ -923,6 +924,17 @@ async function logTradeFromCommand(setup) {
           if (sd && sd[sl.type]) totalSellOI += sd[sl.type].oi || 0;
         }
         trade.entry_sell_oi = totalSellOI;
+      }
+
+      // OI at buy strike(s) — for adversarial Control Index
+      const buyLegs = setup.legs.filter(l => l.action === 'BUY');
+      if (buyLegs.length > 0 && chain.strikes) {
+        let totalBuyOI = 0;
+        for (const bl of buyLegs) {
+          const sd = chain.strikes[bl.strike];
+          if (sd && sd[bl.type]) totalBuyOI += sd[bl.type].oi || 0;
+        }
+        trade.entry_buy_oi = totalBuyOI;
       }
     }
 
@@ -1349,6 +1361,16 @@ async function detectAndLogPositions(rawPositions) {
           }
           trade.entry_sell_oi = totalSellOI;
         }
+        // OI at buy strike(s) — for adversarial Control Index
+        const buyLegs = legs.filter(l => l.action === 'BUY');
+        if (buyLegs.length > 0 && entryChain.strikes) {
+          let totalBuyOI = 0;
+          for (const bl of buyLegs) {
+            const sd = entryChain.strikes[bl.strike];
+            if (sd && sd[bl.type]) totalBuyOI += sd[bl.type].oi || 0;
+          }
+          trade.entry_buy_oi = totalBuyOI;
+        }
       }
 
       const result = await dbInsertTrade(trade);
@@ -1513,7 +1535,11 @@ function computeRecommendation(trade, currentPnl, currentSpot, expiry) {
   // ── Thesis check from position chains ──
   const thesis = checkThesis(trade);
 
-  // ── EXIT NOW: hard limits ──
+  // ── Adversarial Control Index ──
+  const control = computeControlIndex(trade);
+  trade._controlIndex = control; // Attach for rendering
+
+  // ── EXIT NOW: hard limits (unchanged — these are non-negotiable) ──
   if (target > 0 && currentPnl >= target) return 'EXIT_NOW';
   if (sl > 0 && currentPnl <= -sl) return 'EXIT_NOW';
   // Spot breaching sell strike danger zone
@@ -1526,19 +1552,30 @@ function computeRecommendation(trade, currentPnl, currentSpot, expiry) {
   }
   if (isCredit && dte <= 3 && currentPnl < 0) return 'EXIT_NOW';
 
-  // ── BOOK PROFIT: profitable + thesis breaking OR high % of target ──
+  // ── ADVERSARIAL-ENHANCED DECISIONS ──
+  const ci = control.score; // -100 to +100
+
+  // Profitable + opponent in control → BOOK PROFIT urgently
+  if (currentPnl > 0 && ci < -30) return 'BOOK_PROFIT';
+  // Profitable + control slipping → BOOK PROFIT
+  if (currentPnl > 0 && ci < -10 && thesis.severity >= 1) return 'BOOK_PROFIT';
+
+  // Losing + opponent in control → EXIT EARLY
+  if (currentPnl < 0 && ci < -30) return 'EXIT_EARLY';
+  // Losing + control contested + thesis weakening → EXIT EARLY
+  if (currentPnl < 0 && ci < 10 && thesis.severity >= 2) return 'EXIT_EARLY';
+
+  // Legacy thesis-based BOOK PROFIT (still valid)
   if (thesis.severity >= 2 && currentPnl > 0) return 'BOOK_PROFIT';
   if (target > 0 && currentPnl >= target * 0.35 && dte <= 5) return 'BOOK_PROFIT';
   if (target > 0 && currentPnl >= target * 0.40) return 'BOOK_PROFIT';
 
-  // ── EXIT EARLY: losing + thesis breaking ──
+  // Legacy thesis-based EXIT EARLY
   if (thesis.severity >= 2 && currentPnl < 0) return 'EXIT_EARLY';
-  // P&L declining from peak (only if thesis also weakening)
   if (peakPnl > 0 && currentPnl > 0 && currentPnl < peakPnl * 0.70 && thesis.severity >= 1) return 'EXIT_EARLY';
-  // Was profitable, now losing + any thesis concern
   if (peakPnl > target * 0.20 && currentPnl <= 0 && thesis.severity >= 1) return 'EXIT_EARLY';
 
-  // ── TRAIL: protect gains ──
+  // ── TRAIL: profitable + you're in control → let it ride ──
   if (isCredit) {
     if (dte >= 4 && dte <= 10 && trade.max_profit && currentPnl > trade.max_profit * 0.30) return 'TRAIL';
   } else {
@@ -1546,6 +1583,7 @@ function computeRecommendation(trade, currentPnl, currentSpot, expiry) {
     if (currentPnl > 0 && trade.max_loss && currentPnl > trade.max_loss * 0.20) return 'TRAIL';
   }
 
+  // ── HOLD: default, but narrative from control index tells the story ──
   return 'HOLD';
 }
 
@@ -1696,6 +1734,184 @@ function checkThesis(trade) {
   };
 }
 
+// ═══════════════════════════════════════════════════
+// ADVERSARIAL CONTROL INDEX
+// "Who is in control of this trade right now?"
+// -100 = opponent in full control, +100 = you in control
+//
+// Options trading is zero-sum: for every winner there's a loser.
+// Mutual fund heavyweights use options to HEDGE their equity.
+// They can afford to "lose" on options because they win on stocks.
+// Max Pain works because institutions can push index toward
+// settlement levels that minimize their combined exposure.
+// ═══════════════════════════════════════════════════
+
+function computeControlIndex(trade) {
+  const result = { score: 0, signals: [], narrative: '' };
+
+  // Determine trade direction
+  const isBearTrade = ['BEAR_CALL','BEAR_PUT'].includes(trade.strategy_type);
+  const isBullTrade = ['BULL_PUT','BULL_CALL'].includes(trade.strategy_type);
+  const isIC = trade.strategy_type === 'IRON_CONDOR';
+  const dirLabel = isBearTrade ? 'bear' : isBullTrade ? 'bull' : 'neutral';
+
+  // Get chain data
+  const key = `${trade.index_key}|${trade.expiry}`;
+  let chain = (window._POSITION_CHAINS || {})[key];
+  if (!chain) {
+    const fc = window._CHAINS && window._CHAINS[trade.index_key] && window._CHAINS[trade.index_key][trade.expiry];
+    if (fc) {
+      const sellStrikeOI = {};
+      for (const sk in fc.strikes) {
+        const sd = fc.strikes[sk];
+        if (sd.CE) sellStrikeOI[`${sk}_CE`] = sd.CE.oi || 0;
+        if (sd.PE) sellStrikeOI[`${sk}_PE`] = sd.PE.oi || 0;
+      }
+      chain = { pcr: fc.pcr, maxPain: fc.maxPain, callOI: fc.callOI, putOI: fc.putOI, sellStrikeOI, spot: fc.spot };
+    }
+  }
+  if (!chain) return result;
+
+  let totalScore = 0, totalWeight = 0;
+
+  // ── Signal 1: Max Pain Migration (35%) — "Are institutions with or against me?" ──
+  if (trade.entry_max_pain && chain.maxPain) {
+    const mpShift = chain.maxPain - trade.entry_max_pain;
+    const isNF = trade.index_key === 'NF';
+    const normFactor = trade.entry_max_pain * 0.02; // 2% of MP = full signal
+
+    let mpScore = 0;
+    if (isBearTrade) {
+      // Bear wins when MP moves DOWN (institutions accept lower levels)
+      mpScore = -mpShift / normFactor;
+    } else if (isBullTrade) {
+      // Bull wins when MP moves UP
+      mpScore = mpShift / normFactor;
+    } else if (isIC) {
+      // IC wins when MP stays near center of sell strikes
+      const sellStrikes = [];
+      for (let i = 1; i <= 4; i++) {
+        if (trade[`leg${i}_action`] === 'SELL' && trade[`leg${i}_strike`]) sellStrikes.push(trade[`leg${i}_strike`]);
+      }
+      if (sellStrikes.length >= 2) {
+        const center = (Math.max(...sellStrikes) + Math.min(...sellStrikes)) / 2;
+        const entryDist = Math.abs(trade.entry_max_pain - center);
+        const currentDist = Math.abs(chain.maxPain - center);
+        mpScore = (entryDist - currentDist) / normFactor; // Closer to center = better
+      }
+    }
+    mpScore = Math.max(-1, Math.min(1, mpScore));
+
+    const mpPts = Math.abs(mpShift);
+    const mpDir = mpShift > 0 ? 'UP' : 'DOWN';
+    const mpGood = mpScore > 0.1;
+    const mpBad = mpScore < -0.1;
+    result.signals.push({
+      name: 'Max Pain',
+      score: mpScore,
+      detail: `${trade.entry_max_pain}→${chain.maxPain} (${mpDir} ${mpPts}pts)`,
+      reading: mpGood ? 'Institutions aligning with you' : mpBad ? 'Institutions moving against you' : 'Stable'
+    });
+    totalScore += mpScore * 35; totalWeight += 35;
+  }
+
+  // ── Signal 2: Sell Strike OI (30%) — "Are they defending or abandoning my level?" ──
+  if (trade.entry_sell_oi && chain.sellStrikeOI) {
+    let currentSellOI = 0;
+    for (let i = 1; i <= 4; i++) {
+      const strike = trade[`leg${i}_strike`];
+      const type = trade[`leg${i}_type`];
+      const action = trade[`leg${i}_action`];
+      if (strike && type && action === 'SELL') {
+        currentSellOI += chain.sellStrikeOI[`${strike}_${type}`] || 0;
+      }
+    }
+
+    if (currentSellOI > 0) {
+      const oiChange = (currentSellOI - trade.entry_sell_oi) / trade.entry_sell_oi;
+      // OI increasing = sellers defending your level = GOOD
+      // OI decreasing = sellers retreating = BAD
+      let oiScore = Math.max(-1, Math.min(1, oiChange * 2)); // ±50% change = full signal
+
+      const pctChange = (oiChange * 100).toFixed(0);
+      result.signals.push({
+        name: 'Sell OI',
+        score: oiScore,
+        detail: `${(trade.entry_sell_oi/1000).toFixed(0)}K→${(currentSellOI/1000).toFixed(0)}K (${oiChange >= 0 ? '+' : ''}${pctChange}%)`,
+        reading: oiScore > 0.1 ? 'Sellers defending your level' : oiScore < -0.1 ? 'Sellers retreating — losing confidence' : 'Stable'
+      });
+      totalScore += oiScore * 30; totalWeight += 30;
+    }
+  }
+
+  // ── Signal 3: PCR Shift (25%) — "Is overall sentiment turning?" ──
+  if (trade.entry_pcr && chain.pcr) {
+    const pcrShift = chain.pcr - trade.entry_pcr;
+    let pcrScore = 0;
+
+    if (isBearTrade) {
+      // Bear wins when PCR drops (calls getting sold = bearish)
+      pcrScore = -pcrShift / 0.20; // ±0.20 shift = full signal
+    } else if (isBullTrade) {
+      // Bull wins when PCR rises (puts getting sold = bullish)
+      pcrScore = pcrShift / 0.20;
+    } else if (isIC) {
+      // IC wants PCR stable near 1.0
+      const entryDist = Math.abs(trade.entry_pcr - 1.0);
+      const currentDist = Math.abs(chain.pcr - 1.0);
+      pcrScore = (entryDist - currentDist) / 0.20;
+    }
+    pcrScore = Math.max(-1, Math.min(1, pcrScore));
+
+    result.signals.push({
+      name: 'PCR',
+      score: pcrScore,
+      detail: `${trade.entry_pcr}→${chain.pcr} (${pcrShift >= 0 ? '+' : ''}${pcrShift.toFixed(2)})`,
+      reading: pcrScore > 0.1 ? 'Sentiment supporting your thesis' : pcrScore < -0.1 ? 'Sentiment shifting against you' : 'Neutral'
+    });
+    totalScore += pcrScore * 25; totalWeight += 25;
+  }
+
+  // ── Signal 4: Heavyweight Divergence (10%, BNF only) ──
+  if (trade.index_key === 'BNF' && window._BNF_LIVE_BREADTH) {
+    const breadth = window._BNF_LIVE_BREADTH; // { weightedPct, topStockDir }
+    let hwScore = 0;
+    if (isBearTrade) {
+      // Bear wins when weighted breadth is negative (heavyweights falling)
+      hwScore = Math.max(-1, Math.min(1, -breadth.weightedPct / 1.5));
+    } else if (isBullTrade) {
+      hwScore = Math.max(-1, Math.min(1, breadth.weightedPct / 1.5));
+    }
+
+    result.signals.push({
+      name: 'Heavyweights',
+      score: hwScore,
+      detail: `Weighted: ${breadth.weightedPct >= 0 ? '+' : ''}${breadth.weightedPct.toFixed(2)}%`,
+      reading: hwScore > 0.1 ? 'Big stocks aligned with you' : hwScore < -0.1 ? 'Heavyweight fighting your thesis' : 'Mixed'
+    });
+    totalScore += hwScore * 10; totalWeight += 10;
+  }
+
+  // Normalize to -100 to +100
+  result.score = totalWeight > 0 ? Math.round(totalScore / totalWeight * 100) : 0;
+
+  // Generate narrative
+  const absScore = Math.abs(result.score);
+  if (result.score > 30) {
+    result.narrative = `You're in control (${result.score > 60 ? 'strong' : 'moderate'}) — thesis holders dominating`;
+  } else if (result.score > 10) {
+    result.narrative = 'Slight edge to you — watch for shifts';
+  } else if (result.score > -10) {
+    result.narrative = 'Contested — neither side has clear control';
+  } else if (result.score > -30) {
+    result.narrative = 'Opponent gaining ground — consider booking if profitable';
+  } else {
+    result.narrative = `Opponent in control (${result.score < -60 ? 'strong' : 'moderate'}) — protect capital`;
+  }
+
+  return result;
+}
+
 async function checkThesisAndNotify(openTrades) {
   if (!openTrades || !openTrades.length) return;
 
@@ -1736,7 +1952,7 @@ async function checkThesisAndNotify(openTrades) {
     const pct = target > 0 ? Math.round((pnl / target) * 100) : 0;
     const pnlStr = (pnl >= 0 ? '+' : '') + '₹' + pnl.toLocaleString('en-IN');
     const stratName = STRAT_LABELS[trade.strategy_type] || trade.strategy_type;
-    const body = `P&L ${pnlStr} (${pct}% of target) · DTE ${daysTo(trade.expiry)}`;
+    const body = `P&L ${pnlStr} (${pct}% of target) · DTE ${daysTo(trade.expiry)}${trade._controlIndex ? ' · Control: '+(trade._controlIndex.score > 0 ? '+' : '')+trade._controlIndex.score : ''}`;
 
     // Urgent (EXIT_NOW, EXIT_EARLY, BOOK_PROFIT) → IMMEDIATE
     if (meta.priority >= 3) {
@@ -1754,7 +1970,7 @@ async function checkThesisAndNotify(openTrades) {
     const stratName = STRAT_LABELS[trade.strategy_type] || trade.strategy_type;
     const rec = trade.recommendation || 'HOLD';
     const meta = ALERT_META[rec] || ALERT_META.HOLD;
-    fireNotification(`${meta.icon} ${meta.label} — ${stratName} ${trade.index_key}`, `P&L ${pnlStr} (${pct}%) · DTE ${daysTo(trade.expiry)}`, 'mr-routine');
+    fireNotification(`${meta.icon} ${meta.label} — ${stratName} ${trade.index_key}`, `P&L ${pnlStr} (${pct}%) · DTE ${daysTo(trade.expiry)}${trade._controlIndex ? ' · Ctrl:'+(trade._controlIndex.score > 0 ? '+' : '')+trade._controlIndex.score : ''}`, 'mr-routine');
     _lastRoutineNotif = now;
   }
 }
@@ -1904,6 +2120,27 @@ async function renderPositionsTab() {
 // ── Thesis details for expandable position card ──
 function renderThesisDetails(trade, thesis, legs) {
   let html = '<div class="pos-thesis">';
+
+  // ── Adversarial Control Index ──
+  const control = trade._controlIndex || computeControlIndex(trade);
+  if (control.signals.length > 0) {
+    const ci = control.score;
+    const barPct = Math.min(100, Math.max(0, (ci + 100) / 2)); // 0=opponent, 100=you
+    const barColor = ci > 30 ? '#22c55e' : ci > 10 ? '#8b5cf6' : ci > -10 ? '#f59e0b' : ci > -30 ? '#f97316' : '#ef4444';
+    const ciLabel = ci > 0 ? `+${ci}` : `${ci}`;
+
+    html += '<div class="pos-thesis-title">Control Index</div>';
+    html += `<div class="pos-control-bar"><div class="pos-control-fill" style="width:${barPct}%;background:${barColor}"></div></div>`;
+    html += `<div class="pos-control-label" style="color:${barColor}">Control: ${ciLabel} — ${control.narrative}</div>`;
+
+    // Individual signals
+    for (const sig of control.signals) {
+      const sigColor = sig.score > 0.1 ? '#22c55e' : sig.score < -0.1 ? '#ef4444' : '#8a8a9a';
+      const sigIcon = sig.score > 0.1 ? '✅' : sig.score < -0.1 ? '🔴' : '⚪';
+      html += `<div class="pos-control-signal">${sigIcon} <strong>${sig.name}</strong>: ${sig.detail} <span style="color:${sigColor};font-size:11px">${sig.reading}</span></div>`;
+    }
+    html += '<div style="height:8px"></div>';
+  }
 
   // Thesis health section
   html += '<div class="pos-thesis-title">Thesis Health</div>';
