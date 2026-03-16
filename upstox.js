@@ -225,22 +225,30 @@ async function upstoxFetchBnfBreadth() {
   }
 
   try {
-    // Try multiple key formats to discover correct one
+    // ISIN mapping for BNF top-5 constituents
+    const ISIN = {
+      HDFCBANK: 'INE040A01034', ICICIBANK: 'INE090A01021',
+      KOTAKBANK: 'INE237A01028', SBIN: 'INE062A01020', AXISBANK: 'INE238A01034'
+    };
     const symbols = ['HDFCBANK','ICICIBANK','KOTAKBANK','SBIN','AXISBANK'];
+
+    // Try multiple key formats to discover correct one
     const formats = [
+      sym => `NSE_EQ|${ISIN[sym]}`,
       sym => `NSE_EQ|${sym}`,
       sym => `NSE_EQ|${sym}-EQ`,
-      sym => `NSE_EQ|${sym}-BE`
+      sym => `BSE_EQ|${sym}`,
     ];
 
-    let data = null, usedFormat = null;
+    let data = null, usedFormat = null, triedFormats = [];
     for (const fmt of formats) {
       const keys = symbols.map(s => encodeURIComponent(fmt(s))).join(',');
+      triedFormats.push(fmt('HDFCBANK'));
       const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=${keys}`), { headers: _headers() });
       const d = await resp.json();
       if (d.status === 'success' && d.data && Object.keys(d.data).length > 0) {
         data = d;
-        usedFormat = fmt('SAMPLE');
+        usedFormat = fmt('HDFCBANK');
         break;
       }
     }
@@ -249,6 +257,7 @@ async function upstoxFetchBnfBreadth() {
     window._BNF_BREADTH_DEBUG = {
       status: data ? data.status : 'all formats failed',
       format_that_worked: usedFormat,
+      formats_tried: triedFormats,
       keys_received: data && data.data ? Object.keys(data.data) : [],
       error: data ? (data.errors || data.message || null) : 'No format returned data'
     };
@@ -264,11 +273,12 @@ async function upstoxFetchBnfBreadth() {
       const el = document.getElementById(c.id);
       if (!el) continue;
 
-      // Find matching quote — match by symbol substring
-      const sym = c.instrument.split('|')[1];
+      // Find matching quote — match by symbol or ISIN
+      const sym = c.instrument.split('|')[1]; // e.g. HDFCBANK
+      const isin = ISIN[sym]; // e.g. INE040A01034
       let quote = null;
       for (const key in data.data) {
-        if (key.toUpperCase().includes(sym)) { quote = data.data[key]; break; }
+        if (key.toUpperCase().includes(sym) || (isin && key.includes(isin))) { quote = data.data[key]; break; }
       }
       if (!quote) continue;
 
