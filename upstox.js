@@ -225,21 +225,37 @@ async function upstoxFetchBnfBreadth() {
   }
 
   try {
-    const keys = BNF_CONSTITUENTS.map(c => encodeURIComponent(c.instrument)).join(',');
-    const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=${keys}`), { headers: _headers() });
-    const data = await resp.json();
+    // Try multiple key formats to discover correct one
+    const symbols = ['HDFCBANK','ICICIBANK','KOTAKBANK','SBIN','AXISBANK'];
+    const formats = [
+      sym => `NSE_EQ|${sym}`,
+      sym => `NSE_EQ|${sym}-EQ`,
+      sym => `NSE_EQ|${sym}-BE`
+    ];
 
-    // Debug: log raw response so we can fix key format if needed
+    let data = null, usedFormat = null;
+    for (const fmt of formats) {
+      const keys = symbols.map(s => encodeURIComponent(fmt(s))).join(',');
+      const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=${keys}`), { headers: _headers() });
+      const d = await resp.json();
+      if (d.status === 'success' && d.data && Object.keys(d.data).length > 0) {
+        data = d;
+        usedFormat = fmt('SAMPLE');
+        break;
+      }
+    }
+
+    // Debug: log what worked
     window._BNF_BREADTH_DEBUG = {
-      status: data.status,
-      keys_sent: BNF_CONSTITUENTS.map(c => c.instrument),
-      keys_received: data.data ? Object.keys(data.data) : [],
-      error: data.errors || data.message || null
+      status: data ? data.status : 'all formats failed',
+      format_that_worked: usedFormat,
+      keys_received: data && data.data ? Object.keys(data.data) : [],
+      error: data ? (data.errors || data.message || null) : 'No format returned data'
     };
     console.log('[upstox] BNF breadth raw:', JSON.stringify(window._BNF_BREADTH_DEBUG));
 
-    if (data.status !== 'success' || !data.data) {
-      console.warn('[upstox] BNF breadth fetch failed:', data.message || data.errors || 'unknown');
+    if (!data || !data.data || Object.keys(data.data).length === 0) {
+      console.warn('[upstox] BNF breadth: no format worked');
       return;
     }
 
@@ -249,10 +265,10 @@ async function upstoxFetchBnfBreadth() {
       if (!el) continue;
 
       // Find matching quote — match by symbol substring
+      const sym = c.instrument.split('|')[1];
       let quote = null;
       for (const key in data.data) {
-        const sym = c.instrument.split('|')[1];
-        if (key.includes(sym)) { quote = data.data[key]; break; }
+        if (key.toUpperCase().includes(sym)) { quote = data.data[key]; break; }
       }
       if (!quote) continue;
 
@@ -263,10 +279,7 @@ async function upstoxFetchBnfBreadth() {
       const advancing = ltp > prevClose;
       const pctChange = ((ltp - prevClose) / prevClose * 100).toFixed(2);
 
-      // Auto-check if advancing
       el.checked = advancing;
-
-      // Store change % for display
       el.dataset.pct = pctChange;
       el.dataset.ltp = ltp;
 
@@ -274,13 +287,13 @@ async function upstoxFetchBnfBreadth() {
       console.log(`[upstox] ${c.name}: ${ltp} (${pctChange > 0 ? '+' : ''}${pctChange}%) ${advancing ? '↑' : '↓'}`);
     }
 
-    // Update readout and labels with price data
     if (typeof updateBnfReadout === 'function') updateBnfReadout();
     updateBnfLabels();
     if (typeof calcScore === 'function') calcScore();
     console.log(`[upstox] BNF breadth: ${autoCount}/5 advancing`);
   } catch(e) {
     console.warn('[upstox] BNF breadth error:', e.message);
+    window._BNF_BREADTH_DEBUG = { error: e.message };
   }
 }
 
