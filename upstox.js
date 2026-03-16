@@ -286,12 +286,13 @@ async function upstoxFetchBnfBreadth() {
       }
       if (!quote) continue;
 
-      // Flexible field extraction — try multiple Upstox response patterns
-      const ltp = quote.last_price || (quote.market_data && quote.market_data.ltp) || quote.ltp || 0;
-      const prevClose = (quote.ohlc && quote.ohlc.close) || quote.close_price || (quote.market_data && quote.market_data.close_price) || 0;
-      if (!ltp || !prevClose || ltp === prevClose) {
-        // If ltp equals prevClose, stock data may be stale — skip auto-check but log
-        console.log(`[upstox] ${c.name}: ltp=${ltp} prevClose=${prevClose} — skipped (same or missing)`);
+      // Upstox equity quote: ohlc.close updates live (= last_price), NOT prev close
+      // Derive prev close from: last_price - net_change
+      const ltp = quote.last_price || 0;
+      const netChange = quote.net_change || 0;
+      const prevClose = netChange !== 0 ? +(ltp - netChange).toFixed(2) : 0;
+      if (!ltp || !prevClose) {
+        console.log(`[upstox] ${c.name}: ltp=${ltp} net_change=${netChange} — skipped`);
         continue;
       }
 
