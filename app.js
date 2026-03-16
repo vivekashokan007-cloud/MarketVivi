@@ -279,7 +279,7 @@ function evaluateAllStrategies(bias, vix, biasConf) {
   for (const indexKey of ['NF','BNF']) {
     const chains = window._CHAINS[indexKey]; if (!chains || !Object.keys(chains).length) continue;
     const isNF = indexKey === 'NF';
-    const lotSize = isNF ? NF_LOT_SIZE : BNF_LOT, width = isNF ? NF_IC_WIDTH : BNF_IC_WIDTH;
+    const lotSize = isNF ? NF_LOT_SIZE : BNF_LOT;
     const marginPerLot = isNF ? NF_MARGIN_PER_LOT : BNF_MARGIN_PER_LOT, step = isNF ? 50 : 100;
     for (const expiry in chains) {
       const chain = chains[expiry]; if (!chain.strikes || !chain.spot) continue;
@@ -291,9 +291,9 @@ function evaluateAllStrategies(bias, vix, biasConf) {
       const atm = strikeKeys.reduce((best, s) => Math.abs(s - rc) < Math.abs(best - rc) ? s : best, strikeKeys[0]);
       for (const stratType of STRATEGY_TYPES) {
         if (!isStrategyAllowed(stratType, bias, vix)) continue;
-        const candidates = buildCandidates(stratType, chain, atm, rc, width, step, strikeKeys, isNF);
+        const candidates = buildCandidates(stratType, chain, atm, rc, step, strikeKeys, isNF);
         for (const cand of candidates) {
-          const setup = evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix);
+          const setup = evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, cand.width || 0, chain, vix);
           if (setup) {
             setup.riskCenter = rc; // Store for display
             const baseScore = scoreSetup(setup, bias, vix, chain);
@@ -319,18 +319,53 @@ function isStrategyAllowed(stratType, bias, vix) {
   return true;
 }
 
-function buildCandidates(stratType, chain, atm, spot, width, step, strikeKeys, isNF) {
+function buildCandidates(stratType, chain, atm, spot, step, strikeKeys, isNF) {
   const s = chain.strikes, candidates = [];
+  // ── Dynamic widths: let scoring engine find the optimal width ──
+  const widths = isNF
+    ? [100, 150, 200, 250, 300, 400]          // NF: 2-8 strike gaps (step=50)
+    : [200, 300, 400, 500, 600, 800, 1000];   // BNF: 2-10 strike gaps (step=100)
+
   switch(stratType) {
-    case 'BULL_PUT': { const otm = strikeKeys.filter(k => k < spot && k >= spot-(isNF?1000:3000) && s[k]&&s[k].PE&&s[k].PE.ltp>0); for (const sk of otm) { const bk=sk-width; if (s[bk]&&s[bk].PE) candidates.push({legs:[{type:'PE',strike:sk,action:'SELL',data:s[sk].PE},{type:'PE',strike:bk,action:'BUY',data:s[bk].PE}]}); } break; }
-    case 'BEAR_CALL': { const otm = strikeKeys.filter(k => k > spot && k <= spot+(isNF?1000:3000) && s[k]&&s[k].CE&&s[k].CE.ltp>0); for (const sk of otm) { const bk=sk+width; if (s[bk]&&s[bk].CE) candidates.push({legs:[{type:'CE',strike:sk,action:'SELL',data:s[sk].CE},{type:'CE',strike:bk,action:'BUY',data:s[bk].CE}]}); } break; }
-    case 'IRON_CONDOR': { const ps = strikeKeys.filter(k => k<spot-(isNF?100:300) && k>=spot-(isNF?800:2500) && s[k]&&s[k].PE&&s[k].PE.ltp>0); const cs = strikeKeys.filter(k => k>spot+(isNF?100:300) && k<=spot+(isNF?800:2500) && s[k]&&s[k].CE&&s[k].CE.ltp>0); for (const pk of ps.slice(-3)) { for (const ck of cs.slice(0,3)) { const pb=pk-width, cb=ck+width; if (s[pb]&&s[pb].PE&&s[cb]&&s[cb].CE) candidates.push({legs:[{type:'CE',strike:ck,action:'SELL',data:s[ck].CE},{type:'CE',strike:cb,action:'BUY',data:s[cb].CE},{type:'PE',strike:pk,action:'SELL',data:s[pk].PE},{type:'PE',strike:pb,action:'BUY',data:s[pb].PE}]}); } } break; }
-    case 'BULL_CALL': { const bc = strikeKeys.filter(k => Math.abs(k-spot)<=(isNF?200:600) && s[k]&&s[k].CE&&s[k].CE.ltp>0); for (const bk of bc) { const sk=bk+width; if (s[sk]&&s[sk].CE) candidates.push({legs:[{type:'CE',strike:bk,action:'BUY',data:s[bk].CE},{type:'CE',strike:sk,action:'SELL',data:s[sk].CE}]}); } break; }
-    case 'BEAR_PUT': { const bp = strikeKeys.filter(k => Math.abs(k-spot)<=(isNF?200:600) && s[k]&&s[k].PE&&s[k].PE.ltp>0); for (const bk of bp) { const sk=bk-width; if (s[sk]&&s[sk].PE) candidates.push({legs:[{type:'PE',strike:bk,action:'BUY',data:s[bk].PE},{type:'PE',strike:sk,action:'SELL',data:s[sk].PE}]}); } break; }
-    case 'LONG_STRADDLE': { if (s[atm]&&s[atm].CE&&s[atm].PE&&s[atm].CE.ltp>0&&s[atm].PE.ltp>0) candidates.push({legs:[{type:'CE',strike:atm,action:'BUY',data:s[atm].CE},{type:'PE',strike:atm,action:'BUY',data:s[atm].PE}]}); const au=atm+step; if (s[au]&&s[au].CE&&s[atm]&&s[atm].PE) candidates.push({legs:[{type:'CE',strike:au,action:'BUY',data:s[au].CE},{type:'PE',strike:atm,action:'BUY',data:s[atm].PE}]}); break; }
-    case 'LONG_STRANGLE': { const oc = strikeKeys.filter(k => k>spot+(isNF?100:300) && k<=spot+(isNF?500:1500) && s[k]&&s[k].CE&&s[k].CE.ltp>0); const op = strikeKeys.filter(k => k<spot-(isNF?100:300) && k>=spot-(isNF?500:1500) && s[k]&&s[k].PE&&s[k].PE.ltp>0); for (const ck of oc.slice(0,2)) { for (const pk of op.slice(-2)) candidates.push({legs:[{type:'CE',strike:ck,action:'BUY',data:s[ck].CE},{type:'PE',strike:pk,action:'BUY',data:s[pk].PE}]}); } break; }
+    case 'BULL_PUT': {
+      const otm = strikeKeys.filter(k => k < spot && k >= spot-(isNF?1000:3000) && s[k]&&s[k].PE&&s[k].PE.ltp>0);
+      for (const sk of otm) { for (const w of widths) { const bk=sk-w; if (s[bk]&&s[bk].PE) candidates.push({width:w, legs:[{type:'PE',strike:sk,action:'SELL',data:s[sk].PE},{type:'PE',strike:bk,action:'BUY',data:s[bk].PE}]}); } }
+      break;
+    }
+    case 'BEAR_CALL': {
+      const otm = strikeKeys.filter(k => k > spot && k <= spot+(isNF?1000:3000) && s[k]&&s[k].CE&&s[k].CE.ltp>0);
+      for (const sk of otm) { for (const w of widths) { const bk=sk+w; if (s[bk]&&s[bk].CE) candidates.push({width:w, legs:[{type:'CE',strike:sk,action:'SELL',data:s[sk].CE},{type:'CE',strike:bk,action:'BUY',data:s[bk].CE}]}); } }
+      break;
+    }
+    case 'IRON_CONDOR': {
+      const ps = strikeKeys.filter(k => k<spot-(isNF?100:300) && k>=spot-(isNF?800:2500) && s[k]&&s[k].PE&&s[k].PE.ltp>0);
+      const cs = strikeKeys.filter(k => k>spot+(isNF?100:300) && k<=spot+(isNF?800:2500) && s[k]&&s[k].CE&&s[k].CE.ltp>0);
+      for (const pk of ps.slice(-3)) { for (const ck of cs.slice(0,3)) { for (const w of widths) { const pb=pk-w, cb=ck+w; if (s[pb]&&s[pb].PE&&s[cb]&&s[cb].CE) candidates.push({width:w, legs:[{type:'CE',strike:ck,action:'SELL',data:s[ck].CE},{type:'CE',strike:cb,action:'BUY',data:s[cb].CE},{type:'PE',strike:pk,action:'SELL',data:s[pk].PE},{type:'PE',strike:pb,action:'BUY',data:s[pb].PE}]}); } } }
+      break;
+    }
+    case 'BULL_CALL': {
+      const bc = strikeKeys.filter(k => Math.abs(k-spot)<=(isNF?300:800) && s[k]&&s[k].CE&&s[k].CE.ltp>0);
+      for (const bk of bc) { for (const w of widths) { const sk=bk+w; if (s[sk]&&s[sk].CE) candidates.push({width:w, legs:[{type:'CE',strike:bk,action:'BUY',data:s[bk].CE},{type:'CE',strike:sk,action:'SELL',data:s[sk].CE}]}); } }
+      break;
+    }
+    case 'BEAR_PUT': {
+      const bp = strikeKeys.filter(k => Math.abs(k-spot)<=(isNF?300:800) && s[k]&&s[k].PE&&s[k].PE.ltp>0);
+      for (const bk of bp) { for (const w of widths) { const sk=bk-w; if (s[sk]&&s[sk].PE) candidates.push({width:w, legs:[{type:'PE',strike:bk,action:'BUY',data:s[bk].PE},{type:'PE',strike:sk,action:'SELL',data:s[sk].PE}]}); } }
+      break;
+    }
+    case 'LONG_STRADDLE': {
+      if (s[atm]&&s[atm].CE&&s[atm].PE&&s[atm].CE.ltp>0&&s[atm].PE.ltp>0) candidates.push({width:0, legs:[{type:'CE',strike:atm,action:'BUY',data:s[atm].CE},{type:'PE',strike:atm,action:'BUY',data:s[atm].PE}]});
+      const au=atm+step; if (s[au]&&s[au].CE&&s[atm]&&s[atm].PE) candidates.push({width:0, legs:[{type:'CE',strike:au,action:'BUY',data:s[au].CE},{type:'PE',strike:atm,action:'BUY',data:s[atm].PE}]});
+      break;
+    }
+    case 'LONG_STRANGLE': {
+      const oc = strikeKeys.filter(k => k>spot+(isNF?100:300) && k<=spot+(isNF?500:1500) && s[k]&&s[k].CE&&s[k].CE.ltp>0);
+      const op = strikeKeys.filter(k => k<spot-(isNF?100:300) && k>=spot-(isNF?500:1500) && s[k]&&s[k].PE&&s[k].PE.ltp>0);
+      for (const ck of oc.slice(0,2)) { for (const pk of op.slice(-2)) candidates.push({width:0, legs:[{type:'CE',strike:ck,action:'BUY',data:s[ck].CE},{type:'PE',strike:pk,action:'BUY',data:s[pk].PE}]}); }
+      break;
+    }
   }
-  return candidates.slice(0, 5);
+  return candidates.slice(0, 30);
 }
 
 function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte, lotSize, marginPerLot, width, chain, vix) {
@@ -739,7 +774,7 @@ function renderStrategyCard(setup, index) {
     </div>
     <div class="sc-targets">🎯 Target: ₹${setup.targetProfit.toLocaleString('en-IN')} | 🛑 SL: ₹${setup.stopLoss.toLocaleString('en-IN')}</div>
     <div class="sc-greeks">Δ ${setup.netDelta.toFixed(4)} · θ ${setup.netTheta.toFixed(2)} · γ ${setup.netGamma.toFixed(4)} · ν ${setup.netVega.toFixed(2)}</div>
-    <div class="sc-score">EV: ₹${setup.ev.toLocaleString('en-IN')} | Score: ${setup.compositeScore}${setup.requiredMargin ? ' | Margin: ₹'+Math.round(setup.requiredMargin).toLocaleString('en-IN') : ''}</div>
+    <div class="sc-score">EV: ₹${setup.ev.toLocaleString('en-IN')} | Score: ${setup.compositeScore}${setup.width ? ' | W:'+setup.width : ''}${setup.requiredMargin ? ' | Margin: ₹'+Math.round(setup.requiredMargin).toLocaleString('en-IN') : ''}</div>
     <div class="sc-tap">Tap for payoff chart ▾</div>
   </div>`;
 }
@@ -772,6 +807,7 @@ function openDrawer(setup) {
     <div class="dm-row"><span>Breakeven${setup.breakevens.length>1?'s':''}</span><span>${setup.breakevens.join(' / ')}</span></div>
     <div class="dm-row"><span>DTE</span><span>${setup.dte} cal / ${setup.tradingDte} trading (${dteConviction(setup.dte)})</span></div>
     <div class="dm-row"><span>Lots</span><span>${setup.lots}</span></div>
+    ${setup.width ? `<div class="dm-row"><span>Spread Width</span><span>${setup.width} pts</span></div>` : ''}
     <div class="dm-row"><span>${setup.isCredit?'Net Credit':'Net Debit'}</span><span>₹${Math.abs(setup.netPremium).toFixed(2)}</span></div>
     <div class="dm-row"><span>Spread %</span><span>${setup.avgSpreadPct}%</span></div>
     <div class="dm-row"><span>Varsity Tier</span><span>${setup.varsityTier || '—'} (×${(setup.varsityMult||0).toFixed(2)})</span></div>
@@ -1276,7 +1312,17 @@ async function detectAndLogPositions(rawPositions) {
       trade.entry_premium = +netPrem.toFixed(2);
       const isCredit = ['BULL_PUT','BEAR_CALL','IRON_CONDOR'].includes(stratType);
       const lotSize = indexKey === 'NF' ? NF_LOT_SIZE : BNF_LOT;
-      const width = indexKey === 'NF' ? NF_IC_WIDTH : BNF_IC_WIDTH;
+      // Derive width from actual leg strikes (not fixed constant)
+      // For spreads: |strike1 - strike2|. For IC: min adjacent gap (= per-side width)
+      const strikes = legs.map(l => l.strike).sort((a,b) => a - b);
+      let width;
+      if (strikes.length >= 2) {
+        let minGap = Infinity;
+        for (let i = 1; i < strikes.length; i++) minGap = Math.min(minGap, strikes[i] - strikes[i-1]);
+        width = minGap;
+      } else {
+        width = indexKey === 'NF' ? NF_IC_WIDTH : BNF_IC_WIDTH;
+      }
       const safeLots = Math.max(1, trade.lots || 1);
       if (isCredit) {
         trade.max_profit = +(netPrem * lotSize * safeLots).toFixed(0);

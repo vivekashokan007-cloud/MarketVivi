@@ -127,7 +127,8 @@ async function upstoxAutoFill() {
       upstoxFetchHistorical('NSE_INDEX|Nifty 50', true),
       upstoxFetchHistorical('NSE_INDEX|Nifty Bank', false),
       upstoxFetchMargins(),
-      upstoxFetchBnfBreadth()
+      upstoxFetchBnfBreadth(),
+      upstoxFetchNf50Breadth()
     ];
     for (const exp of nfExps)  fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty 50', exp, 'NF'));
     for (const exp of bnfExps) fetches.push(upstoxFetchFullChain('NSE_INDEX|Nifty Bank', exp, 'BNF'));
@@ -327,6 +328,131 @@ function updateBnfLabels() {
       pctEl.textContent = `${pct > 0 ? '+' : ''}${pct}%`;
       pctEl.className = `bnf-pct ${pct > 0 ? 'profit' : 'loss'}`;
     }
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// NF50 CONSTITUENT BREADTH (auto-fetch)
+// Same proven pattern as BNF: ISIN-based keys, one API call
+// ═══════════════════════════════════════════════════
+
+const NF50_CONSTITUENTS = [
+  { sym: 'ADANIENT',   isin: 'INE423A01024' },
+  { sym: 'ADANIPORTS', isin: 'INE742F01042' },
+  { sym: 'APOLLOHOSP', isin: 'INE437A01024' },
+  { sym: 'ASIANPAINT', isin: 'INE021A01026' },
+  { sym: 'AXISBANK',   isin: 'INE238A01034' },
+  { sym: 'BAJAJ-AUTO', isin: 'INE917I01010' },
+  { sym: 'BAJFINANCE', isin: 'INE296A01032' },
+  { sym: 'BAJAJFINSV', isin: 'INE918I01026' },
+  { sym: 'BEL',        isin: 'INE263A01024' },
+  { sym: 'BHARTIARTL', isin: 'INE397D01024' },
+  { sym: 'CIPLA',      isin: 'INE059A01026' },
+  { sym: 'COALINDIA',  isin: 'INE522F01014' },
+  { sym: 'DRREDDY',    isin: 'INE089A01031' },
+  { sym: 'EICHERMOT',  isin: 'INE066A01021' },
+  { sym: 'ETERNAL',    isin: 'INE758T01015' },
+  { sym: 'GRASIM',     isin: 'INE047A01021' },
+  { sym: 'HCLTECH',    isin: 'INE860A01027' },
+  { sym: 'HDFCBANK',   isin: 'INE040A01034' },
+  { sym: 'HDFCLIFE',   isin: 'INE795G01014' },
+  { sym: 'HINDALCO',   isin: 'INE038A01020' },
+  { sym: 'HINDUNILVR', isin: 'INE030A01027' },
+  { sym: 'ICICIBANK',  isin: 'INE090A01021' },
+  { sym: 'ITC',        isin: 'INE154A01025' },
+  { sym: 'INFY',       isin: 'INE009A01021' },
+  { sym: 'INDIGO',     isin: 'INE646L01027' },
+  { sym: 'JSWSTEEL',   isin: 'INE019A01038' },
+  { sym: 'JIOFIN',     isin: 'INE758E01017' },
+  { sym: 'KOTAKBANK',  isin: 'INE237A01036' },
+  { sym: 'LT',         isin: 'INE018A01030' },
+  { sym: 'M&M',        isin: 'INE101A01026' },
+  { sym: 'MARUTI',     isin: 'INE585B01010' },
+  { sym: 'MAXHEALTH',  isin: 'INE027H01010' },
+  { sym: 'NTPC',       isin: 'INE733E01010' },
+  { sym: 'NESTLEIND',  isin: 'INE239A01024' },
+  { sym: 'ONGC',       isin: 'INE213A01029' },
+  { sym: 'POWERGRID',  isin: 'INE752E01010' },
+  { sym: 'RELIANCE',   isin: 'INE002A01018' },
+  { sym: 'SBILIFE',    isin: 'INE123W01016' },
+  { sym: 'SHRIRAMFIN', isin: 'INE721A01047' },
+  { sym: 'SBIN',       isin: 'INE062A01020' },
+  { sym: 'SUNPHARMA',  isin: 'INE044A01036' },
+  { sym: 'TCS',        isin: 'INE467B01029' },
+  { sym: 'TATACONSUM', isin: 'INE192A01025' },
+  { sym: 'TMPV',       isin: 'INE155A01022' },
+  { sym: 'TATASTEEL',  isin: 'INE081A01020' },
+  { sym: 'TECHM',      isin: 'INE669C01036' },
+  { sym: 'TITAN',      isin: 'INE280A01028' },
+  { sym: 'TRENT',      isin: 'INE849A01020' },
+  { sym: 'ULTRACEMCO', isin: 'INE481G01011' },
+  { sym: 'WIPRO',      isin: 'INE075A01022' }
+];
+
+async function upstoxFetchNf50Breadth() {
+  // Only auto-fill after 9:30 IST — before that, stocks haven't moved meaningfully
+  const now = new Date();
+  const istHour = now.getUTCHours() + 5 + (now.getUTCMinutes() + 30) / 60;
+  if (istHour < 9.5) {
+    console.log('[upstox] NF50 breadth: skipped — before 9:30 IST');
+    return;
+  }
+
+  try {
+    // Build keys using ISIN format (the ONLY format that works reliably)
+    const keys = NF50_CONSTITUENTS.map(c => encodeURIComponent(`NSE_EQ|${c.isin}`)).join(',');
+
+    const resp = await fetch(_bust(`${UPSTOX_API}/market-quote/quotes?instrument_key=${keys}`), { headers: _headers() });
+    const data = await resp.json();
+
+    // Debug: log what we got
+    const keysReceived = data && data.data ? Object.keys(data.data).length : 0;
+    window._NF50_BREADTH_DEBUG = {
+      status: data ? data.status : 'failed',
+      keys_sent: NF50_CONSTITUENTS.length,
+      keys_received: keysReceived,
+      keys_list: data && data.data ? Object.keys(data.data) : [],
+      error: data ? (data.errors || data.message || null) : 'No response'
+    };
+    console.log(`[upstox] NF50 breadth: sent ${NF50_CONSTITUENTS.length}, received ${keysReceived}`);
+
+    if (!data || !data.data || keysReceived === 0) {
+      console.warn('[upstox] NF50 breadth: no data received');
+      return;
+    }
+
+    let advancing = 0, matched = 0;
+    for (const c of NF50_CONSTITUENTS) {
+      // Find matching quote — Upstox returns keys as NSE_EQ:{SYMBOL}
+      let quote = null;
+      for (const key in data.data) {
+        if (key.toUpperCase().includes(c.sym) || key.includes(c.isin)) { quote = data.data[key]; break; }
+      }
+      if (!quote) continue;
+
+      // Derive prev close: last_price - net_change (ohlc.close is a trap — updates live)
+      const ltp = quote.last_price || 0;
+      const netChange = quote.net_change || 0;
+      const prevClose = netChange !== 0 ? +(ltp - netChange).toFixed(2) : 0;
+      if (!ltp || !prevClose) continue;
+
+      matched++;
+      if (ltp > prevClose) advancing++;
+    }
+
+    // Scale to 50: if we matched 48 of 50, and 30 advancing → 30/48 * 50 = 31
+    const scaled = matched > 0 ? Math.round(advancing / matched * 50) : 0;
+
+    // Auto-fill the n50adv input field
+    const el = document.getElementById('n50adv');
+    if (el) { el.value = scaled; el.dispatchEvent(new Event('change')); }
+
+    if (typeof calcScore === 'function') calcScore();
+    console.log(`[upstox] NF50 breadth: ${advancing}/${matched} advancing → scaled ${scaled}/50`);
+
+  } catch(e) {
+    console.warn('[upstox] NF50 breadth error:', e.message);
+    window._NF50_BREADTH_DEBUG = { error: e.message };
   }
 }
 
