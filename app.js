@@ -504,6 +504,28 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
     if (rr < 1.5) return null;
   }
 
+  // ── RANGE BUDGET FILTER: debit spreads only ──
+  // Width must not exceed remaining 1σ move in trade direction
+  // This prevents recommending W:400 Bull Call when only 139 pts of upside remain
+  if ((stratType === 'BULL_CALL' || stratType === 'BEAR_PUT') && width > 0) {
+    const dailyEM = bsExpectedMove(spot, vix || 14, Math.max(1, tradingDte));
+    const sigma1 = dailyEM.one_sigma;
+    const isNFIdx = indexKey === 'NF';
+    const prevClose = isNFIdx ? (gv('nifty_prev') || window._NF_PREV_CLOSE || spot) : (window._BNF_PREV_CLOSE || spot);
+    const moveFromClose = spot - prevClose; // Positive = up, negative = down
+
+    let remainingRange;
+    if (stratType === 'BULL_CALL') {
+      // Bull needs upside: 1σ ceiling minus what's already consumed upward
+      remainingRange = Math.max(0, sigma1 - Math.max(0, moveFromClose));
+    } else {
+      // Bear needs downside: 1σ floor minus what's already consumed downward
+      remainingRange = Math.max(0, sigma1 - Math.max(0, -moveFromClose));
+    }
+
+    if (width > remainingRange * 1.2) return null; // 20% tolerance buffer
+  }
+
   // ── Target / Stop Loss ──
   let targetProfit, stopLoss;
   if (isCredit) {
@@ -651,6 +673,55 @@ function renderFuturesPremium() {
   el.innerHTML = html;
 }
 
+function renderRangeBudget() {
+  const el = document.getElementById('range-budget-display');
+  if (!el) return;
+
+  const nfSpot = gv('nf_price'), bnfSpot = gv('bn_price'), vix = gv('india_vix') || 14;
+  const nfPrev = gv('nifty_prev');
+  if (!nfSpot || !vix) { el.textContent = 'Fetch data to see range budget'; return; }
+
+  let html = '';
+
+  // NF range budget
+  if (nfSpot && nfPrev) {
+    const nfEM = bsExpectedMove(nfSpot, vix, 1); // 1 trading day
+    const sigma1 = nfEM.one_sigma;
+    const moveUp = Math.max(0, nfSpot - nfPrev);
+    const moveDown = Math.max(0, nfPrev - nfSpot);
+    const upRemain = Math.max(0, sigma1 - moveUp);
+    const downRemain = Math.max(0, sigma1 - moveDown);
+    const consumedPct = Math.round(Math.max(moveUp, moveDown) / sigma1 * 100);
+    const upColor = upRemain < 100 ? 'loss' : upRemain < 200 ? '' : 'profit';
+    const dnColor = downRemain < 100 ? 'loss' : downRemain < 200 ? '' : 'profit';
+    html += `<div>NF 1σ: ${Math.round(sigma1)} pts · ↑<span class="${upColor}">${Math.round(upRemain)}</span> / ↓<span class="${dnColor}">${Math.round(downRemain)}</span> remaining`;
+    html += ` <span style="opacity:0.5">(${consumedPct}% consumed ${moveUp > moveDown ? 'up' : 'down'})</span></div>`;
+  }
+
+  // BNF range budget
+  if (bnfSpot) {
+    const bnfEM = bsExpectedMove(bnfSpot, vix, 1);
+    const sigma1 = bnfEM.one_sigma;
+    // BNF prev close from chain or estimate
+    const bnfPrev = window._BNF_PREV_CLOSE || 0;
+    if (bnfPrev > 0) {
+      const moveUp = Math.max(0, bnfSpot - bnfPrev);
+      const moveDown = Math.max(0, bnfPrev - bnfSpot);
+      const upRemain = Math.max(0, sigma1 - moveUp);
+      const downRemain = Math.max(0, sigma1 - moveDown);
+      const consumedPct = Math.round(Math.max(moveUp, moveDown) / sigma1 * 100);
+      const upColor = upRemain < 300 ? 'loss' : upRemain < 500 ? '' : 'profit';
+      const dnColor = downRemain < 300 ? 'loss' : downRemain < 500 ? '' : 'profit';
+      html += `<div>BNF 1σ: ${Math.round(sigma1)} pts · ↑<span class="${upColor}">${Math.round(upRemain)}</span> / ↓<span class="${dnColor}">${Math.round(downRemain)}</span> remaining`;
+      html += ` <span style="opacity:0.5">(${consumedPct}% consumed ${moveUp > moveDown ? 'up' : 'down'})</span></div>`;
+    } else {
+      html += `<div>BNF 1σ: ${Math.round(sigma1)} pts <span style="opacity:0.5">(no prev close for budget)</span></div>`;
+    }
+  }
+
+  el.innerHTML = html || 'Fetch data to see range budget';
+}
+
 // ═══════════════════════════════════════════════════
 // COMMAND TAB RENDER
 // ═══════════════════════════════════════════════════
@@ -658,6 +729,7 @@ function renderFuturesPremium() {
 async function buildCommand() {
   const panel = document.getElementById('command-output'); if (!panel) return;
   renderFuturesPremium();
+  renderRangeBudget();
   const vix = gv('india_vix') || gv('strat_vix');
   const hasChains = (Object.keys(window._CHAINS.NF).length + Object.keys(window._CHAINS.BNF).length) > 0;
   if (!hasChains) { panel.innerHTML = '<div class="cmd-placeholder">Fetch Upstox data to see strategy recommendations</div>'; return; }

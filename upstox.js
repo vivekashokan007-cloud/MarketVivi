@@ -649,8 +649,11 @@ async function upstoxFetchHistorical(instrument, isNF) {
   const prevClose = candles[candles.length - 2][4];
   if (isNF) {
     _set('nifty_prev', prevClose);
+    window._NF_PREV_CLOSE = prevClose;
     const pct = ((latest[4] - prevClose) / prevClose) * 100;
     _set('close_char', pct >= 0.8 ? 2 : pct >= 0.3 ? 1 : pct >= -0.3 ? 0 : pct >= -0.8 ? -1 : -2);
+  } else {
+    window._BNF_PREV_CLOSE = prevClose;
   }
   if (isNF) window._NF_HIST = candles.map(c => c[4]);
   else window._BNF_HIST = candles.map(c => c[4]);
