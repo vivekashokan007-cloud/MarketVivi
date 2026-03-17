@@ -133,7 +133,34 @@ function calcScore() {
   }
 
   if (valid(india_vix))  { signals.india_vix = Math.max(-1, Math.min(1, -(india_vix - 14) / 6)); ANALYSIS_VIX = india_vix; rawVals.india_vix = india_vix.toFixed(2); }
-  if (valid(fii))        { signals.fii = Math.max(-1, Math.min(1, fii / 2000)); rawVals.fii = `₹${fii} Cr`; }
+  if (valid(fii)) {
+    // ── FII 2D Signal: cash flow + positioning ──
+    const fiiShortPct = gv('fii_short_pct');
+    const prevShortPct = parseFloat(localStorage.getItem('mr_fii_short_prev') || '0');
+    let fiiSignal = Math.max(-1, Math.min(1, fii / 2000)); // Base: cash flow direction
+    rawVals.fii = `₹${fii} Cr`;
+
+    if (valid(fiiShortPct) && fiiShortPct > 0) {
+      // Enhance with positioning context
+      if (fiiShortPct > 85 && prevShortPct > 0 && fiiShortPct >= prevShortPct) {
+        // Extreme short + adding → strong bear conviction
+        fiiSignal = Math.min(fiiSignal, -0.8);
+        rawVals.fii += ` · ${fiiShortPct}% short ↑`;
+      } else if (fiiShortPct > 85 && prevShortPct > 0 && fiiShortPct < prevShortPct) {
+        // Extreme short BUT covering → bear weakening
+        fiiSignal = Math.max(fiiSignal, fiiSignal + 0.3);
+        rawVals.fii += ` · ${fiiShortPct}% short ↓ covering`;
+      } else if (fiiShortPct < 70) {
+        // Low short = bullish positioning
+        fiiSignal = Math.max(fiiSignal, 0.3);
+        rawVals.fii += ` · ${fiiShortPct}% short (low)`;
+      } else {
+        rawVals.fii += ` · ${fiiShortPct}% short`;
+      }
+      fiiSignal = Math.max(-1, Math.min(1, fiiSignal));
+    }
+    signals.fii = fiiSignal;
+  }
   if (valid(pcr_nf))     { signals.pcr_nf = Math.max(-1, Math.min(1, (pcr_nf - 1.0) / 0.5)); rawVals.pcr_nf = pcr_nf.toFixed(2); }
   if (valid(close_char)) { signals.close_char = Math.max(-1, Math.min(1, close_char / 2)); rawVals.close_char = close_char; }
   if (valid(max_pain) && valid(nf_spot) && nf_spot > 0) {
@@ -297,7 +324,16 @@ function evaluateAllStrategies(bias, vix, biasConf) {
           if (setup) {
             setup.riskCenter = rc; // Store for display
             const baseScore = scoreSetup(setup, bias, vix, chain);
-            const varsityMult = getVarsityMultiplier(stratType, biasConf || 'Neutral', bias, vix);
+            let varsityMult = getVarsityMultiplier(stratType, biasConf || 'Neutral', bias, vix);
+
+            // ── Upstox consensus penalty: when Upstox disagrees, reduce confidence ──
+            const upBias = (document.getElementById('upstox_bias') || {}).value || '';
+            if (upBias) {
+              const upDir = upBias === 'BULLISH' ? 'BULL' : upBias === 'BEARISH' ? 'BEAR' : 'NEUTRAL';
+              if (bias !== 'NEUTRAL' && upDir !== 'NEUTRAL' && bias !== upDir) {
+                varsityMult = Math.max(0.20, varsityMult - 0.10);
+              }
+            }
             setup.baseScore = baseScore;
             setup.varsityMult = varsityMult;
             setup.varsityTier = getVarsityTierLabel(varsityMult);
@@ -725,6 +761,25 @@ function renderQ1Card(q1) {
   html += `<div class="q-header" id="q1-toggle">`;
   html += `<div class="q-title">Q1: Directional Bias → <span class="bias-${biasClass}">${q1.biasConf} ${q1.bias}</span></div>`;
   html += `<div class="q-summary-inline">Bull: ${q1.bullCount} | Bear: ${q1.bearCount} | Net: ${q1.net > 0 ? '+' : ''}${q1.net} <span class="q-expand">${arrow}</span></div>`;
+
+  // ── Upstox Consensus Badge ──
+  const upstoxBias = (document.getElementById('upstox_bias') || {}).value || '';
+  if (upstoxBias) {
+    const ourDir = q1.bias; // BULL, BEAR, NEUTRAL
+    const upDir = upstoxBias === 'BULLISH' ? 'BULL' : upstoxBias === 'BEARISH' ? 'BEAR' : 'NEUTRAL';
+    const agrees = (ourDir === upDir) || (ourDir === 'NEUTRAL') || (upDir === 'NEUTRAL');
+    const badge = agrees
+      ? `<span style="color:#22c55e;font-size:11px">✅ Upstox: Agrees (${upstoxBias.toLowerCase()})</span>`
+      : `<span style="color:#ef4444;font-size:11px">⚠️ Upstox: ${upstoxBias} — DISAGREES</span>`;
+    html += `<div style="padding:2px 0 0">${badge}</div>`;
+  }
+
+  // ── Key Support OI display ──
+  const keySupportOI = (document.getElementById('key_support_oi') || {}).value || '';
+  if (keySupportOI) {
+    html += `<div style="padding:2px 0;font-size:11px;color:var(--text-dim)">🛡️ Key Support: ${keySupportOI}</div>`;
+  }
+
   html += `</div>`;
 
   // Expandable body
@@ -1066,7 +1121,7 @@ function go(n) { document.querySelectorAll('.tab').forEach(t=>t.classList.remove
 // SOFT TOGGLE LOCKS
 // ═══════════════════════════════════════════════════
 
-function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','fii_fut','fii_opt','close_char','max_pain_nf','nf_price','bn_price','nifty_prev'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-radar',JSON.stringify(d)); RADAR_LOCKED=true; } renderLockState(); }
+function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','fii_fut','fii_opt','fii_short_pct','close_char','max_pain_nf','nf_price','bn_price','nifty_prev','upstox_bias','key_support_oi'].forEach(id=>{d[id]=gv(id)||document.getElementById(id)?.value||null;}); localStorage.setItem('mr140-radar',JSON.stringify(d)); const sp=gv('fii_short_pct'); if(valid(sp)) localStorage.setItem('mr_fii_short_prev',sp); RADAR_LOCKED=true; } renderLockState(); }
 function toggleBreadth() { if (BREADTH_LOCKED) { BREADTH_LOCKED = false; } else { const d={}; ['n50adv','n50dma'].forEach(id=>{d[id]=gv(id);}); BNF_CONSTITUENTS.forEach(c=>{const el=document.getElementById(c.id);if(el)d[c.id]=el.checked;}); localStorage.setItem('mr140-breadth',JSON.stringify(d)); BREADTH_LOCKED=true; } renderLockState(); }
 function toggleEvening() { if (EVENING_LOCKED) { EVENING_LOCKED = false; } else { const d={}; ['ev_fii','ev_nf_close','ev_bnf_close','ev_indiavix'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-evening',JSON.stringify(d)); const v=gv('ev_indiavix'); if(valid(v)) localStorage.setItem('mr_ev_indiavix',v); EVENING_LOCKED=true; } renderLockState(); }
 function renderLockState() { [['btn-lock-radar',RADAR_LOCKED,'🔒 Locked','🔓 Lock Morning Data'],['btn-lock-breadth',BREADTH_LOCKED,'🔒 Locked','🔓 Lock Breadth'],['btn-lock-evening',EVENING_LOCKED,'🔒 Locked','🔓 Lock Evening']].forEach(([id,locked,lt,ut])=>{ const el=document.getElementById(id); if(el) el.textContent=locked?lt:ut; }); }

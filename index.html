@@ -67,6 +67,11 @@
     <input type="number" id="fii_opt" step="1" placeholder="Enter from NSDL">
     <span id="ts-fii_opt" class="ts-badge"></span>
   </div>
+  <div class="input-group">
+    <label>FII Short %</label>
+    <input type="number" id="fii_short_pct" step="0.1" min="0" max="100" placeholder="From Upstox email (e.g. 88)">
+    <span id="ts-fii_short_pct" class="ts-badge"></span>
+  </div>
 
   <div class="section-title">Option Chain</div>
   <div class="timing-hint">Auto from Upstox · updates on FETCH</div>
@@ -84,6 +89,24 @@
   <div class="section-title">Futures Premium</div>
   <div class="timing-hint">Synthetic from put-call parity · updates on FETCH</div>
   <div id="futures-premium-display" class="futures-premium">Fetch data to see futures premium</div>
+
+  <div class="section-title">Upstox Pulse</div>
+  <div class="timing-hint">From Upstox F&O Daily email · enter before 9:15 AM</div>
+  <div class="input-group">
+    <label>Upstox Bias</label>
+    <select id="upstox_bias">
+      <option value="">—</option>
+      <option value="BULLISH">Bullish</option>
+      <option value="BEARISH">Bearish</option>
+      <option value="NEUTRAL">Neutral</option>
+    </select>
+    <span id="ts-upstox_bias" class="ts-badge"></span>
+  </div>
+  <div class="input-group">
+    <label>Key Support OI</label>
+    <input type="text" id="key_support_oi" placeholder="e.g. 83L @ 23000">
+    <span id="ts-key_support_oi" class="ts-badge"></span>
+  </div>
 
   <div class="section-title">Previous Day</div>
   <div class="timing-hint">Auto from Upstox historical</div>
