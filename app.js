@@ -878,6 +878,9 @@ function renderQ1Card(q1) {
     html += `</div>`;
   }
 
+  // Session trajectory (institutional memory)
+  html += renderTrajectory();
+
   html += `</div>`; // q-body
   html += `</div>`; // q-card
   return html;
@@ -1193,7 +1196,147 @@ function go(n) { document.querySelectorAll('.tab').forEach(t=>t.classList.remove
 // SOFT TOGGLE LOCKS
 // ═══════════════════════════════════════════════════
 
-function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','fii_fut','fii_opt','fii_short_pct','close_char','max_pain_nf','nf_price','bn_price','nifty_prev','upstox_bias','key_support_oi'].forEach(id=>{d[id]=gv(id)||document.getElementById(id)?.value||null;}); localStorage.setItem('mr140-radar',JSON.stringify(d)); const sp=gv('fii_short_pct'); if(valid(sp)) localStorage.setItem('mr_fii_short_prev',sp); RADAR_LOCKED=true; } renderLockState(); }
+function toggleRadar() { if (RADAR_LOCKED) { RADAR_LOCKED = false; } else { const d={}; ['india_vix','fii','fii_fut','fii_opt','fii_short_pct','close_char','max_pain_nf','nf_price','bn_price','nifty_prev','upstox_bias','key_support_oi'].forEach(id=>{d[id]=gv(id)||document.getElementById(id)?.value||null;}); localStorage.setItem('mr140-radar',JSON.stringify(d)); const sp=gv('fii_short_pct'); if(valid(sp)) localStorage.setItem('mr_fii_short_prev',sp); saveSessionSnapshot(); RADAR_LOCKED=true; } renderLockState(); }
+
+// ═══════════════════════════════════════════════════
+// SESSION SNAPSHOT — Institutional Memory
+// Stores daily snapshots on radar lock. Rolling 10 sessions.
+// This is the FOUNDATION for institutional pattern detection.
+// Phase 1: collect + display trajectory.
+// Phase 2 (after 10-15 sessions): analyse reversal patterns.
+// Phase 3 (after 2-3 months): auto-detection.
+// DO NOT skip this or replace with hardcoded thresholds.
+// ═══════════════════════════════════════════════════
+
+function saveSessionSnapshot() {
+  const today = new Date().toISOString().slice(0, 10);
+  const snapshot = {
+    date: today,
+    nf_spot: gv('nf_price'),
+    bnf_spot: gv('bn_price'),
+    vix: gv('india_vix'),
+    pcr: gv('pcr_nf'),
+    max_pain: gv('max_pain_nf'),
+    fii_cash: gv('fii'),
+    fii_short_pct: gv('fii_short_pct'),
+    breadth_nf: gv('n50adv'),
+    breadth_bnf: computeBnfWeightedBreadth(),
+    fut_premium: window._NF_FUTURES_PREMIUM || null,
+    close_char: gv('close_char'),
+    upstox_bias: (document.getElementById('upstox_bias') || {}).value || null
+  };
+
+  // Load existing history
+  let history = [];
+  try { history = JSON.parse(localStorage.getItem('mr_session_history') || '[]'); } catch(e) {}
+
+  // Prevent duplicate for same date — overwrite if exists
+  history = history.filter(s => s.date !== today);
+  history.push(snapshot);
+
+  // Keep last 10 sessions only
+  if (history.length > 10) history = history.slice(-10);
+
+  localStorage.setItem('mr_session_history', JSON.stringify(history));
+  console.log(`[session] Snapshot saved for ${today}. Total: ${history.length} sessions`);
+}
+
+function getSessionHistory() {
+  try { return JSON.parse(localStorage.getItem('mr_session_history') || '[]'); } catch(e) { return []; }
+}
+
+function renderTrajectory() {
+  const history = getSessionHistory();
+  if (history.length < 2) return ''; // Need at least 2 sessions to show trajectory
+
+  // Build trajectory arrows for key signals
+  const signals = [
+    { key: 'fii_short_pct', label: 'FII Short%', fmt: v => v ? v + '%' : '—' },
+    { key: 'pcr', label: 'PCR', fmt: v => v ? v.toFixed(2) : '—' },
+    { key: 'vix', label: 'VIX', fmt: v => v ? v.toFixed(1) : '—' },
+    { key: 'breadth_nf', label: 'NF Breadth', fmt: v => v !== null ? v + '/50' : '—' },
+    { key: 'fii_cash', label: 'FII ₹Cr', fmt: v => v ? (v > 0 ? '+' : '') + v : '—' },
+    { key: 'fut_premium', label: 'Fut Prem', fmt: v => v !== null ? (v > 0 ? '+' : '') + v.toFixed(3) + '%' : '—' }
+  ];
+
+  // Show last 5 sessions max
+  const recent = history.slice(-5);
+
+  let html = '<div class="q-section-label" style="margin-top:10px">Session Trajectory (' + recent.length + ' sessions)</div>';
+  html += '<div class="trajectory-grid">';
+
+  // Header row: dates
+  html += '<div class="traj-row traj-header"><span class="traj-label"></span>';
+  for (const s of recent) {
+    const d = s.date.slice(5); // MM-DD
+    html += `<span class="traj-cell">${d}</span>`;
+  }
+  html += '</div>';
+
+  // Signal rows
+  for (const sig of signals) {
+    html += `<div class="traj-row"><span class="traj-label">${sig.label}</span>`;
+    let prevVal = null;
+    for (const s of recent) {
+      const val = s[sig.key];
+      let arrow = '', cls = '';
+      if (prevVal !== null && val !== null && prevVal !== undefined && val !== undefined) {
+        if (val > prevVal) { arrow = '↑'; cls = 'traj-up'; }
+        else if (val < prevVal) { arrow = '↓'; cls = 'traj-down'; }
+        else { arrow = '→'; cls = 'traj-flat'; }
+      }
+      html += `<span class="traj-cell ${cls}">${sig.fmt(val)} ${arrow}</span>`;
+      prevVal = val;
+    }
+    html += '</div>';
+  }
+
+  // Detect multi-signal reversals
+  if (recent.length >= 3) {
+    const last = recent[recent.length - 1];
+    const prev = recent[recent.length - 2];
+    const prev2 = recent[recent.length - 3];
+
+    let reversals = 0, reversalNames = [];
+    for (const sig of signals) {
+      const v0 = prev2[sig.key], v1 = prev[sig.key], v2 = last[sig.key];
+      if (v0 === null || v1 === null || v2 === null || v0 === undefined || v1 === undefined || v2 === undefined) continue;
+      const dir1 = v1 - v0; // previous move direction
+      const dir2 = v2 - v1; // latest move direction
+      if (dir1 !== 0 && dir2 !== 0 && Math.sign(dir1) !== Math.sign(dir2)) {
+        reversals++;
+        reversalNames.push(sig.label);
+      }
+    }
+
+    if (reversals >= 3) {
+      html += `<div class="traj-alert traj-alert-high">🔥 ${reversals} signals reversed: ${reversalNames.join(', ')} — Possible institutional shift</div>`;
+    } else if (reversals >= 2) {
+      html += `<div class="traj-alert traj-alert-mid">⚠️ ${reversals} signals reversed: ${reversalNames.join(', ')} — Watch closely</div>`;
+    }
+
+    // Detect alignment (3+ signals moving same direction)
+    let bearAlign = 0, bullAlign = 0;
+    if (last.fii_short_pct > prev.fii_short_pct) bearAlign++; else if (last.fii_short_pct < prev.fii_short_pct) bullAlign++;
+    if (last.pcr < prev.pcr) bearAlign++; else if (last.pcr > prev.pcr) bullAlign++;
+    if (last.vix > prev.vix) bearAlign++; else if (last.vix < prev.vix) bullAlign++;
+    if (last.breadth_nf !== null && prev.breadth_nf !== null) {
+      if (last.breadth_nf < prev.breadth_nf) bearAlign++; else if (last.breadth_nf > prev.breadth_nf) bullAlign++;
+    }
+    if (last.fii_cash !== null && prev.fii_cash !== null) {
+      if (last.fii_cash < prev.fii_cash) bearAlign++; else if (last.fii_cash > prev.fii_cash) bullAlign++;
+    }
+
+    if (bearAlign >= 4) {
+      html += `<div class="traj-alert traj-alert-high">🔴 ${bearAlign} signals bearish-aligned — Institutional selling pressure</div>`;
+    } else if (bullAlign >= 4) {
+      html += `<div class="traj-alert traj-alert-high">🟢 ${bullAlign} signals bullish-aligned — Institutional accumulation</div>`;
+    }
+  }
+
+  html += '</div>';
+  return html;
+}
 function toggleBreadth() { if (BREADTH_LOCKED) { BREADTH_LOCKED = false; } else { const d={}; ['n50adv','n50dma'].forEach(id=>{d[id]=gv(id);}); BNF_CONSTITUENTS.forEach(c=>{const el=document.getElementById(c.id);if(el)d[c.id]=el.checked;}); localStorage.setItem('mr140-breadth',JSON.stringify(d)); BREADTH_LOCKED=true; } renderLockState(); }
 function toggleEvening() { if (EVENING_LOCKED) { EVENING_LOCKED = false; } else { const d={}; ['ev_fii','ev_nf_close','ev_bnf_close','ev_indiavix'].forEach(id=>{d[id]=gv(id);}); localStorage.setItem('mr140-evening',JSON.stringify(d)); const v=gv('ev_indiavix'); if(valid(v)) localStorage.setItem('mr_ev_indiavix',v); EVENING_LOCKED=true; } renderLockState(); }
 function renderLockState() { [['btn-lock-radar',RADAR_LOCKED,'🔒 Locked','🔓 Lock Morning Data'],['btn-lock-breadth',BREADTH_LOCKED,'🔒 Locked','🔓 Lock Breadth'],['btn-lock-evening',EVENING_LOCKED,'🔒 Locked','🔓 Lock Evening']].forEach(([id,locked,lt,ut])=>{ const el=document.getElementById(id); if(el) el.textContent=locked?lt:ut; }); }
