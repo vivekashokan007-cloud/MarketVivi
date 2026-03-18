@@ -687,21 +687,26 @@ function renderRangeBudget() {
   if (nfSpot && nfPrev) {
     const nfEM = bsExpectedMove(nfSpot, vix, 1); // 1 trading day
     const sigma1 = nfEM.one_sigma;
+    const sigma2 = nfEM.two_sigma;
     const moveUp = Math.max(0, nfSpot - nfPrev);
     const moveDown = Math.max(0, nfPrev - nfSpot);
     const upRemain = Math.max(0, sigma1 - moveUp);
     const downRemain = Math.max(0, sigma1 - moveDown);
+    const up2Remain = Math.max(0, sigma2 - moveUp);
+    const dn2Remain = Math.max(0, sigma2 - moveDown);
     const consumedPct = Math.round(Math.max(moveUp, moveDown) / sigma1 * 100);
     const upColor = upRemain < 100 ? 'loss' : upRemain < 200 ? '' : 'profit';
     const dnColor = downRemain < 100 ? 'loss' : downRemain < 200 ? '' : 'profit';
     html += `<div>NF 1σ: ${Math.round(sigma1)} pts · ↑<span class="${upColor}">${Math.round(upRemain)}</span> / ↓<span class="${dnColor}">${Math.round(downRemain)}</span> remaining`;
     html += ` <span style="opacity:0.5">(${consumedPct}% consumed ${moveUp > moveDown ? 'up' : 'down'})</span></div>`;
+    html += `<div style="font-size:10px;opacity:0.6">NF 2σ: ${Math.round(sigma2)} pts · ↑${Math.round(up2Remain)} / ↓${Math.round(dn2Remain)} — 95% ceiling</div>`;
   }
 
   // BNF range budget
   if (bnfSpot) {
     const bnfEM = bsExpectedMove(bnfSpot, vix, 1);
     const sigma1 = bnfEM.one_sigma;
+    const sigma2 = bnfEM.two_sigma;
     // BNF prev close from chain or estimate
     const bnfPrev = window._BNF_PREV_CLOSE || 0;
     if (bnfPrev > 0) {
@@ -709,11 +714,14 @@ function renderRangeBudget() {
       const moveDown = Math.max(0, bnfPrev - bnfSpot);
       const upRemain = Math.max(0, sigma1 - moveUp);
       const downRemain = Math.max(0, sigma1 - moveDown);
+      const up2Remain = Math.max(0, sigma2 - moveUp);
+      const dn2Remain = Math.max(0, sigma2 - moveDown);
       const consumedPct = Math.round(Math.max(moveUp, moveDown) / sigma1 * 100);
       const upColor = upRemain < 300 ? 'loss' : upRemain < 500 ? '' : 'profit';
       const dnColor = downRemain < 300 ? 'loss' : downRemain < 500 ? '' : 'profit';
       html += `<div>BNF 1σ: ${Math.round(sigma1)} pts · ↑<span class="${upColor}">${Math.round(upRemain)}</span> / ↓<span class="${dnColor}">${Math.round(downRemain)}</span> remaining`;
       html += ` <span style="opacity:0.5">(${consumedPct}% consumed ${moveUp > moveDown ? 'up' : 'down'})</span></div>`;
+      html += `<div style="font-size:10px;opacity:0.6">BNF 2σ: ${Math.round(sigma2)} pts · ↑${Math.round(up2Remain)} / ↓${Math.round(dn2Remain)} — 95% ceiling</div>`;
     } else {
       html += `<div>BNF 1σ: ${Math.round(sigma1)} pts <span style="opacity:0.5">(no prev close for budget)</span></div>`;
     }
