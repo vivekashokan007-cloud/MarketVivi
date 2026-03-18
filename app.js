@@ -950,15 +950,108 @@ function openDrawer(setup) {
       return `<div class="dm-leg">${l.action} ${setup.indexKey} ${setup.expiry} ${l.strike} ${l.type} <span style="opacity:0.6">(${moneyLabel(l.strike, setup.spot, l.type)})</span> @ ₹${price.toFixed(2)} <span style="opacity:0.4">${tag}</span></div>`;
     }).join('')}
     <div class="dm-divider"></div>
+    <button class="btn btn-execute-uplink" id="btn-execute-uplink">🚀 EXECUTE IN UPSTOX</button>
     <button class="btn btn-log-trade" id="btn-log-trade">📌 I TOOK THIS TRADE</button>
     <div id="log-trade-status" class="log-trade-status"></div>
   `;
-  // Bind log trade button
+  // Bind buttons
+  const uplinkBtn = document.getElementById('btn-execute-uplink');
+  if (uplinkBtn) uplinkBtn.addEventListener('click', () => executeViaUplink(_drawerSetup));
   const logBtn = document.getElementById('btn-log-trade');
   if (logBtn) logBtn.addEventListener('click', () => logTradeFromCommand(_drawerSetup));
   backdrop.classList.add('show'); drawer.classList.add('show');
 }
 function closeDrawer() { _drawerOpen = false; _drawerSetup = null; const d = document.getElementById('payoff-drawer'), b = document.getElementById('drawer-backdrop'); if (d) d.classList.remove('show'); if (b) b.classList.remove('show'); }
+
+// ═══════════════════════════════════════════════════
+// UPLINK BUSINESS — Execute in Upstox
+// Builds order from strategy legs, POSTs to UpLink.
+// User reviews and places order in Upstox.
+// NO auto-placement — user must confirm in Upstox.
+// ═══════════════════════════════════════════════════
+
+function executeViaUplink(setup) {
+  if (!setup || !setup.legs || !setup.legs.length) return;
+  const statusEl = document.getElementById('log-trade-status');
+
+  // Validate instrument keys exist on all legs
+  const missingKeys = setup.legs.filter(l => !l.data || !l.data.instrument_key);
+  if (missingKeys.length > 0) {
+    if (statusEl) statusEl.textContent = '❌ Missing instrument keys — fetch fresh chain data first';
+    return;
+  }
+
+  // Get access token
+  const token = localStorage.getItem('upstox_access_token');
+  if (!token) {
+    if (statusEl) statusEl.textContent = '❌ No Upstox token — login first';
+    return;
+  }
+
+  // Build order array for UpLink
+  const lotSize = setup.lotSize || (setup.indexKey === 'NF' ? NF_LOT_SIZE : BNF_LOT);
+  const orders = setup.legs.map(leg => ({
+    quantity: lotSize,
+    product: 'D',  // NRML (delivery) for F&O spreads
+    validity: 'DAY',
+    price: 0,
+    instrument_token: leg.data.instrument_key,
+    order_type: 'MARKET',
+    transaction_type: leg.action, // BUY or SELL
+    disclosed_quantity: 0,
+    is_amo: false
+  }));
+
+  // Confirmation
+  const stratName = setup.stratLabel || setup.stratType;
+  const legStr = setup.legs.map(l => {
+    const price = l.action === 'SELL' ? (l.data.bid || l.data.ltp) : (l.data.ask || l.data.ltp);
+    return `${l.action} ${l.strike} ${l.type} @₹${price.toFixed(0)}`;
+  }).join('\n');
+  const marginStr = setup.requiredMargin ? `\nMargin: ₹${Math.round(setup.requiredMargin).toLocaleString('en-IN')}` : '';
+
+  if (!confirm(`Execute in Upstox?\n\n${stratName} — ${setup.indexKey} ${setup.expiry}\n${legStr}\nQty: ${lotSize} per leg${marginStr}\n\nUpstox will open for your review before placing.`)) return;
+
+  if (statusEl) statusEl.textContent = 'Opening Upstox...';
+
+  // Create hidden form and POST to UpLink
+  const redirectUrl = 'https://vivekashokan007-cloud.github.io/MarketVivi/';
+
+  // Remove existing form if any
+  const existing = document.getElementById('uplink-form');
+  if (existing) existing.remove();
+
+  const form = document.createElement('form');
+  form.id = 'uplink-form';
+  form.method = 'POST';
+  form.action = 'https://api.upstox.com/v2/uplink/order/place';
+  form.target = '_blank'; // Open in new tab so Market Radar stays open
+
+  const tokenInput = document.createElement('input');
+  tokenInput.type = 'hidden'; tokenInput.name = 'access_token'; tokenInput.value = token;
+  form.appendChild(tokenInput);
+
+  const redirectInput = document.createElement('input');
+  redirectInput.type = 'hidden'; redirectInput.name = 'redirect_url'; redirectInput.value = redirectUrl;
+  form.appendChild(redirectInput);
+
+  const dataInput = document.createElement('input');
+  dataInput.type = 'hidden'; dataInput.name = 'data'; dataInput.value = JSON.stringify(orders);
+  form.appendChild(dataInput);
+
+  // Allow editing in Upstox (user can review/modify before placing)
+  const editInput = document.createElement('input');
+  editInput.type = 'hidden'; editInput.name = 'is_editable'; editInput.value = 'true';
+  form.appendChild(editInput);
+
+  document.body.appendChild(form);
+  form.submit();
+
+  // Clean up form after submission
+  setTimeout(() => { const f = document.getElementById('uplink-form'); if (f) f.remove(); }, 2000);
+
+  if (statusEl) statusEl.textContent = '✅ Upstox opened — review and place order there. Then come back and tap "I Took This Trade" to log.';
+}
 
 // ═══════════════════════════════════════════════════
 // LOG TRADE FROM COMMAND — "I Took This Trade"
@@ -1331,6 +1424,60 @@ function renderTrajectory() {
       html += `<div class="traj-alert traj-alert-high">🔴 ${bearAlign} signals bearish-aligned — Institutional selling pressure</div>`;
     } else if (bullAlign >= 4) {
       html += `<div class="traj-alert traj-alert-high">🟢 ${bullAlign} signals bullish-aligned — Institutional accumulation</div>`;
+    }
+  }
+
+  // ── Contrarian PCR Flag — forward-looking warning from extreme readings ──
+  const currentPCR = gv('pcr_nf');
+  if (valid(currentPCR)) {
+    if (currentPCR < 0.6) {
+      html += `<div class="traj-alert traj-alert-high">⚡ PCR ${currentPCR.toFixed(2)} — EXTREME put buying. Contrarian bounce likely 1-3 sessions. Institutions buying cheap calls here.</div>`;
+    } else if (currentPCR < 0.8 && recent.length >= 2 && recent[recent.length - 2].pcr && recent[recent.length - 2].pcr < 0.8) {
+      html += `<div class="traj-alert traj-alert-mid">📉 PCR below 0.8 for 2+ sessions — sustained bearish, but watch for snap reversal</div>`;
+    } else if (currentPCR > 1.5) {
+      html += `<div class="traj-alert traj-alert-high">⚡ PCR ${currentPCR.toFixed(2)} — EXTREME call selling. Contrarian drop likely 1-3 sessions. Institutions buying cheap puts here.</div>`;
+    } else if (currentPCR > 1.3 && recent.length >= 2 && recent[recent.length - 2].pcr && recent[recent.length - 2].pcr > 1.3) {
+      html += `<div class="traj-alert traj-alert-mid">📈 PCR above 1.3 for 2+ sessions — sustained bullish, but watch for reversal</div>`;
+    }
+  }
+
+  // ── FII Short% 3-Session Trend Tracker ──
+  const shortHistory = recent.map(s => s.fii_short_pct).filter(v => v !== null && v !== undefined && v > 0);
+  if (shortHistory.length >= 3) {
+    const last3 = shortHistory.slice(-3);
+    const trend1 = last3[1] - last3[0]; // session N-2 to N-1
+    const trend2 = last3[2] - last3[1]; // session N-1 to N
+
+    let trendLabel = '', trendClass = '';
+    if (trend1 < 0 && trend2 < 0) {
+      // Dropping for 2+ sessions = covering
+      const acceleration = Math.abs(trend2) > Math.abs(trend1) ? 'ACCELERATING' : 'steady';
+      trendLabel = `↓ FII covering ${acceleration}: ${last3.join('→')}%`;
+      trendClass = 'traj-alert-mid';
+      if (Math.abs(trend2) >= 3) {
+        trendLabel = `↓↓ FII AGGRESSIVE covering: ${last3.join('→')}% — aircraft carrier turning`;
+        trendClass = 'traj-alert-high';
+      }
+      html += `<div class="traj-alert ${trendClass}" style="color:#22c55e;border-color:rgba(34,197,94,0.3);background:rgba(34,197,94,0.08)">🟢 ${trendLabel}</div>`;
+    } else if (trend1 > 0 && trend2 > 0) {
+      // Rising for 2+ sessions = building shorts
+      const acceleration = Math.abs(trend2) > Math.abs(trend1) ? 'ACCELERATING' : 'steady';
+      trendLabel = `↑ FII shorts building ${acceleration}: ${last3.join('→')}%`;
+      trendClass = 'traj-alert-mid';
+      if (Math.abs(trend2) >= 3) {
+        trendLabel = `↑↑ FII AGGRESSIVE shorting: ${last3.join('→')}% — heavy conviction`;
+        trendClass = 'traj-alert-high';
+      }
+      html += `<div class="traj-alert ${trendClass}">🔴 ${trendLabel}</div>`;
+    } else if (trend1 !== 0 && trend2 !== 0 && Math.sign(trend1) !== Math.sign(trend2)) {
+      // Direction changed = inflection point
+      html += `<div class="traj-alert traj-alert-mid">🔄 FII short% direction changed: ${last3.join('→')}% — possible inflection</div>`;
+    }
+  } else if (shortHistory.length >= 2) {
+    const diff = shortHistory[shortHistory.length - 1] - shortHistory[shortHistory.length - 2];
+    if (Math.abs(diff) >= 2) {
+      const dir = diff < 0 ? '↓ covering' : '↑ building';
+      html += `<div class="traj-alert traj-alert-mid">${diff < 0 ? '🟢' : '🔴'} FII short% ${dir}: ${shortHistory.slice(-2).join('→')}% (need 1 more session for trend)</div>`;
     }
   }
 

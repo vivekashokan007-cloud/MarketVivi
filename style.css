@@ -112,6 +112,15 @@ html, body {
   border-radius: var(--radius); margin-bottom: 12px;
 }
 
+/* ── Execute via UpLink Button (in drawer) ── */
+.btn-execute-uplink {
+  width: 100%; margin-top: 12px; padding: 12px; font-weight: 700;
+  background: rgba(34,197,94,0.15); border: 1px solid #22c55e;
+  color: #22c55e; border-radius: var(--radius); font-size: 13px;
+  cursor: pointer; transition: all 0.2s; font-family: var(--font);
+}
+.btn-execute-uplink:active { transform: scale(0.97); background: rgba(34,197,94,0.30); }
+
 /* ── Trade Log Button (in drawer) ── */
 .btn-log-trade {
   width: 100%; margin-top: 12px; padding: 12px; font-weight: 700;
