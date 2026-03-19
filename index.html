@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=11">
+    <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
     <!-- ═══ HEADER ═══ -->
@@ -48,19 +48,21 @@
                     <label>FII Short %</label>
                     <input type="number" id="in-fii-short" class="input-field morning-input" placeholder="e.g. 88" step="0.1">
                 </div>
-                <div class="input-group">
-                    <label>Close Char <span class="label-hint">(-2 to +2)</span></label>
-                    <input type="number" id="in-close-char" class="input-field morning-input" placeholder="e.g. -2" step="1" min="-3" max="3">
-                </div>
-                <div class="input-group">
-                    <label>Upstox Bias</label>
-                    <select id="in-upstox-bias" class="input-field morning-input">
-                        <option value="Neutral">Neutral</option>
-                        <option value="Bullish">Bullish</option>
-                        <option value="Bearish">Bearish</option>
-                    </select>
-                </div>
             </div>
+            <details class="upstox-compare">
+                <summary>Upstox says... <span id="upstox-badge"></span></summary>
+                <div class="input-grid" style="margin-top:6px">
+                    <div class="input-group">
+                        <label>Upstox Bias <span class="label-hint">(comparison only)</span></label>
+                        <select id="in-upstox-bias" class="input-field morning-input">
+                            <option value="">Not entered</option>
+                            <option value="Bullish">Bullish</option>
+                            <option value="Bearish">Bearish</option>
+                            <option value="Neutral">Neutral</option>
+                        </select>
+                    </div>
+                </div>
+            </details>
             <div class="morning-actions">
                 <button id="btn-lock" class="btn-primary">🔒 Lock & Scan</button>
                 <button id="btn-rescan" class="btn-ghost">↻ Reset</button>
@@ -119,10 +121,10 @@
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="bs.js?v=11"></script>
-    <script src="db.js?v=11"></script>
-    <script src="api.js?v=11"></script>
-    <script src="app.js?v=11"></script>
+    <script src="bs.js?v=12"></script>
+    <script src="db.js?v=12"></script>
+    <script src="api.js?v=12"></script>
+    <script src="app.js?v=12"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(() => {});

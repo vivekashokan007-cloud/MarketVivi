@@ -91,6 +91,7 @@ const STATE = {
     fiiTrend: null,
     trajectory: null,
     controlIndex: null,
+    gapInfo: null,
 
     // Loop control
     pollTimer: null,
@@ -184,28 +185,23 @@ function computeBias(morning, chainData) {
     const votes = { bull: 0, bear: 0 };
     const signals = [];
 
-    // DEBUG: Log what morning data looks like
     console.log('[BIAS] morning input:', JSON.stringify(morning));
-    console.log('[BIAS] chainData keys:', chainData ? Object.keys(chainData) : 'null');
 
-    // Guard
     if (!morning) {
         console.warn('[BIAS] morning is null/undefined!');
-        return { bias: 'NEUTRAL', strength: '', net: 0, votes, signals, label: 'NEUTRAL' };
+        return { bias: 'NEUTRAL', strength: '', net: 0, votes, signals, label: 'NEUTRAL', upstoxAgrees: null };
     }
 
-    // 1. FII Cash
+    // 1. FII Cash (manual)
     const fiiCashVal = morning.fiiCash;
     if (fiiCashVal != null && fiiCashVal !== '' && !isNaN(fiiCashVal)) {
         const fc = parseFloat(fiiCashVal);
         if (fc > 500) { votes.bull++; signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'BULL' }); }
         else if (fc < -500) { votes.bear++; signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'BEAR' }); }
         else signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'NEUTRAL' });
-    } else {
-        console.warn('[BIAS] FII Cash skipped:', typeof fiiCashVal, `"${fiiCashVal}"`);
     }
 
-    // 2. FII Short%
+    // 2. FII Short% (manual)
     const fiiShortVal = morning.fiiShortPct;
     if (fiiShortVal != null && fiiShortVal !== '' && !isNaN(fiiShortVal)) {
         const sp = parseFloat(fiiShortVal);
@@ -214,30 +210,17 @@ function computeBias(morning, chainData) {
         else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering`, dir: 'NEUTRAL' }); }
         else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
         else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
-    } else {
-        console.warn('[BIAS] FII Short% skipped:', typeof fiiShortVal, `"${fiiShortVal}"`);
     }
 
-    // 3. Close Character
-    const closeCharVal = morning.closeChar;
-    if (closeCharVal != null && closeCharVal !== '' && !isNaN(closeCharVal)) {
-        const cc = parseFloat(closeCharVal);
-        if (cc >= 1) { votes.bull++; signals.push({ name: 'Close Char', value: `${cc > 0 ? '+' : ''}${cc}`, dir: 'BULL' }); }
-        else if (cc <= -1) { votes.bear++; signals.push({ name: 'Close Char', value: `${cc}`, dir: 'BEAR' }); }
-        else signals.push({ name: 'Close Char', value: `${cc}`, dir: 'NEUTRAL' });
-    } else {
-        console.warn('[BIAS] Close Char skipped:', typeof closeCharVal, `"${closeCharVal}"`);
+    // 3. Close Character (AUTO-CALCULATED from yesterday OHLC)
+    const cc = chainData?.closeChar;
+    if (cc != null) {
+        if (cc >= 1) { votes.bull++; signals.push({ name: 'Close Char', value: `${cc > 0 ? '+' : ''}${cc} (auto)`, dir: 'BULL' }); }
+        else if (cc <= -1) { votes.bear++; signals.push({ name: 'Close Char', value: `${cc} (auto)`, dir: 'BEAR' }); }
+        else signals.push({ name: 'Close Char', value: `${cc} (auto)`, dir: 'NEUTRAL' });
     }
 
-    // 4. Upstox Bias
-    if (morning.upstoxBias && morning.upstoxBias !== 'Neutral') {
-        if (morning.upstoxBias === 'Bullish') { votes.bull++; signals.push({ name: 'Upstox', value: 'Bullish', dir: 'BULL' }); }
-        else if (morning.upstoxBias === 'Bearish') { votes.bear++; signals.push({ name: 'Upstox', value: 'Bearish', dir: 'BEAR' }); }
-    } else {
-        signals.push({ name: 'Upstox', value: 'Neutral', dir: 'NEUTRAL' });
-    }
-
-    // 5. PCR (from chain)
+    // 4. PCR (from chain)
     if (chainData?.pcr) {
         const pcr = chainData.pcr;
         if (pcr > 1.2) { votes.bull++; signals.push({ name: 'PCR', value: pcr.toFixed(2), dir: 'BULL' }); }
@@ -245,7 +228,7 @@ function computeBias(morning, chainData) {
         else signals.push({ name: 'PCR', value: pcr.toFixed(2), dir: 'NEUTRAL' });
     }
 
-    // 6. VIX Direction (vs yesterday from premium history)
+    // 5. VIX Direction (vs yesterday from premium history)
     if (STATE.premiumHistory.length > 0 && chainData?.vix) {
         const yesterdayVix = STATE.premiumHistory[0]?.vix;
         if (yesterdayVix) {
@@ -256,7 +239,7 @@ function computeBias(morning, chainData) {
         }
     }
 
-    // 7. Futures Premium
+    // 6. Futures Premium (from chain)
     if (chainData?.futuresPremium !== undefined) {
         const fp = chainData.futuresPremium;
         if (fp > 0.05) { votes.bull++; signals.push({ name: 'Futures Prem', value: `${fp.toFixed(3)}%`, dir: 'BULL' }); }
@@ -272,7 +255,16 @@ function computeBias(morning, chainData) {
     else if (net <= -1) { bias = 'BEAR'; strength = 'MILD'; }
     else { bias = 'NEUTRAL'; strength = ''; }
 
-    return { bias, strength, net, votes, signals, label: `${strength} ${bias}`.trim() };
+    // Upstox comparison (NOT a vote — just agree/disagree)
+    const upstoxBias = morning.upstoxBias;
+    let upstoxAgrees = null;
+    if (upstoxBias && upstoxBias !== '') {
+        const upstoxDir = upstoxBias === 'Bullish' ? 'BULL' : upstoxBias === 'Bearish' ? 'BEAR' : 'NEUTRAL';
+        upstoxAgrees = (bias === upstoxDir) || (bias === 'NEUTRAL' && upstoxDir === 'NEUTRAL');
+        signals.push({ name: 'Upstox', value: `${upstoxBias} ${upstoxAgrees ? '✅ agrees' : '⚠️ DISAGREES'}`, dir: upstoxDir, isComparison: true });
+    }
+
+    return { bias, strength, net, votes, signals, label: `${strength} ${bias}`.trim(), upstoxAgrees };
 }
 
 
@@ -933,21 +925,43 @@ async function initialFetch() {
         statusEl.textContent = 'Fetching NF50 breadth...';
         STATE.nf50Breadth = await API.fetchNf50Breadth();
 
-        // Load premium history for IV percentile
+        // Load premium history FIRST (needed for yesterday date + IV percentile)
         statusEl.textContent = 'Loading premium history...';
         STATE.premiumHistory = await DB.getPremiumHistory(60);
         dbg('PREMIUM_HISTORY', { days: STATE.premiumHistory.length, sample: STATE.premiumHistory.slice(0, 3).map(p => `${p.date}:${p.vix}`) });
 
-        // Calculate IV percentile
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
         const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
         dbg('IV_PERCENTILE', { currentVix: spots.vix, historyCount: vixHistory.length, percentile: ivPctl });
 
-        // Compute bias from morning inputs + chain data
+        // Fetch yesterday's OHLC for auto Close Character
+        statusEl.textContent = 'Fetching yesterday OHLC...';
+        const yesterday = STATE.premiumHistory?.[0]?.date || null;
+        let bnfCloseChar = 0;
+        let nfCloseChar = 0;
+        let ydayBnfOHLC = null;
+        let ydayNfOHLC = null;
+        if (yesterday) {
+            ydayBnfOHLC = await API.fetchHistoricalOHLC(API.BNF_KEY, yesterday);
+            ydayNfOHLC = await API.fetchHistoricalOHLC(API.NF_KEY, yesterday);
+            if (ydayBnfOHLC) bnfCloseChar = API.calcCloseChar(ydayBnfOHLC);
+            if (ydayNfOHLC) nfCloseChar = API.calcCloseChar(ydayNfOHLC);
+            dbg('CLOSE_CHAR', { bnf: bnfCloseChar, nf: nfCloseChar, ydayDate: yesterday });
+        } else {
+            dbg('CLOSE_CHAR', { msg: 'No yesterday date - first run' });
+        }
+
+        // Gap classification
+        const ydayClose = ydayBnfOHLC?.close || STATE.premiumHistory?.[0]?.bnf_spot || null;
+        STATE.gapInfo = API.classifyGap(spots.bnfSpot, ydayClose, spots.vix);
+        dbg('GAP', STATE.gapInfo);
+
+        // Compute bias — 6 data-driven signals + Upstox comparison
         const biasResult = computeBias(STATE.morningInput, {
             pcr: STATE.bnfChain.pcr,
             vix: spots.vix,
-            futuresPremium: STATE.bnfChain.futuresPremium
+            futuresPremium: STATE.bnfChain.futuresPremium,
+            closeChar: bnfCloseChar
         });
         dbg('BIAS', { label: biasResult.label, net: biasResult.net, bull: biasResult.votes.bull, bear: biasResult.votes.bear, signalCount: biasResult.signals.length, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
         dbg('MORNING_INPUT', STATE.morningInput);
@@ -1671,6 +1685,17 @@ function renderPremiumEnvironment() {
         <!-- VERDICT -->
         <div class="env-verdict ${verdictClass}">${verdict}</div>
 
+        <!-- GAP CLASSIFICATION -->
+        ${STATE.gapInfo && STATE.gapInfo.type !== 'UNKNOWN' ? `
+        <div class="env-row" style="padding: 6px 0;">
+            <span class="env-row-label">Today's Gap</span>
+            <span class="env-row-value" style="color: ${STATE.gapInfo.gap > 0 ? 'var(--green)' : STATE.gapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+                ${STATE.gapInfo.gap > 0 ? '+' : ''}${STATE.gapInfo.gap} pts (${STATE.gapInfo.pct}%, ${STATE.gapInfo.sigma}σ) — ${STATE.gapInfo.type.replace('_', ' ')}
+            </span>
+        </div>
+        ${Math.abs(STATE.gapInfo.sigma) > 1 ? `<div class="traj-alert warn">⚡ ${STATE.gapInfo.sigma > 0 ? 'Gap-up' : 'Gap-down'} > 1σ — premium is inflated. Credit sellers: enter now. Debit buyers: WAIT for IV to settle.</div>` : ''}
+        ` : ''}
+
         <!-- TOP GRID: Key numbers at a glance -->
         <div class="env-grid-3">
             <div class="env-item">
@@ -2052,13 +2077,13 @@ function lockMorningData() {
 
     const fiiCash = document.getElementById('in-fii-cash').value;
     const fiiShortPct = document.getElementById('in-fii-short').value;
-    const closeChar = document.getElementById('in-close-char').value;
-    const upstoxBias = document.getElementById('in-upstox-bias').value;
+    const upstoxBias = document.getElementById('in-upstox-bias')?.value || '';
 
-    STATE.morningInput = { fiiCash, fiiShortPct, closeChar, upstoxBias };
+    // closeChar will be auto-calculated from yesterday's OHLC
+    STATE.morningInput = { fiiCash, fiiShortPct, upstoxBias };
 
     // Save to localStorage for restore
-    localStorage.setItem('mr2_morning', JSON.stringify(STATE.morningInput));
+    localStorage.setItem('mr2_morning', JSON.stringify({ ...STATE.morningInput, date: new Date().toISOString().split('T')[0] }));
 
     // Disable inputs
     document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
@@ -2073,13 +2098,15 @@ function restoreMorningData() {
     if (!saved) return;
     try {
         const data = JSON.parse(saved);
-        const today = new Date().toISOString().split('T')[0];
         // Only restore if saved today
-        // (we don't have a date in the saved data, so always restore for now)
+        const today = new Date().toISOString().split('T')[0];
+        if (data.date && data.date !== today) return;
         if (data.fiiCash) document.getElementById('in-fii-cash').value = data.fiiCash;
         if (data.fiiShortPct) document.getElementById('in-fii-short').value = data.fiiShortPct;
-        if (data.closeChar) document.getElementById('in-close-char').value = data.closeChar;
-        if (data.upstoxBias) document.getElementById('in-upstox-bias').value = data.upstoxBias;
+        if (data.upstoxBias) {
+            const el = document.getElementById('in-upstox-bias');
+            if (el) el.value = data.upstoxBias;
+        }
     } catch (e) { /* ignore */ }
 }
 

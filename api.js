@@ -60,18 +60,27 @@ const API = (() => {
         const keys = [NF_KEY, BNF_KEY, VIX_KEY].map(encodeURIComponent).join(',');
         const data = await apiCall('/market-quote/quotes', `instrument_key=${keys}`);
         const quotes = data?.data || {};
-        const result = { nfSpot: null, bnfSpot: null, vix: null, timestamp: Date.now() };
+        const result = { nfSpot: null, bnfSpot: null, vix: null, timestamp: Date.now(),
+            bnfOHLC: null, nfOHLC: null };
 
         debugLog('SPOTS_RAW_KEYS', { keys: Object.keys(quotes) });
 
         for (const [key, val] of Object.entries(quotes)) {
             const ltp = val?.last_price;
-            if (key.includes('Nifty 50') && !key.includes('Bank')) result.nfSpot = ltp;
-            else if (key.includes('Nifty Bank')) result.bnfSpot = ltp;
-            else if (key.includes('VIX')) result.vix = ltp;
+            const ohlc = val?.ohlc;
+            if (key.includes('Nifty 50') && !key.includes('Bank')) {
+                result.nfSpot = ltp;
+                if (ohlc) result.nfOHLC = { open: ohlc.open, high: ohlc.high || ltp, low: ohlc.low || ltp, close: ltp };
+            } else if (key.includes('Nifty Bank')) {
+                result.bnfSpot = ltp;
+                if (ohlc) result.bnfOHLC = { open: ohlc.open, high: ohlc.high || ltp, low: ohlc.low || ltp, close: ltp };
+            } else if (key.includes('VIX')) {
+                result.vix = ltp;
+            }
         }
 
-        debugLog('SPOTS_PARSED', { nf: result.nfSpot, bnf: result.bnfSpot, vix: result.vix });
+        debugLog('SPOTS_PARSED', { nf: result.nfSpot, bnf: result.bnfSpot, vix: result.vix,
+            bnfOHLC: result.bnfOHLC ? `O:${result.bnfOHLC.open} H:${result.bnfOHLC.high} L:${result.bnfOHLC.low}` : 'none' });
         return result;
     }
 
@@ -352,12 +361,63 @@ const API = (() => {
         }
     }
 
-    // Expose debug on window — type window._API_DEBUG in console
+    // ═══ HISTORICAL OHLC — for Close Character calculation ═══
+    async function fetchHistoricalOHLC(instrumentKey, date) {
+        // date format: YYYY-MM-DD
+        try {
+            const encoded = encodeURIComponent(instrumentKey);
+            const data = await apiCall(`/historical-candle/${encoded}/day/${date}/${date}`);
+            const candles = data?.data?.candles;
+            if (!candles || candles.length === 0) {
+                debugLog('OHLC_EMPTY', { instrumentKey, date });
+                return null;
+            }
+            // Candle format: [timestamp, open, high, low, close, volume, oi]
+            const c = candles[0];
+            const result = { open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] };
+            debugLog('OHLC_OK', { instrumentKey, date, ...result });
+            return result;
+        } catch (e) {
+            debugLog('OHLC_ERROR', { instrumentKey, date, message: e.message });
+            return null;
+        }
+    }
+
+    // Calculate Close Character from OHLC
+    // Returns -2 to +2: where did the market close within its daily range?
+    function calcCloseChar(ohlc) {
+        if (!ohlc || !ohlc.high || !ohlc.low || ohlc.high === ohlc.low) return 0;
+        const range = ohlc.high - ohlc.low;
+        const position = (ohlc.close - ohlc.low) / range;
+        if (position > 0.8) return 2;   // strong close near high
+        if (position > 0.6) return 1;   // bullish close
+        if (position > 0.4) return 0;   // neutral mid-range
+        if (position > 0.2) return -1;  // bearish close
+        return -2;                       // weak close near low
+    }
+
+    // Classify gap type from yesterday close to today open
+    function classifyGap(todayOpen, yesterdayClose, vix) {
+        if (!todayOpen || !yesterdayClose || !vix) return { type: 'UNKNOWN', pct: 0, sigma: 0 };
+        const gap = todayOpen - yesterdayClose;
+        const pct = (gap / yesterdayClose) * 100;
+        const dailySigma = yesterdayClose * (vix / 100) * Math.sqrt(1 / 252);
+        const sigma = dailySigma > 0 ? gap / dailySigma : 0;
+
+        let type = 'FLAT';
+        if (Math.abs(sigma) > 1) type = gap > 0 ? 'GAP_UP' : 'GAP_DOWN';
+        else if (Math.abs(sigma) > 0.3) type = gap > 0 ? 'MILD_GAP_UP' : 'MILD_GAP_DOWN';
+
+        return { type, gap: Math.round(gap), pct: +pct.toFixed(2), sigma: +sigma.toFixed(2) };
+    }
+
+    // Expose debug on window
     window._API_DEBUG = _debug;
 
     return {
         fetchSpots, fetchExpiries, fetchChain, parseChain,
         fetchBnfBreadth, fetchNf50Breadth, BNF_CONSTITUENTS,
+        fetchHistoricalOHLC, calcCloseChar, classifyGap,
         tradingDTE, calendarDTE, nearestExpiry,
         isMarketHours, minutesSinceOpen, istNow,
         getToken, setToken,

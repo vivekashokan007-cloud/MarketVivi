@@ -211,6 +211,17 @@ main {
     opacity: 0.7;
 }
 
+.upstox-compare {
+    margin-top: 8px;
+}
+
+.upstox-compare summary {
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 0;
+}
+
 .input-field {
     width: 100%;
     padding: 8px 10px;
