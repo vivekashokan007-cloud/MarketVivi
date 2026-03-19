@@ -1,290 +1,113 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#8b5cf6">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Market Radar v6.0</title>
-  <link rel="manifest" href="manifest.json">
-  <link rel="stylesheet" href="style.css?v=10">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0a0e17">
+    <title>Market Radar v2</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=1">
 </head>
 <body>
+    <!-- ═══ HEADER ═══ -->
+    <header class="app-header">
+        <div class="header-left">
+            <h1>Market Radar</h1>
+            <span class="version">v2.0 — Premium First</span>
+        </div>
+        <div class="header-right">
+            <span id="watch-status" class="watch-badge">⏹ Ready</span>
+        </div>
+    </header>
 
-<!-- HEADER -->
-<div class="header">
-  <div>
-    <div class="header-title">⚡ MARKET RADAR</div>
-    <div class="header-version">v6.0 — Real-Time Engine</div>
-  </div>
-  <div style="text-align:right">
-    <div id="upstox-status" class="header-status">—</div>
-    <div id="upstox-margin" class="header-status"></div>
-    <div class="theme-toggle" id="theme-toggle">
-      <span class="theme-icon" id="theme-icon">🌙</span>
-      <span id="theme-label">Dark</span>
-    </div>
-  </div>
-</div>
+    <main>
+        <!-- ═══ TOKEN (collapsed by default) ═══ -->
+        <details class="section token-section">
+            <summary>🔑 Upstox Token</summary>
+            <div class="token-form">
+                <input type="text" id="in-token" class="input-field" placeholder="Paste Upstox access token">
+                <button id="btn-save-token" class="btn-sm">Save</button>
+            </div>
+        </details>
 
-<!-- TAB BAR -->
-<div class="tab-bar">
-  <div class="tab active" id="t0">⚡ SIGNAL</div>
-  <div class="tab" id="t1">📋 COMMAND</div>
-  <div class="tab" id="t2">📊 POSITIONS</div>
-  <div class="tab" id="t3">🌙 CLOSE</div>
-</div>
+        <!-- ═══ MORNING INPUT ═══ -->
+        <section class="section morning-section">
+            <h2>☀️ Morning Data</h2>
+            <div class="input-grid">
+                <div class="input-group">
+                    <label>FII Cash (₹Cr)</label>
+                    <input type="number" id="in-fii-cash" class="input-field morning-input" placeholder="-1200">
+                </div>
+                <div class="input-group">
+                    <label>FII Short %</label>
+                    <input type="number" id="in-fii-short" class="input-field morning-input" placeholder="88" step="0.1">
+                </div>
+                <div class="input-group">
+                    <label>Close Char</label>
+                    <input type="number" id="in-close-char" class="input-field morning-input" placeholder="-2" step="1">
+                </div>
+                <div class="input-group">
+                    <label>Upstox Bias</label>
+                    <select id="in-upstox-bias" class="input-field morning-input">
+                        <option value="Neutral">Neutral</option>
+                        <option value="Bullish">Bullish</option>
+                        <option value="Bearish">Bearish</option>
+                    </select>
+                </div>
+            </div>
+            <div class="morning-actions">
+                <button id="btn-lock" class="btn-primary">🔒 Lock & Scan</button>
+                <button id="btn-rescan" class="btn-ghost">↻ Reset</button>
+                <button id="btn-stop" class="btn-ghost" style="display:none">⏹ Stop</button>
+            </div>
+            <div id="status" class="status-text"></div>
+        </section>
 
-<!-- PANEL 0: SIGNAL -->
-<div class="panel active" id="p0">
-  <button class="btn btn-fetch" id="btn-fetch-upstox">🔄 FETCH UPSTOX DATA</button>
-  <button class="btn" id="btn-debug" style="width:100%;font-size:11px;padding:6px;margin-bottom:8px;color:var(--text-dim)">🔍 Show Chain Debug</button>
-  <div id="debug-output" style="display:none;font-size:11px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;color:var(--text-dim)"></div>
+        <!-- ═══ PREMIUM ENVIRONMENT ═══ -->
+        <section class="section" id="premium-section">
+            <h2>📊 Premium Environment</h2>
+            <div id="premium-env">
+                <div class="empty-state">Enter morning data and scan to see premium environment</div>
+            </div>
+        </section>
 
-  <div class="section-title">India VIX</div>
-  <div class="timing-hint">Auto from Upstox · updates live</div>
-  <div class="input-group">
-    <label>India VIX</label>
-    <input type="number" id="india_vix" step="0.01" placeholder="Auto from Upstox">
-    <span id="ts-india_vix" class="ts-badge"></span>
-  </div>
+        <!-- ═══ WATCHLIST ═══ -->
+        <section class="section" id="watchlist-section">
+            <h2>🎯 Watchlist</h2>
+            <div id="watchlist">
+                <div class="empty-state">Candidates will appear after scan</div>
+            </div>
+        </section>
 
-  <div class="section-title">FII Flow</div>
-  <div class="timing-hint">Enter after 6 PM from NSDL/Moneycontrol · previous day's data</div>
-  <div class="input-group">
-    <label>FII Cash ₹Cr</label>
-    <input type="number" id="fii" step="1" placeholder="Enter from NSDL/moneycontrol">
-    <span id="ts-fii" class="ts-badge"></span>
-  </div>
-  <div class="input-group">
-    <label>FII Futures ₹Cr</label>
-    <input type="number" id="fii_fut" step="1" placeholder="Enter from NSDL">
-    <span id="ts-fii_fut" class="ts-badge"></span>
-  </div>
-  <div class="input-group">
-    <label>FII Options ₹Cr</label>
-    <input type="number" id="fii_opt" step="1" placeholder="Enter from NSDL">
-    <span id="ts-fii_opt" class="ts-badge"></span>
-  </div>
-  <div class="input-group">
-    <label>FII Short %</label>
-    <input type="number" id="fii_short_pct" step="0.1" min="0" max="100" placeholder="From Upstox email (e.g. 88)">
-    <span id="ts-fii_short_pct" class="ts-badge"></span>
-  </div>
+        <!-- ═══ OPEN POSITION ═══ -->
+        <section class="section" id="position" style="display:none"></section>
 
-  <div class="section-title">Option Chain</div>
-  <div class="timing-hint">Auto from Upstox · updates on FETCH</div>
-  <div class="input-group">
-    <label>NF Max Pain</label>
-    <input type="number" id="max_pain_nf" step="1" placeholder="Auto from chain">
-    <span id="ts-max_pain_nf" class="ts-badge"></span>
-  </div>
-  <div class="input-group">
-    <label>NF PCR</label>
-    <input type="number" id="pcr_nf" step="0.01" placeholder="Auto from chain">
-    <span id="ts-pcr_nf" class="ts-badge"></span>
-  </div>
+        <!-- ═══ NOTIFICATION LOG ═══ -->
+        <section class="section">
+            <h2>🔔 Notifications</h2>
+            <div id="notif-log">
+                <div class="empty-state">Notifications will appear here during watch mode</div>
+            </div>
+        </section>
 
-  <div class="section-title">Futures Premium</div>
-  <div class="timing-hint">Synthetic from put-call parity · updates on FETCH</div>
-  <div id="futures-premium-display" class="futures-premium">Fetch data to see futures premium</div>
+        <!-- ═══ FOOTER ═══ -->
+        <footer class="app-footer">
+            <span id="footer-status">Ready</span>
+        </footer>
+    </main>
 
-  <div class="section-title">Range Budget</div>
-  <div class="timing-hint">1σ daily range vs move from prev close · updates on FETCH</div>
-  <div id="range-budget-display" class="futures-premium">Fetch data to see range budget</div>
-
-  <div class="section-title">Upstox Pulse</div>
-  <div class="timing-hint">From Upstox F&O Daily email · enter before 9:15 AM</div>
-  <div class="input-group">
-    <label>Upstox Bias</label>
-    <select id="upstox_bias">
-      <option value="">—</option>
-      <option value="BULLISH">Bullish</option>
-      <option value="BEARISH">Bearish</option>
-      <option value="NEUTRAL">Neutral</option>
-    </select>
-    <span id="ts-upstox_bias" class="ts-badge"></span>
-  </div>
-  <div class="input-group">
-    <label>Key Support OI</label>
-    <input type="text" id="key_support_oi" placeholder="e.g. 83L @ 23000">
-    <span id="ts-key_support_oi" class="ts-badge"></span>
-  </div>
-
-  <div class="section-title">Previous Day</div>
-  <div class="timing-hint">Auto from Upstox historical</div>
-  <div class="input-group">
-    <label>Close Char</label>
-    <select id="close_char">
-      <option value="">—</option>
-      <option value="2">Strong ↑↑ (+2)</option>
-      <option value="1">Mild ↑ (+1)</option>
-      <option value="0">Neutral (0)</option>
-      <option value="-1">Mild ↓ (-1)</option>
-      <option value="-2">Weak ↓↓ (-2)</option>
-    </select>
-    <span id="ts-close_char" class="ts-badge"></span>
-  </div>
-
-  <div class="section-title">Market Breadth</div>
-  <div class="timing-hint">Enter from NSE market pulse · after 9:30 AM</div>
-  <div class="input-group">
-    <label>NF50 Advances</label>
-    <input type="number" id="n50adv" step="1" min="0" max="50" placeholder="0–50">
-    <span id="ts-n50adv" class="ts-badge"></span>
-  </div>
-  <div class="input-group">
-    <label>NF % > 200DMA</label>
-    <input type="number" id="n50dma" step="0.1" placeholder="% above 200DMA">
-    <span id="ts-n50dma" class="ts-badge"></span>
-  </div>
-  <div class="bnf-section" id="bnf-section">
-    <div class="bnf-header" id="bnf-toggle">
-      <span class="section-title" style="margin:0">BNF Weighted Breadth</span>
-      <span class="bnf-summary"><span id="bnf-weighted-readout" class="bnf-readout">0%</span> <span class="q-expand" id="bnf-arrow">▼</span></span>
-    </div>
-    <div class="timing-hint">Auto from Upstox after 9:30 · tap to override</div>
-    <div class="bnf-body" id="bnf-body" style="display:none">
-      <div class="bnf-grid">
-        <label class="bnf-label"><input type="checkbox" id="bnf_hdfc" class="bnf-chk"><span>HDFC Bank <em>28%</em></span><span class="bnf-pct"></span></label>
-        <label class="bnf-label"><input type="checkbox" id="bnf_icici" class="bnf-chk"><span>ICICI Bank <em>22%</em></span><span class="bnf-pct"></span></label>
-        <label class="bnf-label"><input type="checkbox" id="bnf_kotak" class="bnf-chk"><span>Kotak Mah <em>12%</em></span><span class="bnf-pct"></span></label>
-        <label class="bnf-label"><input type="checkbox" id="bnf_sbi" class="bnf-chk"><span>SBI <em>9%</em></span><span class="bnf-pct"></span></label>
-        <label class="bnf-label"><input type="checkbox" id="bnf_axis" class="bnf-chk"><span>Axis Bank <em>8%</em></span><span class="bnf-pct"></span></label>
-      </div>
-    </div>
-  </div>
-
-  <button class="btn btn-lock" id="btn-lock-radar">🔓 Lock Morning Data</button>
-  <button class="btn btn-lock" id="btn-lock-breadth">🔓 Lock Breadth</button>
-
-  <div id="verdict"></div>
-</div>
-
-<!-- PANEL 1: COMMAND -->
-<div class="panel" id="p1">
-  <div id="command-output">
-    <div class="cmd-placeholder">Fetch Upstox data to see strategy recommendations</div>
-  </div>
-  <div id="hidden-inputs">
-    <input type="number" id="nf_price"><input type="number" id="bn_price">
-    <input type="number" id="strat_vix"><input type="number" id="nf_atr">
-    <input type="number" id="bn_atr"><input type="number" id="nifty_prev">
-    <input type="number" id="pcr_bn"><input type="number" id="nf_oi_call">
-    <input type="number" id="nf_oi_put"><input type="number" id="bn_oi_call">
-    <input type="number" id="bn_oi_put"><input type="number" id="nf_maxpain">
-    <input type="number" id="bn_maxpain">
-    <input type="number" id="nf_fut_premium"><input type="number" id="bnf_fut_premium">
-  </div>
-</div>
-
-<!-- PANEL 2: POSITIONS -->
-<div class="panel" id="p2">
-  <button class="btn btn-sync" id="btn-sync-positions">🔄 SYNC WITH UPSTOX</button>
-  <div id="sync-status" class="sync-status"></div>
-  <div class="section-title">Active Positions</div>
-  <div id="positions-open"><div class="cmd-placeholder">Loading positions...</div></div>
-  <div class="section-title" style="margin-top:20px">Recent Trades</div>
-  <div id="positions-history"><div class="cmd-placeholder">No trade history yet</div></div>
-</div>
-
-<!-- PANEL 3: CLOSE / JOURNAL -->
-<div class="panel" id="p3">
-  <div class="section-title">Trade Journal — Summary</div>
-  <div id="journal-stats"><div class="cmd-placeholder">No closed trades yet</div></div>
-
-  <div class="section-title" style="margin-top:16px">Recent Closed Trades</div>
-  <div id="journal-trades"><div class="cmd-placeholder">No trade history</div></div>
-
-  <div class="section-title" style="margin-top:20px">Evening Close Data</div>
-  <div id="evening-section" class="evening-grid">
-    <div class="input-group"><label>Evening FII ₹Cr</label><input type="number" id="ev_fii" step="1" placeholder="Final FII from NSDL"></div>
-    <div class="input-group"><label>NF Close</label><input type="number" id="ev_nf_close" step="0.01" placeholder="Nifty 50 close"></div>
-    <div class="input-group"><label>BNF Close</label><input type="number" id="ev_bnf_close" step="0.01" placeholder="Bank Nifty close"></div>
-    <div class="input-group"><label>India VIX Close</label><input type="number" id="ev_indiavix" step="0.01" placeholder="VIX at close"></div>
-  </div>
-  <button class="btn btn-lock" id="btn-lock-evening">🔓 Lock Evening</button>
-
-  <div class="section-title" style="margin-top:20px">Bhav Copy Upload</div>
-  <div class="bhav-section">
-    <div class="input-group"><label>Spot Price</label><input type="number" id="bhav-spot" step="0.01" placeholder="NF spot at close"></div>
-    <div class="input-group"><label>CSV File</label><input type="file" id="bhav-file" accept=".csv" multiple></div>
-    <button class="btn btn-primary" id="btn-bhav-upload">📤 Upload Bhav Copy</button>
-    <div id="bhav-status" class="bhav-status"></div>
-  </div>
-</div>
-
-<!-- BOTTOM DRAWER -->
-<div class="drawer-backdrop" id="drawer-backdrop"></div>
-<div class="drawer" id="payoff-drawer">
-  <div class="drawer-handle" id="drawer-handle"><div class="drawer-handle-bar"></div></div>
-  <div class="drawer-title" id="drawer-title">—</div>
-  <div class="drawer-chart"><canvas id="payoff-canvas"></canvas></div>
-  <div class="drawer-metrics" id="drawer-metrics"></div>
-</div>
-
-<!-- TOKEN MODAL -->
-<div class="modal-overlay" id="token-modal">
-  <div class="modal-box">
-    <div class="modal-title">🔑 Upstox Access Token</div>
-    <p style="font-size:12px;color:var(--text-dim);margin-bottom:12px">Generate daily token from account.upstox.com → Developer → Apps → Market Radar</p>
-    <input type="text" class="modal-input" id="token-input" placeholder="Paste access token here">
-    <button class="btn btn-primary" id="btn-save-token" style="width:100%">Save & Fetch</button>
-  </div>
-</div>
-
-<!-- SCRIPTS -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="db.js?v=10"></script>
-<script src="bhav.js?v=10"></script>
-<script src="bs.js?v=10"></script>
-<script src="app.js?v=10"></script>
-<script src="upstox.js?v=10"></script>
-
-<!-- THEME TOGGLE -->
-<script>
-(function() {
-  const KEY = 'mr_theme';
-  const html = document.documentElement;
-  const saved = localStorage.getItem(KEY) || 'dark';
-  html.setAttribute('data-theme', saved);
-  function updateUI(theme) {
-    const icon = document.getElementById('theme-icon');
-    const label = document.getElementById('theme-label');
-    if (icon) icon.textContent = theme === 'dark' ? '🌙' : '☀️';
-    if (label) label.textContent = theme === 'dark' ? 'Dark' : 'Light';
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = theme === 'dark' ? '#8b5cf6' : '#7c3aed';
-  }
-  document.addEventListener('DOMContentLoaded', () => {
-    updateUI(saved);
-    const toggle = document.getElementById('theme-toggle');
-    if (toggle) toggle.addEventListener('click', () => {
-      const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-      html.setAttribute('data-theme', next);
-      localStorage.setItem(KEY, next);
-      updateUI(next);
-    });
-  });
-})();
-</script>
-
-<!-- SERVICE WORKER + NOTIFICATIONS -->
-<script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').then(reg => {
-    console.log('[sw] Registered:', reg.scope);
-  }).catch(err => console.warn('[sw] Registration failed:', err));
-}
-// Request notification permission on first interaction
-document.addEventListener('click', function askNotif() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission().then(p => console.log('[notif] Permission:', p));
-  }
-  document.removeEventListener('click', askNotif);
-}, { once: true });
-</script>
-
+    <!-- Scripts: order matters -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="bs.js?v=1"></script>
+    <script src="db.js?v=1"></script>
+    <script src="api.js?v=1"></script>
+    <script src="app.js?v=1"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(() => {});
+        }
+    </script>
 </body>
 </html>

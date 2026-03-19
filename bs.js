@@ -1,177 +1,146 @@
-/* ============================================================
-   bs.js — Black-Scholes Engine for Market Radar v5.0
-   Calibrated coefficients — do NOT change without new data
-   ============================================================ */
+/* ═══════════════════════════════════════════════════════════════
+   Market Radar v2 — Black-Scholes Engine
+   Purpose: IV from LTP, expected move (σ), delta, theta
+   All calibrations from 274 NF + 134 BNF observations — DO NOT CHANGE
+   ═══════════════════════════════════════════════════════════════ */
 
-// ── Standard Normal CDF (Abramowitz & Stegun approximation) ──
-function normCDF(x) {
-  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
-  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
-  const sign = x < 0 ? -1 : 1;
-  x = Math.abs(x) / Math.SQRT2;
-  const t = 1.0 / (1.0 + p * x);
-  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-  return 0.5 * (1.0 + sign * y);
-}
+const BS = (() => {
+    const DAYS_PER_YEAR = 252; // trading days
+    const MINUTES_PER_DAY = 375; // 9:15 - 15:30 IST
+    const RISK_FREE = 0.07; // ~7% India
 
-function normPDF(x) {
-  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
-}
+    // Standard normal CDF (Abramowitz & Stegun approximation)
+    function normCDF(x) {
+        if (x > 6) return 1;
+        if (x < -6) return 0;
+        const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+        const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+        const sign = x < 0 ? -1 : 1;
+        const t = 1 / (1 + p * Math.abs(x));
+        const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+        return 0.5 * (1 + sign * y);
+    }
 
-// ── Core BS pricing ──
-function bsCall(S, K, r, sigma, T) {
-  if (T <= 0 || sigma <= 0) return Math.max(S - K, 0);
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  const d2 = d1 - sigma * Math.sqrt(T);
-  return S * normCDF(d1) - K * Math.exp(-r * T) * normCDF(d2);
-}
+    // Standard normal PDF
+    function normPDF(x) {
+        return Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+    }
 
-function bsPut(S, K, r, sigma, T) {
-  if (T <= 0 || sigma <= 0) return Math.max(K - S, 0);
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  const d2 = d1 - sigma * Math.sqrt(T);
-  return K * Math.exp(-r * T) * normCDF(-d2) - S * normCDF(-d1);
-}
+    // d1, d2 components
+    function d1d2(S, K, T, r, sigma) {
+        const sqrtT = Math.sqrt(T);
+        const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * sqrtT);
+        const d2 = d1 - sigma * sqrtT;
+        return { d1, d2, sqrtT };
+    }
 
-// ── Greeks ──
-function bsDelta(S, K, r, sigma, T, isCall) {
-  if (T <= 0 || sigma <= 0) {
-    return isCall ? (S > K ? 1 : 0) : (S < K ? -1 : 0);
-  }
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  return isCall ? normCDF(d1) : normCDF(d1) - 1;
-}
+    // BS option price
+    function price(S, K, T, r, sigma, type) {
+        if (T <= 0) return Math.max(0, type === 'CE' ? S - K : K - S);
+        const { d1, d2 } = d1d2(S, K, T, r, sigma);
+        if (type === 'CE') {
+            return S * normCDF(d1) - K * Math.exp(-r * T) * normCDF(d2);
+        } else {
+            return K * Math.exp(-r * T) * normCDF(-d2) - S * normCDF(-d1);
+        }
+    }
 
-function bsGamma(S, K, r, sigma, T) {
-  if (T <= 0 || sigma <= 0) return 0;
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  return normPDF(d1) / (S * sigma * Math.sqrt(T));
-}
+    // Implied Volatility via Newton-Raphson
+    function impliedVol(S, K, marketPrice, T, type) {
+        if (T <= 0 || marketPrice <= 0) return null;
+        const intrinsic = type === 'CE' ? Math.max(0, S - K) : Math.max(0, K - S);
+        if (marketPrice < intrinsic * 0.95) return null;
 
-function bsTheta(S, K, r, sigma, T, isCall) {
-  if (T <= 0 || sigma <= 0) return 0;
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  const d2 = d1 - sigma * Math.sqrt(T);
-  const part1 = -(S * normPDF(d1) * sigma) / (2 * Math.sqrt(T));
-  if (isCall) {
-    return (part1 - r * K * Math.exp(-r * T) * normCDF(d2)) / 365;
-  }
-  return (part1 + r * K * Math.exp(-r * T) * normCDF(-d2)) / 365;
-}
+        let sigma = 0.25; // initial guess
+        for (let i = 0; i < 50; i++) {
+            const p = price(S, K, T, RISK_FREE, sigma, type);
+            const { d1, sqrtT } = d1d2(S, K, T, RISK_FREE, sigma);
+            const vega = S * normPDF(d1) * sqrtT;
+            if (vega < 1e-10) break;
+            const diff = p - marketPrice;
+            if (Math.abs(diff) < 0.01) break;
+            sigma -= diff / vega;
+            if (sigma <= 0.01) sigma = 0.01;
+            if (sigma > 3) sigma = 3;
+        }
+        return sigma > 0.01 && sigma < 3 ? sigma : null;
+    }
 
-function bsVega(S, K, r, sigma, T) {
-  if (T <= 0 || sigma <= 0) return 0;
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  return S * normPDF(d1) * Math.sqrt(T) / 100;
-}
+    // Delta
+    function delta(S, K, T, sigma, type) {
+        if (T <= 0 || !sigma) return type === 'CE' ? (S > K ? 1 : 0) : (S < K ? -1 : 0);
+        const { d1 } = d1d2(S, K, T, RISK_FREE, sigma);
+        return type === 'CE' ? normCDF(d1) : normCDF(d1) - 1;
+    }
 
-// ── IV solver (Newton-Raphson) ──
-function bsIV(mktPrice, S, K, r, T, isCall) {
-  if (T <= 0 || mktPrice <= 0) return null;
-  let sigma = 0.20; // initial guess
-  for (let i = 0; i < 100; i++) {
-    const price = isCall ? bsCall(S, K, r, sigma, T) : bsPut(S, K, r, sigma, T);
-    const vega = bsVega(S, K, r, sigma, T) * 100; // undo /100
-    if (Math.abs(vega) < 1e-10) break;
-    const diff = price - mktPrice;
-    if (Math.abs(diff) < 0.01) return sigma;
-    sigma -= diff / vega;
-    if (sigma <= 0.001) sigma = 0.001;
-    if (sigma > 5) sigma = 5;
-  }
-  return sigma;
-}
+    // Theta (per day, in price units)
+    function theta(S, K, T, sigma, type) {
+        if (T <= 0 || !sigma) return 0;
+        const { d1, d2, sqrtT } = d1d2(S, K, T, RISK_FREE, sigma);
+        const term1 = -(S * normPDF(d1) * sigma) / (2 * sqrtT);
+        if (type === 'CE') {
+            return (term1 - RISK_FREE * K * Math.exp(-RISK_FREE * T) * normCDF(d2)) / DAYS_PER_YEAR;
+        } else {
+            return (term1 + RISK_FREE * K * Math.exp(-RISK_FREE * T) * normCDF(-d2)) / DAYS_PER_YEAR;
+        }
+    }
 
-// ── Expected Move (uses TRADING days ÷ 252, not calendar ÷ 365) ──
-// VIX is annualized over ~252 trading days, so conversion must match
-function bsExpectedMove(spot, vix, tradingDte) {
-  const t = tradingDte / 252;
-  const one_sigma = spot * (vix / 100) * Math.sqrt(t);
-  return { one_sigma, two_sigma: one_sigma * 2 };
-}
+    // ═══ SIGMA ENGINE — the core of v2 ═══
 
-// ── Target Delta based on VIX and score ──
-function bsTargetDelta(vix, score, isCall) {
-  // Base target: 0.15 delta (15-delta strikes)
-  let target = 0.15;
-  // High VIX → move further OTM (lower delta)
-  if (vix > 20) target = 0.10;
-  else if (vix > 16) target = 0.12;
-  // Strong directional score → adjust delta
-  if (isCall && score > 0.4) target *= 0.8;  // bullish: calls safer, go wider
-  if (!isCall && score < -0.4) target *= 0.8; // bearish: puts safer, go wider
-  return target;
-}
+    // Daily 1σ expected move from VIX
+    function dailySigma(spot, vix) {
+        return spot * (vix / 100) * Math.sqrt(1 / DAYS_PER_YEAR);
+    }
 
-// ── IV Skew Adjustment ──
-// Calibrated coefficients for skew modeling
-const BS_SKEW_COEFFS = {
-  putSlope:  0.0012,  // IV increases per 1% OTM for puts
-  callSlope: 0.0008,  // IV increases per 1% OTM for calls
-  baseSmile: 0.02     // Minimum smile curvature
-};
+    // σ for any time window (in minutes)
+    function sigmaMins(spot, vix, minutes) {
+        const daily = dailySigma(spot, vix);
+        return daily * Math.sqrt(minutes / MINUTES_PER_DAY);
+    }
 
-function bsSkewIV(vix, strike, spot, isCall) {
-  const moneyness = Math.abs(strike - spot) / spot;
-  const baseIV = vix / 100;
-  if (isCall) {
-    return baseIV + moneyness * BS_SKEW_COEFFS.callSlope * 100 + BS_SKEW_COEFFS.baseSmile * moneyness;
-  }
-  return baseIV + moneyness * BS_SKEW_COEFFS.putSlope * 100 + BS_SKEW_COEFFS.baseSmile * moneyness;
-}
+    // σ for N trading days
+    function sigmaDays(spot, vix, days) {
+        return dailySigma(spot, vix) * Math.sqrt(days);
+    }
 
-// ── Full BS Analysis ──
-function bsAnalyse(spot, vix, r, dte, spots, isNF, score) {
-  const T = dte / 365;
-  const sigma = vix / 100;
-  const em = bsExpectedMove(spot, vix, dte);
-  const snap = isNF ? r50 : r100;
+    // How many σ has spot moved? (relative to expected for elapsed time)
+    function sigmaScore(currentSpot, baselineSpot, vix, elapsedMinutes) {
+        const expectedSigma = sigmaMins(baselineSpot, vix, elapsedMinutes);
+        if (expectedSigma < 0.01) return 0;
+        return (currentSpot - baselineSpot) / expectedSigma;
+    }
 
-  // Delta-based strikes
-  const targetPutDelta = bsTargetDelta(vix, score, false);
-  const targetCallDelta = bsTargetDelta(vix, score, true);
+    // VIX σ — how many σ has VIX itself moved?
+    // VIX daily σ ≈ VIX × 0.05 (empirical — VIX moves ~5% of itself per day)
+    function vixSigmaScore(currentVix, baselineVix, elapsedMinutes) {
+        const dailyVixSigma = baselineVix * 0.05;
+        const expectedSigma = dailyVixSigma * Math.sqrt(elapsedMinutes / MINUTES_PER_DAY);
+        if (expectedSigma < 0.01) return 0;
+        return (currentVix - baselineVix) / expectedSigma;
+    }
 
-  // Find strikes at target delta via search
-  let putStrike = spot, callStrike = spot;
-  const step = isNF ? 50 : 100;
+    // IV percentile from historical data array
+    function ivPercentile(currentVix, historicalVixArray) {
+        if (!historicalVixArray || historicalVixArray.length < 5) return null;
+        const below = historicalVixArray.filter(v => v <= currentVix).length;
+        return Math.round((below / historicalVixArray.length) * 100);
+    }
 
-  for (let k = spot - step; k > spot - em.two_sigma * 1.5; k -= step) {
-    const d = Math.abs(bsDelta(spot, k, r, sigma, T, false));
-    if (d <= targetPutDelta) { putStrike = k; break; }
-  }
-  for (let k = spot + step; k < spot + em.two_sigma * 1.5; k += step) {
-    const d = Math.abs(bsDelta(spot, k, r, sigma, T, true));
-    if (d <= targetCallDelta) { callStrike = k; break; }
-  }
+    // Probability of profit for a spread (using delta of short strike)
+    function probProfit(S, sellStrike, T, sigma, type) {
+        if (!sigma || T <= 0) return 0.5;
+        const d = Math.abs(delta(S, sellStrike, T, sigma, type));
+        // For credit spread: P(profit) = 1 - |delta of sold option|
+        // For debit spread: P(profit) = |delta of bought option|
+        return d;
+    }
 
-  // IV surface for nearby strikes
-  const ivSurface = [];
-  const range = isNF ? 500 : 1500;
-  for (let k = snap(spot - range); k <= snap(spot + range); k += step) {
-    ivSurface.push({
-      strike: k,
-      callIV: bsSkewIV(vix, k, spot, true),
-      putIV: bsSkewIV(vix, k, spot, false),
-      callDelta: bsDelta(spot, k, r, sigma, T, true),
-      putDelta: bsDelta(spot, k, r, sigma, T, false),
-      callPrice: bsCall(spot, k, r, sigma, T),
-      putPrice: bsPut(spot, k, r, sigma, T)
-    });
-  }
+    return {
+        price, impliedVol, delta, theta, normCDF, normPDF,
+        dailySigma, sigmaMins, sigmaDays, sigmaScore, vixSigmaScore,
+        ivPercentile, probProfit,
+        DAYS_PER_YEAR, MINUTES_PER_DAY, RISK_FREE
+    };
+})();
 
-  return {
-    spot, vix, dte, T,
-    expectedMove: em,
-    putStrike: snap(putStrike),
-    callStrike: snap(callStrike),
-    targetPutDelta, targetCallDelta,
-    ivSurface
-  };
-}
-
-// ── Historical spots accessor ──
-function bsGetSpots(isNF) {
-  return isNF ? (window._NF_HIST || []) : (window._BNF_HIST || []);
-}
-
-console.log('[bs.js] Black-Scholes engine loaded — v5.0');
+if (typeof module !== 'undefined') module.exports = BS;

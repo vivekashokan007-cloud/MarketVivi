@@ -1,35 +1,19 @@
-/* ============================================================
-   sw.js — Market Radar v5.0 — Service Worker
-   Handles PWA notifications for smart alerts
-   ============================================================ */
+// Market Radar v2 — Service Worker
+// Minimal: notifications only. No caching (cache-busting via ?v=N handles freshness).
 
-const CACHE_NAME = 'market-radar-v5';
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', () => self.clients.claim());
 
-// Install — cache shell
-self.addEventListener('install', (event) => {
-  self.skipWaiting();
-  console.log('[sw] Installed');
-});
-
-// Activate — clean old caches
-self.addEventListener('activate', (event) => {
-  event.waitUntil(clients.claim());
-  console.log('[sw] Activated');
-});
-
-// Notification click — open POSITIONS tab
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
-      // Focus existing window if open
-      for (const client of clientList) {
-        if (client.url.includes('MarketVivi') && 'focus' in client) {
-          return client.focus();
-        }
-      }
-      // Otherwise open new window
-      return clients.openWindow('./');
-    })
-  );
+self.addEventListener('notificationclick', event => {
+    event.notification.close();
+    event.waitUntil(
+        clients.matchAll({ type: 'window' }).then(list => {
+            for (const client of list) {
+                if (client.url.includes('MarketVivi') && 'focus' in client) {
+                    return client.focus();
+                }
+            }
+            if (clients.openWindow) return clients.openWindow('/MarketVivi/');
+        })
+    );
 });
