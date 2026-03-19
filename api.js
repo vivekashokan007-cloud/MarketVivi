@@ -26,19 +26,32 @@ const API = (() => {
         localStorage.setItem('mr2_upstox_token', token.trim());
     }
 
+    // ═══ DEBUG LOG — accessible via window._API_DEBUG in console ═══
+    const _debug = [];
+    function debugLog(label, data) {
+        const entry = { time: new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }), label, ...data };
+        _debug.push(entry);
+        if (_debug.length > 100) _debug.shift(); // rolling 100
+        console.log(`[API] ${label}`, data);
+    }
+
     async function apiCall(endpoint, rawQuery) {
         const token = getToken();
         if (!token) throw new Error('No Upstox token. Paste your access token.');
         // rawQuery is a pre-built query string
         const url = `${BASE}${endpoint}${rawQuery ? '?' + rawQuery : ''}`;
+        debugLog('REQUEST', { endpoint, url });
         const res = await fetch(url, {
             headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
         });
         if (!res.ok) {
             const body = await res.json().catch(() => ({}));
+            debugLog('ERROR', { status: res.status, endpoint, body });
             throw new Error(`API ${res.status}: ${body.message || body.errors?.[0]?.message || 'Unknown error'}`);
         }
-        return res.json();
+        const json = await res.json();
+        debugLog('RESPONSE', { endpoint, status: res.status, dataKeys: Object.keys(json?.data || {}).length });
+        return json;
     }
 
     // ═══ MARKET DATA ═══
@@ -49,12 +62,16 @@ const API = (() => {
         const quotes = data?.data || {};
         const result = { nfSpot: null, bnfSpot: null, vix: null, timestamp: Date.now() };
 
+        debugLog('SPOTS_RAW_KEYS', { keys: Object.keys(quotes) });
+
         for (const [key, val] of Object.entries(quotes)) {
             const ltp = val?.last_price;
             if (key.includes('Nifty 50') && !key.includes('Bank')) result.nfSpot = ltp;
             else if (key.includes('Nifty Bank')) result.bnfSpot = ltp;
             else if (key.includes('VIX')) result.vix = ltp;
         }
+
+        debugLog('SPOTS_PARSED', { nf: result.nfSpot, bnf: result.bnfSpot, vix: result.vix });
         return result;
     }
 
@@ -68,14 +85,18 @@ const API = (() => {
             const exp = item.expiry;
             if (exp && !seen.has(exp)) { seen.add(exp); expiries.push(exp); }
         }
-        return expiries.sort();
+        const sorted = expiries.sort();
+        debugLog('EXPIRIES', { index: indexKey, count: sorted.length, nearest: sorted[0], all: sorted.slice(0, 5) });
+        return sorted;
     }
 
     async function fetchChain(indexKey, expiry) {
         const data = await apiCall('/option/chain',
             `instrument_key=${encodeURIComponent(indexKey)}&expiry_date=${expiry}`
         );
-        return data?.data || [];
+        const items = data?.data || [];
+        debugLog('CHAIN_RAW', { index: indexKey, expiry, items: items.length, sample: items[0] ? Object.keys(items[0]) : [] });
+        return items;
     }
 
     // Parse chain into structured data
@@ -154,6 +175,14 @@ const API = (() => {
             atmIv = (atmData.CE.iv + atmData.PE.iv) / 2;
         }
 
+        debugLog('CHAIN_PARSED', {
+            spot, atm, strikeCount: allStrikes.length,
+            strikeRange: allStrikes.length ? `${allStrikes[0]}-${allStrikes[allStrikes.length-1]}` : 'none',
+            totalCallOI, totalPutOI, pcr, maxPain,
+            synthFutures: +synthFutures.toFixed(2), futuresPremium,
+            atmIv, atmCE_ltp: atmData?.CE?.ltp, atmPE_ltp: atmData?.PE?.ltp
+        });
+
         return {
             strikes, allStrikes, atm,
             totalCallOI, totalPutOI, pcr,
@@ -227,6 +256,9 @@ const API = (() => {
             hour: '2-digit', minute: '2-digit', hour12: true
         });
     }
+
+    // Expose debug on window — type window._API_DEBUG in console
+    window._API_DEBUG = _debug;
 
     return {
         fetchSpots, fetchExpiries, fetchChain, parseChain,
