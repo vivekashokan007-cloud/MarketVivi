@@ -616,18 +616,33 @@ function getVarsityMultiplier(stratType, biasConf, bias, vix) {
   const tierMap = tiers[outlook] || tiers.NEUTRAL;
   let mult = tierMap[stratType] !== undefined ? tierMap[stratType] : 0.35;
 
-  // VIX fine-tuning
+  // ── IV-AWARE TIER ADJUSTMENT (Varsity principle) ──
+  // Core: HIGH IV → premium expensive → SELL it (credit preferred)
+  //       LOW IV  → premium cheap    → BUY it (debit preferred for directional)
+  // This is NOT a small nudge — it's a tier-changing force.
   const safeVix = vix || 14;
   const isCredit = ['BULL_PUT','BEAR_CALL','IRON_CONDOR'].includes(stratType);
+  const isDebit = ['BULL_CALL','BEAR_PUT'].includes(stratType);
   const isLong = ['LONG_STRADDLE','LONG_STRANGLE'].includes(stratType);
 
-  // High VIX (≥20): credit premiums are fat → slight boost to credit Tier 1/2
-  if (safeVix >= 20 && isCredit && mult >= 0.65) mult = Math.min(1.0, mult + 0.05);
-  // Very high VIX (≥24): extra credit boost
-  if (safeVix >= 24 && isCredit && mult >= 0.65) mult = Math.min(1.0, mult + 0.05);
-  // Low VIX (≤13): long strategies benefit from cheap options
+  // HIGH VIX (≥20): Selling premium is the edge. Buying premium is expensive + IV crush risk.
+  if (safeVix >= 20) {
+    if (isCredit) mult = Math.min(1.0, mult + 0.15);
+    if (isDebit) mult = Math.max(0.20, mult - 0.25);
+  }
+  // VERY HIGH VIX (≥24): Even stronger shift to credit
+  if (safeVix >= 24) {
+    if (isCredit) mult = Math.min(1.0, mult + 0.10);
+    if (isDebit) mult = Math.max(0.20, mult - 0.10);
+  }
+
+  // LOW VIX (≤15): Premiums are cheap — debit directional trades get boosted
+  if (safeVix <= 15 && isDebit) {
+    mult = Math.min(1.0, mult + 0.15);
+  }
+
+  // Long straddle/strangle: cheap = good, expensive = bad
   if (safeVix <= 13 && isLong) mult = Math.min(1.0, mult + 0.10);
-  // High VIX penalizes longs (expensive premium, likely to decay)
   if (safeVix >= 20 && isLong) mult = Math.max(0.20, mult - 0.10);
 
   return mult;
