@@ -496,36 +496,50 @@ function rankCandidates(candidates) {
 
 async function initialFetch() {
     const statusEl = document.getElementById('status');
+    const dbg = (label, data) => {
+        const entry = { time: API.istNow(), label, ...data };
+        (window._API_DEBUG || []).push(entry);
+        console.log(`[APP] ${label}`, data);
+    };
+
     try {
         statusEl.textContent = 'Fetching spots & VIX...';
         const spots = await API.fetchSpots();
         if (!spots.nfSpot || !spots.bnfSpot || !spots.vix) {
-            throw new Error('Missing spot/VIX data');
+            dbg('SPOTS_FAIL', { spots });
+            throw new Error(`Missing spot/VIX data — NF:${spots.nfSpot} BNF:${spots.bnfSpot} VIX:${spots.vix}`);
         }
+        dbg('SPOTS_OK', { nf: spots.nfSpot, bnf: spots.bnfSpot, vix: spots.vix });
 
         statusEl.textContent = 'Fetching BNF expiries...';
         const bnfExpiries = await API.fetchExpiries(API.BNF_KEY);
         STATE.bnfExpiry = API.nearestExpiry(bnfExpiries);
+        dbg('BNF_EXPIRY', { selected: STATE.bnfExpiry, total: bnfExpiries.length });
 
         statusEl.textContent = 'Fetching NF expiries...';
         const nfExpiries = await API.fetchExpiries(API.NF_KEY);
         STATE.nfExpiry = API.nearestExpiry(nfExpiries);
+        dbg('NF_EXPIRY', { selected: STATE.nfExpiry, total: nfExpiries.length });
 
         statusEl.textContent = 'Fetching BNF chain...';
         const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
         STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
+        dbg('BNF_CHAIN', { strikes: STATE.bnfChain.allStrikes.length, atm: STATE.bnfChain.atm, pcr: STATE.bnfChain.pcr, maxPain: STATE.bnfChain.maxPain });
 
         statusEl.textContent = 'Fetching NF chain...';
         const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
         STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
+        dbg('NF_CHAIN', { strikes: STATE.nfChain.allStrikes.length, atm: STATE.nfChain.atm, pcr: STATE.nfChain.pcr });
 
         // Load premium history for IV percentile
         statusEl.textContent = 'Loading premium history...';
         STATE.premiumHistory = await DB.getPremiumHistory(60);
+        dbg('PREMIUM_HISTORY', { days: STATE.premiumHistory.length, sample: STATE.premiumHistory.slice(0, 3).map(p => `${p.date}:${p.vix}`) });
 
         // Calculate IV percentile
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
         const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+        dbg('IV_PERCENTILE', { currentVix: spots.vix, historyCount: vixHistory.length, percentile: ivPctl });
 
         // Compute bias from morning inputs + chain data
         const biasResult = computeBias(STATE.morningInput, {
@@ -533,6 +547,7 @@ async function initialFetch() {
             vix: spots.vix,
             futuresPremium: STATE.bnfChain.futuresPremium
         });
+        dbg('BIAS', { label: biasResult.label, net: biasResult.net, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
 
         // Generate candidates
         statusEl.textContent = 'Generating candidates...';
@@ -546,13 +561,26 @@ async function initialFetch() {
         const allCandidates = [...bnfCandidates, ...nfCandidates];
         STATE.candidates = rankCandidates(allCandidates);
         STATE.watchlist = STATE.candidates.slice(0, 6); // top 6
+        dbg('CANDIDATES', {
+            bnf: bnfCandidates.length, nf: nfCandidates.length, total: allCandidates.length,
+            ranked: STATE.candidates.length, watchlist: STATE.watchlist.length,
+            top3: STATE.watchlist.slice(0, 3).map(c => `${c.type} ${c.forces.aligned}/3 ${c.sellStrike}/${c.buyStrike}`)
+        });
 
         // Set baseline
+        const bnfTDTE = API.tradingDTE(STATE.bnfExpiry);
+        const bnfT = bnfTDTE / BS.DAYS_PER_YEAR;
+        const bnfAtmIvDec = STATE.bnfChain.atmIv ? (STATE.bnfChain.atmIv > 1 ? STATE.bnfChain.atmIv / 100 : STATE.bnfChain.atmIv) : (spots.vix / 100);
+        const bnfAtmTheta = BS.theta(spots.bnfSpot, STATE.bnfChain.atm, bnfT, bnfAtmIvDec, 'CE') + BS.theta(spots.bnfSpot, STATE.bnfChain.atm, bnfT, bnfAtmIvDec, 'PE');
+        const dailySigmaBnf = BS.dailySigma(spots.bnfSpot, spots.vix);
+        const yesterdayVix = STATE.premiumHistory.length > 0 ? STATE.premiumHistory[0]?.vix : null;
+
         STATE.baseline = {
             timestamp: Date.now(),
             nfSpot: spots.nfSpot,
             bnfSpot: spots.bnfSpot,
             vix: spots.vix,
+            yesterdayVix,
             nfAtmIv: STATE.nfChain.atmIv,
             bnfAtmIv: STATE.bnfChain.atmIv,
             pcr: STATE.bnfChain.pcr,
@@ -561,7 +589,28 @@ async function initialFetch() {
             futuresPremBnf: STATE.bnfChain.futuresPremium,
             futuresPremNf: STATE.nfChain.futuresPremium,
             bias: biasResult,
-            ivPercentile: ivPctl
+            ivPercentile: ivPctl,
+            // OI walls
+            bnfCallWall: STATE.bnfChain.callWallStrike,
+            bnfCallWallOI: STATE.bnfChain.callWallOI,
+            bnfPutWall: STATE.bnfChain.putWallStrike,
+            bnfPutWallOI: STATE.bnfChain.putWallOI,
+            // DTE
+            bnfExpiry: STATE.bnfExpiry,
+            bnfTDTE: bnfTDTE,
+            bnfCalendarDTE: API.calendarDTE(STATE.bnfExpiry),
+            nfExpiry: STATE.nfExpiry,
+            // Theta
+            bnfAtmTheta: Math.round(bnfAtmTheta * C.BNF_LOT), // ₹/day for 1 lot
+            // Range budget
+            dailySigmaBnf: Math.round(dailySigmaBnf),
+            tradeSigmaBnf: Math.round(BS.sigmaDays(spots.bnfSpot, spots.vix, bnfTDTE)),
+            // Total OI
+            bnfTotalCallOI: STATE.bnfChain.totalCallOI,
+            bnfTotalPutOI: STATE.bnfChain.totalPutOI,
+            // ATM
+            bnfAtm: STATE.bnfChain.atm,
+            bnfSynthFutures: STATE.bnfChain.synthFutures
         };
 
         STATE.live = { ...STATE.baseline };
@@ -601,6 +650,15 @@ async function initialFetch() {
     } catch (err) {
         statusEl.textContent = `Error: ${err.message}`;
         console.error('initialFetch error:', err);
+        // Log to debug panel even on error
+        if (window._API_DEBUG) {
+            window._API_DEBUG.push({ time: API.istNow(), label: 'FETCH_ERROR', message: err.message, stack: err.stack?.split('\n')[1] || '' });
+        }
+        renderDebug();
+        // Re-enable lock button so user can retry
+        document.getElementById('btn-lock').disabled = false;
+        document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
+        document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
     }
 }
 
@@ -1016,7 +1074,60 @@ function renderAll() {
     renderPremiumEnvironment();
     renderWatchlist();
     renderPosition();
+    renderDebug();
     renderFooter();
+}
+
+function renderDebug() {
+    const el = document.getElementById('debug-log');
+    if (!el) return;
+
+    const debugEntries = window._API_DEBUG || [];
+    if (debugEntries.length === 0) {
+        el.innerHTML = '<div class="empty-state">Debug data appears after scan</div>';
+        return;
+    }
+
+    // Also add app-level state debug
+    const stateInfo = [];
+    if (STATE.baseline) {
+        stateInfo.push({
+            time: '', label: 'APP_STATE',
+            baseline: 'SET',
+            candidates: STATE.candidates.length,
+            watchlist: STATE.watchlist.length,
+            openTrade: STATE.openTrade ? 'YES' : 'NO',
+            premiumHistoryDays: STATE.premiumHistory.length,
+            ivPercentile: STATE.baseline.ivPercentile,
+            isWatching: STATE.isWatching,
+            pollCount: STATE.pollCount
+        });
+    }
+
+    const allEntries = [...stateInfo, ...debugEntries].reverse(); // newest first
+
+    el.innerHTML = allEntries.map(entry => {
+        const isError = entry.label === 'ERROR';
+        const label = entry.label || '';
+        const time = entry.time || '';
+
+        // Format the rest of the entry (excluding label and time)
+        const data = { ...entry };
+        delete data.label;
+        delete data.time;
+        const dataStr = Object.entries(data)
+            .map(([k, v]) => {
+                const val = typeof v === 'object' ? JSON.stringify(v) : v;
+                return `<span style="color:var(--text-muted)">${k}:</span> ${val}`;
+            })
+            .join(' · ');
+
+        return `<div class="debug-entry ${isError ? 'error' : ''}">
+            <span class="debug-time">${time}</span>
+            <span class="debug-label"> ${label}</span><br>
+            ${dataStr}
+        </div>`;
+    }).join('');
 }
 
 function renderPremiumEnvironment() {
@@ -1026,47 +1137,94 @@ function renderPremiumEnvironment() {
     const l = STATE.live;
     const b = STATE.baseline;
     const bias = l.bias;
-    const daily1s = l.bnfSpot ? BS.dailySigma(l.bnfSpot, l.vix) : 0;
 
-    // VIX regime label
-    let ivRegime = 'NORMAL';
-    if (l.vix >= C.IV_VERY_HIGH) ivRegime = 'VERY HIGH — strong sell premium';
-    else if (l.vix >= C.IV_HIGH) ivRegime = 'ELEVATED — sellers favored';
-    else if (l.vix <= C.IV_LOW) ivRegime = 'LOW — buyers favored';
-
-    // VIX change from baseline
-    let vixChange = '';
-    if (b) {
-        const diff = l.vix - b.vix;
-        const arrow = diff > 0.1 ? '↑' : diff < -0.1 ? '↓' : '→';
-        vixChange = `${b.vix.toFixed(1)} → ${l.vix.toFixed(1)} ${arrow}`;
-    } else {
-        vixChange = l.vix?.toFixed(1) || '--';
+    if (!b) {
+        el.innerHTML = '<div class="empty-state">Enter morning data and scan to see premium environment</div>';
+        return;
     }
 
+    const daily1s = b.dailySigmaBnf || 0;
+    const trade1s = b.tradeSigmaBnf || 0;
+
+    // VIX regime
+    let ivRegime = 'NORMAL';
+    let verdictClass = 'neutral';
+    let verdict = 'Normal IV — no strong edge for buyers or sellers';
+    if (l.vix >= C.IV_VERY_HIGH) { ivRegime = 'VERY HIGH'; verdictClass = 'sell'; verdict = '🔥 SELL PREMIUM — IV very high, 3 forces aligned for credit sellers'; }
+    else if (l.vix >= C.IV_HIGH) { ivRegime = 'ELEVATED'; verdictClass = 'sell'; verdict = '📈 Sellers favored — elevated IV, credit spreads preferred'; }
+    else if (l.vix <= C.IV_LOW) { ivRegime = 'LOW'; verdictClass = 'buy'; verdict = '💎 Cheap premium — debit spreads get bargain entry'; }
+
+    // VIX vs yesterday
+    let vixVsYday = '';
+    if (b.yesterdayVix) {
+        const diff = l.vix - b.yesterdayVix;
+        const arrow = diff > 0.3 ? '↑' : diff < -0.3 ? '↓' : '→';
+        const pct = ((diff / b.yesterdayVix) * 100).toFixed(1);
+        vixVsYday = `Yesterday: ${b.yesterdayVix.toFixed(1)} · Change: ${diff > 0 ? '+' : ''}${diff.toFixed(1)} (${pct}%) ${arrow}`;
+    }
+
+    // Max Pain gravity
+    const mpDist = b.maxPainBnf ? (l.bnfSpot - b.maxPainBnf) : 0;
+    const mpDir = mpDist > 100 ? 'above ↑' : mpDist < -100 ? 'below ↓' : 'near →';
+
+    // OI wall formatting
+    const formatOI = (oi) => {
+        if (!oi) return '0';
+        if (oi >= 1e7) return (oi / 1e7).toFixed(1) + 'Cr';
+        if (oi >= 1e5) return (oi / 1e5).toFixed(1) + 'L';
+        if (oi >= 1e3) return (oi / 1e3).toFixed(1) + 'K';
+        return oi.toString();
+    };
+
+    // OI bar proportions
+    const totalOI = (b.bnfTotalCallOI || 0) + (b.bnfTotalPutOI || 0);
+    const callPct = totalOI > 0 ? ((b.bnfTotalCallOI / totalOI) * 100).toFixed(0) : 50;
+    const putPct = totalOI > 0 ? ((b.bnfTotalPutOI / totalOI) * 100).toFixed(0) : 50;
+
     el.innerHTML = `
-        <div class="env-grid">
+        <!-- VERDICT -->
+        <div class="env-verdict ${verdictClass}">${verdict}</div>
+
+        <!-- TOP GRID: Key numbers at a glance -->
+        <div class="env-grid-3">
             <div class="env-item">
                 <div class="env-label">VIX</div>
-                <div class="env-value">${vixChange}</div>
-                <div class="env-sub ${l.vix >= C.IV_HIGH ? 'text-sell' : l.vix <= C.IV_LOW ? 'text-buy' : ''}">${ivRegime}</div>
+                <div class="env-value">${l.vix?.toFixed(1) || '--'}</div>
+                <div class="env-sub">${ivRegime}</div>
+            </div>
+            <div class="env-item">
+                <div class="env-label">IV %ile</div>
+                <div class="env-value">${l.ivPercentile !== null && l.ivPercentile !== undefined ? l.ivPercentile + 'th' : '--'}</div>
+                <div class="env-sub">${STATE.premiumHistory.length}d history</div>
             </div>
             <div class="env-item">
                 <div class="env-label">BNF</div>
                 <div class="env-value">${l.bnfSpot?.toFixed(0) || '--'}</div>
-                <div class="env-sub">Daily 1σ: ±${daily1s.toFixed(0)} pts</div>
-            </div>
-            <div class="env-item">
-                <div class="env-label">IV Percentile</div>
-                <div class="env-value">${l.ivPercentile !== null ? l.ivPercentile + 'th' : 'Need data'}</div>
-                <div class="env-sub">${STATE.premiumHistory.length} days tracked</div>
-            </div>
-            <div class="env-item">
-                <div class="env-label">PCR</div>
-                <div class="env-value">${l.pcr?.toFixed(2) || '--'}</div>
-                <div class="env-sub">Futures Prem: ${l.futuresPremBnf?.toFixed(3) || '--'}%</div>
+                <div class="env-sub">ATM: ${b.bnfAtm || '--'}</div>
             </div>
         </div>
+
+        <!-- FORCE 3: IV / VOLATILITY -->
+        <div class="env-section-title">Force 3 — IV & Volatility</div>
+        <div class="env-row">
+            <span class="env-row-label">VIX vs Yesterday</span>
+            <span class="env-row-value">${vixVsYday || 'No history yet'}</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">BNF ATM IV</span>
+            <span class="env-row-value">${b.bnfAtmIv ? (b.bnfAtmIv > 1 ? b.bnfAtmIv.toFixed(1) + '%' : (b.bnfAtmIv * 100).toFixed(1) + '%') : '--'}</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">ATM Theta (₹/day)</span>
+            <span class="env-row-value" style="color: var(--green)">₹${Math.abs(b.bnfAtmTheta || 0)} decay</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">DTE</span>
+            <span class="env-row-value">${b.bnfTDTE || '--'}T (${b.bnfCalendarDTE || '--'} cal) · Exp: ${b.bnfExpiry || '--'}</span>
+        </div>
+
+        <!-- FORCE 1: DIRECTION / INTRINSIC -->
+        <div class="env-section-title">Force 1 — Direction & Intrinsic</div>
         <div class="env-bias">
             <span class="bias-badge bias-${bias?.bias?.toLowerCase() || 'neutral'}">${bias?.label || 'N/A'}</span>
             <span class="bias-net">${bias?.net > 0 ? '+' : ''}${bias?.net || 0} net</span>
@@ -1076,6 +1234,60 @@ function renderPremiumEnvironment() {
         <div class="env-signals">${(bias?.signals || []).map(s =>
             `<span class="signal-chip signal-${s.dir.toLowerCase()}">${s.name}: ${s.value}</span>`
         ).join('')}</div>
+        <div class="env-row">
+            <span class="env-row-label">Futures Premium</span>
+            <span class="env-row-value ${(l.futuresPremBnf || 0) > 0.05 ? 'text-sell' : (l.futuresPremBnf || 0) < -0.05 ? '' : ''}">${l.futuresPremBnf?.toFixed(3) || '--'}%</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Synth Futures</span>
+            <span class="env-row-value">${b.bnfSynthFutures?.toFixed(0) || '--'} (spot ${l.bnfSpot?.toFixed(0) || '--'})</span>
+        </div>
+
+        <!-- OI STRUCTURE -->
+        <div class="env-section-title">OI Structure — Institutional Positioning</div>
+        <div class="env-row">
+            <span class="env-row-label">PCR</span>
+            <span class="env-row-value">${l.pcr?.toFixed(2) || '--'}</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Max Pain</span>
+            <span class="env-row-value">${b.maxPainBnf || '--'} (${mpDir}, ${Math.abs(mpDist).toFixed(0)} pts)</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Call Wall (resistance)</span>
+            <span class="env-row-value" style="color: var(--danger)">${b.bnfCallWall || '--'} · ${formatOI(b.bnfCallWallOI)} OI</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Put Wall (support)</span>
+            <span class="env-row-value" style="color: var(--green)">${b.bnfPutWall || '--'} · ${formatOI(b.bnfPutWallOI)} OI</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Total OI</span>
+            <span class="env-row-value">CE ${callPct}% / PE ${putPct}%</span>
+        </div>
+        <div class="oi-bar">
+            <div class="oi-bar-fill call" style="width: ${callPct}%; float: left;"></div>
+            <div class="oi-bar-fill put" style="width: ${putPct}%; float: right;"></div>
+        </div>
+
+        <!-- RANGE BUDGET -->
+        <div class="env-section-title">Range Budget — σ Framework</div>
+        <div class="env-row">
+            <span class="env-row-label">Daily 1σ</span>
+            <span class="env-row-value">±${daily1s} pts (68% probability)</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Daily 2σ</span>
+            <span class="env-row-value">±${(daily1s * 2)} pts (95% ceiling)</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Trade duration 1σ (${b.bnfTDTE}T)</span>
+            <span class="env-row-value" style="color: var(--accent)">±${trade1s} pts</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">NF Spot</span>
+            <span class="env-row-value">${l.nfSpot?.toFixed(0) || '--'}</span>
+        </div>
     `;
 }
 
@@ -1255,6 +1467,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     restoreMorningData();
     setupTokenInput();
     requestNotificationPermission();
+    initTheme();
     await loadOpenTrade();
     renderAll();
 
@@ -1268,4 +1481,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
     });
+
+    // Theme toggle
+    document.getElementById('theme-switch')?.addEventListener('change', (e) => {
+        const isLight = e.target.checked;
+        document.body.classList.toggle('light', isLight);
+        localStorage.setItem('mr2_theme', isLight ? 'light' : 'dark');
+        document.querySelector('.toggle-icon').textContent = isLight ? '☀️' : '🌙';
+        document.querySelector('meta[name="theme-color"]').content = isLight ? '#f5f5f9' : '#121218';
+    });
 });
+
+function initTheme() {
+    const saved = localStorage.getItem('mr2_theme');
+    if (saved === 'light') {
+        document.body.classList.add('light');
+        const toggle = document.getElementById('theme-switch');
+        if (toggle) toggle.checked = true;
+        const icon = document.querySelector('.toggle-icon');
+        if (icon) icon.textContent = '☀️';
+        document.querySelector('meta[name="theme-color"]').content = '#f5f5f9';
+    }
+}

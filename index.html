@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=3">
+    <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
     <!-- ═══ HEADER ═══ -->
@@ -18,6 +18,11 @@
             <span class="version">v2.0 — Premium First</span>
         </div>
         <div class="header-right">
+            <label class="theme-toggle" title="Toggle theme">
+                <input type="checkbox" id="theme-switch">
+                <span class="toggle-slider"></span>
+                <span class="toggle-icon">🌙</span>
+            </label>
             <span id="watch-status" class="watch-badge">⏹ Ready</span>
         </div>
     </header>
@@ -92,6 +97,14 @@
             </div>
         </section>
 
+        <!-- ═══ DEBUG LOG (on-screen) ═══ -->
+        <details class="section debug-section">
+            <summary>🔧 Chain Debug</summary>
+            <div id="debug-log" class="debug-log">
+                <div class="empty-state">Debug data appears after scan</div>
+            </div>
+        </details>
+
         <!-- ═══ FOOTER ═══ -->
         <footer class="app-footer">
             <span id="footer-status">Ready</span>
@@ -100,10 +113,10 @@
 
     <!-- Scripts: order matters -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="bs.js?v=3"></script>
-    <script src="db.js?v=3"></script>
-    <script src="api.js?v=3"></script>
-    <script src="app.js?v=3"></script>
+    <script src="bs.js?v=5"></script>
+    <script src="db.js?v=5"></script>
+    <script src="api.js?v=5"></script>
+    <script src="app.js?v=5"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(() => {});

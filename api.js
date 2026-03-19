@@ -175,19 +175,29 @@ const API = (() => {
             atmIv = (atmData.CE.iv + atmData.PE.iv) / 2;
         }
 
+        // OI Walls — highest concentration strikes
+        let callWallStrike = atm, callWallOI = 0;
+        let putWallStrike = atm, putWallOI = 0;
+        for (const s of allStrikes) {
+            if (strikes[s]?.CE?.oi > callWallOI) { callWallOI = strikes[s].CE.oi; callWallStrike = s; }
+            if (strikes[s]?.PE?.oi > putWallOI) { putWallOI = strikes[s].PE.oi; putWallStrike = s; }
+        }
+
         debugLog('CHAIN_PARSED', {
             spot, atm, strikeCount: allStrikes.length,
             strikeRange: allStrikes.length ? `${allStrikes[0]}-${allStrikes[allStrikes.length-1]}` : 'none',
             totalCallOI, totalPutOI, pcr, maxPain,
             synthFutures: +synthFutures.toFixed(2), futuresPremium,
-            atmIv, atmCE_ltp: atmData?.CE?.ltp, atmPE_ltp: atmData?.PE?.ltp
+            atmIv, atmCE_ltp: atmData?.CE?.ltp, atmPE_ltp: atmData?.PE?.ltp,
+            callWall: `${callWallStrike} (${callWallOI})`, putWall: `${putWallStrike} (${putWallOI})`
         });
 
         return {
             strikes, allStrikes, atm,
             totalCallOI, totalPutOI, pcr,
             maxPain, synthFutures, futuresPremium,
-            atmIv
+            atmIv,
+            callWallStrike, callWallOI, putWallStrike, putWallOI
         };
     }
 
