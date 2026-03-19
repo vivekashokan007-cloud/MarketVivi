@@ -4,8 +4,8 @@
     "description": "Premium-first options trading dashboard",
     "start_url": "/MarketVivi/",
     "display": "standalone",
-    "background_color": "#0a0e17",
-    "theme_color": "#0a0e17",
+    "background_color": "#121218",
+    "theme_color": "#121218",
     "orientation": "portrait",
     "icons": [
         {

@@ -26,11 +26,11 @@ const API = (() => {
         localStorage.setItem('mr2_upstox_token', token.trim());
     }
 
-    async function apiCall(endpoint, params = {}) {
+    async function apiCall(endpoint, rawQuery) {
         const token = getToken();
         if (!token) throw new Error('No Upstox token. Paste your access token.');
-        const qs = new URLSearchParams(params).toString();
-        const url = `${BASE}${endpoint}${qs ? '?' + qs : ''}`;
+        // rawQuery is a pre-built query string
+        const url = `${BASE}${endpoint}${rawQuery ? '?' + rawQuery : ''}`;
         const res = await fetch(url, {
             headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
         });
@@ -45,7 +45,7 @@ const API = (() => {
 
     async function fetchSpots() {
         const keys = [NF_KEY, BNF_KEY, VIX_KEY].map(encodeURIComponent).join(',');
-        const data = await apiCall('/market-quote/quotes', { instrument_key: keys });
+        const data = await apiCall('/market-quote/quotes', `instrument_key=${keys}`);
         const quotes = data?.data || {};
         const result = { nfSpot: null, bnfSpot: null, vix: null, timestamp: Date.now() };
 
@@ -61,7 +61,7 @@ const API = (() => {
     // ═══ OPTION CHAIN ═══
 
     async function fetchExpiries(indexKey) {
-        const data = await apiCall('/option/contract', { instrument_key: indexKey });
+        const data = await apiCall('/option/contract', `instrument_key=${encodeURIComponent(indexKey)}`);
         const expiries = [];
         const seen = new Set();
         for (const item of (data?.data || [])) {
@@ -72,10 +72,9 @@ const API = (() => {
     }
 
     async function fetchChain(indexKey, expiry) {
-        const data = await apiCall('/option/chain', {
-            instrument_key: indexKey,
-            expiry_date: expiry
-        });
+        const data = await apiCall('/option/chain',
+            `instrument_key=${encodeURIComponent(indexKey)}&expiry_date=${expiry}`
+        );
         return data?.data || [];
     }
 

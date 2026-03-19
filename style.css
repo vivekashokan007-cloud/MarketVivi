@@ -5,26 +5,29 @@
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-    --bg-deep: #0a0e17;
-    --bg-card: #111827;
-    --bg-card-hover: #1a2332;
-    --bg-input: #0d1320;
-    --border: #1e293b;
-    --border-accent: #334155;
+    --bg-deep: #121218;
+    --bg-card: #1e1e2d;
+    --bg-card-hover: #2a2a3d;
+    --bg-input: #16161f;
+    --border: #2d2d40;
+    --border-accent: #3d3d55;
 
-    --text-primary: #e2e8f0;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
+    --text-primary: #e8e8f0;
+    --text-secondary: #a0a0b8;
+    --text-muted: #6b6b82;
 
-    --accent: #00d4aa;       /* teal — aligned, positive */
-    --accent-dim: #00d4aa30;
-    --warn: #f59e0b;         /* amber — conditional */
+    --accent: #8b5cf6;           /* purple — primary brand */
+    --accent-dim: #8b5cf620;
+    --accent-bright: #a78bfa;
+    --green: #22c55e;            /* profit, aligned */
+    --green-dim: #22c55e20;
+    --warn: #f59e0b;             /* conditional */
     --warn-dim: #f59e0b20;
-    --danger: #ef4444;       /* red — against, exit */
+    --danger: #ef4444;           /* against, exit */
     --danger-dim: #ef444420;
-    --sell: #00d4aa;         /* credit = good in premium-first world */
-    --buy: #f59e0b;          /* debit = conditional */
-    --neutral: #64748b;
+    --sell: #22c55e;             /* credit = good */
+    --buy: #f59e0b;              /* debit = conditional */
+    --neutral: #6b6b82;
 
     --font-text: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
@@ -185,7 +188,7 @@ select.input-field {
 .btn-primary {
     padding: 10px 20px;
     background: var(--accent);
-    color: var(--bg-deep);
+    color: #ffffff;
     border: none;
     border-radius: var(--radius-sm);
     font-weight: 600;
@@ -254,7 +257,7 @@ select.input-field {
     color: var(--text-muted);
 }
 
-.text-sell { color: var(--sell); }
+.text-sell { color: var(--green); }
 .text-buy { color: var(--buy); }
 .text-warn { color: var(--warn); }
 
@@ -274,7 +277,7 @@ select.input-field {
     font-family: var(--font-mono);
 }
 
-.bias-bull { background: #00d4aa25; color: var(--accent); border: 1px solid var(--accent); }
+.bias-bull { background: #22c55e25; color: var(--green); border: 1px solid var(--green); }
 .bias-bear { background: #ef444425; color: var(--danger); border: 1px solid var(--danger); }
 .bias-neutral { background: #64748b25; color: var(--neutral); border: 1px solid var(--neutral); }
 
@@ -307,7 +310,7 @@ select.input-field {
     font-family: var(--font-mono);
 }
 
-.signal-bull { background: #00d4aa15; color: var(--accent); }
+.signal-bull { background: #22c55e15; color: var(--green); }
 .signal-bear { background: #ef444415; color: var(--danger); }
 .signal-neutral { background: #64748b15; color: var(--text-muted); }
 
@@ -321,7 +324,7 @@ select.input-field {
     transition: border-color 0.3s;
 }
 
-.candidate-card.align-3 { border-color: var(--accent); background: var(--accent-dim); }
+.candidate-card.align-3 { border-color: var(--green); background: var(--green-dim); }
 .candidate-card.align-2 { border-color: var(--warn); background: var(--warn-dim); }
 .candidate-card.align-1 { border-color: var(--border); }
 
@@ -363,7 +366,7 @@ select.input-field {
     color: var(--text-secondary);
 }
 
-.force-pos { color: var(--accent); }
+.force-pos { color: var(--green); }
 .force-neg { color: var(--danger); }
 .force-neutral { color: var(--warn); }
 
@@ -389,7 +392,7 @@ select.input-field {
     padding: 3px 0;
 }
 
-.cand-align.align-3 { color: var(--accent); }
+.cand-align.align-3 { color: var(--green); }
 .cand-align.align-2 { color: var(--warn); }
 .cand-align.align-1 { color: var(--text-muted); }
 
@@ -397,8 +400,8 @@ select.input-field {
     width: 100%;
     padding: 10px;
     margin-top: 6px;
-    background: var(--accent);
-    color: var(--bg-deep);
+    background: var(--green);
+    color: #ffffff;
     border: none;
     border-radius: var(--radius-sm);
     font-weight: 700;
@@ -442,7 +445,7 @@ select.input-field {
     margin-bottom: 4px;
 }
 
-.pnl-pos { color: var(--accent); }
+.pnl-pos { color: var(--green); }
 .pnl-neg { color: var(--danger); }
 
 .pos-peak {
@@ -470,8 +473,8 @@ select.input-field {
 .btn-close-profit {
     flex: 1;
     padding: 10px;
-    background: var(--accent);
-    color: var(--bg-deep);
+    background: var(--green);
+    color: #ffffff;
     border: none;
     border-radius: var(--radius-sm);
     font-weight: 600;
