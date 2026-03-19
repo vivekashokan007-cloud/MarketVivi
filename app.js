@@ -303,6 +303,8 @@ const STRAT_LABELS = { BULL_PUT:'Bull Put Spread', BEAR_CALL:'Bear Call Spread',
 
 function evaluateAllStrategies(bias, vix, biasConf) {
   const setups = [];
+  // Track nearest expiry DTE for range budget multi-day display
+  let nfMinDte = 99, bnfMinDte = 99;
   for (const indexKey of ['NF','BNF']) {
     const chains = window._CHAINS[indexKey]; if (!chains || !Object.keys(chains).length) continue;
     const isNF = indexKey === 'NF';
@@ -311,6 +313,8 @@ function evaluateAllStrategies(bias, vix, biasConf) {
     for (const expiry in chains) {
       const chain = chains[expiry]; if (!chain.strikes || !chain.spot) continue;
       const spot = chain.spot, dte = chain.dte, tradingDte = chain.tradingDte || dte;
+      if (isNF && tradingDte < nfMinDte && tradingDte > 0) nfMinDte = tradingDte;
+      if (!isNF && tradingDte < bnfMinDte && tradingDte > 0) bnfMinDte = tradingDte;
       const rc = chain.riskCenter || spot; // Actual futures price or spot fallback
       const strikeKeys = Object.keys(chain.strikes).map(Number).sort((a,b) => a - b);
       if (strikeKeys.length < 4) continue;
@@ -345,6 +349,9 @@ function evaluateAllStrategies(bias, vix, biasConf) {
     }
   }
   setups.sort((a, b) => b.compositeScore - a.compositeScore);
+  // Store nearest expiry DTE for range budget multi-day display
+  if (nfMinDte < 99) window._NF_NEAREST_TRADING_DTE = nfMinDte;
+  if (bnfMinDte < 99) window._BNF_NEAREST_TRADING_DTE = bnfMinDte;
   return setups;
 }
 
@@ -700,6 +707,14 @@ function renderRangeBudget() {
     html += `<div>NF 1σ: ${Math.round(sigma1)} pts · ↑<span class="${upColor}">${Math.round(upRemain)}</span> / ↓<span class="${dnColor}">${Math.round(downRemain)}</span> remaining`;
     html += ` <span style="opacity:0.5">(${consumedPct}% consumed ${moveUp > moveDown ? 'up' : 'down'})</span></div>`;
     html += `<div style="font-size:10px;opacity:0.6">NF 2σ: ${Math.round(sigma2)} pts · ↑${Math.round(up2Remain)} / ↓${Math.round(dn2Remain)} — 95% ceiling</div>`;
+    // Multi-day context: show trade-duration expected move
+    const nearExpDte = window._NF_NEAREST_TRADING_DTE || 5;
+    if (nearExpDte > 1) {
+      const multiEM = bsExpectedMove(nfSpot, vix, nearExpDte);
+      const multiUpRemain = Math.max(0, multiEM.one_sigma - moveUp);
+      const multiDnRemain = Math.max(0, multiEM.one_sigma - moveDown);
+      html += `<div style="font-size:10px;color:#8b5cf6">NF ${nearExpDte}-day 1σ: ${Math.round(multiEM.one_sigma)} pts · ↑${Math.round(multiUpRemain)} / ↓${Math.round(multiDnRemain)} remaining — trade-duration view</div>`;
+    }
   }
 
   // BNF range budget
@@ -722,6 +737,14 @@ function renderRangeBudget() {
       html += `<div>BNF 1σ: ${Math.round(sigma1)} pts · ↑<span class="${upColor}">${Math.round(upRemain)}</span> / ↓<span class="${dnColor}">${Math.round(downRemain)}</span> remaining`;
       html += ` <span style="opacity:0.5">(${consumedPct}% consumed ${moveUp > moveDown ? 'up' : 'down'})</span></div>`;
       html += `<div style="font-size:10px;opacity:0.6">BNF 2σ: ${Math.round(sigma2)} pts · ↑${Math.round(up2Remain)} / ↓${Math.round(dn2Remain)} — 95% ceiling</div>`;
+      // Multi-day context
+      const nearExpDte = window._BNF_NEAREST_TRADING_DTE || 5;
+      if (nearExpDte > 1) {
+        const multiEM = bsExpectedMove(bnfSpot, vix, nearExpDte);
+        const multiUpRemain = Math.max(0, multiEM.one_sigma - moveUp);
+        const multiDnRemain = Math.max(0, multiEM.one_sigma - moveDown);
+        html += `<div style="font-size:10px;color:#8b5cf6">BNF ${nearExpDte}-day 1σ: ${Math.round(multiEM.one_sigma)} pts · ↑${Math.round(multiUpRemain)} / ↓${Math.round(multiDnRemain)} remaining — trade-duration view</div>`;
+      }
     } else {
       html += `<div>BNF 1σ: ${Math.round(sigma1)} pts <span style="opacity:0.5">(no prev close for budget)</span></div>`;
     }
