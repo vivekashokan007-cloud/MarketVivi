@@ -11,7 +11,7 @@
 // ═══ CONSTANTS ═══
 const C = {
     CAPITAL: 110000,
-    MAX_RISK_PCT: 5,
+    MAX_RISK_PCT: 10,
     NF_LOT: 65,
     BNF_LOT: 30,
     NF_MARGIN_EST: 97000,
@@ -21,40 +21,42 @@ const C = {
     NF_WIDTHS: [100, 150, 200, 250, 300, 400],
     BNF_WIDTHS: [200, 300, 400, 500, 600, 800, 1000],
 
-    // NF is secondary due to margin constraint. BNF is primary.
-    // NF only recommended when margin < 70% capital
     NF_MARGIN_THRESHOLD: 0.7,
 
     // Polling intervals
-    POLL_INTERVAL_MS: 5 * 60 * 1000,       // 5 min light fetch
-    ROUTINE_NOTIFY_MS: 30 * 60 * 1000,     // 30 min routine notification
+    POLL_INTERVAL_MS: 5 * 60 * 1000,
+    ROUTINE_NOTIFY_MS: 30 * 60 * 1000,
 
-    // σ thresholds for notifications — ADAPTIVE, not hardcoded
-    // These are statistical thresholds, not point values
-    // The actual point values change with VIX and elapsed time
-    SIGMA_ENTRY_THRESHOLD: 1.5,     // >1.5σ move triggers re-evaluation
-    SIGMA_EXIT_THRESHOLD: 1.0,      // tighter for open positions
-    SIGMA_IMPORTANT_THRESHOLD: 2.0, // >2σ = immediate important notification
+    // σ thresholds
+    SIGMA_ENTRY_THRESHOLD: 1.5,
+    SIGMA_EXIT_THRESHOLD: 1.0,
+    SIGMA_IMPORTANT_THRESHOLD: 2.0,
 
-    // Time gates (minutes since 9:15)
-    NOISE_WINDOW: 15,    // first 15 min = suppress entry signals
-    SWEET_SPOT_START: 135, // 11:30 AM — institutional flow visible
-    SWEET_SPOT_END: 315,   // 14:30
-    LAST_ENTRY_CUTOFF: 345, // 15:00 — no new entries in last 30 min
+    // Time gates
+    NOISE_WINDOW: 15,
+    SWEET_SPOT_START: 135,
+    SWEET_SPOT_END: 315,
+    LAST_ENTRY_CUTOFF: 345,
 
-    // Force alignment labels
     FORCE_LABELS: { 1: '✅', 0: '⚠️', '-1': '❌' },
 
-    // IV regime thresholds (VIX-based)
+    // IV regime thresholds
     IV_LOW: 15,
     IV_NORMAL_LOW: 16,
     IV_NORMAL_HIGH: 19,
     IV_HIGH: 20,
     IV_VERY_HIGH: 24,
 
-    // Strategy types
-    CREDIT_TYPES: ['BEAR_CALL', 'BULL_PUT'],
-    DEBIT_TYPES: ['BEAR_PUT', 'BULL_CALL']
+    // Filters
+    MIN_PROB: 0.60,          // minimum probability of profit
+    MIN_CREDIT_RATIO: 0.12,  // credit/width must be ≥12% for credit strategies
+
+    // Strategy categories
+    CREDIT_TYPES: ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
+    DEBIT_TYPES: ['BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT'],
+    NEUTRAL_TYPES: ['IRON_CONDOR', 'IRON_BUTTERFLY', 'DOUBLE_DEBIT'],
+    DIRECTIONAL_BULL: ['BULL_CALL', 'BULL_PUT'],
+    DIRECTIONAL_BEAR: ['BEAR_CALL', 'BEAR_PUT']
 };
 
 // ═══ APP STATE ═══
@@ -81,6 +83,14 @@ const STATE = {
 
     // Premium history (from Supabase, for IV percentile)
     premiumHistory: [],
+
+    // Direction intelligence
+    bnfBreadth: null,
+    nf50Breadth: null,
+    contrarianPCR: [],
+    fiiTrend: null,
+    trajectory: null,
+    controlIndex: null,
 
     // Loop control
     pollTimer: null,
@@ -271,43 +281,45 @@ function computeBias(morning, chainData) {
 // ═══════════════════════════════════════════════════════════════
 
 function assessForce1_Intrinsic(strategyType, biasResult) {
-    // Does the directional bias support this strategy?
-    const isBullStrategy = strategyType === 'BULL_CALL' || strategyType === 'BULL_PUT';
-    const isBearStrategy = strategyType === 'BEAR_CALL' || strategyType === 'BEAR_PUT';
+    const isNeutral = C.NEUTRAL_TYPES.includes(strategyType);
+    const isBull = C.DIRECTIONAL_BULL.includes(strategyType);
+    const isBear = C.DIRECTIONAL_BEAR.includes(strategyType);
 
-    if (biasResult.bias === 'BULL' && isBullStrategy) return 1;
-    if (biasResult.bias === 'BEAR' && isBearStrategy) return 1;
+    // Neutral strategies: LOVE neutral bias, HATE strong directional
+    if (isNeutral) {
+        if (biasResult.bias === 'NEUTRAL') return 1;
+        if (biasResult.strength === 'MILD') return 0;
+        return -1; // STRONG directional = bad for neutral strategies
+    }
+
+    // Directional strategies: same as before
+    if (biasResult.bias === 'BULL' && isBull) return 1;
+    if (biasResult.bias === 'BEAR' && isBear) return 1;
     if (biasResult.bias === 'NEUTRAL') return 0;
-    // Opposing direction
-    if (biasResult.bias === 'BULL' && isBearStrategy) return -1;
-    if (biasResult.bias === 'BEAR' && isBullStrategy) return -1;
+    if (biasResult.bias === 'BULL' && isBear) return -1;
+    if (biasResult.bias === 'BEAR' && isBull) return -1;
     return 0;
 }
 
 function assessForce2_Theta(strategyType) {
-    // Credit = always +1 (theta works for you). Debit = always -1.
     return C.CREDIT_TYPES.includes(strategyType) ? 1 : -1;
 }
 
 function assessForce3_IV(strategyType, vix, ivPercentile) {
-    // Is the IV environment helping or hurting this strategy?
     const isCredit = C.CREDIT_TYPES.includes(strategyType);
     const isDebit = C.DEBIT_TYPES.includes(strategyType);
 
-    // Determine IV regime
     let regime = 'NORMAL';
     if (vix >= C.IV_HIGH || (ivPercentile !== null && ivPercentile > 65)) regime = 'HIGH';
     if (vix >= C.IV_VERY_HIGH || (ivPercentile !== null && ivPercentile > 85)) regime = 'VERY_HIGH';
     if (vix <= C.IV_LOW || (ivPercentile !== null && ivPercentile < 25)) regime = 'LOW';
 
     if (regime === 'HIGH' || regime === 'VERY_HIGH') {
-        // Premium is expensive. Sellers benefit (IV crush). Buyers overpay.
         return isCredit ? 1 : -1;
     } else if (regime === 'LOW') {
-        // Premium is cheap. Buyers get bargains. Sellers get peanuts.
         return isDebit ? 1 : -1;
     }
-    return 0; // NORMAL — neither helps nor hurts
+    return 0;
 }
 
 function getForceAlignment(strategyType, biasResult, vix, ivPercentile) {
@@ -317,6 +329,166 @@ function getForceAlignment(strategyType, biasResult, vix, ivPercentile) {
     const aligned = [f1, f2, f3].filter(f => f === 1).length;
     const against = [f1, f2, f3].filter(f => f === -1).length;
     return { f1, f2, f3, aligned, against, score: f1 + f2 + f3 };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// DIRECTION INTELLIGENCE — v1 knowledge carried forward
+// ═══════════════════════════════════════════════════════════════
+
+// 3. Contrarian PCR Flag — extreme readings = reversal warning
+function getContrarianPCR(currentPCR, history) {
+    const flags = [];
+    if (currentPCR < 0.6) flags.push({ type: 'extreme', text: '⚡ PCR < 0.6 — extreme put buying. Contrarian bounce likely 1-3 sessions.', severity: 'high' });
+    else if (currentPCR > 1.5) flags.push({ type: 'extreme', text: '⚡ PCR > 1.5 — extreme call selling. Contrarian drop likely 1-3 sessions.', severity: 'high' });
+
+    // Multi-session detection from history
+    if (history.length >= 2) {
+        const recentPCRs = history.slice(0, 2).map(h => h.pcr).filter(Boolean);
+        if (recentPCRs.length >= 2) {
+            if (recentPCRs.every(p => p < 0.8) && currentPCR < 0.8) {
+                flags.push({ type: 'sustained', text: '📉 PCR < 0.8 for 3+ sessions — sustained bearish, watch for snap reversal.', severity: 'medium' });
+            }
+            if (recentPCRs.every(p => p > 1.3) && currentPCR > 1.3) {
+                flags.push({ type: 'sustained', text: '📈 PCR > 1.3 for 3+ sessions — sustained bullish, watch for reversal.', severity: 'medium' });
+            }
+        }
+    }
+    return flags;
+}
+
+// 4. FII Short% 3-Session Trend Tracker
+function getFiiShortTrend(currentShort, history) {
+    const vals = [];
+    if (currentShort) vals.push(parseFloat(currentShort));
+    for (const h of history.slice(0, 2)) {
+        if (h.fii_short_pct) vals.push(h.fii_short_pct);
+    }
+    if (vals.length < 2) return null;
+
+    const changes = [];
+    for (let i = 0; i < vals.length - 1; i++) changes.push(vals[i] - vals[i + 1]);
+
+    let trend = 'FLAT';
+    let label = '';
+    const allDown = changes.every(c => c < 0);
+    const allUp = changes.every(c => c > 0);
+
+    if (allDown) { trend = 'COVERING'; label = `↓↓ Covering (${vals.map(v => v.toFixed(1)).join('→')}) — bullish`; }
+    else if (allUp) { trend = 'BUILDING'; label = `↑↑ Building (${vals.map(v => v.toFixed(1)).join('→')}) — bearish`; }
+    else if (changes.length >= 2 && Math.sign(changes[0]) !== Math.sign(changes[1])) {
+        trend = 'INFLECTION'; label = `⟳ Inflection (${vals.map(v => v.toFixed(1)).join('→')}) — direction changed`;
+    } else {
+        label = vals.map(v => v.toFixed(1)).join('→');
+    }
+
+    // Acceleration
+    let accel = false;
+    if (changes.length >= 2 && Math.abs(changes[0]) > Math.abs(changes[1]) * 1.3) accel = true;
+
+    // Aggressive move
+    const aggressive = changes.length > 0 && Math.abs(changes[0]) >= 3;
+
+    return { trend, label, accel, aggressive, values: vals, changes };
+}
+
+// 7. Adversarial Control Index — who controls your open position?
+function computeControlIndex(trade, chain, spot, bnfBreadth) {
+    if (!trade || !chain) return null;
+
+    const isBear = trade.strategy_type?.includes('BEAR');
+    const isBull = trade.strategy_type?.includes('BULL');
+    const isIC = trade.strategy_type === 'IRON_CONDOR' || trade.strategy_type === 'IRON_BUTTERFLY';
+    let score = 0;
+
+    // Signal 1: Max Pain Migration (35%)
+    const entryMaxPain = trade.entry_max_pain || chain.maxPain;
+    const currentMaxPain = chain.maxPain;
+    if (entryMaxPain && currentMaxPain) {
+        const mpMove = currentMaxPain - entryMaxPain;
+        let mpScore = 0;
+        if (isBear && mpMove < 0) mpScore = 1;      // MP moving down, good for bears
+        else if (isBear && mpMove > 0) mpScore = -1;
+        else if (isBull && mpMove > 0) mpScore = 1;
+        else if (isBull && mpMove < 0) mpScore = -1;
+        else if (isIC) mpScore = Math.abs(mpMove) < 200 ? 1 : -1; // IC wants MP stable
+        score += mpScore * 35;
+    }
+
+    // Signal 2: Sell Strike OI change (30%)
+    const sellStrikeData = chain.strikes[trade.sell_strike]?.[trade.sell_type];
+    if (sellStrikeData && trade.entry_sell_oi) {
+        const oiChange = sellStrikeData.oi - trade.entry_sell_oi;
+        score += (oiChange > 0 ? 1 : oiChange < 0 ? -1 : 0) * 30;
+    }
+
+    // Signal 3: PCR Shift (25%)
+    if (trade.entry_pcr && chain.pcr) {
+        const pcrChange = chain.pcr - trade.entry_pcr;
+        let pcrScore = 0;
+        if (isBear && pcrChange < -0.05) pcrScore = 1;   // PCR dropping = more bearish
+        else if (isBear && pcrChange > 0.05) pcrScore = -1;
+        else if (isBull && pcrChange > 0.05) pcrScore = 1;
+        else if (isBull && pcrChange < -0.05) pcrScore = -1;
+        score += pcrScore * 25;
+    }
+
+    // Signal 4: Heavyweight Divergence — BNF only (10%)
+    if (bnfBreadth && trade.index_key === 'BNF') {
+        const wp = bnfBreadth.weightedPct || 0;
+        let hwScore = 0;
+        if (isBear && wp < -0.5) hwScore = 1;   // heavyweights falling = good for bears
+        else if (isBear && wp > 0.5) hwScore = -1;
+        else if (isBull && wp > 0.5) hwScore = 1;
+        else if (isBull && wp < -0.5) hwScore = -1;
+        score += hwScore * 10;
+    }
+
+    return Math.round(Math.max(-100, Math.min(100, score)));
+}
+
+// 8. Session Trajectory — last 5 sessions with arrows
+function getSessionTrajectory(history) {
+    if (!history || history.length < 2) return null;
+    const sessions = history.slice(0, 5).reverse(); // oldest first
+    const fields = ['vix', 'pcr', 'fii_cash', 'fii_short_pct', 'bnf_spot', 'nf_spot'];
+    const labels = ['VIX', 'PCR', 'FII Cash', 'FII Short%', 'BNF', 'NF'];
+    const trajectory = [];
+
+    for (let f = 0; f < fields.length; f++) {
+        const row = { label: labels[f], arrows: [] };
+        for (let i = 1; i < sessions.length; i++) {
+            const prev = sessions[i - 1][fields[f]];
+            const curr = sessions[i][fields[f]];
+            if (prev == null || curr == null) { row.arrows.push('—'); continue; }
+            const diff = curr - prev;
+            const threshold = fields[f] === 'vix' ? 0.3 : fields[f] === 'pcr' ? 0.03 : fields[f] === 'fii_short_pct' ? 0.5 : fields[f] === 'bnf_spot' || fields[f] === 'nf_spot' ? 50 : 100;
+            row.arrows.push(diff > threshold ? '↑' : diff < -threshold ? '↓' : '→');
+        }
+        trajectory.push(row);
+    }
+
+    // Detect multi-signal reversal (3+ arrows changed direction from prev session)
+    let reversalCount = 0;
+    if (sessions.length >= 3) {
+        for (const row of trajectory) {
+            const last = row.arrows[row.arrows.length - 1];
+            const prev = row.arrows.length >= 2 ? row.arrows[row.arrows.length - 2] : null;
+            if (prev && last !== prev && last !== '→' && prev !== '→') reversalCount++;
+        }
+    }
+
+    // Detect alignment (4+ moving same direction)
+    const lastArrows = trajectory.map(r => r.arrows[r.arrows.length - 1]).filter(a => a !== '—');
+    const upCount = lastArrows.filter(a => a === '↑').length;
+    const downCount = lastArrows.filter(a => a === '↓').length;
+
+    return {
+        trajectory, dates: sessions.map(s => s.date),
+        reversal: reversalCount >= 3 ? 'Possible institutional shift — 3+ signals reversed' : null,
+        alignment: upCount >= 4 ? 'Institutional accumulation pressure — 4+ signals rising' :
+            downCount >= 4 ? 'Institutional selling pressure — 4+ signals falling' : null
+    };
 }
 
 
@@ -335,42 +507,231 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
     const candidates = [];
 
-    // Determine ATM IV for probability calculations
     const atmIv = parsed.atmIv || (vix / 100);
-    const vol = atmIv > 1 ? atmIv / 100 : atmIv; // normalize
+    const vol = atmIv > 1 ? atmIv / 100 : atmIv;
 
-    // Strike step (derived from chain)
     const allStrikes = parsed.allStrikes;
     const step = allStrikes.length > 1 ? allStrikes[1] - allStrikes[0] : (isBNF ? 100 : 50);
 
-    // Generate spreads
+    // ═══ 1. DIRECTIONAL SPREADS (4 types) ═══
     const stratTypes = ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL'];
+
+    // ═══ RANGE BUDGET for debit spreads ═══
+    // Reject if width > remaining 1σ in trade direction (uses multi-day sigma)
+    const prevClose = STATE.premiumHistory?.[0]?.bnf_spot || spot;
+    const tradeSigma = BS.sigmaDays(spot, vix, tDTE);
+    const moveFromClose = spot - prevClose;
+    const remainingUp = Math.max(0, tradeSigma - Math.max(0, moveFromClose));
+    const remainingDown = Math.max(0, tradeSigma - Math.max(0, -moveFromClose));
 
     for (const sType of stratTypes) {
         for (const width of widths) {
             const strikePairs = getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF);
-
             for (const pair of strikePairs) {
-                const cand = buildCandidate(sType, pair, parsed.strikes, spot, lotSize, width, T, tDTE, vol, expiry, isBNF);
+                const cand = buildCandidate(sType, pair, parsed.strikes, spot, lotSize, width, T, tDTE, vol, expiry, isBNF, vix);
                 if (!cand) continue;
 
-                // Force alignment
+                // ═══ RANGE BUDGET FILTER (debit spreads only) ═══
+                if (C.DEBIT_TYPES.includes(sType)) {
+                    if (sType === 'BULL_CALL' && width > remainingUp * 1.2) continue;
+                    if (sType === 'BEAR_PUT' && width > remainingDown * 1.2) continue;
+                }
+
                 cand.forces = getForceAlignment(sType, biasResult, vix, ivPercentile);
                 cand.index = isBNF ? 'BNF' : 'NF';
                 cand.expiry = expiry;
                 cand.tDTE = tDTE;
-
-                // Capital check
-                if (!isBNF) {
-                    // NF: check margin constraint
+                if (!isBNF && C.DIRECTIONAL_BEAR.concat(C.DIRECTIONAL_BULL).includes(sType)) {
                     if (C.CREDIT_TYPES.includes(sType) && C.NF_MARGIN_EST > C.CAPITAL * C.NF_MARGIN_THRESHOLD) {
                         cand.capitalBlocked = true;
                     }
                 }
-
                 candidates.push(cand);
             }
         }
+    }
+
+    // ═══ 2. IRON CONDOR (Bear Call + Bull Put combined) ═══
+    for (const width of widths) {
+        const range = isBNF ? 2000 : 800;
+        // Try symmetric distances from ATM
+        for (let dist = width; dist <= range; dist += step) {
+            const sellCall = atm + dist;
+            const buyCall = sellCall + width;
+            const sellPut = atm - dist;
+            const buyPut = sellPut - width;
+
+            if (!allStrikes.includes(sellCall) || !allStrikes.includes(buyCall)) continue;
+            if (!allStrikes.includes(sellPut) || !allStrikes.includes(buyPut)) continue;
+
+            const ceS = parsed.strikes[sellCall]?.CE;
+            const ceB = parsed.strikes[buyCall]?.CE;
+            const peS = parsed.strikes[sellPut]?.PE;
+            const peB = parsed.strikes[buyPut]?.PE;
+            if (!ceS || !ceB || !peS || !peB) continue;
+
+            const callCredit = (ceS.bid || 0) - (ceB.ask || 0);
+            const putCredit = (peS.bid || 0) - (peB.ask || 0);
+            if (callCredit <= 0 || putCredit <= 0) continue;
+
+            const totalCredit = callCredit + putCredit;
+            const maxLossPerShare = width - totalCredit;
+            if (maxLossPerShare <= 0) continue;
+
+            const maxProfit = Math.round(totalCredit * lotSize);
+            const maxLoss = Math.round(maxLossPerShare * lotSize);
+            if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) continue;
+            if (maxLoss <= 0 || maxProfit <= 0) continue;
+
+            // Probability: spot stays between both sold strikes
+            const probAbovePut = 1 - Math.abs(BS.delta(spot, sellPut, T, vol, 'PE'));
+            const probBelowCall = 1 - Math.abs(BS.delta(spot, sellCall, T, vol, 'CE'));
+            const probProfit = Math.max(0, probAbovePut + probBelowCall - 1);
+            if (probProfit < C.MIN_PROB) continue;
+            if (totalCredit / width < C.MIN_CREDIT_RATIO) continue;
+
+            const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
+
+            // Theta: sum of all 4 legs
+            const netTheta = Math.round(Math.abs(
+                (BS.theta(spot, sellCall, T, vol, 'CE') + BS.theta(spot, sellPut, T, vol, 'PE')
+                - BS.theta(spot, buyCall, T, vol, 'CE') - BS.theta(spot, buyPut, T, vol, 'PE'))
+            ) * lotSize);
+
+            const id = `IC_${isBNF ? 'BNF' : 'NF'}_${sellCall}_${sellPut}_W${width}`;
+
+            candidates.push({
+                id, type: 'IRON_CONDOR', width, legs: 4,
+                sellStrike: sellCall, buyStrike: buyCall,
+                sellStrike2: sellPut, buyStrike2: buyPut,
+                sellType: 'CE', buyType: 'CE', sellType2: 'PE', buyType2: 'PE',
+                sellLTP: ceS.bid, buyLTP: ceB.ask,
+                sellLTP2: peS.bid, buyLTP2: peB.ask,
+                netPremium: +totalCredit.toFixed(2),
+                maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
+                ev, netTheta, isCredit: true, lotSize,
+                forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
+                index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
+                margin: Math.round(maxLossPerShare * lotSize * 1.2) // IC margin is ~one side
+            });
+        }
+    }
+
+    // ═══ 3. IRON BUTTERFLY (sell ATM CE+PE, buy wings) ═══
+    for (const width of widths) {
+        const sellCall = atm;
+        const buyCall = atm + width;
+        const sellPut = atm;
+        const buyPut = atm - width;
+
+        if (!allStrikes.includes(buyCall) || !allStrikes.includes(buyPut)) continue;
+
+        const ceS = parsed.strikes[atm]?.CE;
+        const ceB = parsed.strikes[buyCall]?.CE;
+        const peS = parsed.strikes[atm]?.PE;
+        const peB = parsed.strikes[buyPut]?.PE;
+        if (!ceS || !ceB || !peS || !peB) continue;
+
+        const callCredit = (ceS.bid || 0) - (ceB.ask || 0);
+        const putCredit = (peS.bid || 0) - (peB.ask || 0);
+        if (callCredit <= 0 || putCredit <= 0) continue;
+
+        const totalCredit = callCredit + putCredit;
+        const maxLossPerShare = width - totalCredit;
+        if (maxLossPerShare <= 0) continue;
+
+        const maxProfit = Math.round(totalCredit * lotSize);
+        const maxLoss = Math.round(maxLossPerShare * lotSize);
+        if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) continue;
+        if (maxLoss <= 0 || maxProfit <= 0) continue;
+
+        // IB has lower probability (needs pinning near ATM) but higher credit
+        const probProfit = Math.max(0.2, 1 - (width / (BS.dailySigma(spot, vix) * Math.sqrt(tDTE))));
+        if (probProfit < C.MIN_PROB) continue;
+
+        const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
+        const netTheta = Math.round(Math.abs(
+            (BS.theta(spot, atm, T, vol, 'CE') + BS.theta(spot, atm, T, vol, 'PE')
+            - BS.theta(spot, buyCall, T, vol, 'CE') - BS.theta(spot, buyPut, T, vol, 'PE'))
+        ) * lotSize);
+
+        const id = `IB_${isBNF ? 'BNF' : 'NF'}_${atm}_W${width}`;
+
+        candidates.push({
+            id, type: 'IRON_BUTTERFLY', width, legs: 4,
+            sellStrike: atm, buyStrike: buyCall,
+            sellStrike2: atm, buyStrike2: buyPut,
+            sellType: 'CE', buyType: 'CE', sellType2: 'PE', buyType2: 'PE',
+            sellLTP: ceS.bid, buyLTP: ceB.ask,
+            sellLTP2: peS.bid, buyLTP2: peB.ask,
+            netPremium: +totalCredit.toFixed(2),
+            maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
+            ev, netTheta, isCredit: true, lotSize,
+            forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
+            index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
+            margin: Math.round(maxLossPerShare * lotSize * 1.2)
+        });
+    }
+
+    // ═══ 4. DOUBLE DEBIT SPREAD (Bull Call + Bear Put — straddle replacement) ═══
+    for (const width of widths) {
+        // Buy ATM-ish CE spread + Buy ATM-ish PE spread
+        const buyCall = atm;
+        const sellCall = atm + width;
+        const buyPut = atm;
+        const sellPut = atm - width;
+
+        if (!allStrikes.includes(sellCall) || !allStrikes.includes(sellPut)) continue;
+
+        const ceB = parsed.strikes[atm]?.CE;
+        const ceS = parsed.strikes[sellCall]?.CE;
+        const peB = parsed.strikes[atm]?.PE;
+        const peS = parsed.strikes[sellPut]?.PE;
+        if (!ceB || !ceS || !peB || !peS) continue;
+
+        const callDebit = (ceB.ask || 0) - (ceS.bid || 0);
+        const putDebit = (peB.ask || 0) - (peS.bid || 0);
+        if (callDebit <= 0 || putDebit <= 0) continue;
+
+        const totalDebit = callDebit + putDebit;
+        // Max profit = width - losing side's debit (one side profits, other expires worthless)
+        // If BNF moves up: call spread profits (width - callDebit), put spread = -putDebit
+        // Net best case = width - callDebit - putDebit = width - totalDebit
+        const maxProfit = Math.round((width - totalDebit) * lotSize);
+        const maxLoss = Math.round(totalDebit * lotSize); // both expire worthless if pinned at ATM
+        if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) continue;
+        if (maxLoss <= 0 || maxProfit <= 0) continue;
+
+        // Probability: need move > totalDebit in either direction
+        // Roughly: 1 - prob(stays within totalDebit range)
+        const breakeven = totalDebit;
+        const moveNeeded = breakeven / spot;
+        const dailySigma = BS.dailySigma(spot, vix) * Math.sqrt(tDTE);
+        const probProfit = Math.max(0.1, 2 * (1 - BS.normCDF(breakeven / dailySigma)));
+        if (probProfit < 0.30) continue; // lower threshold for event plays
+
+        const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
+        const netTheta = -Math.round(Math.abs(
+            (BS.theta(spot, atm, T, vol, 'CE') + BS.theta(spot, atm, T, vol, 'PE')
+            - BS.theta(spot, sellCall, T, vol, 'CE') - BS.theta(spot, sellPut, T, vol, 'PE'))
+        ) * lotSize); // negative = theta against you
+
+        const id = `DDS_${isBNF ? 'BNF' : 'NF'}_${atm}_W${width}`;
+
+        candidates.push({
+            id, type: 'DOUBLE_DEBIT', width, legs: 4,
+            sellStrike: sellCall, buyStrike: atm,
+            sellStrike2: sellPut, buyStrike2: atm,
+            sellType: 'CE', buyType: 'CE', sellType2: 'PE', buyType2: 'PE',
+            sellLTP: ceS.bid, buyLTP: ceB.ask,
+            sellLTP2: peS.bid, buyLTP2: peB.ask,
+            netPremium: +totalDebit.toFixed(2),
+            maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
+            ev, netTheta, isCredit: false, lotSize,
+            forces: getForceAlignment('DOUBLE_DEBIT', biasResult, vix, ivPercentile),
+            index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
+            margin: maxLoss
+        });
     }
 
     return candidates;
@@ -417,7 +778,7 @@ function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
     return pairs.slice(0, 8); // limit per width
 }
 
-function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol, expiry, isBNF) {
+function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol, expiry, isBNF, vix) {
     const sellData = strikes[pair.sell]?.[pair.sellType];
     const buyData = strikes[pair.buy]?.[pair.buyType];
     if (!sellData || !buyData) return null;
@@ -449,8 +810,19 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol
 
     // Probability (using delta of sell strike)
     const sellDelta = Math.abs(BS.delta(spot, pair.sell, T, vol, pair.sellType));
-    const probProfit = isCredit ? (1 - sellDelta) : sellDelta;
-    if (probProfit < 0.30) return null; // minimum viable
+    let probProfit = isCredit ? (1 - sellDelta) : sellDelta;
+
+    // ═══ IV EDGE PROBABILITY BOOST (credit sellers only) ═══
+    // When VIX ≥ 18, implied > realized. Delta underestimates credit win rate.
+    if (isCredit && vix >= 18) {
+        const ivEdge = Math.min(0.10, (vix - 16) * 0.015);
+        probProfit = Math.min(0.98, probProfit + ivEdge);
+    }
+
+    if (probProfit < C.MIN_PROB) return null;
+
+    // Credit ratio filter
+    if (isCredit && (netPremium / width) < C.MIN_CREDIT_RATIO) return null;
 
     // EV
     const ev = (probProfit * maxProfit) - ((1 - probProfit) * maxLoss);
@@ -553,6 +925,14 @@ async function initialFetch() {
         STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
         dbg('NF_CHAIN', { strikes: STATE.nfChain.allStrikes.length, atm: STATE.nfChain.atm, pcr: STATE.nfChain.pcr });
 
+        // Fetch BNF breadth (5 constituents, 79% weight)
+        statusEl.textContent = 'Fetching BNF breadth...';
+        STATE.bnfBreadth = await API.fetchBnfBreadth();
+
+        // Fetch NF50 breadth (50 constituents)
+        statusEl.textContent = 'Fetching NF50 breadth...';
+        STATE.nf50Breadth = await API.fetchNf50Breadth();
+
         // Load premium history for IV percentile
         statusEl.textContent = 'Loading premium history...';
         STATE.premiumHistory = await DB.getPremiumHistory(60);
@@ -571,6 +951,11 @@ async function initialFetch() {
         });
         dbg('BIAS', { label: biasResult.label, net: biasResult.net, bull: biasResult.votes.bull, bear: biasResult.votes.bear, signalCount: biasResult.signals.length, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
         dbg('MORNING_INPUT', STATE.morningInput);
+
+        // Direction intelligence
+        STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.pcr, STATE.premiumHistory);
+        STATE.fiiTrend = getFiiShortTrend(STATE.morningInput?.fiiShortPct, STATE.premiumHistory);
+        STATE.trajectory = getSessionTrajectory(STATE.premiumHistory);
 
         // Generate candidates
         statusEl.textContent = 'Generating candidates...';
@@ -633,7 +1018,12 @@ async function initialFetch() {
             bnfTotalPutOI: STATE.bnfChain.totalPutOI,
             // ATM
             bnfAtm: STATE.bnfChain.atm,
-            bnfSynthFutures: STATE.bnfChain.synthFutures
+            bnfSynthFutures: STATE.bnfChain.synthFutures,
+            // Breadth
+            bnfBreadth: STATE.bnfBreadth,
+            nf50Breadth: STATE.nf50Breadth,
+            bnfAdvancing: STATE.bnfBreadth?.advancing || 0,
+            nf50Advancing: STATE.nf50Breadth?.scaled || 0
         };
 
         STATE.live = { ...STATE.baseline };
@@ -741,6 +1131,9 @@ async function lightFetch() {
         // Update open trade P&L
         if (STATE.openTrade) {
             updateOpenTradePnL(bnfChain, spots);
+            // Adversarial Control Index
+            STATE.controlIndex = computeControlIndex(STATE.openTrade, bnfChain, spots.bnfSpot, STATE.bnfBreadth);
+            if (STATE.openTrade) STATE.openTrade.controlIndex = STATE.controlIndex;
         }
 
         // Check for notifications
@@ -776,7 +1169,7 @@ async function lightFetch() {
 
 function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
     for (const cand of STATE.watchlist) {
-        // Update LTPs from live chain
+        // Update LTPs from live chain — leg 1+2
         const sellData = bnfChain.strikes[cand.sellStrike]?.[cand.sellType];
         const buyData = bnfChain.strikes[cand.buyStrike]?.[cand.buyType];
         if (sellData) {
@@ -788,8 +1181,30 @@ function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
             cand.buyOI = buyData.oi;
         }
 
+        // 4-leg: update leg 3+4
+        if (cand.legs === 4 && cand.sellStrike2) {
+            const sellData2 = bnfChain.strikes[cand.sellStrike2]?.[cand.sellType2];
+            const buyData2 = bnfChain.strikes[cand.buyStrike2]?.[cand.buyType2];
+            if (sellData2) cand.sellLTP2 = cand.isCredit ? sellData2.bid : sellData2.ask;
+            if (buyData2) cand.buyLTP2 = cand.isCredit ? buyData2.ask : buyData2.bid;
+        }
+
         // Recalculate premium
-        if (cand.isCredit) {
+        if (cand.legs === 4) {
+            if (cand.isCredit) {
+                const credit1 = (cand.sellLTP || 0) - (cand.buyLTP || 0);
+                const credit2 = (cand.sellLTP2 || 0) - (cand.buyLTP2 || 0);
+                cand.netPremium = +(credit1 + credit2).toFixed(2);
+                cand.maxProfit = Math.round(cand.netPremium * cand.lotSize);
+                cand.maxLoss = Math.round((cand.width - cand.netPremium) * cand.lotSize);
+            } else {
+                const debit1 = (cand.buyLTP || 0) - (cand.sellLTP || 0);
+                const debit2 = (cand.buyLTP2 || 0) - (cand.sellLTP2 || 0);
+                cand.netPremium = +(debit1 + debit2).toFixed(2);
+                cand.maxProfit = Math.round((cand.width - cand.netPremium) * cand.lotSize);
+                cand.maxLoss = Math.round(cand.netPremium * cand.lotSize);
+            }
+        } else if (cand.isCredit) {
             cand.netPremium = +(cand.sellLTP - cand.buyLTP).toFixed(2);
             cand.maxProfit = Math.round(cand.netPremium * cand.lotSize);
             cand.maxLoss = Math.round((cand.width - cand.netPremium) * cand.lotSize);
@@ -802,8 +1217,6 @@ function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
         // Recalculate forces
         const oldAlignment = cand.forces.aligned;
         cand.forces = getForceAlignment(cand.type, biasResult, spots.vix, ivPctl);
-
-        // Detect alignment change
         cand._alignmentChanged = (cand.forces.aligned !== oldAlignment);
         cand._prevAlignment = oldAlignment;
     }
@@ -1095,7 +1508,10 @@ function friendlyType(type) {
         BEAR_CALL: 'Bear Call',
         BULL_PUT: 'Bull Put',
         BEAR_PUT: 'Bear Put',
-        BULL_CALL: 'Bull Call'
+        BULL_CALL: 'Bull Call',
+        IRON_CONDOR: 'Iron Condor',
+        IRON_BUTTERFLY: 'Iron Butterfly',
+        DOUBLE_DEBIT: 'Double Debit'
     }[type] || type;
 }
 
@@ -1359,6 +1775,57 @@ function renderPremiumEnvironment() {
             <span class="env-row-value">${l.nfSpot?.toFixed(0) || '--'}</span>
         </div>
 
+        <!-- BREADTH -->
+        <div class="env-section-title">📊 Market Breadth</div>
+        ${STATE.bnfBreadth ? `
+        <div class="env-row">
+            <span class="env-row-label">BNF Weighted (5 stocks, 79%)</span>
+            <span class="env-row-value" style="color: ${STATE.bnfBreadth.weightedPct > 0 ? 'var(--green)' : STATE.bnfBreadth.weightedPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+                ${STATE.bnfBreadth.weightedPct > 0 ? '+' : ''}${STATE.bnfBreadth.weightedPct}% · ${STATE.bnfBreadth.advancing}↑ ${STATE.bnfBreadth.declining}↓
+            </span>
+        </div>
+        <div class="env-signals">${(STATE.bnfBreadth.results || []).map(r =>
+            `<span class="signal-chip signal-${r.change > 0 ? 'bull' : r.change < 0 ? 'bear' : 'neutral'}">${r.name}: ${r.pctChange > 0 ? '+' : ''}${r.pctChange}%</span>`
+        ).join('')}</div>
+        ` : '<div class="env-row"><span class="env-row-label">BNF Breadth</span><span class="env-row-value">--</span></div>'}
+        ${STATE.nf50Breadth ? `
+        <div class="env-row">
+            <span class="env-row-label">NF50 Breadth</span>
+            <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing (${STATE.nf50Breadth.advancing}/${STATE.nf50Breadth.matched} matched)</span>
+        </div>
+        ` : ''}
+
+        <!-- DIRECTION INTELLIGENCE -->
+        <div class="env-section-title">🔍 Direction Intelligence</div>
+        ${(STATE.contrarianPCR || []).length > 0 ? STATE.contrarianPCR.map(f =>
+            `<div class="env-row" style="color: ${f.severity === 'high' ? 'var(--warn)' : 'var(--text-secondary)'}">
+                <span>${f.text}</span>
+            </div>`
+        ).join('') : '<div class="env-row"><span class="env-row-label">Contrarian PCR</span><span class="env-row-value" style="color:var(--text-muted)">No extreme readings</span></div>'}
+        ${STATE.fiiTrend ? `
+        <div class="env-row">
+            <span class="env-row-label">FII Short% Trend</span>
+            <span class="env-row-value" style="color: ${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--text-secondary)'}">
+                ${STATE.fiiTrend.label}${STATE.fiiTrend.accel ? ' ⚡ACCELERATING' : ''}${STATE.fiiTrend.aggressive ? ' 🔴 AGGRESSIVE' : ''}
+            </span>
+        </div>
+        ` : ''}
+
+        <!-- SESSION TRAJECTORY -->
+        ${STATE.trajectory ? `
+        <div class="env-section-title">📅 Session Trajectory (${STATE.trajectory.dates?.length || 0} sessions)</div>
+        <div class="trajectory-grid">
+            ${STATE.trajectory.trajectory.map(row => `
+                <div class="traj-row">
+                    <span class="traj-label">${row.label}</span>
+                    ${row.arrows.map(a => `<span class="traj-arrow ${a === '↑' ? 'up' : a === '↓' ? 'down' : 'flat'}">${a}</span>`).join('')}
+                </div>
+            `).join('')}
+        </div>
+        ${STATE.trajectory.reversal ? `<div class="traj-alert warn">${STATE.trajectory.reversal}</div>` : ''}
+        ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
+        ` : ''}
+
         ${yday ? `
         <!-- OVERNIGHT: Yesterday Close → Today Morning -->
         <div class="env-section-title">🌙 Overnight (${yday.date} close → today open)</div>
@@ -1424,29 +1891,58 @@ function renderCandidateCard(cand, atm) {
     const alignClass = forces.aligned === 3 ? 'align-3' :
         forces.aligned === 2 ? 'align-2' : 'align-1';
 
-    let sellLeg, buyLeg;
-    if (cand.isCredit) {
-        sellLeg = `SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}`;
-        buyLeg = `BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}`;
+    const is4Leg = cand.legs === 4;
+
+    // Build legs display
+    let legsHtml = '';
+    if (is4Leg) {
+        // 4-leg: IC, IB, DDS
+        if (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') {
+            legsHtml = `
+                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
+                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
+                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike2} ${cand.sellType2} @ ₹${cand.sellLTP2?.toFixed(1) || '--'}</div>
+                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike2} ${cand.buyType2} @ ₹${cand.buyLTP2?.toFixed(1) || '--'}</div>
+            `;
+        } else if (cand.type === 'DOUBLE_DEBIT') {
+            legsHtml = `
+                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
+                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
+                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike2} ${cand.buyType2} @ ₹${cand.buyLTP2?.toFixed(1) || '--'}</div>
+                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike2} ${cand.sellType2} @ ₹${cand.sellLTP2?.toFixed(1) || '--'}</div>
+            `;
+        }
     } else {
-        buyLeg = `BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}`;
-        sellLeg = `SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}`;
+        // 2-leg: directional spreads
+        if (cand.isCredit) {
+            legsHtml = `
+                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
+                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
+            `;
+        } else {
+            legsHtml = `
+                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
+                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
+            `;
+        }
     }
 
-    const otmDist = Math.abs(cand.sellStrike - atm);
+    const otmDist = is4Leg ? Math.abs(cand.sellStrike - atm) : Math.abs(cand.sellStrike - atm);
     const otmLabel = otmDist < 50 ? 'ATM' : `${otmDist} OTM`;
+    const legLabel = is4Leg ? '4-leg' : '2-leg';
+    const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
+    const thetaLabel = cand.netTheta >= 0 ? `+₹${cand.netTheta}/day for you` : `₹${Math.abs(cand.netTheta)}/day against you`;
 
     return `
         <div class="candidate-card ${alignClass}" data-id="${cand.id}">
             <div class="cand-header">
                 <span class="cand-dots">${dots}</span>
                 <span class="cand-type">${friendlyType(cand.type)}</span>
-                <span class="cand-width">W:${cand.width} · ${otmLabel}</span>
+                <span class="cand-width">W:${cand.width} · ${otmLabel} · ${legLabel}</span>
             </div>
             <div class="cand-legs">
-                <div class="leg sell-leg">🔴 ${sellLeg}</div>
-                <div class="leg buy-leg">🟢 ${buyLeg}</div>
-                <div class="leg-info">${cand.isCredit ? 'Net Credit' : 'Net Debit'} ₹${cand.netPremium}/share · Exp: ${cand.expiry || '--'}</div>
+                ${legsHtml}
+                <div class="leg-info">${premLabel} ₹${cand.netPremium}/share · Exp: ${cand.expiry || '--'}</div>
             </div>
             <div class="cand-forces">
                 <span>Δ ${forceIcon(forces.f1)} Direction</span>
@@ -1460,7 +1956,7 @@ function renderCandidateCard(cand, atm) {
                 <div class="metric"><span class="metric-label">EV</span><span class="metric-value">₹${cand.ev.toLocaleString()}</span></div>
             </div>
             <div class="cand-ev">
-                Θ decay: ₹${cand.netTheta}/day · DTE: ${cand.tDTE || '--'}T
+                Θ: ${thetaLabel} · DTE: ${cand.tDTE || '--'}T
             </div>
             <div class="cand-align ${alignClass}">${alignLabel}</div>
             ${forces.aligned >= 2 && !STATE.openTrade ? `
@@ -1485,6 +1981,16 @@ function renderPosition() {
     const dots = alignmentDots(forces.aligned);
     const lastUpdate = STATE.lastPollTime ? new Date(STATE.lastPollTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
 
+    // Control Index
+    const ci = t.controlIndex || STATE.controlIndex;
+    let ciColor = 'var(--text-muted)';
+    let ciLabel = 'Calculating...';
+    if (ci !== null && ci !== undefined) {
+        ciColor = ci > 20 ? 'var(--green)' : ci < -20 ? 'var(--danger)' : 'var(--warn)';
+        ciLabel = ci > 30 ? 'You in control' : ci > 0 ? 'Slight advantage' : ci > -30 ? 'Opponent gaining' : 'Opponent in control';
+    }
+    const ciPct = ci !== null ? Math.max(0, Math.min(100, (ci + 100) / 2)) : 50;
+
     el.innerHTML = `
         <div class="section-timestamp">Last updated: ${lastUpdate || API.istNow()}</div>
         <div class="position-card">
@@ -1504,6 +2010,18 @@ function renderPosition() {
             <div class="pos-forces">
                 ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
             </div>
+
+            <!-- Control Index -->
+            <div class="control-section">
+                <div class="env-row">
+                    <span class="env-row-label">Control Index</span>
+                    <span class="env-row-value" style="color:${ciColor}">${ci !== null && ci !== undefined ? ci : '--'} · ${ciLabel}</span>
+                </div>
+                <div class="control-bar">
+                    <div class="control-fill" style="width:${ciPct}%; background:${ciColor}"></div>
+                </div>
+            </div>
+
             <div class="pos-detail">
                 Entry VIX: ${t.entry_vix?.toFixed(1) || '--'} · Entry Bias: ${t.entry_bias || '--'} · Forces at entry: ${t.force_alignment}/3
             </div>

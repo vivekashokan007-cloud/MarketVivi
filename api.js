@@ -278,11 +278,86 @@ const API = (() => {
         });
     }
 
+    // ═══ BNF BREADTH — Top 5 constituents (79% of BNF weight) ═══
+    const BNF_CONSTITUENTS = [
+        { name: 'HDFC Bank', isin: 'INE040A01034', weight: 0.28 },
+        { name: 'ICICI Bank', isin: 'INE090A01021', weight: 0.22 },
+        { name: 'Kotak Mah', isin: 'INE237A01028', weight: 0.12 },
+        { name: 'SBI', isin: 'INE062A01020', weight: 0.09 },
+        { name: 'Axis Bank', isin: 'INE238A01034', weight: 0.08 }
+    ];
+
+    async function fetchBnfBreadth() {
+        const keys = BNF_CONSTITUENTS.map(c => `NSE_EQ|${c.isin}`);
+        const keysStr = keys.map(encodeURIComponent).join(',');
+        try {
+            const data = await apiCall('/market-quote/quotes', `instrument_key=${keysStr}`);
+            const quotes = data?.data || {};
+            const results = [];
+            let advancing = 0, declining = 0, weightedPct = 0;
+
+            for (const [key, val] of Object.entries(quotes)) {
+                const change = val?.net_change || 0;
+                // Match back to constituent by checking ISIN in key
+                const constituent = BNF_CONSTITUENTS.find(c => key.includes(c.isin) || key.includes(c.name.split(' ')[0].toUpperCase()));
+                const weight = constituent?.weight || 0.05;
+                const name = constituent?.name || key;
+                const pctChange = val?.last_price ? (change / (val.last_price - change) * 100) : 0;
+
+                results.push({ name, weight, change, pctChange: +pctChange.toFixed(2), ltp: val?.last_price });
+                if (change > 0) { advancing++; weightedPct += weight * pctChange; }
+                else if (change < 0) { declining++; weightedPct += weight * pctChange; }
+            }
+
+            debugLog('BNF_BREADTH', { matched: results.length, advancing, declining, weightedPct: +weightedPct.toFixed(2) });
+            return { results, advancing, declining, weightedPct: +weightedPct.toFixed(2), total: results.length };
+        } catch (e) {
+            debugLog('BNF_BREADTH_ERROR', { message: e.message });
+            return null;
+        }
+    }
+
+    // ═══ NF50 BREADTH — All 50 constituents ═══
+    // ISINs from official NSE niftyindices.com CSV
+    const NF50_ISINS = [
+        'INE002A01018','INE009A01021','INE040A01034','INE090A01021','INE154A01025',
+        'INE176A01028','INE180A01020','INE185A01028','INE237A01028','INE238A01034',
+        'INE062A01020','INE034A01023','INE019A01038','INE047A01021','INE066F01020',
+        'INE397D01024','INE467B01029','INE028A01039','INE669E01016','INE101A01026',
+        'INE121A01024','INE152A01029','INE160A01022','INE208A01029','INE213A01029',
+        'INE216A01030','INE226A01021','INE256A01028','INE296A01024','INE361B01024',
+        'INE376G01013','INE437A01024','INE438A01022','INE457A01014','INE528G01035',
+        'INE585B01010','INE628A01036','INE669C01036','INE685A01028','INE691A01018',
+        'INE721A01013','INE742F01042','INE758T01015','INE775A01035','INE848E01016',
+        'INE860A01027','INE917I01010','INE934A01020','INE976A01021','INE030A01027'
+    ];
+
+    async function fetchNf50Breadth() {
+        const keys = NF50_ISINS.map(isin => `NSE_EQ|${isin}`);
+        const keysStr = keys.map(encodeURIComponent).join(',');
+        try {
+            const data = await apiCall('/market-quote/quotes', `instrument_key=${keysStr}`);
+            const quotes = data?.data || {};
+            const matched = Object.keys(quotes).length;
+            let advancing = 0;
+            for (const val of Object.values(quotes)) {
+                if ((val?.net_change || 0) > 0) advancing++;
+            }
+            const scaled = matched > 0 ? Math.round(advancing / matched * 50) : 0;
+            debugLog('NF50_BREADTH', { matched, advancing, scaled });
+            return { advancing, matched, scaled, total: 50 };
+        } catch (e) {
+            debugLog('NF50_BREADTH_ERROR', { message: e.message });
+            return null;
+        }
+    }
+
     // Expose debug on window — type window._API_DEBUG in console
     window._API_DEBUG = _debug;
 
     return {
         fetchSpots, fetchExpiries, fetchChain, parseChain,
+        fetchBnfBreadth, fetchNf50Breadth, BNF_CONSTITUENTS,
         tradingDTE, calendarDTE, nearestExpiry,
         isMarketHours, minutesSinceOpen, istNow,
         getToken, setToken,

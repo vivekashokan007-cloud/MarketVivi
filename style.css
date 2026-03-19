@@ -224,6 +224,12 @@ main {
     transition: border-color 0.2s;
 }
 
+.input-field::placeholder {
+    color: var(--text-muted);
+    opacity: 0.4;
+    font-style: italic;
+}
+
 .input-field:focus {
     border-color: var(--accent);
 }
@@ -840,6 +846,73 @@ body.light .btn-close-profit {
 
 .range-consumed { background: var(--text-muted); }
 .range-remaining { background: var(--green); }
+
+/* ═══ TRAJECTORY GRID ═══ */
+.trajectory-grid {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    margin: 6px 0;
+}
+
+.traj-row {
+    display: flex;
+    align-items: center;
+    padding: 2px 0;
+}
+
+.traj-label {
+    width: 80px;
+    color: var(--text-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.traj-arrow {
+    width: 24px;
+    text-align: center;
+    font-size: 14px;
+}
+
+.traj-arrow.up { color: var(--green); }
+.traj-arrow.down { color: var(--danger); }
+.traj-arrow.flat { color: var(--text-muted); }
+
+.traj-alert {
+    font-size: 12px;
+    padding: 6px 8px;
+    margin-top: 6px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+    color: var(--accent-bright);
+    border: 1px solid var(--accent);
+}
+
+.traj-alert.warn {
+    background: var(--warn-dim);
+    color: var(--warn);
+    border-color: var(--warn);
+}
+
+/* ═══ CONTROL INDEX BAR ═══ */
+.control-section {
+    margin: 8px 0;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+}
+
+.control-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--border);
+    overflow: hidden;
+    margin-top: 4px;
+}
+
+.control-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s, background 0.5s;
+}
 
 /* ═══ DEBUG PANEL ═══ */
 .debug-section summary {

@@ -7,7 +7,7 @@
 const DB = (() => {
     const SUPABASE_URL = 'https://fdynxkfxohbnlvayouje.supabase.co';
     // Anon key — safe to expose (RLS controls access)
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvanVlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE2MDE1ODIsImV4cCI6MjA1NzE3NzU4Mn0.mFLBB2_dWgS-9cvVMsEZMT3gyX6J0jbwOZ3I0zYoGIc';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE';
 
     let sb = null;
 
