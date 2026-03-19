@@ -288,12 +288,14 @@ const API = (() => {
     }
 
     // ═══ BNF BREADTH — Top 5 constituents (79% of BNF weight) ═══
+    // CRITICAL: Upstox sends NSE_EQ|{ISIN} but responds with NSE_EQ:{SYMBOL}
+    // Must match by SYMBOL in response key, NOT by ISIN
     const BNF_CONSTITUENTS = [
-        { name: 'HDFC Bank', isin: 'INE040A01034', weight: 0.28 },
-        { name: 'ICICI Bank', isin: 'INE090A01021', weight: 0.22 },
-        { name: 'Kotak Mah', isin: 'INE237A01028', weight: 0.12 },
-        { name: 'SBI', isin: 'INE062A01020', weight: 0.09 },
-        { name: 'Axis Bank', isin: 'INE238A01034', weight: 0.08 }
+        { name: 'HDFC Bank', symbol: 'HDFCBANK', isin: 'INE040A01034', weight: 0.28 },
+        { name: 'ICICI Bank', symbol: 'ICICIBANK', isin: 'INE090A01021', weight: 0.22 },
+        { name: 'Kotak Mah', symbol: 'KOTAKBANK', isin: 'INE237A01036', weight: 0.12 },
+        { name: 'SBI', symbol: 'SBIN', isin: 'INE062A01020', weight: 0.09 },
+        { name: 'Axis Bank', symbol: 'AXISBANK', isin: 'INE238A01034', weight: 0.08 }
     ];
 
     async function fetchBnfBreadth() {
@@ -307,18 +309,28 @@ const API = (() => {
 
             for (const [key, val] of Object.entries(quotes)) {
                 const change = val?.net_change || 0;
-                // Match back to constituent by checking ISIN in key
-                const constituent = BNF_CONSTITUENTS.find(c => key.includes(c.isin) || key.includes(c.name.split(' ')[0].toUpperCase()));
+                // Match by SYMBOL in response key: "NSE_EQ:HDFCBANK"
+                const symbol = key.split(':')[1] || '';
+                const constituent = BNF_CONSTITUENTS.find(c => c.symbol === symbol);
                 const weight = constituent?.weight || 0.05;
-                const name = constituent?.name || key;
-                const pctChange = val?.last_price ? (change / (val.last_price - change) * 100) : 0;
+                const name = constituent?.name || symbol;
+                const prevClose = val?.last_price && change ? val.last_price - change : val?.last_price;
+                const pctChange = prevClose ? (change / prevClose * 100) : 0;
 
-                results.push({ name, weight, change, pctChange: +pctChange.toFixed(2), ltp: val?.last_price });
+                results.push({ name, symbol, weight, change, pctChange: +pctChange.toFixed(2), ltp: val?.last_price });
                 if (change > 0) { advancing++; weightedPct += weight * pctChange; }
                 else if (change < 0) { declining++; weightedPct += weight * pctChange; }
             }
 
-            debugLog('BNF_BREADTH', { matched: results.length, advancing, declining, weightedPct: +weightedPct.toFixed(2) });
+            // Sort by weight descending for display
+            results.sort((a, b) => b.weight - a.weight);
+
+            const unmatched = BNF_CONSTITUENTS.filter(c => !results.find(r => r.symbol === c.symbol));
+            if (unmatched.length > 0) {
+                debugLog('BNF_BREADTH_MISSING', { missing: unmatched.map(c => `${c.name}(${c.symbol})`) });
+            }
+
+            debugLog('BNF_BREADTH', { matched: results.length, advancing, declining, weightedPct: +weightedPct.toFixed(2), symbols: results.map(r => r.symbol) });
             return { results, advancing, declining, weightedPct: +weightedPct.toFixed(2), total: results.length };
         } catch (e) {
             debugLog('BNF_BREADTH_ERROR', { message: e.message });
@@ -327,34 +339,87 @@ const API = (() => {
     }
 
     // ═══ NF50 BREADTH — All 50 constituents ═══
-    // ISINs from official NSE niftyindices.com CSV
-    const NF50_ISINS = [
-        'INE002A01018','INE009A01021','INE040A01034','INE090A01021','INE154A01025',
-        'INE176A01028','INE180A01020','INE185A01028','INE237A01028','INE238A01034',
-        'INE062A01020','INE034A01023','INE019A01038','INE047A01021','INE066F01020',
-        'INE397D01024','INE467B01029','INE028A01039','INE669E01016','INE101A01026',
-        'INE121A01024','INE152A01029','INE160A01022','INE208A01029','INE213A01029',
-        'INE216A01030','INE226A01021','INE256A01028','INE296A01024','INE361B01024',
-        'INE376G01013','INE437A01024','INE438A01022','INE457A01014','INE528G01035',
-        'INE585B01010','INE628A01036','INE669C01036','INE685A01028','INE691A01018',
-        'INE721A01013','INE742F01042','INE758T01015','INE775A01035','INE848E01016',
-        'INE860A01027','INE917I01010','INE934A01020','INE976A01021','INE030A01027'
+    // PROVEN ISINs from v1 upstox.js — verified during market hours
+    const NF50_CONSTITUENTS = [
+        { sym: 'ADANIENT',   isin: 'INE423A01024' },
+        { sym: 'ADANIPORTS', isin: 'INE742F01042' },
+        { sym: 'APOLLOHOSP', isin: 'INE437A01024' },
+        { sym: 'ASIANPAINT', isin: 'INE021A01026' },
+        { sym: 'AXISBANK',   isin: 'INE238A01034' },
+        { sym: 'BAJAJ-AUTO', isin: 'INE917I01010' },
+        { sym: 'BAJFINANCE', isin: 'INE296A01032' },
+        { sym: 'BAJAJFINSV', isin: 'INE918I01026' },
+        { sym: 'BEL',        isin: 'INE263A01024' },
+        { sym: 'BHARTIARTL', isin: 'INE397D01024' },
+        { sym: 'CIPLA',      isin: 'INE059A01026' },
+        { sym: 'COALINDIA',  isin: 'INE522F01014' },
+        { sym: 'DRREDDY',    isin: 'INE089A01031' },
+        { sym: 'EICHERMOT',  isin: 'INE066A01021' },
+        { sym: 'ETERNAL',    isin: 'INE758T01015' },
+        { sym: 'GRASIM',     isin: 'INE047A01021' },
+        { sym: 'HCLTECH',    isin: 'INE860A01027' },
+        { sym: 'HDFCBANK',   isin: 'INE040A01034' },
+        { sym: 'HDFCLIFE',   isin: 'INE795G01014' },
+        { sym: 'HINDALCO',   isin: 'INE038A01020' },
+        { sym: 'HINDUNILVR', isin: 'INE030A01027' },
+        { sym: 'ICICIBANK',  isin: 'INE090A01021' },
+        { sym: 'ITC',        isin: 'INE154A01025' },
+        { sym: 'INFY',       isin: 'INE009A01021' },
+        { sym: 'INDIGO',     isin: 'INE646L01027' },
+        { sym: 'JSWSTEEL',   isin: 'INE019A01038' },
+        { sym: 'JIOFIN',     isin: 'INE758E01017' },
+        { sym: 'KOTAKBANK',  isin: 'INE237A01036' },
+        { sym: 'LT',         isin: 'INE018A01030' },
+        { sym: 'M&M',        isin: 'INE101A01026' },
+        { sym: 'MARUTI',     isin: 'INE585B01010' },
+        { sym: 'MAXHEALTH',  isin: 'INE027H01010' },
+        { sym: 'NTPC',       isin: 'INE733E01010' },
+        { sym: 'NESTLEIND',  isin: 'INE239A01024' },
+        { sym: 'ONGC',       isin: 'INE213A01029' },
+        { sym: 'POWERGRID',  isin: 'INE752E01010' },
+        { sym: 'RELIANCE',   isin: 'INE002A01018' },
+        { sym: 'SBILIFE',    isin: 'INE123W01016' },
+        { sym: 'SHRIRAMFIN', isin: 'INE721A01047' },
+        { sym: 'SBIN',       isin: 'INE062A01020' },
+        { sym: 'SUNPHARMA',  isin: 'INE044A01036' },
+        { sym: 'TCS',        isin: 'INE467B01029' },
+        { sym: 'TATACONSUM', isin: 'INE192A01025' },
+        { sym: 'TMPV',       isin: 'INE155A01022' },
+        { sym: 'TATASTEEL',  isin: 'INE081A01020' },
+        { sym: 'TECHM',      isin: 'INE669C01036' },
+        { sym: 'TITAN',      isin: 'INE280A01028' },
+        { sym: 'TRENT',      isin: 'INE849A01020' },
+        { sym: 'ULTRACEMCO', isin: 'INE481G01011' },
+        { sym: 'WIPRO',      isin: 'INE075A01022' }
     ];
 
     async function fetchNf50Breadth() {
-        const keys = NF50_ISINS.map(isin => `NSE_EQ|${isin}`);
+        const keys = NF50_CONSTITUENTS.map(c => `NSE_EQ|${c.isin}`);
         const keysStr = keys.map(encodeURIComponent).join(',');
         try {
             const data = await apiCall('/market-quote/quotes', `instrument_key=${keysStr}`);
             const quotes = data?.data || {};
             const matched = Object.keys(quotes).length;
-            let advancing = 0;
-            for (const val of Object.values(quotes)) {
-                if ((val?.net_change || 0) > 0) advancing++;
+            let advancing = 0, declining = 0;
+
+            for (const [key, val] of Object.entries(quotes)) {
+                const change = val?.net_change || 0;
+                if (change > 0) advancing++;
+                else if (change < 0) declining++;
             }
+
             const scaled = matched > 0 ? Math.round(advancing / matched * 50) : 0;
-            debugLog('NF50_BREADTH', { matched, advancing, scaled });
-            return { advancing, matched, scaled, total: 50 };
+
+            if (matched < 50) {
+                // Log which symbols responded vs which were sent
+                const respondedSymbols = Object.keys(quotes).map(k => k.split(':')[1] || k);
+                const sentSymbols = NF50_CONSTITUENTS.map(c => c.sym);
+                const missing = sentSymbols.filter(s => !respondedSymbols.includes(s));
+                debugLog('NF50_UNMATCHED', { sent: 50, received: matched, missing });
+            }
+
+            debugLog('NF50_BREADTH', { matched, advancing, declining, scaled });
+            return { advancing, declining, matched, scaled, total: 50 };
         } catch (e) {
             debugLog('NF50_BREADTH_ERROR', { message: e.message });
             return null;
@@ -363,13 +428,19 @@ const API = (() => {
 
     // ═══ HISTORICAL OHLC — for Close Character calculation ═══
     async function fetchHistoricalOHLC(instrumentKey, date) {
-        // date format: YYYY-MM-DD
+        // Upstox historical candle: to_date must be day AFTER the date we want
+        // URL format: /historical-candle/{key}/{interval}/{to_date}/{from_date}
         try {
             const encoded = encodeURIComponent(instrumentKey);
-            const data = await apiCall(`/historical-candle/${encoded}/day/${date}/${date}`);
+            // to_date = next day (Upstox range is exclusive on to_date)
+            const d = new Date(date);
+            d.setDate(d.getDate() + 1);
+            const toDate = d.toISOString().split('T')[0];
+
+            const data = await apiCall(`/historical-candle/${encoded}/day/${toDate}/${date}`);
             const candles = data?.data?.candles;
             if (!candles || candles.length === 0) {
-                debugLog('OHLC_EMPTY', { instrumentKey, date });
+                debugLog('OHLC_EMPTY', { instrumentKey, date, toDate, rawDataKeys: Object.keys(data?.data || {}) });
                 return null;
             }
             // Candle format: [timestamp, open, high, low, close, volume, oi]

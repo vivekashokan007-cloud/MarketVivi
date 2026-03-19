@@ -92,6 +92,7 @@ const STATE = {
     trajectory: null,
     controlIndex: null,
     gapInfo: null,
+    yesterdayHistory: [],
 
     // Loop control
     pollTimer: null,
@@ -228,9 +229,10 @@ function computeBias(morning, chainData) {
         else signals.push({ name: 'PCR', value: pcr.toFixed(2), dir: 'NEUTRAL' });
     }
 
-    // 5. VIX Direction (vs yesterday from premium history)
-    if (STATE.premiumHistory.length > 0 && chainData?.vix) {
-        const yesterdayVix = STATE.premiumHistory[0]?.vix;
+    // 5. VIX Direction (vs yesterday — uses yesterdayHistory which skips today)
+    const ydayHistory = STATE.yesterdayHistory || STATE.premiumHistory || [];
+    if (ydayHistory.length > 0 && chainData?.vix) {
+        const yesterdayVix = ydayHistory[0]?.vix;
         if (yesterdayVix) {
             const diff = chainData.vix - yesterdayVix;
             if (diff > 0.3) { votes.bear++; signals.push({ name: 'VIX Dir', value: `${chainData.vix.toFixed(1)} ↑${diff.toFixed(1)}`, dir: 'BEAR' }); }
@@ -934,9 +936,15 @@ async function initialFetch() {
         const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
         dbg('IV_PERCENTILE', { currentVix: spots.vix, historyCount: vixHistory.length, percentile: ivPctl });
 
+        // Find YESTERDAY's row — skip today's date
+        const today = new Date().toISOString().split('T')[0];
+        const ydayRow = STATE.premiumHistory.find(p => p.date !== today) || null;
+        // Also create a history array that excludes today (for VIX direction, trajectory etc)
+        STATE.yesterdayHistory = STATE.premiumHistory.filter(p => p.date !== today);
+
         // Fetch yesterday's OHLC for auto Close Character
         statusEl.textContent = 'Fetching yesterday OHLC...';
-        const yesterday = STATE.premiumHistory?.[0]?.date || null;
+        const yesterday = ydayRow?.date || null;
         let bnfCloseChar = 0;
         let nfCloseChar = 0;
         let ydayBnfOHLC = null;
@@ -946,13 +954,13 @@ async function initialFetch() {
             ydayNfOHLC = await API.fetchHistoricalOHLC(API.NF_KEY, yesterday);
             if (ydayBnfOHLC) bnfCloseChar = API.calcCloseChar(ydayBnfOHLC);
             if (ydayNfOHLC) nfCloseChar = API.calcCloseChar(ydayNfOHLC);
-            dbg('CLOSE_CHAR', { bnf: bnfCloseChar, nf: nfCloseChar, ydayDate: yesterday });
+            dbg('CLOSE_CHAR', { bnf: bnfCloseChar, nf: nfCloseChar, ydayDate: yesterday, bnfClose: ydayBnfOHLC?.close, bnfLow: ydayBnfOHLC?.low, bnfHigh: ydayBnfOHLC?.high });
         } else {
             dbg('CLOSE_CHAR', { msg: 'No yesterday date - first run' });
         }
 
-        // Gap classification
-        const ydayClose = ydayBnfOHLC?.close || STATE.premiumHistory?.[0]?.bnf_spot || null;
+        // Gap classification (uses yesterday's actual close, not today's seeded data)
+        const ydayClose = ydayBnfOHLC?.close || ydayRow?.bnf_spot || null;
         STATE.gapInfo = API.classifyGap(spots.bnfSpot, ydayClose, spots.vix);
         dbg('GAP', STATE.gapInfo);
 
@@ -966,10 +974,10 @@ async function initialFetch() {
         dbg('BIAS', { label: biasResult.label, net: biasResult.net, bull: biasResult.votes.bull, bear: biasResult.votes.bear, signalCount: biasResult.signals.length, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
         dbg('MORNING_INPUT', STATE.morningInput);
 
-        // Direction intelligence
-        STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.pcr, STATE.premiumHistory);
-        STATE.fiiTrend = getFiiShortTrend(STATE.morningInput?.fiiShortPct, STATE.premiumHistory);
-        STATE.trajectory = getSessionTrajectory(STATE.premiumHistory);
+        // Direction intelligence (use yesterdayHistory to avoid comparing today with today)
+        STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.pcr, STATE.yesterdayHistory);
+        STATE.fiiTrend = getFiiShortTrend(STATE.morningInput?.fiiShortPct, STATE.yesterdayHistory);
+        STATE.trajectory = getSessionTrajectory(STATE.yesterdayHistory);
 
         // Generate candidates
         statusEl.textContent = 'Generating candidates...';
@@ -995,7 +1003,7 @@ async function initialFetch() {
         const bnfAtmIvDec = STATE.bnfChain.atmIv ? (STATE.bnfChain.atmIv > 1 ? STATE.bnfChain.atmIv / 100 : STATE.bnfChain.atmIv) : (spots.vix / 100);
         const bnfAtmTheta = BS.theta(spots.bnfSpot, STATE.bnfChain.atm, bnfT, bnfAtmIvDec, 'CE') + BS.theta(spots.bnfSpot, STATE.bnfChain.atm, bnfT, bnfAtmIvDec, 'PE');
         const dailySigmaBnf = BS.dailySigma(spots.bnfSpot, spots.vix);
-        const yesterdayVix = STATE.premiumHistory.length > 0 ? STATE.premiumHistory[0]?.vix : null;
+        const yesterdayVix = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0]?.vix : null;
 
         STATE.baseline = {
             timestamp: Date.now(),
@@ -1049,7 +1057,6 @@ async function initialFetch() {
         });
 
         // Save MORNING snapshot to premium history
-        const today = new Date().toISOString().split('T')[0];
         DB.savePremiumSnapshot({
             date: today,
             nfSpot: spots.nfSpot,
@@ -1653,7 +1660,7 @@ function renderPremiumEnvironment() {
     const putPct = totalOI > 0 ? ((b.bnfTotalPutOI / totalOI) * 100).toFixed(0) : 50;
 
     // Yesterday's data from premium_history for comparisons
-    const yday = STATE.premiumHistory.length > 0 ? STATE.premiumHistory[0] : null;
+    const yday = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0] : null;
     let ydayComparisons = '';
     if (yday) {
         const items = [];
