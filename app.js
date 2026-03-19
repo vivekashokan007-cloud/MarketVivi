@@ -497,15 +497,27 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
     if (buyLeg && buyLeg.data.delta != null) probProfit = Math.abs(buyLeg.data.delta);
   }
 
+  // ── IV EDGE: when VIX is elevated, options are overpriced ──
+  // Delta-based probability uses IMPLIED vol (elevated).
+  // REALIZED vol is typically lower → actual P(Profit) for credit sellers is HIGHER.
+  // This is the structural edge Varsity teaches: sell expensive premium.
+  const safeVix = vix || 14;
+  if (isCredit && safeVix >= 18) {
+    const ivEdge = Math.min(0.10, (safeVix - 16) * 0.015); // 1.5% per VIX point above 16, max 10%
+    probProfit = Math.min(0.95, probProfit + ivEdge);
+  }
+
   // ── EV calculation (needed before filter) ──
   const ev = (probProfit * maxProfit) - ((1 - probProfit) * maxLoss);
 
   // ── SPLIT FILTER: credit vs debit ──
   if (isCredit) {
-    // Credit spreads: R:R is structurally <1 (small credit, large risk)
-    // Filter by: probability of keeping premium + positive expected value
-    if (probProfit < 0.35) return null;   // Need >35% win rate
-    if (ev <= 0) return null;              // Must be +EV
+    // Credit spreads: small profit, large risk — high probability is the edge.
+    // Delta-based EV underestimates true win rate when IV is elevated
+    // (options are overpriced → realized vol < implied vol → more profits expire OTM).
+    // Filter by probability + minimum EV threshold (not strict EV>0).
+    if (probProfit < 0.50) return null;   // Need >50% win rate — must be better than coin flip
+    if (ev < -(maxProfit * 0.5)) return null; // Allow slightly negative mathematical EV — theta/IV crush compensate
   } else {
     // Debit spreads/straddles/strangles: R:R must justify the premium spent
     if (rr < 1.5) return null;
@@ -554,7 +566,11 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
   if (!isCredit && stratType !== 'LONG_STRADDLE' && stratType !== 'LONG_STRANGLE' && absPremium > width * 0.85) return null;
 
   const marginUsed = marginPerLot * safeLots;
-  const evPerRupee = ev / Math.max(marginUsed, 1);
+  // EV per rupee of ACTUAL RISK, not margin.
+  // Credit spreads use high margin (SPAN) for small profit — margin ≠ risk.
+  // Debit spreads margin ≈ maxLoss anyway (premium paid).
+  // Using maxLoss normalizes both to "EV per rupee you can actually lose."
+  const evPerRupee = ev / Math.max(maxLoss, 1);
 
   return {
     stratType, stratLabel: STRAT_LABELS[stratType], indexKey, isNF: indexKey === 'NF', expiry, dte, tradingDte, spot, legs,
@@ -572,14 +588,22 @@ function evaluateSetup(cand, stratType, indexKey, expiry, spot, dte, tradingDte,
 }
 
 // ═══════════════════════════════════════════════════
-// EV-BASED SCORING
+// PROBABILITY-FIRST SCORING (Varsity principle)
+// With ₹1.1L capital, survivability > maximum EV.
+// 75% win rate × ₹1,500 beats 40% win rate × ₹12,000
+// because you can't survive 12 losses out of 20.
 // ═══════════════════════════════════════════════════
 
 function scoreSetup(setup, bias, vix, chain) {
-  const evScore = Math.max(0, Math.min(40, setup.evPerRupee * 400));
-  const probScore = (setup.probProfit / 100) * 20;
-  // biasScore REMOVED — Varsity multiplier handles bias alignment post-score
-  const capEff = setup.maxProfit / Math.max(setup.marginUsed, 1);
+  // Probability: max 35 pts (was 20). THE dominant factor.
+  // 78% credit spread scores 27.3. 42% debit spread scores 14.7. Gap = 12.6 pts.
+  const probScore = (setup.probProfit / 100) * 35;
+
+  // EV per rupee of risk: max 25 pts (was 40). Still important but not dominant.
+  const evScore = Math.max(0, Math.min(25, setup.evPerRupee * 250));
+
+  // Capital efficiency: profit potential per rupee of actual risk
+  const capEff = setup.maxProfit / Math.max(setup.maxLoss, 1);
   const capScore = Math.min(10, capEff * 50);
   const liqScore = Math.max(0, 5 - setup.avgSpreadPct);
   const pcr = chain.pcr || 0;
