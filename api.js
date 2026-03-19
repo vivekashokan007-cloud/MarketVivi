@@ -170,9 +170,20 @@ const API = (() => {
 
         // ATM IV (from real LTPs)
         let atmIv = null;
-        // Use chain-provided IV first, fall back to BS calculation
+        // Use chain-provided IV first
         if (atmData?.CE?.iv && atmData?.PE?.iv) {
             atmIv = (atmData.CE.iv + atmData.PE.iv) / 2;
+        }
+        // Fallback: calculate from real LTPs using Black-Scholes
+        if (!atmIv && atmData?.CE?.ltp && atmData?.PE?.ltp && typeof BS !== 'undefined') {
+            // Estimate DTE from typical weekly expiry (~7 calendar days)
+            const T_est = 7 / 365;
+            const ceIv = BS.impliedVol(spot, atm, atmData.CE.ltp, T_est, 'CE');
+            const peIv = BS.impliedVol(spot, atm, atmData.PE.ltp, T_est, 'PE');
+            if (ceIv && peIv) atmIv = ((ceIv + peIv) / 2) * 100; // store as percentage
+            else if (ceIv) atmIv = ceIv * 100;
+            else if (peIv) atmIv = peIv * 100;
+            debugLog('ATM_IV_CALC', { method: 'BS_fallback', ceIv: ceIv?.toFixed(4), peIv: peIv?.toFixed(4), atmIv: atmIv?.toFixed(2) });
         }
 
         // OI Walls — highest concentration strikes

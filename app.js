@@ -101,7 +101,10 @@ const STATE = {
     },
 
     // Audio context (initialized on first user tap)
-    audioCtx: null
+    audioCtx: null,
+
+    // Active tab
+    activeTab: 'data'
 };
 
 
@@ -171,30 +174,49 @@ function computeBias(morning, chainData) {
     const votes = { bull: 0, bear: 0 };
     const signals = [];
 
+    // DEBUG: Log what morning data looks like
+    console.log('[BIAS] morning input:', JSON.stringify(morning));
+    console.log('[BIAS] chainData keys:', chainData ? Object.keys(chainData) : 'null');
+
+    // Guard
+    if (!morning) {
+        console.warn('[BIAS] morning is null/undefined!');
+        return { bias: 'NEUTRAL', strength: '', net: 0, votes, signals, label: 'NEUTRAL' };
+    }
+
     // 1. FII Cash
-    if (morning.fiiCash !== null && morning.fiiCash !== '') {
-        const fc = parseFloat(morning.fiiCash);
+    const fiiCashVal = morning.fiiCash;
+    if (fiiCashVal != null && fiiCashVal !== '' && !isNaN(fiiCashVal)) {
+        const fc = parseFloat(fiiCashVal);
         if (fc > 500) { votes.bull++; signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'BULL' }); }
         else if (fc < -500) { votes.bear++; signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'BEAR' }); }
         else signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'NEUTRAL' });
+    } else {
+        console.warn('[BIAS] FII Cash skipped:', typeof fiiCashVal, `"${fiiCashVal}"`);
     }
 
     // 2. FII Short%
-    if (morning.fiiShortPct !== null && morning.fiiShortPct !== '') {
-        const sp = parseFloat(morning.fiiShortPct);
+    const fiiShortVal = morning.fiiShortPct;
+    if (fiiShortVal != null && fiiShortVal !== '' && !isNaN(fiiShortVal)) {
+        const sp = parseFloat(fiiShortVal);
         const prev = parseFloat(localStorage.getItem('mr2_fii_short_prev') || '0');
         if (sp > 85 && sp >= prev) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}%↑`, dir: 'BEAR' }); }
         else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering`, dir: 'NEUTRAL' }); }
         else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
         else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
+    } else {
+        console.warn('[BIAS] FII Short% skipped:', typeof fiiShortVal, `"${fiiShortVal}"`);
     }
 
     // 3. Close Character
-    if (morning.closeChar !== null && morning.closeChar !== '') {
-        const cc = parseFloat(morning.closeChar);
+    const closeCharVal = morning.closeChar;
+    if (closeCharVal != null && closeCharVal !== '' && !isNaN(closeCharVal)) {
+        const cc = parseFloat(closeCharVal);
         if (cc >= 1) { votes.bull++; signals.push({ name: 'Close Char', value: `${cc > 0 ? '+' : ''}${cc}`, dir: 'BULL' }); }
         else if (cc <= -1) { votes.bear++; signals.push({ name: 'Close Char', value: `${cc}`, dir: 'BEAR' }); }
         else signals.push({ name: 'Close Char', value: `${cc}`, dir: 'NEUTRAL' });
+    } else {
+        console.warn('[BIAS] Close Char skipped:', typeof closeCharVal, `"${closeCharVal}"`);
     }
 
     // 4. Upstox Bias
@@ -547,7 +569,8 @@ async function initialFetch() {
             vix: spots.vix,
             futuresPremium: STATE.bnfChain.futuresPremium
         });
-        dbg('BIAS', { label: biasResult.label, net: biasResult.net, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
+        dbg('BIAS', { label: biasResult.label, net: biasResult.net, bull: biasResult.votes.bull, bear: biasResult.votes.bear, signalCount: biasResult.signals.length, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
+        dbg('MORNING_INPUT', STATE.morningInput);
 
         // Generate candidates
         statusEl.textContent = 'Generating candidates...';
@@ -621,7 +644,7 @@ async function initialFetch() {
             STATE.lastForceState[c.id] = c.forces.aligned;
         });
 
-        // Save snapshot to premium history
+        // Save MORNING snapshot to premium history
         const today = new Date().toISOString().split('T')[0];
         DB.savePremiumSnapshot({
             date: today,
@@ -636,7 +659,7 @@ async function initialFetch() {
             futuresPremBnf: STATE.bnfChain.futuresPremium,
             bias: biasResult.label,
             biasNet: biasResult.net
-        });
+        }, 'morning');
 
         // Save FII short% as yesterday's baseline for next session
         if (STATE.morningInput.fiiShortPct) {
@@ -722,6 +745,23 @@ async function lightFetch() {
 
         // Check for notifications
         handleNotifications(absSpotSigma, absVixSigma, significantMove);
+
+        // Save CLOSE snapshot — upserts by (date, 'close'), last poll = closing data
+        const today = new Date().toISOString().split('T')[0];
+        DB.savePremiumSnapshot({
+            date: today,
+            nfSpot: spots.nfSpot,
+            bnfSpot: spots.bnfSpot,
+            vix: spots.vix,
+            nfAtmIv: STATE.nfChain?.atmIv,
+            bnfAtmIv: bnfChain.atmIv,
+            pcr: bnfChain.pcr,
+            fiiCash: parseFloat(STATE.morningInput?.fiiCash) || null,
+            fiiShortPct: parseFloat(STATE.morningInput?.fiiShortPct) || null,
+            futuresPremBnf: bnfChain.futuresPremium,
+            bias: STATE.live.bias?.label,
+            biasNet: STATE.live.bias?.net
+        }, 'close');
 
         STATE.pollCount++;
         STATE.lastPollTime = Date.now();
@@ -1020,6 +1060,7 @@ async function takeTrade(candidateId) {
         trade.id = saved.id;
         STATE.openTrade = trade;
         playSound('entry');
+        switchTab('positions');
         renderAll();
     }
 }
@@ -1181,7 +1222,36 @@ function renderPremiumEnvironment() {
     const callPct = totalOI > 0 ? ((b.bnfTotalCallOI / totalOI) * 100).toFixed(0) : 50;
     const putPct = totalOI > 0 ? ((b.bnfTotalPutOI / totalOI) * 100).toFixed(0) : 50;
 
+    // Yesterday's data from premium_history for comparisons
+    const yday = STATE.premiumHistory.length > 0 ? STATE.premiumHistory[0] : null;
+    let ydayComparisons = '';
+    if (yday) {
+        const items = [];
+        if (yday.fii_cash != null && STATE.morningInput?.fiiCash) {
+            const diff = parseFloat(STATE.morningInput.fiiCash) - yday.fii_cash;
+            items.push(`FII: ₹${yday.fii_cash}→₹${STATE.morningInput.fiiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        }
+        if (yday.fii_short_pct != null && STATE.morningInput?.fiiShortPct) {
+            const diff = parseFloat(STATE.morningInput.fiiShortPct) - yday.fii_short_pct;
+            items.push(`Short%: ${yday.fii_short_pct}→${STATE.morningInput.fiiShortPct} (${diff > 0 ? '+' : ''}${diff.toFixed(1)})`);
+        }
+        if (yday.pcr != null && l.pcr) {
+            const diff = l.pcr - yday.pcr;
+            items.push(`PCR: ${yday.pcr.toFixed(2)}→${l.pcr.toFixed(2)} (${diff > 0 ? '+' : ''}${diff.toFixed(2)})`);
+        }
+        if (yday.bnf_spot != null && l.bnfSpot) {
+            const diff = l.bnfSpot - yday.bnf_spot;
+            items.push(`BNF: ${yday.bnf_spot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        }
+        ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
+    }
+
+    const scanTime = API.istNow();
+
     el.innerHTML = `
+        <!-- TIMESTAMP -->
+        <div class="section-timestamp">Scanned: ${scanTime}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
+
         <!-- VERDICT -->
         <div class="env-verdict ${verdictClass}">${verdict}</div>
 
@@ -1288,6 +1358,24 @@ function renderPremiumEnvironment() {
             <span class="env-row-label">NF Spot</span>
             <span class="env-row-value">${l.nfSpot?.toFixed(0) || '--'}</span>
         </div>
+
+        ${yday ? `
+        <!-- OVERNIGHT: Yesterday Close → Today Morning -->
+        <div class="env-section-title">🌙 Overnight (${yday.date} close → today open)</div>
+        <div class="env-signals">${ydayComparisons || '<span class="signal-chip signal-neutral">No comparison data</span>'}</div>
+        ` : ''}
+
+        ${STATE.pollCount > 0 ? `
+        <!-- INTRADAY: Morning → Now -->
+        <div class="env-section-title">📈 Intraday (morning → now)</div>
+        <div class="env-signals">
+            ${b.vix && l.vix ? `<span class="signal-chip signal-${Math.abs(l.vix - b.vix) > 0.5 ? (l.vix > b.vix ? 'bear' : 'bull') : 'neutral'}">VIX: ${b.vix.toFixed(1)}→${l.vix.toFixed(1)} (${(l.vix - b.vix) > 0 ? '+' : ''}${(l.vix - b.vix).toFixed(1)})</span>` : ''}
+            ${b.bnfSpot && l.bnfSpot ? `<span class="signal-chip signal-${Math.abs(l.bnfSpot - b.bnfSpot) > 100 ? (l.bnfSpot > b.bnfSpot ? 'bull' : 'bear') : 'neutral'}">BNF: ${b.bnfSpot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${(l.bnfSpot - b.bnfSpot) > 0 ? '+' : ''}${(l.bnfSpot - b.bnfSpot).toFixed(0)})</span>` : ''}
+            ${b.pcr && l.pcr ? `<span class="signal-chip signal-neutral">PCR: ${b.pcr.toFixed(2)}→${l.pcr.toFixed(2)}</span>` : ''}
+            ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
+            ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
+        </div>
+        ` : ''}
     `;
 }
 
@@ -1295,49 +1383,91 @@ function renderWatchlist() {
     const el = document.getElementById('watchlist');
     if (!el) return;
 
-    if (!STATE.watchlist.length) {
+    if (!STATE.watchlist.length && !STATE.candidates.length) {
         el.innerHTML = '<div class="empty-state">Press Lock & Scan to generate candidates</div>';
         return;
     }
 
-    el.innerHTML = STATE.watchlist.map(cand => {
-        const forces = cand.forces;
-        const dots = alignmentDots(forces.aligned);
-        const alignLabel = forces.aligned === 3 ? 'ALIGNED — Entry Ready' :
-            forces.aligned === 2 ? 'CONDITIONAL' : 'WATCHING';
-        const alignClass = forces.aligned === 3 ? 'align-3' :
-            forces.aligned === 2 ? 'align-2' : 'align-1';
+    const scanTime = API.istNow();
+    const atm = STATE.bnfChain?.atm || STATE.baseline?.bnfAtm || 0;
 
-        return `
-            <div class="candidate-card ${alignClass}" data-id="${cand.id}">
-                <div class="cand-header">
-                    <span class="cand-dots">${dots}</span>
-                    <span class="cand-type">${cand.index} ${friendlyType(cand.type)}</span>
-                    <span class="cand-strikes">${cand.sellStrike}/${cand.buyStrike}</span>
-                    <span class="cand-width">W:${cand.width}</span>
-                </div>
-                <div class="cand-forces">
-                    <span>Δ:${forceIcon(forces.f1)} Intrinsic</span>
-                    <span>Θ:${forceIcon(forces.f2)} Theta</span>
-                    <span>IV:${forceIcon(forces.f3)} Volatility</span>
-                </div>
-                <div class="cand-metrics">
-                    <span>${cand.isCredit ? 'Credit' : 'Debit'} ₹${cand.netPremium}</span>
-                    <span>Prob ${(cand.probProfit * 100).toFixed(0)}%</span>
-                    <span>Max +₹${cand.maxProfit.toLocaleString()}</span>
-                    <span>Risk ₹${cand.maxLoss.toLocaleString()}</span>
-                </div>
-                <div class="cand-ev">
-                    EV: ₹${cand.ev.toLocaleString()} · Θ/day: ₹${cand.netTheta}
-                    ${cand.capitalBlocked ? ' · <span class="text-warn">NF margin blocked</span>' : ''}
-                </div>
-                <div class="cand-align ${alignClass}">${alignLabel}</div>
-                ${forces.aligned >= 2 && !STATE.openTrade ? `
-                    <button class="btn-take" onclick="takeTrade('${cand.id}')">📌 I TOOK THIS TRADE</button>
-                ` : ''}
+    // Separate BNF and NF candidates
+    const bnfCands = STATE.watchlist.filter(c => c.index === 'BNF');
+    const nfCands = STATE.candidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 3);
+    const nfBlocked = STATE.candidates.some(c => c.index === 'NF' && c.capitalBlocked);
+
+    let html = `<div class="section-timestamp">Generated: ${scanTime} · ${STATE.candidates.length} total candidates</div>`;
+
+    // BNF Strategies
+    html += '<div class="strat-section-title">Bank Nifty</div>';
+    html += bnfCands.map(cand => renderCandidateCard(cand, atm)).join('');
+    if (!bnfCands.length) html += '<div class="empty-state">No BNF candidates found</div>';
+
+    // NF Strategies
+    html += '<div class="strat-section-title">Nifty 50</div>';
+    if (nfBlocked && !nfCands.length) {
+        html += '<div class="empty-state">NF credit spreads need ~₹97K margin (88% of ₹1.1L capital). Hidden until capital allows.</div>';
+    } else if (nfCands.length) {
+        html += nfCands.map(cand => renderCandidateCard(cand, STATE.nfChain?.atm || 0)).join('');
+    } else {
+        html += '<div class="empty-state">No NF candidates found</div>';
+    }
+
+    el.innerHTML = html;
+}
+
+function renderCandidateCard(cand, atm) {
+    const forces = cand.forces;
+    const dots = alignmentDots(forces.aligned);
+    const alignLabel = forces.aligned === 3 ? '🟢 ALIGNED — Entry Ready' :
+        forces.aligned === 2 ? '🟡 CONDITIONAL' : '⚫ WATCHING';
+    const alignClass = forces.aligned === 3 ? 'align-3' :
+        forces.aligned === 2 ? 'align-2' : 'align-1';
+
+    let sellLeg, buyLeg;
+    if (cand.isCredit) {
+        sellLeg = `SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}`;
+        buyLeg = `BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}`;
+    } else {
+        buyLeg = `BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}`;
+        sellLeg = `SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}`;
+    }
+
+    const otmDist = Math.abs(cand.sellStrike - atm);
+    const otmLabel = otmDist < 50 ? 'ATM' : `${otmDist} OTM`;
+
+    return `
+        <div class="candidate-card ${alignClass}" data-id="${cand.id}">
+            <div class="cand-header">
+                <span class="cand-dots">${dots}</span>
+                <span class="cand-type">${friendlyType(cand.type)}</span>
+                <span class="cand-width">W:${cand.width} · ${otmLabel}</span>
             </div>
-        `;
-    }).join('');
+            <div class="cand-legs">
+                <div class="leg sell-leg">🔴 ${sellLeg}</div>
+                <div class="leg buy-leg">🟢 ${buyLeg}</div>
+                <div class="leg-info">${cand.isCredit ? 'Net Credit' : 'Net Debit'} ₹${cand.netPremium}/share · Exp: ${cand.expiry || '--'}</div>
+            </div>
+            <div class="cand-forces">
+                <span>Δ ${forceIcon(forces.f1)} Direction</span>
+                <span>Θ ${forceIcon(forces.f2)} Time</span>
+                <span>IV ${forceIcon(forces.f3)} Vol</span>
+            </div>
+            <div class="cand-metrics">
+                <div class="metric"><span class="metric-label">Prob</span><span class="metric-value">${(cand.probProfit * 100).toFixed(0)}%</span></div>
+                <div class="metric"><span class="metric-label">Profit</span><span class="metric-value" style="color:var(--green)">+₹${cand.maxProfit.toLocaleString()}</span></div>
+                <div class="metric"><span class="metric-label">Risk</span><span class="metric-value" style="color:var(--danger)">₹${cand.maxLoss.toLocaleString()}</span></div>
+                <div class="metric"><span class="metric-label">EV</span><span class="metric-value">₹${cand.ev.toLocaleString()}</span></div>
+            </div>
+            <div class="cand-ev">
+                Θ decay: ₹${cand.netTheta}/day · DTE: ${cand.tDTE || '--'}T
+            </div>
+            <div class="cand-align ${alignClass}">${alignLabel}</div>
+            ${forces.aligned >= 2 && !STATE.openTrade ? `
+                <button class="btn-take" onclick="takeTrade('${cand.id}')">📌 I TOOK THIS TRADE</button>
+            ` : ''}
+        </div>
+    `;
 }
 
 function renderPosition() {
@@ -1345,21 +1475,21 @@ function renderPosition() {
     if (!el) return;
 
     if (!STATE.openTrade) {
-        el.innerHTML = '';
-        el.style.display = 'none';
+        el.innerHTML = '<div class="empty-state">No open position. Take a trade from Strategies tab.</div>';
         return;
     }
 
-    el.style.display = 'block';
     const t = STATE.openTrade;
     const forces = t.forces || { f1: 0, f2: 0, f3: 0, aligned: 0 };
     const pnlClass = t.current_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
     const dots = alignmentDots(forces.aligned);
+    const lastUpdate = STATE.lastPollTime ? new Date(STATE.lastPollTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
 
     el.innerHTML = `
+        <div class="section-timestamp">Last updated: ${lastUpdate || API.istNow()}</div>
         <div class="position-card">
             <div class="pos-header">
-                <span class="pos-title">📌 OPEN: ${t.index_key} ${friendlyType(t.strategy_type)}</span>
+                <span class="pos-title">📌 ${t.index_key} ${friendlyType(t.strategy_type)}</span>
                 <span class="pos-strikes">${t.sell_strike}/${t.buy_strike} W:${t.width}</span>
             </div>
             <div class="pos-pnl ${pnlClass}">
@@ -1372,7 +1502,10 @@ function renderPosition() {
                 · Spot: ${t.current_spot?.toFixed(0) || '--'}
             </div>
             <div class="pos-forces">
-                ${dots} Forces: ${forceIcon(forces.f1)} Δ ${forceIcon(forces.f2)} Θ ${forceIcon(forces.f3)} IV
+                ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
+            </div>
+            <div class="pos-detail">
+                Entry VIX: ${t.entry_vix?.toFixed(1) || '--'} · Entry Bias: ${t.entry_bias || '--'} · Forces at entry: ${t.force_alignment}/3
             </div>
             <div class="pos-actions">
                 <button class="btn-close-profit" onclick="closeTrade('Profit booked')">💰 Book Profit</button>
@@ -1461,6 +1594,17 @@ function requestNotificationPermission() {
     }
 }
 
+// ═══ TAB SWITCHING ═══
+function switchTab(tabName) {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-content').forEach(tc => {
+        tc.classList.toggle('active', tc.id === `tab-${tabName}`);
+    });
+    STATE.activeTab = tabName;
+}
+
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', async () => {
     DB.init();
@@ -1469,7 +1613,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     requestNotificationPermission();
     initTheme();
     await loadOpenTrade();
+
+    // If open trade exists, show positions tab
+    if (STATE.openTrade) {
+        switchTab('positions');
+    }
+
     renderAll();
+
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
 
     // Event listeners
     document.getElementById('btn-lock')?.addEventListener('click', lockMorningData);

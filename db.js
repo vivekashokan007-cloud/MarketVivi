@@ -14,18 +14,25 @@ const DB = (() => {
     function init() {
         if (window.supabase && !sb) {
             sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            console.log('[DB] Supabase client initialized');
+            if (window._API_DEBUG) window._API_DEBUG.push({ time: '', label: 'DB_INIT', status: 'OK' });
+        }
+        if (!window.supabase) {
+            console.warn('[DB] window.supabase not available!');
+            if (window._API_DEBUG) window._API_DEBUG.push({ time: '', label: 'DB_INIT', status: 'FAILED — supabase CDN not loaded' });
         }
         return sb;
     }
 
     // ═══ PREMIUM HISTORY ═══
-    // One row per trading day. Used for IV percentile calculation.
 
-    async function savePremiumSnapshot(data) {
-        if (!init()) return null;
+    // session: 'morning' or 'close'
+    async function savePremiumSnapshot(data, session = 'close') {
+        if (!init()) { console.warn('[DB] savePremiumSnapshot: no client'); return null; }
         try {
             const row = {
                 date: data.date,
+                session: session,
                 nf_spot: data.nfSpot,
                 bnf_spot: data.bnfSpot,
                 vix: data.vix,
@@ -40,29 +47,53 @@ const DB = (() => {
             };
             const { data: result, error } = await sb
                 .from('premium_history')
-                .upsert(row, { onConflict: 'date' });
-            if (error) console.warn('DB savePremiumSnapshot:', error.message);
+                .upsert(row, { onConflict: 'date,session' });
+            if (error) console.warn('[DB] savePremiumSnapshot error:', error.message, error.details, error.hint);
+            else console.log(`[DB] savePremiumSnapshot OK: ${data.date} ${session}`);
             return result;
         } catch (e) {
-            console.warn('DB savePremiumSnapshot error:', e);
+            console.warn('[DB] savePremiumSnapshot exception:', e);
             return null;
         }
     }
 
+    // Returns closing snapshots for IV percentile + yesterday comparison
     async function getPremiumHistory(days = 60) {
-        if (!init()) return [];
+        if (!init()) { console.warn('[DB] getPremiumHistory: no client'); return []; }
         try {
             const { data, error } = await sb
                 .from('premium_history')
                 .select('*')
+                .eq('session', 'close')
                 .order('date', { ascending: false })
                 .limit(days);
-            if (error) { console.warn('DB getPremiumHistory:', error.message); return []; }
+            if (error) {
+                console.warn('[DB] getPremiumHistory error:', error.message, error.details, error.hint, error.code);
+                if (window._API_DEBUG) window._API_DEBUG.push({ time: '', label: 'DB_HISTORY_ERROR', message: error.message, code: error.code, hint: error.hint || '' });
+                return [];
+            }
+            console.log('[DB] getPremiumHistory OK:', data?.length, 'rows', data?.[0]?.date, data?.[0]?.vix);
+            if (window._API_DEBUG) window._API_DEBUG.push({ time: '', label: 'DB_HISTORY_OK', rows: data?.length || 0, latest: data?.[0]?.date || 'none', latestVix: data?.[0]?.vix || 'none' });
             return data || [];
         } catch (e) {
-            console.warn('DB getPremiumHistory error:', e);
+            console.warn('[DB] getPremiumHistory exception:', e);
             return [];
         }
+    }
+
+    // Get today's morning snapshot for intraday comparison
+    async function getMorningSnapshot(date) {
+        if (!init()) return null;
+        try {
+            const { data, error } = await sb
+                .from('premium_history')
+                .select('*')
+                .eq('date', date)
+                .eq('session', 'morning')
+                .single();
+            if (error) return null;
+            return data;
+        } catch (e) { return null; }
     }
 
     // ═══ TRADES ═══
@@ -132,7 +163,7 @@ const DB = (() => {
     }
 
     return {
-        init, savePremiumSnapshot, getPremiumHistory,
+        init, savePremiumSnapshot, getPremiumHistory, getMorningSnapshot,
         insertTrade, updateTrade, getOpenTrades, getClosedTrades
     };
 })();
