@@ -162,8 +162,82 @@ const DB = (() => {
         }
     }
 
+    // ═══ CHAIN SNAPSHOTS — Afternoon Positioning System ═══
+
+    async function saveChainSnapshot(data, session) {
+        if (!init()) return null;
+        try {
+            const row = {
+                date: data.date,
+                session,
+                bnf_spot: data.bnfSpot,
+                nf_spot: data.nfSpot,
+                vix: data.vix,
+                bnf_pcr: data.bnfPcr,
+                bnf_near_atm_pcr: data.bnfNearAtmPcr,
+                nf_pcr: data.nfPcr,
+                bnf_max_pain: data.bnfMaxPain,
+                nf_max_pain: data.nfMaxPain,
+                bnf_call_wall: data.bnfCallWall,
+                bnf_call_wall_oi: data.bnfCallWallOi,
+                bnf_put_wall: data.bnfPutWall,
+                bnf_put_wall_oi: data.bnfPutWallOi,
+                bnf_total_call_oi: data.bnfTotalCallOi,
+                bnf_total_put_oi: data.bnfTotalPutOi,
+                nf_total_call_oi: data.nfTotalCallOi,
+                nf_total_put_oi: data.nfTotalPutOi,
+                bnf_atm_iv: data.bnfAtmIv,
+                bnf_futures_prem: data.bnfFuturesPrem,
+                bnf_breadth_pct: data.bnfBreadthPct,
+                nf50_advancing: data.nf50Advancing,
+                tomorrow_signal: data.tomorrowSignal || null,
+                signal_strength: data.signalStrength || null
+            };
+            const { data: result, error } = await sb
+                .from('chain_snapshots')
+                .upsert(row, { onConflict: 'date,session' })
+                .select();
+            if (error) { console.warn('DB saveChainSnapshot:', error.message); return null; }
+            console.log(`[DB] Chain snapshot saved: ${data.date} ${session}`);
+            return result?.[0] || null;
+        } catch (e) {
+            console.warn('DB saveChainSnapshot error:', e);
+            return null;
+        }
+    }
+
+    async function getChainSnapshot(date, session) {
+        if (!init()) return null;
+        try {
+            const { data, error } = await sb
+                .from('chain_snapshots')
+                .select('*')
+                .eq('date', date)
+                .eq('session', session)
+                .single();
+            if (error) return null;
+            return data;
+        } catch (e) { return null; }
+    }
+
+    async function getRecentSignals(limit = 20) {
+        if (!init()) return [];
+        try {
+            const { data, error } = await sb
+                .from('chain_snapshots')
+                .select('date, tomorrow_signal, signal_strength, bnf_spot, vix')
+                .eq('session', '315pm')
+                .not('tomorrow_signal', 'is', null)
+                .order('date', { ascending: false })
+                .limit(limit);
+            if (error) return [];
+            return data || [];
+        } catch (e) { return []; }
+    }
+
     return {
         init, savePremiumSnapshot, getPremiumHistory, getMorningSnapshot,
-        insertTrade, updateTrade, getOpenTrades, getClosedTrades
+        insertTrade, updateTrade, getOpenTrades, getClosedTrades,
+        saveChainSnapshot, getChainSnapshot, getRecentSignals
     };
 })();

@@ -93,6 +93,14 @@ const STATE = {
     controlIndex: null,
     gapInfo: null,
     yesterdayHistory: [],
+    _notified2pm: false,
+    _notified315pm: false,
+    _captured2pm: false,
+    _captured315pm: false,
+    afternoonBaseline: null,   // 2PM snapshot
+    positioningResult: null,   // 3:15PM comparison result
+    tomorrowSignal: null,      // BEARISH/BULLISH/NEUTRAL + strength
+    signalAccuracy: null,      // { correct, total, history }
 
     // Loop control
     pollTimer: null,
@@ -490,6 +498,202 @@ function getSessionTrajectory(history) {
         alignment: upCount >= 4 ? 'Institutional accumulation pressure — 4+ signals rising' :
             downCount >= 4 ? 'Institutional selling pressure — 4+ signals falling' : null
     };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// AFTERNOON POSITIONING SYSTEM — Detect institutional last-hour moves
+// ═══════════════════════════════════════════════════════════════
+
+// Build snapshot data from current state (used for morning, 2pm, 3:15pm)
+function buildChainSnapshotData() {
+    return {
+        date: new Date().toISOString().split('T')[0],
+        bnfSpot: STATE.live?.bnfSpot || STATE.baseline?.bnfSpot,
+        nfSpot: STATE.live?.nfSpot || STATE.baseline?.nfSpot,
+        vix: STATE.live?.vix || STATE.baseline?.vix,
+        bnfPcr: STATE.bnfChain?.pcr,
+        bnfNearAtmPcr: STATE.bnfChain?.nearAtmPCR,
+        nfPcr: STATE.nfChain?.pcr,
+        bnfMaxPain: STATE.bnfChain?.maxPain,
+        nfMaxPain: STATE.nfChain?.maxPain,
+        bnfCallWall: STATE.bnfChain?.callWallStrike,
+        bnfCallWallOi: STATE.bnfChain?.callWallOI,
+        bnfPutWall: STATE.bnfChain?.putWallStrike,
+        bnfPutWallOi: STATE.bnfChain?.putWallOI,
+        bnfTotalCallOi: STATE.bnfChain?.totalCallOI,
+        bnfTotalPutOi: STATE.bnfChain?.totalPutOI,
+        nfTotalCallOi: STATE.nfChain?.totalCallOI,
+        nfTotalPutOi: STATE.nfChain?.totalPutOI,
+        bnfAtmIv: STATE.bnfChain?.atmIv,
+        bnfFuturesPrem: STATE.bnfChain?.futuresPremium,
+        bnfBreadthPct: STATE.bnfBreadth?.weightedPct,
+        nf50Advancing: STATE.nf50Breadth?.scaled
+    };
+}
+
+// Heavy afternoon fetch — full chains + breadth (same as morning)
+async function heavyAfternoonFetch() {
+    try {
+        const spots = await API.fetchSpots();
+        const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
+        STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
+        const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
+        STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
+        STATE.bnfBreadth = await API.fetchBnfBreadth();
+        STATE.nf50Breadth = await API.fetchNf50Breadth();
+
+        // Update live state
+        STATE.live = { ...STATE.live,
+            nfSpot: spots.nfSpot, bnfSpot: spots.bnfSpot, vix: spots.vix,
+            pcr: STATE.bnfChain.pcr, nearAtmPCR: STATE.bnfChain.nearAtmPCR,
+            maxPainBnf: STATE.bnfChain.maxPain, futuresPremBnf: STATE.bnfChain.futuresPremium,
+            bnfAtmIv: STATE.bnfChain.atmIv
+        };
+        return spots;
+    } catch (e) {
+        console.error('heavyAfternoonFetch error:', e);
+        return null;
+    }
+}
+
+// Compare 2PM vs 3:15PM snapshots → detect positioning
+function computePositioning(snap2pm, snap315pm) {
+    if (!snap2pm || !snap315pm) return null;
+
+    const delta = {
+        callOiDelta: (snap315pm.bnf_total_call_oi || 0) - (snap2pm.bnf_total_call_oi || 0),
+        putOiDelta: (snap315pm.bnf_total_put_oi || 0) - (snap2pm.bnf_total_put_oi || 0),
+        nfCallOiDelta: (snap315pm.nf_total_call_oi || 0) - (snap2pm.nf_total_call_oi || 0),
+        nfPutOiDelta: (snap315pm.nf_total_put_oi || 0) - (snap2pm.nf_total_put_oi || 0),
+        pcrChange: (snap315pm.bnf_pcr || 0) - (snap2pm.bnf_pcr || 0),
+        nearPcrChange: (snap315pm.bnf_near_atm_pcr || 0) - (snap2pm.bnf_near_atm_pcr || 0),
+        vixChange: (snap315pm.vix || 0) - (snap2pm.vix || 0),
+        maxPainShift: (snap315pm.bnf_max_pain || 0) - (snap2pm.bnf_max_pain || 0),
+        breadthChange: (snap315pm.bnf_breadth_pct || 0) - (snap2pm.bnf_breadth_pct || 0),
+        spotChange: (snap315pm.bnf_spot || 0) - (snap2pm.bnf_spot || 0),
+        // Raw values for display
+        snap2pm, snap315pm
+    };
+
+    // Score each signal for tomorrow direction
+    let bearScore = 0, bullScore = 0;
+
+    // 1. OI imbalance — which side is building faster?
+    const netOiDelta = delta.putOiDelta - delta.callOiDelta;
+    if (delta.callOiDelta > delta.putOiDelta * 1.5) { bearScore += 2; } // heavy call writing = bearish
+    else if (delta.putOiDelta > delta.callOiDelta * 1.5) { bullScore += 2; } // heavy put writing = bullish (defense)
+
+    // 2. PCR direction in last hour
+    if (delta.pcrChange < -0.05) bearScore += 1.5;   // PCR dropping = more calls = bearish
+    else if (delta.pcrChange > 0.05) bullScore += 1.5;
+
+    // 3. VIX direction — rising into close = protection buying
+    if (delta.vixChange > 0.3) bearScore += 1.5;
+    else if (delta.vixChange < -0.3) bullScore += 1.5;
+
+    // 4. Max Pain shift
+    if (delta.maxPainShift < -100) bearScore += 1;
+    else if (delta.maxPainShift > 100) bullScore += 1;
+
+    // 5. BNF Breadth direction
+    if (delta.breadthChange < -0.5) bearScore += 1;
+    else if (delta.breadthChange > 0.5) bullScore += 1;
+
+    // Generate signal
+    const netScore = bullScore - bearScore;
+    let signal = 'NEUTRAL';
+    let strength = 0;
+    if (netScore >= 3) { signal = 'BULLISH'; strength = Math.min(5, Math.round(netScore)); }
+    else if (netScore >= 1) { signal = 'BULLISH'; strength = Math.min(3, Math.round(netScore)); }
+    else if (netScore <= -3) { signal = 'BEARISH'; strength = Math.min(5, Math.round(Math.abs(netScore))); }
+    else if (netScore <= -1) { signal = 'BEARISH'; strength = Math.min(3, Math.round(Math.abs(netScore))); }
+    else { signal = 'NEUTRAL'; strength = 1; }
+
+    return { delta, signal, strength, bullScore, bearScore, netScore };
+}
+
+// Validate yesterday's signal against today's gap
+async function validateYesterdaySignal(todayGap) {
+    if (!todayGap || todayGap.type === 'UNKNOWN') return null;
+    try {
+        // Get yesterday's date
+        const ydayDate = STATE.yesterdayHistory?.[0]?.date;
+        if (!ydayDate) return null;
+        const ydaySignal = await DB.getChainSnapshot(ydayDate, '315pm');
+        if (!ydaySignal || !ydaySignal.tomorrow_signal) return null;
+
+        const predicted = ydaySignal.tomorrow_signal;
+        const actualDir = todayGap.gap > 50 ? 'BULLISH' : todayGap.gap < -50 ? 'BEARISH' : 'NEUTRAL';
+        const correct = (predicted === actualDir) || (predicted === 'NEUTRAL' && Math.abs(todayGap.gap) < 100);
+
+        // Get historical accuracy
+        const signals = await DB.getRecentSignals(20);
+        // We need morning snapshots to get gaps... for now just track this one
+        return {
+            date: ydayDate,
+            predicted,
+            strength: ydaySignal.signal_strength,
+            actualGap: todayGap.gap,
+            actualDir,
+            correct,
+            totalSignals: signals.length
+        };
+    } catch (e) { return null; }
+}
+
+// Render positioning section on DATA tab
+function renderPositioning() {
+    if (!STATE.positioningResult && !STATE._captured2pm && !STATE.signalValidation) return '';
+
+    let html = '<div class="env-section-title">🔍 Afternoon Positioning</div>';
+
+    // Signal validation from yesterday
+    if (STATE.signalValidation) {
+        const sv = STATE.signalValidation;
+        html += `<div class="traj-alert ${sv.correct ? '' : 'warn'}">
+            Yesterday's signal: ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap} pts
+            ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
+        </div>`;
+    }
+
+    // 2PM baseline status
+    if (STATE._captured2pm && !STATE._captured315pm) {
+        html += `<div class="env-row"><span class="env-row-label">2:00 PM Baseline</span><span class="env-row-value" style="color:var(--green)">✅ Captured</span></div>`;
+        html += `<div class="env-row"><span class="env-row-label">3:15 PM Scan</span><span class="env-row-value" style="color:var(--text-muted)">⏳ Pending...</span></div>`;
+    }
+
+    // Full comparison after 3:15PM
+    if (STATE.positioningResult) {
+        const r = STATE.positioningResult;
+        const d = r.delta;
+        const fmtOI = (v) => { const l = Math.abs(v) / 100000; return `${v > 0 ? '+' : ''}${l.toFixed(1)}L`; };
+
+        html += `
+        <div class="env-row"><span class="env-row-label">BNF Call OI change</span>
+            <span class="env-row-value" style="color:${d.callOiDelta > 0 ? 'var(--danger)' : 'var(--green)'}">${fmtOI(d.callOiDelta)} ${d.callOiDelta > d.putOiDelta * 1.3 ? '(heavy call writing)' : ''}</span></div>
+        <div class="env-row"><span class="env-row-label">BNF Put OI change</span>
+            <span class="env-row-value" style="color:${d.putOiDelta > 0 ? 'var(--green)' : 'var(--danger)'}">${fmtOI(d.putOiDelta)} ${d.putOiDelta > d.callOiDelta * 1.3 ? '(heavy put defense)' : ''}</span></div>
+        <div class="env-row"><span class="env-row-label">PCR shift</span>
+            <span class="env-row-value">${d.snap2pm.bnf_near_atm_pcr?.toFixed(2) || '--'} → ${d.snap315pm.bnf_near_atm_pcr?.toFixed(2) || '--'} (${d.nearPcrChange > 0 ? '+' : ''}${d.nearPcrChange.toFixed(2)})</span></div>
+        <div class="env-row"><span class="env-row-label">VIX shift</span>
+            <span class="env-row-value" style="color:${d.vixChange > 0.2 ? 'var(--danger)' : d.vixChange < -0.2 ? 'var(--green)' : 'var(--text-muted)'}">${d.snap2pm.vix?.toFixed(1)} → ${d.snap315pm.vix?.toFixed(1)} (${d.vixChange > 0 ? '+' : ''}${d.vixChange.toFixed(1)})</span></div>
+        <div class="env-row"><span class="env-row-label">MaxPain shift</span>
+            <span class="env-row-value">${d.snap2pm.bnf_max_pain || '--'} → ${d.snap315pm.bnf_max_pain || '--'} (${d.maxPainShift > 0 ? '+' : ''}${d.maxPainShift})</span></div>
+        <div class="env-row"><span class="env-row-label">BNF Breadth</span>
+            <span class="env-row-value">${d.snap2pm.bnf_breadth_pct?.toFixed(2) || '--'}% → ${d.snap315pm.bnf_breadth_pct?.toFixed(2) || '--'}%</span></div>
+        `;
+
+        // Tomorrow Signal
+        const sigColor = r.signal === 'BEARISH' ? 'var(--danger)' : r.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)';
+        html += `<div class="tomorrow-signal" style="border-color:${sigColor}">
+            <div class="signal-label">⚡ TOMORROW SIGNAL</div>
+            <div class="signal-value" style="color:${sigColor}">${r.signal} (${r.strength}/5)</div>
+            <div class="signal-detail">${r.signal === 'BEARISH' ? 'Institutions positioned for gap-down. Sell call premium above resistance.' : r.signal === 'BULLISH' ? 'Institutions positioned for gap-up. Sell put premium below support.' : 'No clear positioning. Range likely. Iron Condor favorable.'}</div>
+        </div>`;
+    }
+
+    return html;
 }
 
 
@@ -1026,6 +1230,7 @@ async function initialFetch() {
             futuresPremBnf: STATE.bnfChain.futuresPremium,
             futuresPremNf: STATE.nfChain.futuresPremium,
             bias: biasResult,
+            closeChar: bnfCloseChar,
             ivPercentile: ivPctl,
             // OI walls
             bnfCallWall: STATE.bnfChain.callWallStrike,
@@ -1084,6 +1289,16 @@ async function initialFetch() {
             localStorage.setItem('mr2_fii_short_prev', STATE.morningInput.fiiShortPct);
         }
 
+        // Save morning CHAIN SNAPSHOT for afternoon comparison
+        const morningSnap = buildChainSnapshotData();
+        DB.saveChainSnapshot(morningSnap, 'morning');
+
+        // Validate yesterday's positioning signal against today's gap
+        STATE.signalValidation = await validateYesterdaySignal(STATE.gapInfo);
+        if (STATE.signalValidation) {
+            dbg('SIGNAL_VALIDATION', STATE.signalValidation);
+        }
+
         statusEl.textContent = '';
         // Reset button after successful scan
         document.getElementById('btn-lock').disabled = true;
@@ -1131,6 +1346,7 @@ async function lightFetch() {
             bnfSpot: spots.bnfSpot,
             vix: spots.vix,
             pcr: bnfChain.pcr,
+            nearAtmPCR: bnfChain.nearAtmPCR,
             maxPainBnf: bnfChain.maxPain,
             futuresPremBnf: bnfChain.futuresPremium,
             bnfAtmIv: bnfChain.atmIv,
@@ -1143,8 +1359,10 @@ async function lightFetch() {
         // Recompute bias with live chain data
         const biasResult = computeBias(STATE.morningInput, {
             pcr: bnfChain.pcr,
+            nearAtmPCR: bnfChain.nearAtmPCR,
             vix: spots.vix,
-            futuresPremium: bnfChain.futuresPremium
+            futuresPremium: bnfChain.futuresPremium,
+            closeChar: STATE.baseline?.closeChar || 0
         });
         STATE.live.bias = biasResult;
 
@@ -1301,7 +1519,7 @@ function updateOpenTradePnL(bnfChain, spots) {
 // NOTIFICATION MANAGER
 // ═══════════════════════════════════════════════════════════════
 
-function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
+async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
     const now = Date.now();
     const elapsed = API.minutesSinceOpen();
 
@@ -1390,6 +1608,72 @@ function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         }
 
         sendNotification('📈 Market Update', body, 'routine');
+    }
+
+    // ═══ AFTERNOON POSITIONING SCANS (2:00 PM and 3:15 PM) ═══
+    const mins = API.minutesSinceOpen();
+
+    // 2:00 PM = 285 min since 9:15. Capture baseline.
+    if (mins >= 285 && mins <= 295 && !STATE._captured2pm) {
+        STATE._captured2pm = true;
+        sendNotification('📊 Capturing 2:00 PM Baseline...', 'Heavy fetch in progress. Institutional positioning scan started.', 'important');
+        // Heavy fetch for full chain data
+        await heavyAfternoonFetch();
+        const snapData = buildChainSnapshotData();
+        await DB.saveChainSnapshot(snapData, '2pm');
+        STATE.afternoonBaseline = snapData;
+        addNotificationLog('📊 2:00 PM Baseline', 'Chain snapshot saved. Waiting for 3:15 PM comparison.', 'important');
+        renderAll();
+    }
+
+    // 3:15 PM = 360 min since 9:15. Final scan + compare + generate signal.
+    if (mins >= 360 && mins <= 370 && !STATE._captured315pm) {
+        STATE._captured315pm = true;
+        sendNotification('⚡ Final Positioning Scan...', 'Heavy fetch in progress. Comparing with 2:00 PM baseline.', 'urgent');
+        // Heavy fetch
+        await heavyAfternoonFetch();
+        const snapData315 = buildChainSnapshotData();
+
+        // Load 2PM snapshot from Supabase (reliable source)
+        const today = new Date().toISOString().split('T')[0];
+        const snap2pm = await DB.getChainSnapshot(today, '2pm');
+
+        if (snap2pm) {
+            // Compare
+            const result = computePositioning(snap2pm, {
+                ...snapData315,
+                bnf_total_call_oi: snapData315.bnfTotalCallOi,
+                bnf_total_put_oi: snapData315.bnfTotalPutOi,
+                bnf_pcr: snapData315.bnfPcr,
+                bnf_near_atm_pcr: snapData315.bnfNearAtmPcr,
+                vix: snapData315.vix,
+                bnf_max_pain: snapData315.bnfMaxPain,
+                bnf_breadth_pct: snapData315.bnfBreadthPct,
+                bnf_spot: snapData315.bnfSpot
+            });
+            STATE.positioningResult = result;
+            STATE.tomorrowSignal = result ? { signal: result.signal, strength: result.strength } : null;
+
+            // Save with tomorrow signal
+            snapData315.tomorrowSignal = result?.signal;
+            snapData315.signalStrength = result?.strength;
+
+            sendNotification(
+                `⚡ Tomorrow Signal: ${result?.signal || 'NEUTRAL'} (${result?.strength || 0}/5)`,
+                result?.signal === 'BEARISH' ? 'Sell call premium now. Enter Bear Call Spread.' :
+                result?.signal === 'BULLISH' ? 'Sell put premium now. Enter Bull Put Spread.' :
+                'No clear direction. Consider Iron Condor.',
+                'urgent'
+            );
+        }
+
+        await DB.saveChainSnapshot(snapData315, '315pm');
+        addNotificationLog('⚡ 3:15 PM Scan Complete', `Tomorrow Signal: ${STATE.tomorrowSignal?.signal || 'NEUTRAL'} (${STATE.tomorrowSignal?.strength || 0}/5)`, 'urgent');
+
+        // Re-rank candidates aligned with tomorrow signal
+        if (STATE.tomorrowSignal && STATE.candidates.length) {
+            renderAll();
+        }
     }
 }
 
@@ -1572,7 +1856,10 @@ async function logManualTrade() {
         trade.id = saved.id;
         STATE.openTrade = trade;
         playSound('entry');
+        switchTab('positions');
         renderAll();
+        // Start watch loop for live P&L tracking
+        if (!STATE.isWatching) startWatchLoop();
     }
 }
 
@@ -1939,6 +2226,9 @@ function renderPremiumEnvironment() {
         ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
         ` : ''}
 
+        <!-- AFTERNOON POSITIONING -->
+        ${renderPositioning()}
+
         ${yday ? `
         <!-- OVERNIGHT: Yesterday Close → Today Morning -->
         <div class="env-section-title">🌙 Overnight (${yday.date} close → today open)</div>
@@ -2130,7 +2420,13 @@ function renderPosition() {
     }
 
     const t = STATE.openTrade;
-    const forces = t.forces || { f1: 0, f2: 0, f3: 0, aligned: 0 };
+    // Reconstruct forces object from flat fields (works for both manual and auto trades)
+    const forces = t.forces || {
+        f1: t.force_f1 || 0,
+        f2: t.force_f2 || 0,
+        f3: t.force_f3 || 0,
+        aligned: t.force_alignment || 0
+    };
     const pnlClass = t.current_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
     const dots = alignmentDots(forces.aligned);
     const lastUpdate = STATE.lastPollTime ? new Date(STATE.lastPollTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
