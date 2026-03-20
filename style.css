@@ -925,6 +925,26 @@ body.light .btn-close-profit {
     transition: width 0.5s, background 0.5s;
 }
 
+/* ═══ MANUAL TRADE FORM ═══ */
+.manual-trade-form {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+.manual-trade-form .input-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.manual-trade-form .input-field {
+    font-size: 13px;
+    padding: 6px 8px;
+}
+
 /* ═══ DEBUG PANEL ═══ */
 .debug-section summary {
     font-size: 12px;

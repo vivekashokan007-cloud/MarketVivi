@@ -48,8 +48,8 @@ const C = {
     IV_VERY_HIGH: 24,
 
     // Filters
-    MIN_PROB: 0.60,          // minimum probability of profit
-    MIN_CREDIT_RATIO: 0.12,  // credit/width must be ≥12% for credit strategies
+    MIN_PROB: 0.50,          // allow 50%+ through, ranking by EV picks sweet spot
+    MIN_CREDIT_RATIO: 0.10,  // credit/width must be ≥10%
 
     // Strategy categories
     CREDIT_TYPES: ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
@@ -202,14 +202,20 @@ function computeBias(morning, chainData) {
         else signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'NEUTRAL' });
     }
 
-    // 2. FII Short% (manual) — compare with yesterday from premium_history, not localStorage
+    // 2. FII Short% (manual) — compare with yesterday from premium_history ONLY
     const fiiShortVal = morning.fiiShortPct;
     if (fiiShortVal != null && fiiShortVal !== '' && !isNaN(fiiShortVal)) {
         const sp = parseFloat(fiiShortVal);
-        const ydayHist = STATE.yesterdayHistory || STATE.premiumHistory || [];
-        const prev = ydayHist.length > 0 && ydayHist[0]?.fii_short_pct ? ydayHist[0].fii_short_pct : parseFloat(localStorage.getItem('mr2_fii_short_prev') || '0');
-        if (sp > 85 && sp >= prev) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}% (prev ${prev.toFixed?.(0) || prev})↑`, dir: 'BEAR' }); }
-        else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering (was ${prev.toFixed?.(0) || prev})`, dir: 'NEUTRAL' }); }
+        const ydayHist = STATE.yesterdayHistory || [];
+        const prev = ydayHist.length > 0 && ydayHist[0]?.fii_short_pct ? ydayHist[0].fii_short_pct : null;
+        if (prev === null) {
+            // No yesterday data — can't compare direction, just use level
+            if (sp > 85) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}% (prev: N/A)`, dir: 'BEAR' }); }
+            else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
+            else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
+        } else if (sp > 85 && sp > prev) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}%↑ (was ${prev})`, dir: 'BEAR' }); }
+        else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering (was ${prev})`, dir: 'NEUTRAL' }); }
+        else if (sp > 85 && sp === prev) { signals.push({ name: 'FII Short%', value: `${sp}% → flat (was ${prev})`, dir: 'NEUTRAL' }); }
         else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
         else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
     }
@@ -869,12 +875,10 @@ function rankCandidates(candidates) {
             if (b.forces.aligned !== a.forces.aligned) return b.forces.aligned - a.forces.aligned;
             // Secondary: fewer forces against
             if (a.forces.against !== b.forces.against) return a.forces.against - b.forces.against;
-            // Tertiary: probability (survivability)
-            if (Math.abs(b.probProfit - a.probProfit) > 0.05) return b.probProfit - a.probProfit;
-            // Quaternary: EV per rupee of risk
-            const evRiskA = a.ev / a.maxLoss;
-            const evRiskB = b.ev / b.maxLoss;
-            return evRiskB - evRiskA;
+            // Tertiary: EV — sweet spot trades (higher credit, moderate prob) rank higher
+            if (Math.abs(b.ev - a.ev) > 100) return b.ev - a.ev;
+            // Quaternary: probability as tiebreaker
+            return b.probProfit - a.probProfit;
         });
 }
 
@@ -1506,6 +1510,72 @@ async function takeTrade(candidateId) {
     }
 }
 
+async function logManualTrade() {
+    const type = document.getElementById('mt-type').value;
+    const indexKey = document.getElementById('mt-index').value;
+    const sellStrike = parseFloat(document.getElementById('mt-sell').value);
+    const buyStrike = parseFloat(document.getElementById('mt-buy').value);
+    const sellLTP = parseFloat(document.getElementById('mt-sell-ltp').value);
+    const buyLTP = parseFloat(document.getElementById('mt-buy-ltp').value);
+
+    if (!sellStrike || !buyStrike || !sellLTP || !buyLTP) {
+        alert('Please fill all fields');
+        return;
+    }
+
+    const isCredit = C.CREDIT_TYPES.includes(type);
+    const width = Math.abs(sellStrike - buyStrike);
+    const netPremium = isCredit ? +(sellLTP - buyLTP).toFixed(2) : +(buyLTP - sellLTP).toFixed(2);
+    const lotSize = indexKey === 'BNF' ? C.BNF_LOT : C.NF_LOT;
+    const maxProfit = isCredit ? Math.round(netPremium * lotSize) : Math.round((width - netPremium) * lotSize);
+    const maxLoss = isCredit ? Math.round((width - netPremium) * lotSize) : Math.round(netPremium * lotSize);
+
+    // Determine sell/buy types from strategy
+    const sellType = (type === 'BEAR_CALL' || type === 'BULL_CALL') ? 'CE' : 'PE';
+    const buyType = sellType;
+
+    const trade = {
+        strategy_type: type,
+        index_key: indexKey,
+        expiry: indexKey === 'BNF' ? STATE.bnfExpiry : STATE.nfExpiry,
+        entry_date: new Date().toISOString(),
+        entry_spot: indexKey === 'BNF' ? (STATE.live?.bnfSpot || STATE.baseline?.bnfSpot) : (STATE.live?.nfSpot || STATE.baseline?.nfSpot),
+        entry_vix: STATE.live?.vix || STATE.baseline?.vix,
+        entry_atm_iv: indexKey === 'BNF' ? (STATE.live?.bnfAtmIv || STATE.baseline?.bnfAtmIv) : null,
+        entry_premium: netPremium,
+        width,
+        sell_strike: sellStrike,
+        sell_type: sellType,
+        sell_ltp: sellLTP,
+        buy_strike: buyStrike,
+        buy_type: buyType,
+        buy_ltp: buyLTP,
+        max_profit: maxProfit,
+        max_loss: maxLoss,
+        is_credit: isCredit,
+        force_alignment: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).aligned : 0,
+        force_f1: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f1 : 0,
+        force_f2: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f2 : 0,
+        force_f3: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f3 : 0,
+        entry_pcr: STATE.live?.pcr || STATE.baseline?.pcr,
+        entry_futures_premium: STATE.live?.futuresPremBnf || STATE.baseline?.futuresPremBnf,
+        entry_bias: STATE.live?.bias?.label || STATE.baseline?.bias?.label,
+        entry_bias_net: STATE.live?.bias?.net || STATE.baseline?.bias?.net,
+        status: 'OPEN',
+        current_pnl: 0,
+        peak_pnl: 0,
+        lots: 1
+    };
+
+    const saved = await DB.insertTrade(trade);
+    if (saved) {
+        trade.id = saved.id;
+        STATE.openTrade = trade;
+        playSound('entry');
+        renderAll();
+    }
+}
+
 async function closeTrade(exitReason) {
     if (!STATE.openTrade) return;
 
@@ -2014,7 +2084,48 @@ function renderPosition() {
     if (!el) return;
 
     if (!STATE.openTrade) {
-        el.innerHTML = '<div class="empty-state">No open position. Take a trade from Strategies tab.</div>';
+        el.innerHTML = `
+        <div class="empty-state">No open position</div>
+        <div class="manual-trade-form">
+            <div class="env-section-title">📝 Log Manual Trade</div>
+            <div class="input-grid">
+                <div class="input-group">
+                    <label>Type</label>
+                    <select id="mt-type" class="input-field">
+                        <option value="BEAR_CALL">Bear Call</option>
+                        <option value="BULL_PUT">Bull Put</option>
+                        <option value="BEAR_PUT">Bear Put</option>
+                        <option value="BULL_CALL">Bull Call</option>
+                        <option value="IRON_CONDOR">Iron Condor</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Index</label>
+                    <select id="mt-index" class="input-field">
+                        <option value="BNF">Bank Nifty</option>
+                        <option value="NF">Nifty 50</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Sell Strike</label>
+                    <input type="number" id="mt-sell" class="input-field" placeholder="55500">
+                </div>
+                <div class="input-group">
+                    <label>Buy Strike</label>
+                    <input type="number" id="mt-buy" class="input-field" placeholder="55800">
+                </div>
+                <div class="input-group">
+                    <label>Sell LTP (₹)</label>
+                    <input type="number" id="mt-sell-ltp" class="input-field" placeholder="429.3" step="0.05">
+                </div>
+                <div class="input-group">
+                    <label>Buy LTP (₹)</label>
+                    <input type="number" id="mt-buy-ltp" class="input-field" placeholder="334.85" step="0.05">
+                </div>
+            </div>
+            <button class="btn-primary" onclick="logManualTrade()" style="margin-top:8px">📌 Log This Trade</button>
+        </div>
+        `;
         return;
     }
 
