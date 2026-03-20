@@ -720,7 +720,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
     // ═══ RANGE BUDGET for debit spreads ═══
     // Reject if width > remaining 1σ in trade direction (uses multi-day sigma)
-    const prevClose = STATE.premiumHistory?.[0]?.bnf_spot || spot;
+    const prevClose = isBNF
+        ? (STATE.premiumHistory?.[0]?.bnf_spot || spot)
+        : (STATE.premiumHistory?.[0]?.nf_spot || spot);
     const tradeSigma = BS.sigmaDays(spot, vix, tDTE);
     const moveFromClose = spot - prevClose;
     const remainingUp = Math.max(0, tradeSigma - Math.max(0, moveFromClose));
@@ -1380,6 +1382,15 @@ async function lightFetch() {
         const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
         const bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
 
+        // Fetch NF chain if NF trade is open OR for OI tab display
+        let nfChain = STATE.nfChain; // keep morning chain as fallback
+        if (STATE.openTrade?.index_key === 'NF' || STATE.nfExpiry) {
+            try {
+                const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
+                nfChain = API.parseChain(nfRaw, spots.nfSpot);
+            } catch (e) { console.warn('NF chain fetch skipped:', e.message); }
+        }
+
         const elapsed = API.minutesSinceOpen();
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
         const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
@@ -1388,9 +1399,9 @@ async function lightFetch() {
         const spotSigma = BS.sigmaScore(spots.bnfSpot, STATE.baseline.bnfSpot, STATE.baseline.vix, elapsed);
         const vixSigma = BS.vixSigmaScore(spots.vix, STATE.baseline.vix, elapsed);
 
-        // Update live state
-        // Update chain reference for positioning/snapshot functions
+        // Update chain references for positioning/snapshot functions
         STATE.bnfChain = bnfChain;
+        STATE.nfChain = nfChain;
 
         STATE.live = {
             ...STATE.baseline,
@@ -1402,13 +1413,18 @@ async function lightFetch() {
             maxPainBnf: bnfChain.maxPain,
             futuresPremBnf: bnfChain.futuresPremium,
             bnfAtmIv: bnfChain.atmIv,
-            // OI walls — live
+            // OI walls — live BNF
             bnfCallWall: bnfChain.callWallStrike,
             bnfCallWallOI: bnfChain.callWallOI,
             bnfPutWall: bnfChain.putWallStrike,
             bnfPutWallOI: bnfChain.putWallOI,
             bnfTotalCallOI: bnfChain.totalCallOI,
             bnfTotalPutOI: bnfChain.totalPutOI,
+            // NF live data
+            nfAtmIv: nfChain?.atmIv || STATE.baseline?.nfAtmIv,
+            nfPcr: nfChain?.pcr,
+            nfNearAtmPCR: nfChain?.nearAtmPCR,
+            futuresPremNf: nfChain?.futuresPremium,
             ivPercentile: ivPctl,
             spotSigma: +spotSigma.toFixed(2),
             vixSigma: +vixSigma.toFixed(2),
@@ -1440,11 +1456,13 @@ async function lightFetch() {
             updateWatchlistForces(bnfChain, spots, biasResult, ivPctl);
         }
 
-        // Update open trade P&L
+        // Update open trade P&L — use correct chain based on trade index
         if (STATE.openTrade) {
-            updateOpenTradePnL(bnfChain, spots);
-            // Adversarial Control Index
-            STATE.controlIndex = computeControlIndex(STATE.openTrade, bnfChain, spots.bnfSpot, STATE.bnfBreadth);
+            const tradeChain = STATE.openTrade.index_key === 'NF' ? nfChain : bnfChain;
+            const tradeSpot = STATE.openTrade.index_key === 'NF' ? spots.nfSpot : spots.bnfSpot;
+            updateOpenTradePnL(tradeChain, spots, tradeSpot);
+            // Adversarial Control Index — use correct chain
+            STATE.controlIndex = computeControlIndex(STATE.openTrade, tradeChain, tradeSpot, STATE.bnfBreadth);
             if (STATE.openTrade) STATE.openTrade.controlIndex = STATE.controlIndex;
         }
 
@@ -1536,9 +1554,13 @@ async function lightFetch() {
 
 function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
     for (const cand of STATE.watchlist) {
+        // Use correct chain for this candidate's index
+        const chain = cand.index === 'NF' ? STATE.nfChain : bnfChain;
+        if (!chain) continue;
+
         // Update LTPs from live chain — leg 1+2
-        const sellData = bnfChain.strikes[cand.sellStrike]?.[cand.sellType];
-        const buyData = bnfChain.strikes[cand.buyStrike]?.[cand.buyType];
+        const sellData = chain.strikes[cand.sellStrike]?.[cand.sellType];
+        const buyData = chain.strikes[cand.buyStrike]?.[cand.buyType];
         if (sellData) {
             cand.sellLTP = cand.isCredit ? sellData.bid : sellData.ask;
             cand.sellOI = sellData.oi;
@@ -1550,8 +1572,8 @@ function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
 
         // 4-leg: update leg 3+4
         if (cand.legs === 4 && cand.sellStrike2) {
-            const sellData2 = bnfChain.strikes[cand.sellStrike2]?.[cand.sellType2];
-            const buyData2 = bnfChain.strikes[cand.buyStrike2]?.[cand.buyType2];
+            const sellData2 = chain.strikes[cand.sellStrike2]?.[cand.sellType2];
+            const buyData2 = chain.strikes[cand.buyStrike2]?.[cand.buyType2];
             if (sellData2) cand.sellLTP2 = cand.isCredit ? sellData2.bid : sellData2.ask;
             if (buyData2) cand.buyLTP2 = cand.isCredit ? buyData2.ask : buyData2.bid;
         }
@@ -1589,12 +1611,12 @@ function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
     }
 }
 
-function updateOpenTradePnL(bnfChain, spots) {
+function updateOpenTradePnL(chain, spots, tradeSpot) {
     const trade = STATE.openTrade;
-    if (!trade) return;
+    if (!trade || !chain) return;
 
-    const sellData = bnfChain.strikes[trade.sell_strike]?.[trade.sell_type];
-    const buyData = bnfChain.strikes[trade.buy_strike]?.[trade.buy_type];
+    const sellData = chain.strikes[trade.sell_strike]?.[trade.sell_type];
+    const buyData = chain.strikes[trade.buy_strike]?.[trade.buy_type];
     if (!sellData || !buyData) return;
 
     const lotSize = trade.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT;
@@ -1609,7 +1631,7 @@ function updateOpenTradePnL(bnfChain, spots) {
         trade.current_pnl = Math.round((currentNet - trade.entry_premium) * lotSize);
     }
 
-    trade.current_spot = spots.bnfSpot;
+    trade.current_spot = tradeSpot || spots.bnfSpot;
     trade.current_vix = spots.vix;
 
     // Update peak
@@ -1941,8 +1963,10 @@ function stopWatchLoop() {
 // ═══════════════════════════════════════════════════════════════
 
 async function takeTrade(candidateId) {
-    const cand = STATE.watchlist.find(c => c.id === candidateId);
-    if (!cand) return;
+    const cand = STATE.watchlist.find(c => c.id === candidateId)
+        || STATE.candidates.find(c => c.id === candidateId)
+        || STATE.positioningCandidates.find(c => c.id === candidateId);
+    if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
 
     const trade = {
         strategy_type: cand.type,
@@ -1967,8 +1991,10 @@ async function takeTrade(candidateId) {
         force_f1: cand.forces.f1,
         force_f2: cand.forces.f2,
         force_f3: cand.forces.f3,
-        entry_pcr: STATE.live.pcr,
-        entry_futures_premium: STATE.live.futuresPremBnf,
+        entry_pcr: cand.index === 'BNF' ? STATE.live.pcr : (STATE.live.nfPcr || STATE.nfChain?.pcr),
+        entry_futures_premium: cand.index === 'BNF' ? STATE.live.futuresPremBnf : (STATE.live.futuresPremNf || STATE.nfChain?.futuresPremium),
+        entry_max_pain: cand.index === 'BNF' ? (STATE.live.maxPainBnf || STATE.bnfChain?.maxPain) : (STATE.nfChain?.maxPain || STATE.baseline?.maxPainNf),
+        entry_sell_oi: (() => { const ch = cand.index === 'BNF' ? STATE.bnfChain : STATE.nfChain; return ch?.strikes[cand.sellStrike]?.[cand.sellType]?.oi || null; })(),
         entry_bias: STATE.live.bias?.label,
         entry_bias_net: STATE.live.bias?.net,
         prob_profit: cand.probProfit,
@@ -2019,7 +2045,7 @@ async function logManualTrade() {
         entry_date: new Date().toISOString(),
         entry_spot: indexKey === 'BNF' ? (STATE.live?.bnfSpot || STATE.baseline?.bnfSpot) : (STATE.live?.nfSpot || STATE.baseline?.nfSpot),
         entry_vix: STATE.live?.vix || STATE.baseline?.vix,
-        entry_atm_iv: indexKey === 'BNF' ? (STATE.live?.bnfAtmIv || STATE.baseline?.bnfAtmIv) : null,
+        entry_atm_iv: indexKey === 'BNF' ? (STATE.live?.bnfAtmIv || STATE.baseline?.bnfAtmIv) : (STATE.live?.nfAtmIv || STATE.baseline?.nfAtmIv),
         entry_premium: netPremium,
         width,
         sell_strike: sellStrike,
@@ -2035,8 +2061,10 @@ async function logManualTrade() {
         force_f1: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f1 : 0,
         force_f2: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f2 : 0,
         force_f3: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f3 : 0,
-        entry_pcr: STATE.live?.pcr || STATE.baseline?.pcr,
-        entry_futures_premium: STATE.live?.futuresPremBnf || STATE.baseline?.futuresPremBnf,
+        entry_pcr: indexKey === 'BNF' ? (STATE.live?.pcr || STATE.baseline?.pcr) : (STATE.nfChain?.pcr || null),
+        entry_futures_premium: indexKey === 'BNF' ? (STATE.live?.futuresPremBnf || STATE.baseline?.futuresPremBnf) : (STATE.nfChain?.futuresPremium || null),
+        entry_max_pain: indexKey === 'BNF' ? (STATE.live?.maxPainBnf || STATE.bnfChain?.maxPain) : (STATE.nfChain?.maxPain || null),
+        entry_sell_oi: (() => { const ch = indexKey === 'BNF' ? STATE.bnfChain : STATE.nfChain; return ch?.strikes[sellStrike]?.[sellType]?.oi || null; })(),
         entry_bias: STATE.live?.bias?.label || STATE.baseline?.bias?.label,
         entry_bias_net: STATE.live?.bias?.net || STATE.baseline?.bias?.net,
         status: 'OPEN',
@@ -2068,7 +2096,7 @@ async function closeTrade(exitReason) {
         exit_premium: trade.current_premium,
         exit_reason: exitReason || 'Manual',
         exit_vix: STATE.live?.vix,
-        exit_atm_iv: STATE.live?.bnfAtmIv,
+        exit_atm_iv: trade.index_key === 'NF' ? (STATE.live?.nfAtmIv || STATE.nfChain?.atmIv) : STATE.live?.bnfAtmIv,
         exit_force_alignment: trade.forces?.aligned
     });
 
