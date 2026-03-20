@@ -101,6 +101,8 @@ const STATE = {
     positioningResult: null,   // 3:15PM comparison result
     tomorrowSignal: null,      // BEARISH/BULLISH/NEUTRAL + strength
     signalAccuracy: null,      // { correct, total, history }
+    positioningCandidates: [],  // strategies aligned with tomorrow signal
+    positioningBias: null,      // bias derived from tomorrow signal
 
     // Loop control
     pollTimer: null,
@@ -1725,10 +1727,33 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         await DB.saveChainSnapshot(snapData315, '315pm');
         addNotificationLog('⚡ 3:15 PM Scan Complete', `Tomorrow Signal: ${STATE.tomorrowSignal?.signal || 'NEUTRAL'} (${STATE.tomorrowSignal?.strength || 0}/5)`, 'urgent');
 
-        // Re-rank candidates aligned with tomorrow signal
-        if (STATE.tomorrowSignal && STATE.candidates.length) {
-            renderAll();
-        }
+        // ═══ GENERATE POSITIONING TRADES aligned with tomorrow signal ═══
+        // Use fresh chain data from heavy fetch + tomorrow signal as bias
+        const tSignal = STATE.tomorrowSignal?.signal || 'NEUTRAL';
+        const positioningBias = {
+            bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
+            strength: STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD',
+            net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
+            votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
+            signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${STATE.tomorrowSignal?.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
+            label: `${STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
+        };
+
+        const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
+        const ivPctl = BS.ivPercentile(STATE.live.vix, vixHistory);
+        const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
+
+        const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
+        const posNfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
+        const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
+
+        STATE.positioningCandidates = allPosCands.slice(0, 10);
+        STATE.positioningBias = positioningBias;
+
+        addNotificationLog('🎯 Positioning Trades Ready',
+            `${STATE.positioningCandidates.length} trades aligned with ${tSignal} signal. Check Strategies tab.`, 'entry');
+
+        renderAll();
     }
 }
 
@@ -2395,6 +2420,31 @@ function renderWatchlist() {
     const nfBlocked = STATE.candidates.some(c => c.index === 'NF' && c.capitalBlocked);
 
     let html = `<div class="section-timestamp">Generated: ${scanTime} · ${STATE.candidates.length} total candidates</div>`;
+
+    // ═══ POSITIONING TRADES (after 3:15 PM scan) ═══
+    if (STATE.positioningCandidates?.length > 0 && STATE.tomorrowSignal) {
+        const sig = STATE.tomorrowSignal;
+        const sigColor = sig.signal === 'BEARISH' ? 'var(--danger)' : sig.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)';
+        html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin-bottom:12px">
+            <div class="signal-label">⚡ POSITION FOR TOMORROW</div>
+            <div class="signal-value" style="color:${sigColor}">${sig.signal} (${sig.strength}/5)</div>
+            <div class="signal-detail">Enter NOW at today's IV. Tomorrow's gap = your profit.</div>
+        </div>`;
+
+        const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF').slice(0, 3);
+        const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 2);
+
+        if (posBnf.length) {
+            html += '<div class="strat-section-title" style="color:var(--green)">🎯 BNF — Positioning Trades</div>';
+            html += posBnf.map(cand => renderCandidateCard(cand, atm)).join('');
+        }
+        if (posNf.length) {
+            html += '<div class="strat-section-title" style="color:var(--green)">🎯 NF — Positioning Trades</div>';
+            html += posNf.map(cand => renderCandidateCard(cand, STATE.nfChain?.atm || 0)).join('');
+        }
+
+        html += '<div class="strat-section-title" style="border-color:var(--border)">Morning Scan Strategies</div>';
+    }
 
     // BNF Strategies
     html += '<div class="strat-section-title">Bank Nifty</div>';
