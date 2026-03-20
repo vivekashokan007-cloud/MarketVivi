@@ -154,8 +154,19 @@ const API = (() => {
             if (Math.abs(s - spot) < minDist) { minDist = Math.abs(s - spot); atm = s; }
         }
 
-        // PCR
+        // PCR — full chain (for display)
         const pcr = totalCallOI > 0 ? +(totalPutOI / totalCallOI).toFixed(2) : null;
+
+        // Near-ATM PCR — ±10 strikes from ATM (for bias calculation)
+        // Far OTM lottery tickets inflate total OI and distort PCR
+        let nearCallOI = 0, nearPutOI = 0;
+        const atmIdx = allStrikes.indexOf(atm);
+        const nearStrikes = allStrikes.slice(Math.max(0, atmIdx - 10), atmIdx + 11);
+        for (const s of nearStrikes) {
+            nearCallOI += strikes[s]?.CE?.oi || 0;
+            nearPutOI += strikes[s]?.PE?.oi || 0;
+        }
+        const nearAtmPCR = nearCallOI > 0 ? +(nearPutOI / nearCallOI).toFixed(2) : pcr;
 
         // Max Pain
         let maxPain = atm;
@@ -206,7 +217,7 @@ const API = (() => {
         debugLog('CHAIN_PARSED', {
             spot, atm, strikeCount: allStrikes.length,
             strikeRange: allStrikes.length ? `${allStrikes[0]}-${allStrikes[allStrikes.length-1]}` : 'none',
-            totalCallOI, totalPutOI, pcr, maxPain,
+            totalCallOI, totalPutOI, pcr, nearAtmPCR, maxPain,
             synthFutures: +synthFutures.toFixed(2), futuresPremium,
             atmIv, atmCE_ltp: atmData?.CE?.ltp, atmPE_ltp: atmData?.PE?.ltp,
             callWall: `${callWallStrike} (${callWallOI})`, putWall: `${putWallStrike} (${putWallOI})`
@@ -214,7 +225,7 @@ const API = (() => {
 
         return {
             strikes, allStrikes, atm,
-            totalCallOI, totalPutOI, pcr,
+            totalCallOI, totalPutOI, pcr, nearAtmPCR,
             maxPain, synthFutures, futuresPremium,
             atmIv,
             callWallStrike, callWallOI, putWallStrike, putWallOI

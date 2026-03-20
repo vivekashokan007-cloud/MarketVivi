@@ -202,13 +202,14 @@ function computeBias(morning, chainData) {
         else signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'NEUTRAL' });
     }
 
-    // 2. FII Short% (manual)
+    // 2. FII Short% (manual) — compare with yesterday from premium_history, not localStorage
     const fiiShortVal = morning.fiiShortPct;
     if (fiiShortVal != null && fiiShortVal !== '' && !isNaN(fiiShortVal)) {
         const sp = parseFloat(fiiShortVal);
-        const prev = parseFloat(localStorage.getItem('mr2_fii_short_prev') || '0');
-        if (sp > 85 && sp >= prev) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}%↑`, dir: 'BEAR' }); }
-        else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering`, dir: 'NEUTRAL' }); }
+        const ydayHist = STATE.yesterdayHistory || STATE.premiumHistory || [];
+        const prev = ydayHist.length > 0 && ydayHist[0]?.fii_short_pct ? ydayHist[0].fii_short_pct : parseFloat(localStorage.getItem('mr2_fii_short_prev') || '0');
+        if (sp > 85 && sp >= prev) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}% (prev ${prev.toFixed?.(0) || prev})↑`, dir: 'BEAR' }); }
+        else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering (was ${prev.toFixed?.(0) || prev})`, dir: 'NEUTRAL' }); }
         else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
         else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
     }
@@ -221,12 +222,12 @@ function computeBias(morning, chainData) {
         else signals.push({ name: 'Close Char', value: `${cc} (auto)`, dir: 'NEUTRAL' });
     }
 
-    // 4. PCR (from chain)
-    if (chainData?.pcr) {
-        const pcr = chainData.pcr;
-        if (pcr > 1.2) { votes.bull++; signals.push({ name: 'PCR', value: pcr.toFixed(2), dir: 'BULL' }); }
-        else if (pcr < 0.9) { votes.bear++; signals.push({ name: 'PCR', value: pcr.toFixed(2), dir: 'BEAR' }); }
-        else signals.push({ name: 'PCR', value: pcr.toFixed(2), dir: 'NEUTRAL' });
+    // 4. PCR — use near-ATM PCR, not full chain (far OTM inflates call OI)
+    if (chainData?.nearAtmPCR) {
+        const pcr = chainData.nearAtmPCR;
+        if (pcr > 1.2) { votes.bull++; signals.push({ name: 'PCR', value: `${pcr.toFixed(2)} (near-ATM)`, dir: 'BULL' }); }
+        else if (pcr < 0.9) { votes.bear++; signals.push({ name: 'PCR', value: `${pcr.toFixed(2)} (near-ATM)`, dir: 'BEAR' }); }
+        else signals.push({ name: 'PCR', value: `${pcr.toFixed(2)} (near-ATM)`, dir: 'NEUTRAL' });
     }
 
     // 5. VIX Direction (vs yesterday — uses yesterdayHistory which skips today)
@@ -967,6 +968,7 @@ async function initialFetch() {
         // Compute bias — 6 data-driven signals + Upstox comparison
         const biasResult = computeBias(STATE.morningInput, {
             pcr: STATE.bnfChain.pcr,
+            nearAtmPCR: STATE.bnfChain.nearAtmPCR,
             vix: spots.vix,
             futuresPremium: STATE.bnfChain.futuresPremium,
             closeChar: bnfCloseChar
@@ -1014,6 +1016,7 @@ async function initialFetch() {
             nfAtmIv: STATE.nfChain.atmIv,
             bnfAtmIv: STATE.bnfChain.atmIv,
             pcr: STATE.bnfChain.pcr,
+            nearAtmPCR: STATE.bnfChain.nearAtmPCR,
             maxPainBnf: STATE.bnfChain.maxPain,
             maxPainNf: STATE.nfChain.maxPain,
             futuresPremBnf: STATE.bnfChain.futuresPremium,
@@ -1078,6 +1081,10 @@ async function initialFetch() {
         }
 
         statusEl.textContent = '';
+        // Reset button after successful scan
+        document.getElementById('btn-lock').disabled = true;
+        document.getElementById('btn-lock').textContent = '✅ Scanned';
+        document.getElementById('btn-stop').style.display = 'inline-block';
         renderAll();
         startWatchLoop();
 
@@ -1764,8 +1771,12 @@ function renderPremiumEnvironment() {
         <!-- OI STRUCTURE -->
         <div class="env-section-title">OI Structure — Institutional Positioning</div>
         <div class="env-row">
-            <span class="env-row-label">PCR</span>
-            <span class="env-row-value">${l.pcr?.toFixed(2) || '--'}</span>
+            <span class="env-row-label">PCR (near-ATM)</span>
+            <span class="env-row-value" style="color: ${(l.nearAtmPCR || 0) > 1.2 ? 'var(--green)' : (l.nearAtmPCR || 0) < 0.9 ? 'var(--danger)' : 'var(--text-primary)'}">${l.nearAtmPCR?.toFixed(2) || '--'} ${(l.nearAtmPCR || 0) > 1.2 ? '(bullish)' : (l.nearAtmPCR || 0) < 0.9 ? '(bearish)' : '(neutral)'}</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">PCR (full chain)</span>
+            <span class="env-row-value" style="color: var(--text-muted)">${l.pcr?.toFixed(2) || '--'}</span>
         </div>
         <div class="env-row">
             <span class="env-row-label">Max Pain</span>
@@ -1823,7 +1834,7 @@ function renderPremiumEnvironment() {
         ${STATE.nf50Breadth ? `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>
-            <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing (${STATE.nf50Breadth.advancing}/${STATE.nf50Breadth.matched} matched)</span>
+            <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing · ${STATE.nf50Breadth.matched}/50 matched</span>
         </div>
         ` : ''}
 
