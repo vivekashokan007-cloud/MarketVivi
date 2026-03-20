@@ -2563,17 +2563,17 @@ function renderWatchlist() {
             <div class="global-context-grid">
                 <div class="input-group compact">
                     <label>GIFT Nifty %</label>
-                    <input type="number" id="in-gift-nifty" class="input-field input-sm" placeholder="+0.3" step="0.1"
+                    <input type="text" inputmode="decimal" id="in-gift-nifty" class="input-field input-sm" placeholder="+0.3"
                         value="${STATE.globalContext.giftNifty ?? ''}">
                 </div>
                 <div class="input-group compact">
                     <label>Europe %</label>
-                    <input type="number" id="in-europe" class="input-field input-sm" placeholder="+0.5" step="0.1"
+                    <input type="text" inputmode="decimal" id="in-europe" class="input-field input-sm" placeholder="+0.5"
                         value="${STATE.globalContext.europe ?? ''}">
                 </div>
                 <div class="input-group compact">
                     <label>Crude %</label>
-                    <input type="number" id="in-crude" class="input-field input-sm" placeholder="-1.2" step="0.1"
+                    <input type="text" inputmode="decimal" id="in-crude" class="input-field input-sm" placeholder="-1.2"
                         value="${STATE.globalContext.crude ?? ''}">
                 </div>
             </div>
@@ -2748,19 +2748,19 @@ function renderPosition() {
                 </div>
                 <div class="input-group">
                     <label>Sell Strike</label>
-                    <input type="number" id="mt-sell" class="input-field" placeholder="55500">
+                    <input type="text" inputmode="numeric" id="mt-sell" class="input-field" placeholder="55500">
                 </div>
                 <div class="input-group">
                     <label>Buy Strike</label>
-                    <input type="number" id="mt-buy" class="input-field" placeholder="55800">
+                    <input type="text" inputmode="numeric" id="mt-buy" class="input-field" placeholder="55800">
                 </div>
                 <div class="input-group">
                     <label>Sell LTP (₹)</label>
-                    <input type="number" id="mt-sell-ltp" class="input-field" placeholder="429.3" step="0.05">
+                    <input type="text" inputmode="decimal" id="mt-sell-ltp" class="input-field" placeholder="429.3">
                 </div>
                 <div class="input-group">
                     <label>Buy LTP (₹)</label>
-                    <input type="number" id="mt-buy-ltp" class="input-field" placeholder="334.85" step="0.05">
+                    <input type="text" inputmode="decimal" id="mt-buy-ltp" class="input-field" placeholder="334.85">
                 </div>
             </div>
             <button class="btn-primary" onclick="logManualTrade()" style="margin-top:8px">📌 Log This Trade</button>
@@ -2920,6 +2920,14 @@ function requestNotificationPermission() {
 }
 
 // ═══ MORNING COLLAPSE ═══
+function toggleSign(inputId) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const val = el.value.trim();
+    if (!val) { el.value = '-'; el.focus(); return; }
+    el.value = val.startsWith('-') ? val.substring(1) : '-' + val;
+}
+
 function collapseMorning() {
     const section = document.getElementById('morning-section');
     const full = document.getElementById('morning-full');

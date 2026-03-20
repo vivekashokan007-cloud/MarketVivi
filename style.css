@@ -256,6 +256,30 @@ main {
 }
 
 /* ═══ INPUTS — Upstox style ═══ */
+.input-with-sign {
+    display: flex;
+    gap: 4px;
+    align-items: stretch;
+}
+.input-with-sign .input-field {
+    flex: 1;
+}
+.sign-toggle {
+    width: 36px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.sign-toggle:active {
+    background: var(--accent);
+    color: #fff;
+}
+
 .input-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
