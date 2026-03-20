@@ -1668,8 +1668,8 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
     // ═══ AFTERNOON POSITIONING SCANS (2:00 PM and 3:15 PM) ═══
     const mins = API.minutesSinceOpen();
 
-    // 2:00 PM = 285 min since 9:15. Capture baseline.
-    if (mins >= 285 && mins <= 295 && !STATE._captured2pm) {
+    // 2:00 PM baseline — capture anytime between 1:45-2:30 (270-315 mins since 9:15)
+    if (mins >= 270 && mins <= 315 && !STATE._captured2pm) {
         STATE._captured2pm = true;
         sendNotification('📊 Capturing 2:00 PM Baseline...', 'Heavy fetch in progress. Institutional positioning scan started.', 'important');
         // Heavy fetch for full chain data
@@ -1681,8 +1681,8 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         renderAll();
     }
 
-    // 3:15 PM = 360 min since 9:15. Final scan + compare + generate signal.
-    if (mins >= 360 && mins <= 370 && !STATE._captured315pm) {
+    // 3:15 PM final — capture anytime between 3:00-3:30 (345-375 mins since 9:15)
+    if (mins >= 345 && mins <= 375 && !STATE._captured315pm) {
         STATE._captured315pm = true;
         sendNotification('⚡ Final Positioning Scan...', 'Heavy fetch in progress. Comparing with 2:00 PM baseline.', 'urgent');
         // Heavy fetch
