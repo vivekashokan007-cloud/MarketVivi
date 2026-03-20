@@ -4,18 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#121218">
-    <title>Market Radar v2</title>
+    <title>Market Radar v2.1</title>
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=25">
+    <link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
     <!-- ═══ HEADER ═══ -->
     <header class="app-header">
         <div class="header-left">
             <h1>Market Radar</h1>
-            <span class="version">v2.0</span>
+            <span class="version">v2.1</span>
         </div>
         <div class="header-right">
             <label class="theme-toggle" title="Toggle theme">
@@ -85,35 +85,43 @@
             <div id="status" class="status-text"></div>
         </section>
 
-        <!-- ═══ TAB BAR (sticky below morning section) ═══ -->
+        <!-- ═══ TAB BAR (4 tabs) ═══ -->
         <nav class="tab-bar" id="tab-bar">
-            <button class="tab-btn active" data-tab="data">📊 Data</button>
-            <button class="tab-btn" data-tab="strategies">🎯 Strategies</button>
-            <button class="tab-btn" data-tab="positions">📌 Positions</button>
+            <button class="tab-btn active" data-tab="market">📊 Market</button>
+            <button class="tab-btn" data-tab="oi">🔍 OI</button>
+            <button class="tab-btn" data-tab="strategies">🎯 Trade</button>
+            <button class="tab-btn" data-tab="positions">📌 Position</button>
         </nav>
 
-        <!-- ═══ TAB 1: DATA ═══ -->
-        <div class="tab-content active" id="tab-data">
-            <div id="premium-env">
-                <div class="empty-state">Enter morning data and scan to see premium environment</div>
+        <!-- ═══ TAB 1: MARKET ═══ -->
+        <div class="tab-content active" id="tab-market">
+            <div id="market-content">
+                <div class="empty-state">Enter morning data and scan to see market environment</div>
             </div>
         </div>
 
-        <!-- ═══ TAB 2: STRATEGIES ═══ -->
+        <!-- ═══ TAB 2: OI ═══ -->
+        <div class="tab-content" id="tab-oi">
+            <div id="oi-content">
+                <div class="empty-state">Scan to see OI structure & institutional positioning</div>
+            </div>
+        </div>
+
+        <!-- ═══ TAB 3: STRATEGIES ═══ -->
         <div class="tab-content" id="tab-strategies">
             <div id="watchlist">
                 <div class="empty-state">Press Lock & Scan to generate candidates</div>
             </div>
         </div>
 
-        <!-- ═══ TAB 3: POSITIONS ═══ -->
+        <!-- ═══ TAB 4: POSITIONS ═══ -->
         <div class="tab-content" id="tab-positions">
             <div id="position">
-                <div class="empty-state">No open position. Take a trade from Strategies tab.</div>
+                <div class="empty-state">No open position. Take a trade from Trade tab.</div>
             </div>
         </div>
 
-        <!-- ═══ BELOW TABS: Notifications (always visible) ═══ -->
+        <!-- ═══ BELOW TABS: Notifications ═══ -->
         <section class="section notif-section">
             <h2>🔔 Notifications <span id="notif-timestamp" class="timestamp"></span></h2>
             <div id="notif-log">
@@ -135,10 +143,10 @@
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="bs.js?v=25"></script>
-    <script src="db.js?v=25"></script>
-    <script src="api.js?v=25"></script>
-    <script src="app.js?v=25"></script>
+    <script src="bs.js?v=26"></script>
+    <script src="db.js?v=26"></script>
+    <script src="api.js?v=26"></script>
+    <script src="app.js?v=26"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(() => {});

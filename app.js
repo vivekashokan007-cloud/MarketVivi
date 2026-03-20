@@ -125,8 +125,11 @@ const STATE = {
     // Audio context (initialized on first user tap)
     audioCtx: null,
 
+    // Global context (3:15 PM inputs)
+    globalContext: { giftNifty: null, europe: null, crude: null },
+
     // Active tab
-    activeTab: 'data'
+    activeTab: 'market'
 };
 
 
@@ -646,18 +649,9 @@ async function validateYesterdaySignal(todayGap) {
 
 // Render positioning section on DATA tab
 function renderPositioning() {
-    if (!STATE.positioningResult && !STATE._captured2pm && !STATE.signalValidation) return '';
+    if (!STATE.positioningResult && !STATE._captured2pm) return '';
 
     let html = '<div class="env-section-title">🔍 Afternoon Positioning</div>';
-
-    // Signal validation from yesterday
-    if (STATE.signalValidation) {
-        const sv = STATE.signalValidation;
-        html += `<div class="traj-alert ${sv.correct ? '' : 'warn'}">
-            Yesterday's signal: ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap} pts
-            ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
-        </div>`;
-    }
 
     // 2PM baseline status
     if (STATE._captured2pm && !STATE._captured315pm) {
@@ -692,6 +686,7 @@ function renderPositioning() {
             <div class="signal-label">⚡ TOMORROW SIGNAL</div>
             <div class="signal-value" style="color:${sigColor}">${r.signal} (${r.strength}/5)</div>
             <div class="signal-detail">${r.signal === 'BEARISH' ? 'Institutions positioned for gap-down. Sell call premium above resistance.' : r.signal === 'BULLISH' ? 'Institutions positioned for gap-up. Sell put premium below support.' : 'No clear positioning. Range likely. Iron Condor favorable.'}</div>
+            ${STATE.tomorrowSignal?.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global context: ${STATE.tomorrowSignal.globalBoost > 0 ? '+' : ''}${STATE.tomorrowSignal.globalBoost} strength</div>` : ''}
         </div>`;
     }
 
@@ -1730,6 +1725,36 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             STATE.positioningResult = result;
             STATE.tomorrowSignal = result ? { signal: result.signal, strength: result.strength } : null;
 
+            // ═══ GLOBAL CONTEXT BOOST — adjusts signal strength ═══
+            if (STATE.tomorrowSignal && STATE.tomorrowSignal.signal !== 'NEUTRAL') {
+                const gc = STATE.globalContext;
+                const isBull = STATE.tomorrowSignal.signal === 'BULLISH';
+                let boost = 0;
+                const THRESHOLD = 0.2; // ±0.2% = meaningful
+
+                // GIFT Nifty: positive = bullish for tomorrow
+                if (gc.giftNifty !== null && Math.abs(gc.giftNifty) >= THRESHOLD) {
+                    if ((gc.giftNifty > 0 && isBull) || (gc.giftNifty < 0 && !isBull)) boost++;
+                    else boost--;
+                }
+                // Europe: positive = bullish
+                if (gc.europe !== null && Math.abs(gc.europe) >= THRESHOLD) {
+                    if ((gc.europe > 0 && isBull) || (gc.europe < 0 && !isBull)) boost++;
+                    else boost--;
+                }
+                // Crude: DOWN = bullish India (inverse)
+                if (gc.crude !== null && Math.abs(gc.crude) >= THRESHOLD) {
+                    if ((gc.crude < 0 && isBull) || (gc.crude > 0 && !isBull)) boost++;
+                    else boost--;
+                }
+
+                if (boost !== 0) {
+                    STATE.tomorrowSignal.strength = Math.max(1, Math.min(5, STATE.tomorrowSignal.strength + boost));
+                    STATE.tomorrowSignal.globalBoost = boost;
+                    console.log(`[POSITIONING] Global context boost: ${boost > 0 ? '+' : ''}${boost} → strength ${STATE.tomorrowSignal.strength}`);
+                }
+            }
+
             // Save with tomorrow signal
             snapData315.tomorrowSignal = result?.signal;
             snapData315.signalStrength = result?.strength;
@@ -2040,7 +2065,8 @@ function alignmentDots(aligned) {
 
 function renderAll() {
     renderTicker();
-    renderPremiumEnvironment();
+    renderMarket();
+    renderOI();
     renderWatchlist();
     renderPosition();
     renderDebug();
@@ -2144,8 +2170,8 @@ function renderDebug() {
     }).join('');
 }
 
-function renderPremiumEnvironment() {
-    const el = document.getElementById('premium-env');
+function renderMarket() {
+    const el = document.getElementById('market-content');
     if (!el || !STATE.live) return;
 
     const l = STATE.live;
@@ -2153,7 +2179,7 @@ function renderPremiumEnvironment() {
     const bias = l.bias;
 
     if (!b) {
-        el.innerHTML = '<div class="empty-state">Enter morning data and scan to see premium environment</div>';
+        el.innerHTML = '<div class="empty-state">Enter morning data and scan to see market environment</div>';
         return;
     }
 
@@ -2177,27 +2203,7 @@ function renderPremiumEnvironment() {
         vixVsYday = `Yesterday: ${b.yesterdayVix.toFixed(1)} · Change: ${diff > 0 ? '+' : ''}${diff.toFixed(1)} (${pct}%) ${arrow}`;
     }
 
-    // Max Pain gravity — use LIVE data
-    const mpDist = (l.maxPainBnf || b.maxPainBnf) ? (l.bnfSpot - (l.maxPainBnf || b.maxPainBnf)) : 0;
-    const mpDir = mpDist > 100 ? 'above ↑' : mpDist < -100 ? 'below ↓' : 'near →';
-
-    // OI wall formatting
-    const formatOI = (oi) => {
-        if (!oi) return '0';
-        if (oi >= 1e7) return (oi / 1e7).toFixed(1) + 'Cr';
-        if (oi >= 1e5) return (oi / 1e5).toFixed(1) + 'L';
-        if (oi >= 1e3) return (oi / 1e3).toFixed(1) + 'K';
-        return oi.toString();
-    };
-
-    // OI bar proportions — use LIVE data
-    const liveCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
-    const livePutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
-    const totalOI = liveCallOI + livePutOI;
-    const callPct = totalOI > 0 ? ((liveCallOI / totalOI) * 100).toFixed(0) : 50;
-    const putPct = totalOI > 0 ? ((livePutOI / totalOI) * 100).toFixed(0) : 50;
-
-    // Yesterday's data from premium_history for comparisons
+    // Yesterday's data for comparisons
     const yday = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0] : null;
     let ydayComparisons = '';
     if (yday) {
@@ -2281,54 +2287,17 @@ function renderPremiumEnvironment() {
 
         <!-- FORCE 1: DIRECTION / INTRINSIC -->
         <div class="env-section-title">Force 1 — Direction & Intrinsic</div>
-        <div class="env-bias">
-            <span class="bias-badge bias-${bias?.bias?.toLowerCase() || 'neutral'}">${bias?.label || 'N/A'}</span>
-            <span class="bias-net">${bias?.net > 0 ? '+' : ''}${bias?.net || 0} net</span>
-            ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
-            ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
-        </div>
-        <div class="env-signals">${(bias?.signals || []).map(s =>
-            `<span class="signal-chip signal-${s.dir.toLowerCase()}">${s.name}: ${s.value}</span>`
-        ).join('')}</div>
-        <div class="env-row">
-            <span class="env-row-label">Futures Premium</span>
-            <span class="env-row-value ${(l.futuresPremBnf || 0) > 0.05 ? 'text-sell' : (l.futuresPremBnf || 0) < -0.05 ? '' : ''}">${l.futuresPremBnf?.toFixed(3) || '--'}%</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Synth Futures</span>
-            <span class="env-row-value">${b.bnfSynthFutures?.toFixed(0) || '--'} (spot ${l.bnfSpot?.toFixed(0) || '--'})</span>
-        </div>
-
-        <!-- OI STRUCTURE -->
-        <div class="env-section-title">OI Structure — Institutional Positioning</div>
-        <div class="env-row">
-            <span class="env-row-label">PCR (near-ATM)</span>
-            <span class="env-row-value" style="color: ${(l.nearAtmPCR || 0) > 1.2 ? 'var(--green)' : (l.nearAtmPCR || 0) < 0.9 ? 'var(--danger)' : 'var(--text-primary)'}">${l.nearAtmPCR?.toFixed(2) || '--'} ${(l.nearAtmPCR || 0) > 1.2 ? '(bullish)' : (l.nearAtmPCR || 0) < 0.9 ? '(bearish)' : '(neutral)'}</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">PCR (full chain)</span>
-            <span class="env-row-value" style="color: var(--text-muted)">${l.pcr?.toFixed(2) || '--'}</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Max Pain</span>
-            <span class="env-row-value">${l.maxPainBnf || b.maxPainBnf || '--'} (${mpDir}, ${Math.abs(mpDist).toFixed(0)} pts)</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Call Wall (resistance)</span>
-            <span class="env-row-value" style="color: var(--danger)">${l.bnfCallWall || b.bnfCallWall || '--'} · ${formatOI(l.bnfCallWallOI || b.bnfCallWallOI)} OI</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Put Wall (support)</span>
-            <span class="env-row-value" style="color: var(--green)">${l.bnfPutWall || b.bnfPutWall || '--'} · ${formatOI(l.bnfPutWallOI || b.bnfPutWallOI)} OI</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Total OI</span>
-            <span class="env-row-value">CE ${callPct}% / PE ${putPct}%</span>
-        </div>
-        <div class="oi-bar">
-            <div class="oi-bar-fill call" style="width: ${callPct}%; float: left;"></div>
-            <div class="oi-bar-fill put" style="width: ${putPct}%; float: right;"></div>
-        </div>
+        <details class="bias-details">
+            <summary class="bias-summary">
+                <span class="bias-badge bias-${bias?.bias?.toLowerCase() || 'neutral'}">${bias?.label || 'N/A'}</span>
+                <span class="bias-net">${bias?.net > 0 ? '+' : ''}${bias?.net || 0} net</span>
+                ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
+                ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
+            </summary>
+            <div class="env-signals">${(bias?.signals || []).map(s =>
+                `<span class="signal-chip signal-${s.dir.toLowerCase()}">${s.name}: ${s.value}</span>`
+            ).join('')}</div>
+        </details>
 
         <!-- RANGE BUDGET -->
         <div class="env-section-title">Range Budget — σ Framework</div>
@@ -2344,9 +2313,149 @@ function renderPremiumEnvironment() {
             <span class="env-row-label">Trade duration 1σ (${b.bnfTDTE}T)</span>
             <span class="env-row-value" style="color: var(--accent)">±${trade1s} pts</span>
         </div>
+
+        <!-- CONTRARIAN PCR (alert only when triggered) -->
+        ${(STATE.contrarianPCR || []).length > 0 ? `
+        <div class="env-section-title">⚡ Contrarian Alert</div>
+        ${STATE.contrarianPCR.map(f =>
+            `<div class="traj-alert ${f.severity === 'high' ? 'warn' : ''}">${f.text}</div>`
+        ).join('')}` : ''}
+
+        <!-- FII SHORT% TREND -->
+        ${STATE.fiiTrend ? `
         <div class="env-row">
-            <span class="env-row-label">NF Spot</span>
-            <span class="env-row-value">${l.nfSpot?.toFixed(0) || '--'}</span>
+            <span class="env-row-label">FII Short% Trend</span>
+            <span class="env-row-value" style="color: ${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--text-secondary)'}">
+                ${STATE.fiiTrend.label}${STATE.fiiTrend.accel ? ' ⚡ACCELERATING' : ''}${STATE.fiiTrend.aggressive ? ' 🔴 AGGRESSIVE' : ''}
+            </span>
+        </div>
+        ` : ''}
+
+        <!-- SESSION TRAJECTORY (collapsible) -->
+        ${STATE.trajectory ? `
+        <details class="trajectory-details">
+            <summary class="env-section-title" style="cursor:pointer; user-select:none;">📅 Session Trajectory (${STATE.trajectory.dates?.length || 0} sessions) ▸</summary>
+            <div class="trajectory-grid">
+                ${STATE.trajectory.trajectory.map(row => `
+                    <div class="traj-row">
+                        <span class="traj-label">${row.label}</span>
+                        ${row.arrows.map(a => `<span class="traj-arrow ${a === '↑' ? 'up' : a === '↓' ? 'down' : 'flat'}">${a}</span>`).join('')}
+                    </div>
+                `).join('')}
+            </div>
+            ${STATE.trajectory.reversal ? `<div class="traj-alert warn">${STATE.trajectory.reversal}</div>` : ''}
+            ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
+        </details>
+        ` : ''}
+
+        ${yday ? `
+        <!-- OVERNIGHT: Yesterday Close → Today Morning -->
+        <details>
+            <summary class="env-section-title" style="cursor:pointer; user-select:none;">🌙 Overnight ▸</summary>
+            <div class="env-signals">${ydayComparisons || '<span class="signal-chip signal-neutral">No comparison data</span>'}</div>
+        </details>
+        ` : ''}
+
+        ${STATE.pollCount > 0 ? `
+        <!-- INTRADAY: Morning → Now -->
+        <div class="env-section-title">📈 Intraday (morning → now)</div>
+        <div class="env-signals">
+            ${b.vix && l.vix ? `<span class="signal-chip signal-${Math.abs(l.vix - b.vix) > 0.5 ? (l.vix > b.vix ? 'bear' : 'bull') : 'neutral'}">VIX: ${b.vix.toFixed(1)}→${l.vix.toFixed(1)} (${(l.vix - b.vix) > 0 ? '+' : ''}${(l.vix - b.vix).toFixed(1)})</span>` : ''}
+            ${b.bnfSpot && l.bnfSpot ? `<span class="signal-chip signal-${Math.abs(l.bnfSpot - b.bnfSpot) > 100 ? (l.bnfSpot > b.bnfSpot ? 'bull' : 'bear') : 'neutral'}">BNF: ${b.bnfSpot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${(l.bnfSpot - b.bnfSpot) > 0 ? '+' : ''}${(l.bnfSpot - b.bnfSpot).toFixed(0)})</span>` : ''}
+            ${b.pcr && l.pcr ? `<span class="signal-chip signal-neutral">PCR: ${b.pcr.toFixed(2)}→${l.pcr.toFixed(2)}</span>` : ''}
+            ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
+            ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
+        </div>
+        ` : ''}
+    `;
+}
+
+function renderOI() {
+    const el = document.getElementById('oi-content');
+    if (!el || !STATE.live) return;
+
+    const l = STATE.live;
+    const b = STATE.baseline;
+
+    if (!b) {
+        el.innerHTML = '<div class="empty-state">Scan to see OI structure & institutional positioning</div>';
+        return;
+    }
+
+    const formatOI = (oi) => {
+        if (!oi) return '0';
+        if (oi >= 1e7) return (oi / 1e7).toFixed(1) + 'Cr';
+        if (oi >= 1e5) return (oi / 1e5).toFixed(1) + 'L';
+        if (oi >= 1e3) return (oi / 1e3).toFixed(1) + 'K';
+        return oi.toString();
+    };
+
+    // Max Pain gravity — use LIVE data
+    const mpVal = l.maxPainBnf || b.maxPainBnf;
+    const mpDist = mpVal ? (l.bnfSpot - mpVal) : 0;
+    const mpDir = mpDist > 100 ? 'above ↑' : mpDist < -100 ? 'below ↓' : 'near →';
+
+    // OI bar proportions — use LIVE data
+    const liveCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
+    const livePutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
+    const totalOI = liveCallOI + livePutOI;
+    const callPct = totalOI > 0 ? ((liveCallOI / totalOI) * 100).toFixed(0) : 50;
+    const putPct = totalOI > 0 ? ((livePutOI / totalOI) * 100).toFixed(0) : 50;
+
+    const scanTime = API.istNow();
+
+    el.innerHTML = `
+        <div class="section-timestamp">Updated: ${scanTime}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
+
+        <!-- HERO: Near-ATM PCR -->
+        <div class="oi-hero">
+            <div class="oi-hero-label">Near-ATM PCR (±10 strikes)</div>
+            <div class="oi-hero-value" style="color: ${(l.nearAtmPCR || 0) > 1.2 ? 'var(--green)' : (l.nearAtmPCR || 0) < 0.9 ? 'var(--danger)' : 'var(--text-primary)'}">
+                ${l.nearAtmPCR?.toFixed(2) || '--'}
+            </div>
+            <div class="oi-hero-sub">${(l.nearAtmPCR || 0) > 1.2 ? 'Bullish — put writing dominates' : (l.nearAtmPCR || 0) < 0.9 ? 'Bearish — call writing dominates' : 'Neutral range'}</div>
+            <div class="oi-hero-sub" style="color:var(--text-muted)">Full chain PCR: ${l.pcr?.toFixed(2) || '--'}</div>
+        </div>
+
+        <!-- MAX PAIN -->
+        <div class="env-row">
+            <span class="env-row-label">Max Pain</span>
+            <span class="env-row-value">${mpVal || '--'} (${mpDir}, ${Math.abs(mpDist).toFixed(0)} pts from spot)</span>
+        </div>
+
+        <!-- OI WALLS -->
+        <div class="oi-walls">
+            <div class="oi-wall call-wall">
+                <div class="oi-wall-label">Call Wall (resistance)</div>
+                <div class="oi-wall-value">${l.bnfCallWall || b.bnfCallWall || '--'}</div>
+                <div class="oi-wall-oi">${formatOI(l.bnfCallWallOI || b.bnfCallWallOI)} OI</div>
+            </div>
+            <div class="oi-wall put-wall">
+                <div class="oi-wall-label">Put Wall (support)</div>
+                <div class="oi-wall-value">${l.bnfPutWall || b.bnfPutWall || '--'}</div>
+                <div class="oi-wall-oi">${formatOI(l.bnfPutWallOI || b.bnfPutWallOI)} OI</div>
+            </div>
+        </div>
+
+        <!-- TOTAL OI BAR -->
+        <div class="env-row">
+            <span class="env-row-label">Total OI</span>
+            <span class="env-row-value">CE ${callPct}% / PE ${putPct}%</span>
+        </div>
+        <div class="oi-bar">
+            <div class="oi-bar-fill call" style="width: ${callPct}%; float: left;"></div>
+            <div class="oi-bar-fill put" style="width: ${putPct}%; float: right;"></div>
+        </div>
+
+        <!-- FUTURES PREMIUM -->
+        <div class="env-section-title">Futures Premium</div>
+        <div class="env-row">
+            <span class="env-row-label">BNF Premium</span>
+            <span class="env-row-value" style="color: ${(l.futuresPremBnf || 0) > 0.05 ? 'var(--green)' : (l.futuresPremBnf || 0) < -0.05 ? 'var(--danger)' : 'var(--text-muted)'}">${l.futuresPremBnf?.toFixed(3) || '--'}%</span>
+        </div>
+        <div class="env-row">
+            <span class="env-row-label">Synth Futures</span>
+            <span class="env-row-value">${b.bnfSynthFutures?.toFixed(0) || '--'} (spot ${l.bnfSpot?.toFixed(0) || '--'})</span>
         </div>
 
         <!-- BREADTH -->
@@ -2369,57 +2478,10 @@ function renderPremiumEnvironment() {
         </div>
         ` : ''}
 
-        <!-- DIRECTION INTELLIGENCE -->
-        <div class="env-section-title">🔍 Direction Intelligence</div>
-        ${(STATE.contrarianPCR || []).length > 0 ? STATE.contrarianPCR.map(f =>
-            `<div class="env-row" style="color: ${f.severity === 'high' ? 'var(--warn)' : 'var(--text-secondary)'}">
-                <span>${f.text}</span>
-            </div>`
-        ).join('') : '<div class="env-row"><span class="env-row-label">Contrarian PCR</span><span class="env-row-value" style="color:var(--text-muted)">No extreme readings</span></div>'}
-        ${STATE.fiiTrend ? `
         <div class="env-row">
-            <span class="env-row-label">FII Short% Trend</span>
-            <span class="env-row-value" style="color: ${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--text-secondary)'}">
-                ${STATE.fiiTrend.label}${STATE.fiiTrend.accel ? ' ⚡ACCELERATING' : ''}${STATE.fiiTrend.aggressive ? ' 🔴 AGGRESSIVE' : ''}
-            </span>
+            <span class="env-row-label">NF Spot</span>
+            <span class="env-row-value">${l.nfSpot?.toFixed(0) || '--'}</span>
         </div>
-        ` : ''}
-
-        <!-- SESSION TRAJECTORY -->
-        ${STATE.trajectory ? `
-        <div class="env-section-title">📅 Session Trajectory (${STATE.trajectory.dates?.length || 0} sessions)</div>
-        <div class="trajectory-grid">
-            ${STATE.trajectory.trajectory.map(row => `
-                <div class="traj-row">
-                    <span class="traj-label">${row.label}</span>
-                    ${row.arrows.map(a => `<span class="traj-arrow ${a === '↑' ? 'up' : a === '↓' ? 'down' : 'flat'}">${a}</span>`).join('')}
-                </div>
-            `).join('')}
-        </div>
-        ${STATE.trajectory.reversal ? `<div class="traj-alert warn">${STATE.trajectory.reversal}</div>` : ''}
-        ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
-        ` : ''}
-
-        <!-- AFTERNOON POSITIONING -->
-        ${renderPositioning()}
-
-        ${yday ? `
-        <!-- OVERNIGHT: Yesterday Close → Today Morning -->
-        <div class="env-section-title">🌙 Overnight (${yday.date} close → today open)</div>
-        <div class="env-signals">${ydayComparisons || '<span class="signal-chip signal-neutral">No comparison data</span>'}</div>
-        ` : ''}
-
-        ${STATE.pollCount > 0 ? `
-        <!-- INTRADAY: Morning → Now -->
-        <div class="env-section-title">📈 Intraday (morning → now)</div>
-        <div class="env-signals">
-            ${b.vix && l.vix ? `<span class="signal-chip signal-${Math.abs(l.vix - b.vix) > 0.5 ? (l.vix > b.vix ? 'bear' : 'bull') : 'neutral'}">VIX: ${b.vix.toFixed(1)}→${l.vix.toFixed(1)} (${(l.vix - b.vix) > 0 ? '+' : ''}${(l.vix - b.vix).toFixed(1)})</span>` : ''}
-            ${b.bnfSpot && l.bnfSpot ? `<span class="signal-chip signal-${Math.abs(l.bnfSpot - b.bnfSpot) > 100 ? (l.bnfSpot > b.bnfSpot ? 'bull' : 'bear') : 'neutral'}">BNF: ${b.bnfSpot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${(l.bnfSpot - b.bnfSpot) > 0 ? '+' : ''}${(l.bnfSpot - b.bnfSpot).toFixed(0)})</span>` : ''}
-            ${b.pcr && l.pcr ? `<span class="signal-chip signal-neutral">PCR: ${b.pcr.toFixed(2)}→${l.pcr.toFixed(2)}</span>` : ''}
-            ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
-            ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
-        </div>
-        ` : ''}
     `;
 }
 
@@ -2441,6 +2503,54 @@ function renderWatchlist() {
     const nfBlocked = STATE.candidates.some(c => c.index === 'NF' && c.capitalBlocked);
 
     let html = `<div class="section-timestamp">Generated: ${scanTime} · ${STATE.candidates.length} total candidates</div>`;
+
+    // ═══ COLLAPSIBLE INTELLIGENCE DROPDOWN ═══
+    const hasPositioning = STATE.positioningCandidates?.length > 0 && STATE.tomorrowSignal;
+    const hasValidation = STATE.signalValidation;
+    const has2pm = STATE._captured2pm;
+    const showIntel = hasPositioning || hasValidation || has2pm;
+
+    html += `<details class="intel-dropdown" ${hasPositioning ? 'open' : ''}>
+        <summary class="intel-summary">
+            🔮 Intelligence & Positioning
+            ${STATE.tomorrowSignal ? `<span class="intel-badge" style="color:${STATE.tomorrowSignal.signal === 'BEARISH' ? 'var(--danger)' : STATE.tomorrowSignal.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)'}"> · ${STATE.tomorrowSignal.signal} (${STATE.tomorrowSignal.strength}/5)</span>` : ''}
+        </summary>
+        <div class="intel-body">
+
+            <!-- GLOBAL CONTEXT -->
+            <div class="env-section-title">🌍 Global Context</div>
+            <div class="global-context-grid">
+                <div class="input-group compact">
+                    <label>GIFT Nifty %</label>
+                    <input type="number" id="in-gift-nifty" class="input-field input-sm" placeholder="+0.3" step="0.1"
+                        value="${STATE.globalContext.giftNifty ?? ''}">
+                </div>
+                <div class="input-group compact">
+                    <label>Europe %</label>
+                    <input type="number" id="in-europe" class="input-field input-sm" placeholder="+0.5" step="0.1"
+                        value="${STATE.globalContext.europe ?? ''}">
+                </div>
+                <div class="input-group compact">
+                    <label>Crude %</label>
+                    <input type="number" id="in-crude" class="input-field input-sm" placeholder="-1.2" step="0.1"
+                        value="${STATE.globalContext.crude ?? ''}">
+                </div>
+            </div>
+
+            <!-- YESTERDAY'S SIGNAL VALIDATION -->
+            ${hasValidation ? (() => {
+                const sv = STATE.signalValidation;
+                return `<div class="traj-alert ${sv.correct ? '' : 'warn'}">
+                    Yesterday: ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap} pts
+                    ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
+                </div>`;
+            })() : ''}
+
+            <!-- AFTERNOON POSITIONING -->
+            ${renderPositioning()}
+
+        </div>
+    </details>`;
 
     // ═══ POSITIONING TRADES (after 3:15 PM scan) ═══
     if (STATE.positioningCandidates?.length > 0 && STATE.tomorrowSignal) {
@@ -2699,6 +2809,11 @@ function renderFooter() {
 function lockMorningData() {
     initAudio(); // Initialize audio on user tap
 
+    // Request notification permission on user tap (mobile Chrome requires gesture)
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
     const fiiCash = document.getElementById('in-fii-cash').value;
     const fiiShortPct = document.getElementById('in-fii-short').value;
     const upstoxBias = document.getElementById('in-upstox-bias')?.value || '';
@@ -2779,7 +2894,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     DB.init();
     restoreMorningData();
     setupTokenInput();
-    requestNotificationPermission();
     initTheme();
     await loadOpenTrade();
 
@@ -2804,6 +2918,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('btn-lock').disabled = false;
         document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
+    });
+
+    // Global Context inputs — live update on change
+    document.addEventListener('change', (e) => {
+        if (e.target.id === 'in-gift-nifty') {
+            STATE.globalContext.giftNifty = e.target.value ? parseFloat(e.target.value) : null;
+        } else if (e.target.id === 'in-europe') {
+            STATE.globalContext.europe = e.target.value ? parseFloat(e.target.value) : null;
+        } else if (e.target.id === 'in-crude') {
+            STATE.globalContext.crude = e.target.value ? parseFloat(e.target.value) : null;
+        }
     });
 
     // Theme toggle
