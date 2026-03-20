@@ -539,27 +539,25 @@ function buildChainSnapshotData() {
 
 // Heavy afternoon fetch — full chains + breadth (same as morning)
 async function heavyAfternoonFetch() {
-    try {
-        const spots = await API.fetchSpots();
-        const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
-        STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
-        const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
-        STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
-        STATE.bnfBreadth = await API.fetchBnfBreadth();
-        STATE.nf50Breadth = await API.fetchNf50Breadth();
+    const spots = await API.fetchSpots();
+    if (!spots.bnfSpot || !spots.vix) throw new Error('Spots missing — check Upstox token');
+    const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
+    STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
+    const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
+    STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
+    STATE.bnfBreadth = await API.fetchBnfBreadth();
+    STATE.nf50Breadth = await API.fetchNf50Breadth();
 
-        // Update live state
-        STATE.live = { ...STATE.live,
-            nfSpot: spots.nfSpot, bnfSpot: spots.bnfSpot, vix: spots.vix,
-            pcr: STATE.bnfChain.pcr, nearAtmPCR: STATE.bnfChain.nearAtmPCR,
-            maxPainBnf: STATE.bnfChain.maxPain, futuresPremBnf: STATE.bnfChain.futuresPremium,
-            bnfAtmIv: STATE.bnfChain.atmIv
-        };
-        return spots;
-    } catch (e) {
-        console.error('heavyAfternoonFetch error:', e);
-        return null;
-    }
+    // Update live state
+    STATE.live = { ...STATE.live,
+        nfSpot: spots.nfSpot, bnfSpot: spots.bnfSpot, vix: spots.vix,
+        pcr: STATE.bnfChain.pcr, nearAtmPCR: STATE.bnfChain.nearAtmPCR,
+        maxPainBnf: STATE.bnfChain.maxPain, futuresPremBnf: STATE.bnfChain.futuresPremium,
+        bnfAtmIv: STATE.bnfChain.atmIv,
+        nfAtmIv: STATE.nfChain.atmIv, nfPcr: STATE.nfChain.pcr,
+        futuresPremNf: STATE.nfChain.futuresPremium
+    };
+    return spots;
 }
 
 // Compare 2PM vs 3:15PM snapshots → detect positioning
@@ -1752,125 +1750,136 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
     // ═══ AFTERNOON POSITIONING SCANS (2:00 PM and 3:15 PM) ═══
     const mins = API.minutesSinceOpen();
 
-    // 2PM capture: FIRST poll after 1:45 PM. No upper bound — never miss it.
+    // 2PM capture: FIRST poll after 1:45 PM. Retries on failure.
     if (mins >= 270 && mins < 345 && !STATE._captured2pm) {
-        STATE._captured2pm = true;
-        sendNotification('📊 Capturing 2:00 PM Baseline...', 'Heavy fetch in progress. Institutional positioning scan started.', 'important');
-        // Heavy fetch for full chain data
-        await heavyAfternoonFetch();
-        const snapData = buildChainSnapshotData();
-        await DB.saveChainSnapshot(snapData, '2pm');
-        STATE.afternoonBaseline = snapData;
-        addNotificationLog('📊 2:00 PM Baseline', 'Chain snapshot saved. Waiting for 3:15 PM comparison.', 'important');
+        try {
+            addNotificationLog('📊 2:00 PM Scan', 'Capturing institutional baseline...', 'important');
+            const result = await heavyAfternoonFetch();
+            if (!result) throw new Error('Chain fetch failed — token may have expired');
+            const snapData = buildChainSnapshotData();
+            if (!snapData.bnfPcr && !snapData.bnfMaxPain) throw new Error('Snapshot data is empty — chains not loaded');
+            await DB.saveChainSnapshot(snapData, '2pm');
+            STATE._captured2pm = true;  // Flag AFTER success
+            STATE.afternoonBaseline = snapData;
+            addNotificationLog('✅ 2:00 PM Baseline Saved', 'Waiting for 3:15 PM comparison.', 'important');
+        } catch (e) {
+            // DON'T set flag — will retry next 5-min poll
+            addNotificationLog('⚠️ 2:00 PM Scan Failed', `${e.message}. Will retry in 5 min.`, 'urgent');
+            console.error('2PM capture error:', e);
+        }
         renderAll();
     }
 
-    // 3:15PM capture: FIRST poll after 3:00 PM. No upper bound — never miss it.
+    // 3:15PM capture: FIRST poll after 3:00 PM. Retries on failure.
     if (mins >= 345 && !STATE._captured315pm) {
-        STATE._captured315pm = true;
-        sendNotification('⚡ Final Positioning Scan...', 'Heavy fetch in progress. Comparing with 2:00 PM baseline.', 'urgent');
-        // Heavy fetch
-        await heavyAfternoonFetch();
-        const snapData315 = buildChainSnapshotData();
+        try {
+            addNotificationLog('⚡ 3:15 PM Scan', 'Final positioning scan...', 'urgent');
+            const result = await heavyAfternoonFetch();
+            if (!result) throw new Error('Chain fetch failed — token may have expired');
+            const snapData315 = buildChainSnapshotData();
+            if (!snapData315.bnfPcr && !snapData315.bnfMaxPain) throw new Error('Snapshot data is empty');
 
-        // Load 2PM snapshot from Supabase. Fallback to morning if 2PM missing.
-        const today = new Date().toISOString().split('T')[0];
-        let baselineSnap = await DB.getChainSnapshot(today, '2pm');
-        let baselineLabel = '2:00 PM';
-        if (!baselineSnap) {
-            baselineSnap = await DB.getChainSnapshot(today, 'morning');
-            baselineLabel = 'morning';
-        }
-
-        if (baselineSnap) {
-            sendNotification('⚡ Comparing with ' + baselineLabel + ' baseline...', 'Analyzing institutional positioning.', 'important');
-            // Compare
-            const result = computePositioning(baselineSnap, {
-                ...snapData315,
-                bnf_total_call_oi: snapData315.bnfTotalCallOi,
-                bnf_total_put_oi: snapData315.bnfTotalPutOi,
-                bnf_pcr: snapData315.bnfPcr,
-                bnf_near_atm_pcr: snapData315.bnfNearAtmPcr,
-                vix: snapData315.vix,
-                bnf_max_pain: snapData315.bnfMaxPain,
-                bnf_breadth_pct: snapData315.bnfBreadthPct,
-                bnf_spot: snapData315.bnfSpot
-            });
-            STATE.positioningResult = result;
-            STATE.tomorrowSignal = result ? { signal: result.signal, strength: result.strength } : null;
-
-            // ═══ GLOBAL CONTEXT BOOST — adjusts signal strength ═══
-            if (STATE.tomorrowSignal && STATE.tomorrowSignal.signal !== 'NEUTRAL') {
-                const gc = STATE.globalContext;
-                const isBull = STATE.tomorrowSignal.signal === 'BULLISH';
-                let boost = 0;
-                const THRESHOLD = 0.2; // ±0.2% = meaningful
-
-                // GIFT Nifty: positive = bullish for tomorrow
-                if (gc.giftNifty !== null && Math.abs(gc.giftNifty) >= THRESHOLD) {
-                    if ((gc.giftNifty > 0 && isBull) || (gc.giftNifty < 0 && !isBull)) boost++;
-                    else boost--;
-                }
-                // Europe: positive = bullish
-                if (gc.europe !== null && Math.abs(gc.europe) >= THRESHOLD) {
-                    if ((gc.europe > 0 && isBull) || (gc.europe < 0 && !isBull)) boost++;
-                    else boost--;
-                }
-                // Crude: DOWN = bullish India (inverse)
-                if (gc.crude !== null && Math.abs(gc.crude) >= THRESHOLD) {
-                    if ((gc.crude < 0 && isBull) || (gc.crude > 0 && !isBull)) boost++;
-                    else boost--;
-                }
-
-                if (boost !== 0) {
-                    STATE.tomorrowSignal.strength = Math.max(1, Math.min(5, STATE.tomorrowSignal.strength + boost));
-                    STATE.tomorrowSignal.globalBoost = boost;
-                    console.log(`[POSITIONING] Global context boost: ${boost > 0 ? '+' : ''}${boost} → strength ${STATE.tomorrowSignal.strength}`);
-                }
+            // Load 2PM snapshot from Supabase. Fallback to morning if 2PM missing.
+            const today = new Date().toISOString().split('T')[0];
+            let baselineSnap = await DB.getChainSnapshot(today, '2pm');
+            let baselineLabel = '2:00 PM';
+            if (!baselineSnap) {
+                baselineSnap = await DB.getChainSnapshot(today, 'morning');
+                baselineLabel = 'morning';
             }
 
-            // Save with tomorrow signal
-            snapData315.tomorrowSignal = result?.signal;
-            snapData315.signalStrength = result?.strength;
+            if (!baselineSnap) {
+                addNotificationLog('⚠️ No Baseline Found', 'Neither 2PM nor morning snapshot exists. Cannot compare.', 'urgent');
+            } else {
+                addNotificationLog('⚡ Comparing', `Using ${baselineLabel} baseline for positioning analysis.`, 'important');
+                // Compare
+                const posResult = computePositioning(baselineSnap, {
+                    ...snapData315,
+                    bnf_total_call_oi: snapData315.bnfTotalCallOi,
+                    bnf_total_put_oi: snapData315.bnfTotalPutOi,
+                    bnf_pcr: snapData315.bnfPcr,
+                    bnf_near_atm_pcr: snapData315.bnfNearAtmPcr,
+                    vix: snapData315.vix,
+                    bnf_max_pain: snapData315.bnfMaxPain,
+                    bnf_breadth_pct: snapData315.bnfBreadthPct,
+                    bnf_spot: snapData315.bnfSpot
+                });
+                STATE.positioningResult = posResult;
+                STATE.tomorrowSignal = posResult ? { signal: posResult.signal, strength: posResult.strength } : null;
 
-            sendNotification(
-                `⚡ Tomorrow Signal: ${result?.signal || 'NEUTRAL'} (${result?.strength || 0}/5)`,
-                result?.signal === 'BEARISH' ? 'Sell call premium now. Enter Bear Call Spread.' :
-                result?.signal === 'BULLISH' ? 'Sell put premium now. Enter Bull Put Spread.' :
-                'No clear direction. Consider Iron Condor.',
-                'urgent'
-            );
+                // ═══ GLOBAL CONTEXT BOOST — adjusts signal strength ═══
+                if (STATE.tomorrowSignal && STATE.tomorrowSignal.signal !== 'NEUTRAL') {
+                    const gc = STATE.globalContext;
+                    const isBull = STATE.tomorrowSignal.signal === 'BULLISH';
+                    let boost = 0;
+                    const THRESHOLD = 0.2;
+
+                    if (gc.giftNifty !== null && Math.abs(gc.giftNifty) >= THRESHOLD) {
+                        if ((gc.giftNifty > 0 && isBull) || (gc.giftNifty < 0 && !isBull)) boost++;
+                        else boost--;
+                    }
+                    if (gc.europe !== null && Math.abs(gc.europe) >= THRESHOLD) {
+                        if ((gc.europe > 0 && isBull) || (gc.europe < 0 && !isBull)) boost++;
+                        else boost--;
+                    }
+                    if (gc.crude !== null && Math.abs(gc.crude) >= THRESHOLD) {
+                        if ((gc.crude < 0 && isBull) || (gc.crude > 0 && !isBull)) boost++;
+                        else boost--;
+                    }
+
+                    if (boost !== 0) {
+                        STATE.tomorrowSignal.strength = Math.max(1, Math.min(5, STATE.tomorrowSignal.strength + boost));
+                        STATE.tomorrowSignal.globalBoost = boost;
+                    }
+                }
+
+                // Save with tomorrow signal
+                snapData315.tomorrowSignal = posResult?.signal;
+                snapData315.signalStrength = posResult?.strength;
+
+                sendNotification(
+                    `⚡ Tomorrow Signal: ${posResult?.signal || 'NEUTRAL'} (${posResult?.strength || 0}/5)`,
+                    posResult?.signal === 'BEARISH' ? 'Sell call premium now. Enter Bear Call Spread.' :
+                    posResult?.signal === 'BULLISH' ? 'Sell put premium now. Enter Bull Put Spread.' :
+                    'No clear direction. Consider Iron Condor.',
+                    'urgent'
+                );
+            }
+
+            await DB.saveChainSnapshot(snapData315, '315pm');
+            STATE._captured315pm = true;  // Flag AFTER success
+            addNotificationLog('✅ 3:15 PM Scan Complete', `Tomorrow Signal: ${STATE.tomorrowSignal?.signal || 'NEUTRAL'} (${STATE.tomorrowSignal?.strength || 0}/5)`, 'urgent');
+
+            // ═══ GENERATE POSITIONING TRADES ═══
+            const tSignal = STATE.tomorrowSignal?.signal || 'NEUTRAL';
+            const positioningBias = {
+                bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
+                strength: STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD',
+                net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
+                votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
+                signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${STATE.tomorrowSignal?.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
+                label: `${STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
+            };
+
+            const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
+            const ivPctl = BS.ivPercentile(STATE.live.vix, vixHistory);
+            const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
+
+            const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
+            const posNfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
+            const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
+
+            STATE.positioningCandidates = allPosCands.slice(0, 10);
+            STATE.positioningBias = positioningBias;
+
+            addNotificationLog('🎯 Positioning Trades Ready',
+                `${STATE.positioningCandidates.length} trades aligned with ${tSignal} signal. Check Trade tab.`, 'entry');
+
+        } catch (e) {
+            // DON'T set flag — will retry next 5-min poll
+            addNotificationLog('⚠️ 3:15 PM Scan Failed', `${e.message}. Will retry in 5 min.`, 'urgent');
+            console.error('3:15PM capture error:', e);
         }
-
-        await DB.saveChainSnapshot(snapData315, '315pm');
-        addNotificationLog('⚡ 3:15 PM Scan Complete', `Tomorrow Signal: ${STATE.tomorrowSignal?.signal || 'NEUTRAL'} (${STATE.tomorrowSignal?.strength || 0}/5)`, 'urgent');
-
-        // ═══ GENERATE POSITIONING TRADES aligned with tomorrow signal ═══
-        // Use fresh chain data from heavy fetch + tomorrow signal as bias
-        const tSignal = STATE.tomorrowSignal?.signal || 'NEUTRAL';
-        const positioningBias = {
-            bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
-            strength: STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD',
-            net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
-            votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
-            signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${STATE.tomorrowSignal?.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
-            label: `${STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
-        };
-
-        const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = BS.ivPercentile(STATE.live.vix, vixHistory);
-        const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
-
-        const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
-        const posNfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
-        const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
-
-        STATE.positioningCandidates = allPosCands.slice(0, 10);
-        STATE.positioningBias = positioningBias;
-
-        addNotificationLog('🎯 Positioning Trades Ready',
-            `${STATE.positioningCandidates.length} trades aligned with ${tSignal} signal. Check Strategies tab.`, 'entry');
-
         renderAll();
     }
 }
