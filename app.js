@@ -1301,6 +1301,10 @@ async function initialFetch() {
         document.getElementById('btn-lock').disabled = true;
         document.getElementById('btn-lock').textContent = '✅ Scanned';
         document.getElementById('btn-stop').style.display = 'inline-block';
+
+        // Auto-collapse morning section
+        collapseMorning();
+
         renderAll();
         startWatchLoop();
 
@@ -2255,14 +2259,14 @@ function renderMarket() {
                 <div class="env-sub">${ivRegime}</div>
             </div>
             <div class="env-item">
-                <div class="env-label">IV %ile</div>
-                <div class="env-value">${l.ivPercentile !== null && l.ivPercentile !== undefined ? l.ivPercentile + 'th' : '--'}</div>
-                <div class="env-sub">${STATE.premiumHistory.length}d history</div>
-            </div>
-            <div class="env-item">
                 <div class="env-label">BNF</div>
                 <div class="env-value">${l.bnfSpot?.toFixed(0) || '--'}</div>
                 <div class="env-sub">ATM: ${b.bnfAtm || '--'}</div>
+            </div>
+            <div class="env-item">
+                <div class="env-label">NF</div>
+                <div class="env-value">${l.nfSpot?.toFixed(0) || '--'}</div>
+                <div class="env-sub">IV: ${l.ivPercentile != null ? l.ivPercentile + 'th %ile' : '--'}</div>
             </div>
         </div>
 
@@ -2390,79 +2394,92 @@ function renderOI() {
         return oi.toString();
     };
 
-    // Max Pain gravity — use LIVE data
-    const mpVal = l.maxPainBnf || b.maxPainBnf;
-    const mpDist = mpVal ? (l.bnfSpot - mpVal) : 0;
-    const mpDir = mpDist > 100 ? 'above ↑' : mpDist < -100 ? 'below ↓' : 'near →';
+    // BNF data
+    const bnfPCR = l.nearAtmPCR;
+    const bnfFullPCR = l.pcr;
+    const bnfMP = l.maxPainBnf || b.maxPainBnf;
+    const bnfMPDist = bnfMP ? (l.bnfSpot - bnfMP) : 0;
+    const bnfCallWall = l.bnfCallWall || b.bnfCallWall;
+    const bnfCallWallOI = l.bnfCallWallOI || b.bnfCallWallOI;
+    const bnfPutWall = l.bnfPutWall || b.bnfPutWall;
+    const bnfPutWallOI = l.bnfPutWallOI || b.bnfPutWallOI;
+    const bnfCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
+    const bnfPutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
+    const bnfTotalOI = bnfCallOI + bnfPutOI;
+    const bnfCallPct = bnfTotalOI > 0 ? ((bnfCallOI / bnfTotalOI) * 100).toFixed(0) : 50;
+    const bnfFP = l.futuresPremBnf;
 
-    // OI bar proportions — use LIVE data
-    const liveCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
-    const livePutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
-    const totalOI = liveCallOI + livePutOI;
-    const callPct = totalOI > 0 ? ((liveCallOI / totalOI) * 100).toFixed(0) : 50;
-    const putPct = totalOI > 0 ? ((livePutOI / totalOI) * 100).toFixed(0) : 50;
+    // NF data (from nfChain if available)
+    const nfc = STATE.nfChain;
+    const nfPCR = nfc?.nearAtmPCR;
+    const nfFullPCR = nfc?.pcr;
+    const nfMP = nfc?.maxPain || b.maxPainNf;
+    const nfMPDist = nfMP && l.nfSpot ? (l.nfSpot - nfMP) : 0;
+    const nfCallWall = nfc?.callWallStrike;
+    const nfCallWallOI = nfc?.callWallOI;
+    const nfPutWall = nfc?.putWallStrike;
+    const nfPutWallOI = nfc?.putWallOI;
+    const nfCallOI = nfc?.totalCallOI || 0;
+    const nfPutOI = nfc?.totalPutOI || 0;
+    const nfTotalOI = nfCallOI + nfPutOI;
+    const nfCallPct = nfTotalOI > 0 ? ((nfCallOI / nfTotalOI) * 100).toFixed(0) : 50;
+    const nfFP = nfc?.futuresPremium;
+
+    const pcrColor = (v) => v > 1.2 ? 'var(--green)' : v < 0.9 ? 'var(--danger)' : 'var(--text-primary)';
+    const pcrLabel = (v) => v > 1.2 ? 'Bullish' : v < 0.9 ? 'Bearish' : 'Neutral';
+    const mpLabel = (d) => d > 100 ? 'above ↑' : d < -100 ? 'below ↓' : 'near →';
 
     const scanTime = API.istNow();
 
     el.innerHTML = `
         <div class="section-timestamp">Updated: ${scanTime}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
 
-        <!-- HERO: Near-ATM PCR -->
-        <div class="oi-hero">
-            <div class="oi-hero-label">Near-ATM PCR (±10 strikes)</div>
-            <div class="oi-hero-value" style="color: ${(l.nearAtmPCR || 0) > 1.2 ? 'var(--green)' : (l.nearAtmPCR || 0) < 0.9 ? 'var(--danger)' : 'var(--text-primary)'}">
-                ${l.nearAtmPCR?.toFixed(2) || '--'}
+        <!-- BNF vs NF SIDE BY SIDE -->
+        <div class="oi-compare">
+            <div class="oi-compare-col">
+                <div class="oi-col-header">Bank Nifty</div>
+                <div class="oi-hero" style="margin-bottom:6px">
+                    <div class="oi-hero-label">Near-ATM PCR</div>
+                    <div class="oi-hero-value" style="color:${pcrColor(bnfPCR || 0)}">${bnfPCR?.toFixed(2) || '--'}</div>
+                    <div class="oi-hero-sub">${pcrLabel(bnfPCR || 0)} · Full: ${bnfFullPCR?.toFixed(2) || '--'}</div>
+                </div>
+                <div class="env-row"><span class="env-row-label">Max Pain</span><span class="env-row-value">${bnfMP || '--'}</span></div>
+                <div class="env-row"><span class="env-row-label">MP dist</span><span class="env-row-value">${mpLabel(bnfMPDist)} ${Math.abs(bnfMPDist).toFixed(0)}</span></div>
+                <div class="env-row"><span class="env-row-label">Call Wall</span><span class="env-row-value" style="color:var(--danger)">${bnfCallWall || '--'} · ${formatOI(bnfCallWallOI)}</span></div>
+                <div class="env-row"><span class="env-row-label">Put Wall</span><span class="env-row-value" style="color:var(--green)">${bnfPutWall || '--'} · ${formatOI(bnfPutWallOI)}</span></div>
+                <div class="env-row"><span class="env-row-label">OI split</span><span class="env-row-value">CE ${bnfCallPct}% / PE ${100 - bnfCallPct}%</span></div>
+                <div class="oi-bar">
+                    <div class="oi-bar-fill call" style="width:${bnfCallPct}%;float:left"></div>
+                    <div class="oi-bar-fill put" style="width:${100 - bnfCallPct}%;float:right"></div>
+                </div>
+                <div class="env-row"><span class="env-row-label">Fut Prem</span><span class="env-row-value" style="color:${(bnfFP || 0) > 0.05 ? 'var(--green)' : (bnfFP || 0) < -0.05 ? 'var(--danger)' : 'var(--text-muted)'}">${bnfFP?.toFixed(3) || '--'}%</span></div>
             </div>
-            <div class="oi-hero-sub">${(l.nearAtmPCR || 0) > 1.2 ? 'Bullish — put writing dominates' : (l.nearAtmPCR || 0) < 0.9 ? 'Bearish — call writing dominates' : 'Neutral range'}</div>
-            <div class="oi-hero-sub" style="color:var(--text-muted)">Full chain PCR: ${l.pcr?.toFixed(2) || '--'}</div>
-        </div>
 
-        <!-- MAX PAIN -->
-        <div class="env-row">
-            <span class="env-row-label">Max Pain</span>
-            <span class="env-row-value">${mpVal || '--'} (${mpDir}, ${Math.abs(mpDist).toFixed(0)} pts from spot)</span>
-        </div>
-
-        <!-- OI WALLS -->
-        <div class="oi-walls">
-            <div class="oi-wall call-wall">
-                <div class="oi-wall-label">Call Wall (resistance)</div>
-                <div class="oi-wall-value">${l.bnfCallWall || b.bnfCallWall || '--'}</div>
-                <div class="oi-wall-oi">${formatOI(l.bnfCallWallOI || b.bnfCallWallOI)} OI</div>
-            </div>
-            <div class="oi-wall put-wall">
-                <div class="oi-wall-label">Put Wall (support)</div>
-                <div class="oi-wall-value">${l.bnfPutWall || b.bnfPutWall || '--'}</div>
-                <div class="oi-wall-oi">${formatOI(l.bnfPutWallOI || b.bnfPutWallOI)} OI</div>
+            <div class="oi-compare-col">
+                <div class="oi-col-header">Nifty 50</div>
+                <div class="oi-hero" style="margin-bottom:6px">
+                    <div class="oi-hero-label">Near-ATM PCR</div>
+                    <div class="oi-hero-value" style="color:${pcrColor(nfPCR || 0)}">${nfPCR?.toFixed(2) || '--'}</div>
+                    <div class="oi-hero-sub">${pcrLabel(nfPCR || 0)} · Full: ${nfFullPCR?.toFixed(2) || '--'}</div>
+                </div>
+                <div class="env-row"><span class="env-row-label">Max Pain</span><span class="env-row-value">${nfMP || '--'}</span></div>
+                <div class="env-row"><span class="env-row-label">MP dist</span><span class="env-row-value">${mpLabel(nfMPDist)} ${Math.abs(nfMPDist).toFixed(0)}</span></div>
+                <div class="env-row"><span class="env-row-label">Call Wall</span><span class="env-row-value" style="color:var(--danger)">${nfCallWall || '--'} · ${formatOI(nfCallWallOI)}</span></div>
+                <div class="env-row"><span class="env-row-label">Put Wall</span><span class="env-row-value" style="color:var(--green)">${nfPutWall || '--'} · ${formatOI(nfPutWallOI)}</span></div>
+                <div class="env-row"><span class="env-row-label">OI split</span><span class="env-row-value">CE ${nfCallPct}% / PE ${100 - nfCallPct}%</span></div>
+                <div class="oi-bar">
+                    <div class="oi-bar-fill call" style="width:${nfCallPct}%;float:left"></div>
+                    <div class="oi-bar-fill put" style="width:${100 - nfCallPct}%;float:right"></div>
+                </div>
+                <div class="env-row"><span class="env-row-label">Fut Prem</span><span class="env-row-value" style="color:${(nfFP || 0) > 0.05 ? 'var(--green)' : (nfFP || 0) < -0.05 ? 'var(--danger)' : 'var(--text-muted)'}">${nfFP?.toFixed(3) || '--'}%</span></div>
             </div>
         </div>
 
-        <!-- TOTAL OI BAR -->
-        <div class="env-row">
-            <span class="env-row-label">Total OI</span>
-            <span class="env-row-value">CE ${callPct}% / PE ${putPct}%</span>
-        </div>
-        <div class="oi-bar">
-            <div class="oi-bar-fill call" style="width: ${callPct}%; float: left;"></div>
-            <div class="oi-bar-fill put" style="width: ${putPct}%; float: right;"></div>
-        </div>
-
-        <!-- FUTURES PREMIUM -->
-        <div class="env-section-title">Futures Premium</div>
-        <div class="env-row">
-            <span class="env-row-label">BNF Premium</span>
-            <span class="env-row-value" style="color: ${(l.futuresPremBnf || 0) > 0.05 ? 'var(--green)' : (l.futuresPremBnf || 0) < -0.05 ? 'var(--danger)' : 'var(--text-muted)'}">${l.futuresPremBnf?.toFixed(3) || '--'}%</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Synth Futures</span>
-            <span class="env-row-value">${b.bnfSynthFutures?.toFixed(0) || '--'} (spot ${l.bnfSpot?.toFixed(0) || '--'})</span>
-        </div>
-
-        <!-- BREADTH -->
+        <!-- BREADTH — shared section below -->
         <div class="env-section-title">📊 Market Breadth</div>
         ${STATE.bnfBreadth ? `
         <div class="env-row">
-            <span class="env-row-label">BNF Weighted (5 stocks, 79%)</span>
+            <span class="env-row-label">BNF Weighted (79%)</span>
             <span class="env-row-value" style="color: ${STATE.bnfBreadth.weightedPct > 0 ? 'var(--green)' : STATE.bnfBreadth.weightedPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
                 ${STATE.bnfBreadth.weightedPct > 0 ? '+' : ''}${STATE.bnfBreadth.weightedPct}% · ${STATE.bnfBreadth.advancing}↑ ${STATE.bnfBreadth.declining}↓
             </span>
@@ -2470,7 +2487,7 @@ function renderOI() {
         <div class="env-signals">${(STATE.bnfBreadth.results || []).map(r =>
             `<span class="signal-chip signal-${r.change > 0 ? 'bull' : r.change < 0 ? 'bear' : 'neutral'}">${r.name}: ${r.pctChange > 0 ? '+' : ''}${r.pctChange}%</span>`
         ).join('')}</div>
-        ` : '<div class="env-row"><span class="env-row-label">BNF Breadth</span><span class="env-row-value">--</span></div>'}
+        ` : ''}
         ${STATE.nf50Breadth ? `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>
@@ -2479,8 +2496,8 @@ function renderOI() {
         ` : ''}
 
         <div class="env-row">
-            <span class="env-row-label">NF Spot</span>
-            <span class="env-row-value">${l.nfSpot?.toFixed(0) || '--'}</span>
+            <span class="env-row-label">Synth Futures BNF</span>
+            <span class="env-row-value">${b.bnfSynthFutures?.toFixed(0) || '--'} (spot ${l.bnfSpot?.toFixed(0) || '--'})</span>
         </div>
     `;
 }
@@ -2878,6 +2895,37 @@ function requestNotificationPermission() {
     }
 }
 
+// ═══ MORNING COLLAPSE ═══
+function collapseMorning() {
+    const section = document.getElementById('morning-section');
+    const full = document.getElementById('morning-full');
+    const collapsed = document.getElementById('morning-collapsed');
+    if (!section || !full || !collapsed) return;
+
+    const fii = STATE.morningInput?.fiiCash || '--';
+    const short = STATE.morningInput?.fiiShortPct || '--';
+    const time = API.istNow();
+
+    full.style.display = 'none';
+    collapsed.style.display = 'block';
+    collapsed.innerHTML = `<div class="morning-collapsed-bar" onclick="expandMorning()">
+        ☀️ FII ₹${fii}Cr · Short ${short}% · Scanned ${time}
+        <span style="color:var(--text-muted)">▸</span>
+    </div>`;
+    section.classList.add('collapsed');
+}
+
+function expandMorning() {
+    const section = document.getElementById('morning-section');
+    const full = document.getElementById('morning-full');
+    const collapsed = document.getElementById('morning-collapsed');
+    if (!section || !full || !collapsed) return;
+
+    full.style.display = 'block';
+    collapsed.style.display = 'none';
+    section.classList.remove('collapsed');
+}
+
 // ═══ TAB SWITCHING ═══
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2915,6 +2963,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-save-token')?.addEventListener('click', saveToken);
     document.getElementById('btn-rescan')?.addEventListener('click', () => {
         stopWatchLoop();
+        expandMorning();
         document.getElementById('btn-lock').disabled = false;
         document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
@@ -2931,24 +2980,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // Theme toggle
+    // Theme toggle — light is default, dark is toggled
     document.getElementById('theme-switch')?.addEventListener('change', (e) => {
-        const isLight = e.target.checked;
-        document.body.classList.toggle('light', isLight);
-        localStorage.setItem('mr2_theme', isLight ? 'light' : 'dark');
-        document.querySelector('.toggle-icon').textContent = isLight ? '☀️' : '🌙';
-        document.querySelector('meta[name="theme-color"]').content = isLight ? '#f5f5f9' : '#121218';
+        const isDark = e.target.checked;
+        document.body.classList.toggle('dark', isDark);
+        localStorage.setItem('mr2_theme', isDark ? 'dark' : 'light');
+        document.querySelector('.toggle-icon').textContent = isDark ? '🌙' : '☀️';
+        document.querySelector('meta[name="theme-color"]').content = isDark ? '#121218' : '#FFFFFF';
     });
 });
 
 function initTheme() {
     const saved = localStorage.getItem('mr2_theme');
-    if (saved === 'light') {
-        document.body.classList.add('light');
+    if (saved === 'dark') {
+        document.body.classList.add('dark');
         const toggle = document.getElementById('theme-switch');
         if (toggle) toggle.checked = true;
         const icon = document.querySelector('.toggle-icon');
-        if (icon) icon.textContent = '☀️';
-        document.querySelector('meta[name="theme-color"]').content = '#f5f5f9';
+        if (icon) icon.textContent = '🌙';
+        document.querySelector('meta[name="theme-color"]').content = '#121218';
     }
 }

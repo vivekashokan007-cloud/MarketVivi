@@ -2,7 +2,7 @@
 // Network-first with versioned cache. Bump CACHE_VERSION on every push.
 // localStorage is NEVER affected by cache operations.
 
-const CACHE_VERSION = 'mr-v26';
+const CACHE_VERSION = 'mr-v27';
 
 // Install: skip waiting immediately so new SW takes over
 self.addEventListener('install', event => {

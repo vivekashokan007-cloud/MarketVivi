@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#121218">
+    <meta name="theme-color" content="#FFFFFF">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>Market Radar v2.1</title>
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=26">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=27">
 </head>
 <body>
     <!-- ═══ HEADER ═══ -->
@@ -24,7 +24,7 @@
             <label class="theme-toggle" title="Toggle theme">
                 <input type="checkbox" id="theme-switch">
                 <span class="toggle-slider"></span>
-                <span class="toggle-icon">🌙</span>
+                <span class="toggle-icon">☀️</span>
             </label>
             <span id="watch-status" class="watch-badge">⏹ Ready</span>
         </div>
@@ -54,38 +54,41 @@
             </div>
         </details>
 
-        <section class="section morning-section">
+        <section class="section morning-section" id="morning-section">
             <h2>☀️ Morning Data</h2>
-            <div class="input-grid">
-                <div class="input-group">
-                    <label>FII Cash (₹Cr)</label>
-                    <input type="number" id="in-fii-cash" class="input-field morning-input" placeholder="e.g. -1200">
-                </div>
-                <div class="input-group">
-                    <label>FII Short %</label>
-                    <input type="number" id="in-fii-short" class="input-field morning-input" placeholder="e.g. 88" step="0.1">
-                </div>
-            </div>
-            <details class="upstox-compare">
-                <summary>Upstox says... <span id="upstox-badge"></span></summary>
-                <div class="input-grid" style="margin-top:6px">
+            <div id="morning-full">
+                <div class="input-grid">
                     <div class="input-group">
-                        <label>Upstox Bias <span class="label-hint">(comparison only)</span></label>
-                        <select id="in-upstox-bias" class="input-field morning-input">
-                            <option value="">Not entered</option>
-                            <option value="Bullish">Bullish</option>
-                            <option value="Bearish">Bearish</option>
-                            <option value="Neutral">Neutral</option>
-                        </select>
+                        <label>FII Cash (₹Cr)</label>
+                        <input type="number" id="in-fii-cash" class="input-field morning-input" placeholder="e.g. -1200">
+                    </div>
+                    <div class="input-group">
+                        <label>FII Short %</label>
+                        <input type="number" id="in-fii-short" class="input-field morning-input" placeholder="e.g. 88" step="0.1">
                     </div>
                 </div>
-            </details>
-            <div class="morning-actions">
-                <button id="btn-lock" class="btn-primary">🔒 Lock & Scan</button>
-                <button id="btn-rescan" class="btn-ghost">↻ Reset</button>
-                <button id="btn-stop" class="btn-ghost" style="display:none">⏹ Stop</button>
+                <details class="upstox-compare">
+                    <summary>Upstox says... <span id="upstox-badge"></span></summary>
+                    <div class="input-grid" style="margin-top:6px">
+                        <div class="input-group">
+                            <label>Upstox Bias <span class="label-hint">(comparison only)</span></label>
+                            <select id="in-upstox-bias" class="input-field morning-input">
+                                <option value="">Not entered</option>
+                                <option value="Bullish">Bullish</option>
+                                <option value="Bearish">Bearish</option>
+                                <option value="Neutral">Neutral</option>
+                            </select>
+                        </div>
+                    </div>
+                </details>
+                <div class="morning-actions">
+                    <button id="btn-lock" class="btn-primary">🔒 Lock & Scan</button>
+                    <button id="btn-rescan" class="btn-ghost">↻ Reset</button>
+                    <button id="btn-stop" class="btn-ghost" style="display:none">⏹ Stop</button>
+                </div>
+                <div id="status" class="status-text"></div>
             </div>
-            <div id="status" class="status-text"></div>
+            <div id="morning-collapsed" style="display:none"></div>
         </section>
 
         <!-- ═══ TAB BAR (4 tabs) ═══ -->
@@ -124,7 +127,7 @@
             </div>
         </div>
 
-        <!-- ═══ BELOW TABS: Notifications ═══ -->
+        <!-- ═══ Notifications ═══ -->
         <section class="section notif-section">
             <h2>🔔 Notifications <span id="notif-timestamp" class="timestamp"></span></h2>
             <div id="notif-log">
@@ -146,10 +149,10 @@
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="bs.js?v=26"></script>
-    <script src="db.js?v=26"></script>
-    <script src="api.js?v=26"></script>
-    <script src="app.js?v=26"></script>
+    <script src="bs.js?v=27"></script>
+    <script src="db.js?v=27"></script>
+    <script src="api.js?v=27"></script>
+    <script src="app.js?v=27"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(() => {});
