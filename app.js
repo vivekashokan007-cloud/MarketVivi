@@ -350,8 +350,8 @@ function getForceAlignment(strategyType, biasResult, vix, ivPercentile) {
 // 3. Contrarian PCR Flag — extreme readings = reversal warning
 function getContrarianPCR(currentPCR, history) {
     const flags = [];
-    if (currentPCR < 0.6) flags.push({ type: 'extreme', text: '⚡ PCR < 0.6 — extreme put buying. Contrarian bounce likely 1-3 sessions.', severity: 'high' });
-    else if (currentPCR > 1.5) flags.push({ type: 'extreme', text: '⚡ PCR > 1.5 — extreme call selling. Contrarian drop likely 1-3 sessions.', severity: 'high' });
+    if (currentPCR < 0.6) flags.push({ type: 'extreme', text: `⚡ PCR ${currentPCR.toFixed(2)} — extreme low. Institutions buying cheap calls. Contrarian bounce likely 1-3 sessions.`, severity: 'high' });
+    else if (currentPCR > 1.5) flags.push({ type: 'extreme', text: `⚡ PCR ${currentPCR.toFixed(2)} — heavy put writing near ATM. Institutions defending support. Bullish positioning.`, severity: 'high' });
 
     // Multi-session detection from history
     if (history.length >= 2) {
@@ -361,7 +361,7 @@ function getContrarianPCR(currentPCR, history) {
                 flags.push({ type: 'sustained', text: '📉 PCR < 0.8 for 3+ sessions — sustained bearish, watch for snap reversal.', severity: 'medium' });
             }
             if (recentPCRs.every(p => p > 1.3) && currentPCR > 1.3) {
-                flags.push({ type: 'sustained', text: '📈 PCR > 1.3 for 3+ sessions — sustained bullish, watch for reversal.', severity: 'medium' });
+                flags.push({ type: 'sustained', text: '📈 PCR > 1.3 for 3+ sessions — sustained bullish, institutions heavily defending.', severity: 'medium' });
             }
         }
     }
@@ -1187,7 +1187,7 @@ async function initialFetch() {
         dbg('MORNING_INPUT', STATE.morningInput);
 
         // Direction intelligence (use yesterdayHistory to avoid comparing today with today)
-        STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.pcr, STATE.yesterdayHistory);
+        STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.nearAtmPCR || STATE.bnfChain.pcr, STATE.yesterdayHistory);
         STATE.fiiTrend = getFiiShortTrend(STATE.morningInput?.fiiShortPct, STATE.yesterdayHistory);
         STATE.trajectory = getSessionTrajectory(STATE.yesterdayHistory);
 
@@ -1342,6 +1342,9 @@ async function lightFetch() {
         const vixSigma = BS.vixSigmaScore(spots.vix, STATE.baseline.vix, elapsed);
 
         // Update live state
+        // Update chain reference for positioning/snapshot functions
+        STATE.bnfChain = bnfChain;
+
         STATE.live = {
             ...STATE.baseline,
             nfSpot: spots.nfSpot,
@@ -1352,6 +1355,13 @@ async function lightFetch() {
             maxPainBnf: bnfChain.maxPain,
             futuresPremBnf: bnfChain.futuresPremium,
             bnfAtmIv: bnfChain.atmIv,
+            // OI walls — live
+            bnfCallWall: bnfChain.callWallStrike,
+            bnfCallWallOI: bnfChain.callWallOI,
+            bnfPutWall: bnfChain.putWallStrike,
+            bnfPutWallOI: bnfChain.putWallOI,
+            bnfTotalCallOI: bnfChain.totalCallOI,
+            bnfTotalPutOI: bnfChain.totalPutOI,
             ivPercentile: ivPctl,
             spotSigma: +spotSigma.toFixed(2),
             vixSigma: +vixSigma.toFixed(2),
@@ -1367,6 +1377,9 @@ async function lightFetch() {
             closeChar: STATE.baseline?.closeChar || 0
         });
         STATE.live.bias = biasResult;
+
+        // Update contrarian PCR with live near-ATM PCR
+        STATE.contrarianPCR = getContrarianPCR(bnfChain.nearAtmPCR || bnfChain.pcr, STATE.yesterdayHistory);
 
         // Check: is any σ move significant enough to recalculate?
         const absSpotSigma = Math.abs(spotSigma);
@@ -1670,8 +1683,8 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
     // ═══ AFTERNOON POSITIONING SCANS (2:00 PM and 3:15 PM) ═══
     const mins = API.minutesSinceOpen();
 
-    // 2:00 PM baseline — capture anytime between 1:45-2:30 (270-315 mins since 9:15)
-    if (mins >= 270 && mins <= 315 && !STATE._captured2pm) {
+    // 2PM capture: FIRST poll after 1:45 PM. No upper bound — never miss it.
+    if (mins >= 270 && mins < 345 && !STATE._captured2pm) {
         STATE._captured2pm = true;
         sendNotification('📊 Capturing 2:00 PM Baseline...', 'Heavy fetch in progress. Institutional positioning scan started.', 'important');
         // Heavy fetch for full chain data
@@ -1683,21 +1696,27 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         renderAll();
     }
 
-    // 3:15 PM final — capture anytime between 3:00-3:30 (345-375 mins since 9:15)
-    if (mins >= 345 && mins <= 375 && !STATE._captured315pm) {
+    // 3:15PM capture: FIRST poll after 3:00 PM. No upper bound — never miss it.
+    if (mins >= 345 && !STATE._captured315pm) {
         STATE._captured315pm = true;
         sendNotification('⚡ Final Positioning Scan...', 'Heavy fetch in progress. Comparing with 2:00 PM baseline.', 'urgent');
         // Heavy fetch
         await heavyAfternoonFetch();
         const snapData315 = buildChainSnapshotData();
 
-        // Load 2PM snapshot from Supabase (reliable source)
+        // Load 2PM snapshot from Supabase. Fallback to morning if 2PM missing.
         const today = new Date().toISOString().split('T')[0];
-        const snap2pm = await DB.getChainSnapshot(today, '2pm');
+        let baselineSnap = await DB.getChainSnapshot(today, '2pm');
+        let baselineLabel = '2:00 PM';
+        if (!baselineSnap) {
+            baselineSnap = await DB.getChainSnapshot(today, 'morning');
+            baselineLabel = 'morning';
+        }
 
-        if (snap2pm) {
+        if (baselineSnap) {
+            sendNotification('⚡ Comparing with ' + baselineLabel + ' baseline...', 'Analyzing institutional positioning.', 'important');
             // Compare
-            const result = computePositioning(snap2pm, {
+            const result = computePositioning(baselineSnap, {
                 ...snapData315,
                 bnf_total_call_oi: snapData315.bnfTotalCallOi,
                 bnf_total_put_oi: snapData315.bnfTotalPutOi,
@@ -2158,8 +2177,8 @@ function renderPremiumEnvironment() {
         vixVsYday = `Yesterday: ${b.yesterdayVix.toFixed(1)} · Change: ${diff > 0 ? '+' : ''}${diff.toFixed(1)} (${pct}%) ${arrow}`;
     }
 
-    // Max Pain gravity
-    const mpDist = b.maxPainBnf ? (l.bnfSpot - b.maxPainBnf) : 0;
+    // Max Pain gravity — use LIVE data
+    const mpDist = (l.maxPainBnf || b.maxPainBnf) ? (l.bnfSpot - (l.maxPainBnf || b.maxPainBnf)) : 0;
     const mpDir = mpDist > 100 ? 'above ↑' : mpDist < -100 ? 'below ↓' : 'near →';
 
     // OI wall formatting
@@ -2171,10 +2190,12 @@ function renderPremiumEnvironment() {
         return oi.toString();
     };
 
-    // OI bar proportions
-    const totalOI = (b.bnfTotalCallOI || 0) + (b.bnfTotalPutOI || 0);
-    const callPct = totalOI > 0 ? ((b.bnfTotalCallOI / totalOI) * 100).toFixed(0) : 50;
-    const putPct = totalOI > 0 ? ((b.bnfTotalPutOI / totalOI) * 100).toFixed(0) : 50;
+    // OI bar proportions — use LIVE data
+    const liveCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
+    const livePutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
+    const totalOI = liveCallOI + livePutOI;
+    const callPct = totalOI > 0 ? ((liveCallOI / totalOI) * 100).toFixed(0) : 50;
+    const putPct = totalOI > 0 ? ((livePutOI / totalOI) * 100).toFixed(0) : 50;
 
     // Yesterday's data from premium_history for comparisons
     const yday = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0] : null;
@@ -2290,15 +2311,15 @@ function renderPremiumEnvironment() {
         </div>
         <div class="env-row">
             <span class="env-row-label">Max Pain</span>
-            <span class="env-row-value">${b.maxPainBnf || '--'} (${mpDir}, ${Math.abs(mpDist).toFixed(0)} pts)</span>
+            <span class="env-row-value">${l.maxPainBnf || b.maxPainBnf || '--'} (${mpDir}, ${Math.abs(mpDist).toFixed(0)} pts)</span>
         </div>
         <div class="env-row">
             <span class="env-row-label">Call Wall (resistance)</span>
-            <span class="env-row-value" style="color: var(--danger)">${b.bnfCallWall || '--'} · ${formatOI(b.bnfCallWallOI)} OI</span>
+            <span class="env-row-value" style="color: var(--danger)">${l.bnfCallWall || b.bnfCallWall || '--'} · ${formatOI(l.bnfCallWallOI || b.bnfCallWallOI)} OI</span>
         </div>
         <div class="env-row">
             <span class="env-row-label">Put Wall (support)</span>
-            <span class="env-row-value" style="color: var(--green)">${b.bnfPutWall || '--'} · ${formatOI(b.bnfPutWallOI)} OI</span>
+            <span class="env-row-value" style="color: var(--green)">${l.bnfPutWall || b.bnfPutWall || '--'} · ${formatOI(l.bnfPutWallOI || b.bnfPutWallOI)} OI</span>
         </div>
         <div class="env-row">
             <span class="env-row-label">Total OI</span>
