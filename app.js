@@ -1387,7 +1387,62 @@ async function lightFetch() {
         }
 
         // Check for notifications
-        handleNotifications(absSpotSigma, absVixSigma, significantMove);
+        await handleNotifications(absSpotSigma, absVixSigma, significantMove);
+
+        // ═══ POSITION HEALTH CHECK — runs EVERY poll, not just σ moves ═══
+        if (STATE.openTrade) {
+            const trade = STATE.openTrade;
+            const pnlPct = trade.max_profit > 0 ? trade.current_pnl / trade.max_profit : 0;
+            const lossPct = trade.max_loss > 0 ? Math.abs(trade.current_pnl) / trade.max_loss : 0;
+            const ci = trade.controlIndex;
+
+            // First poll — always show status
+            if (STATE.pollCount <= 1) {
+                addNotificationLog('📊 Position Status',
+                    `${trade.index_key} ${friendlyType(trade.strategy_type)} | P&L: ₹${trade.current_pnl} | Spot: ${trade.current_spot?.toFixed(0)} | Ctrl: ${ci ?? '--'}`,
+                    'routine');
+            }
+
+            // Target approaching (>50% of max profit)
+            if (pnlPct >= 0.5 && pnlPct < 0.8 && !trade._notified50) {
+                trade._notified50 = true;
+                sendNotification('💰 50% Target Hit', `P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max). Consider booking.`, 'important');
+            }
+
+            // Target hit (>80%)
+            if (pnlPct >= 0.8 && !trade._notifiedTarget) {
+                trade._notifiedTarget = true;
+                sendNotification('🎯 Target! Book Profit', `P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max ₹${trade.max_profit}). BOOK NOW.`, 'urgent');
+            }
+
+            // P&L dropping from peak
+            if (trade.peak_pnl > 500 && trade.current_pnl < trade.peak_pnl * 0.5 && !trade._notifiedDrop) {
+                trade._notifiedDrop = true;
+                sendNotification('⚠️ P&L Dropping', `Was ₹${trade.peak_pnl}, now ₹${trade.current_pnl}. Peak erosion >50%.`, 'important');
+            }
+
+            // Control Index danger
+            if (ci !== null && ci <= -30 && !trade._notifiedControl) {
+                trade._notifiedControl = true;
+                sendNotification('🛑 Opponent in Control', `Control Index: ${ci}. Consider exiting.`, 'urgent');
+            }
+
+            // Stop loss approaching (>60% of max loss)
+            if (trade.current_pnl < 0 && lossPct >= 0.6 && !trade._notifiedSL) {
+                trade._notifiedSL = true;
+                sendNotification('🛑 Stop Loss Near', `P&L ₹${trade.current_pnl} (${Math.round(lossPct * 100)}% of max loss). EXIT.`, 'urgent');
+            }
+
+            // Spot approaching sold strike (for credit spreads)
+            if (trade.is_credit && trade.current_spot && trade.sell_strike) {
+                const cushion = Math.abs(trade.sell_strike - trade.current_spot);
+                const width = trade.width || 300;
+                if (cushion < width && !trade._notifiedCushion) {
+                    trade._notifiedCushion = true;
+                    sendNotification('⚡ Spot Near Sold Strike', `Only ${cushion} pts cushion left. Sold: ${trade.sell_strike}, Spot: ${trade.current_spot.toFixed(0)}`, 'urgent');
+                }
+            }
+        }
 
         // Save CLOSE snapshot — upserts by (date, 'close'), last poll = closing data
         const today = new Date().toISOString().split('T')[0];
