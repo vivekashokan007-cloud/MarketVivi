@@ -1212,6 +1212,12 @@ async function initialFetch() {
         const dailySigmaBnf = BS.dailySigma(spots.bnfSpot, spots.vix);
         const yesterdayVix = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0]?.vix : null;
 
+        // NF theta + DTE (same computation as BNF, different chain)
+        const nfTDTE = API.tradingDTE(STATE.nfExpiry);
+        const nfT = nfTDTE / BS.DAYS_PER_YEAR;
+        const nfAtmIvDec = STATE.nfChain.atmIv ? (STATE.nfChain.atmIv > 1 ? STATE.nfChain.atmIv / 100 : STATE.nfChain.atmIv) : (spots.vix / 100);
+        const nfAtmTheta = BS.theta(spots.nfSpot, STATE.nfChain.atm, nfT, nfAtmIvDec, 'CE') + BS.theta(spots.nfSpot, STATE.nfChain.atm, nfT, nfAtmIvDec, 'PE');
+
         STATE.baseline = {
             timestamp: Date.now(),
             nfSpot: spots.nfSpot,
@@ -1229,27 +1235,34 @@ async function initialFetch() {
             bias: biasResult,
             closeChar: bnfCloseChar,
             ivPercentile: ivPctl,
-            // OI walls
+            // OI walls — BNF
             bnfCallWall: STATE.bnfChain.callWallStrike,
             bnfCallWallOI: STATE.bnfChain.callWallOI,
             bnfPutWall: STATE.bnfChain.putWallStrike,
             bnfPutWallOI: STATE.bnfChain.putWallOI,
-            // DTE
+            // DTE — both indices
             bnfExpiry: STATE.bnfExpiry,
             bnfTDTE: bnfTDTE,
             bnfCalendarDTE: API.calendarDTE(STATE.bnfExpiry),
             nfExpiry: STATE.nfExpiry,
-            // Theta
-            bnfAtmTheta: Math.round(bnfAtmTheta * C.BNF_LOT), // ₹/day for 1 lot
-            // Range budget
+            nfTDTE: nfTDTE,
+            nfCalendarDTE: API.calendarDTE(STATE.nfExpiry),
+            // Theta — both indices (₹/day for 1 lot)
+            bnfAtmTheta: Math.round(bnfAtmTheta * C.BNF_LOT),
+            nfAtmTheta: Math.round(nfAtmTheta * C.NF_LOT),
+            // Range budget — both indices
             dailySigmaBnf: Math.round(dailySigmaBnf),
             tradeSigmaBnf: Math.round(BS.sigmaDays(spots.bnfSpot, spots.vix, bnfTDTE)),
+            dailySigmaNf: Math.round(BS.dailySigma(spots.nfSpot, spots.vix)),
+            tradeSigmaNf: Math.round(BS.sigmaDays(spots.nfSpot, spots.vix, nfTDTE)),
             // Total OI
             bnfTotalCallOI: STATE.bnfChain.totalCallOI,
             bnfTotalPutOI: STATE.bnfChain.totalPutOI,
-            // ATM
+            // ATM — both indices
             bnfAtm: STATE.bnfChain.atm,
+            nfAtm: STATE.nfChain.atm,
             bnfSynthFutures: STATE.bnfChain.synthFutures,
+            nfSynthFutures: STATE.nfChain.synthFutures,
             // Breadth
             bnfBreadth: STATE.bnfBreadth,
             nf50Breadth: STATE.nf50Breadth,
@@ -1809,26 +1822,17 @@ function sendNotification(title, body, type) {
     // Play sound
     playSound(type);
 
-    // PWA notification — use Service Worker for mobile support
-    if (Notification.permission === 'granted') {
-        const options = {
-            body,
-            icon: '/favicon.ico',
-            tag: type + '_' + Date.now(),
-            vibrate: type === 'urgent' ? [200, 100, 200, 100, 200] : [200],
-            requireInteraction: type === 'urgent',
-            silent: false
-        };
-
-        // Service Worker method (works on mobile Chrome)
-        if (navigator.serviceWorker?.controller) {
-            navigator.serviceWorker.ready.then(reg => {
-                reg.showNotification(title, options);
-            }).catch(() => {});
-        } else {
-            // Fallback for desktop
-            try { new Notification(title, options); } catch (e) {}
-        }
+    // PWA notification
+    if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+            new Notification(title, {
+                body,
+                icon: '/favicon.ico',
+                tag: type + '_' + Date.now(),
+                vibrate: type === 'urgent' ? [200, 100, 200] : [200],
+                silent: false
+            });
+        } catch (e) { /* mobile may block this */ }
     }
 
     // Log to UI
@@ -2270,24 +2274,37 @@ function renderMarket() {
             </div>
         </div>
 
-        <!-- FORCE 3: IV / VOLATILITY -->
+        <!-- FORCE 3: IV / VOLATILITY — both indices -->
         <div class="env-section-title">Force 3 — IV & Volatility</div>
         <div class="env-row">
             <span class="env-row-label">VIX vs Yesterday</span>
             <span class="env-row-value">${vixVsYday || 'No history yet'}</span>
         </div>
-        <div class="env-row">
-            <span class="env-row-label">BNF ATM IV</span>
-            <span class="env-row-value">${b.bnfAtmIv ? (b.bnfAtmIv > 1 ? b.bnfAtmIv.toFixed(1) + '%' : (b.bnfAtmIv * 100).toFixed(1) + '%') : '--'}</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">ATM Theta (₹/day)</span>
-            <span class="env-row-value" style="color: var(--green)">₹${Math.abs(b.bnfAtmTheta || 0)} decay</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">DTE</span>
-            <span class="env-row-value">${b.bnfTDTE || '--'}T (${b.bnfCalendarDTE || '--'} cal) · Exp: ${b.bnfExpiry || '--'}</span>
-        </div>
+        <table class="oi-table">
+            <thead><tr><th></th><th class="oi-th">BNF</th><th class="oi-th">NF</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td class="oi-td-label">ATM IV</td>
+                    <td class="oi-td-val">${b.bnfAtmIv ? (b.bnfAtmIv > 1 ? b.bnfAtmIv.toFixed(1) + '%' : (b.bnfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
+                    <td class="oi-td-val">${b.nfAtmIv ? (b.nfAtmIv > 1 ? b.nfAtmIv.toFixed(1) + '%' : (b.nfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Θ ₹/day</td>
+                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(b.bnfAtmTheta || 0)}</td>
+                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(b.nfAtmTheta || 0)}</td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">DTE</td>
+                    <td class="oi-td-val">${b.bnfTDTE || '--'}T (${b.bnfCalendarDTE || '--'}c)</td>
+                    <td class="oi-td-val">${b.nfTDTE || '--'}T (${b.nfCalendarDTE || '--'}c)</td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Expiry</td>
+                    <td class="oi-td-val">${b.bnfExpiry || '--'}</td>
+                    <td class="oi-td-val">${b.nfExpiry || '--'}</td>
+                </tr>
+            </tbody>
+        </table>
 
         <!-- FORCE 1: DIRECTION / INTRINSIC -->
         <div class="env-section-title">Force 1 — Direction & Intrinsic</div>
@@ -2303,20 +2320,28 @@ function renderMarket() {
             ).join('')}</div>
         </details>
 
-        <!-- RANGE BUDGET -->
+        <!-- RANGE BUDGET — Both indices -->
         <div class="env-section-title">Range Budget — σ Framework</div>
-        <div class="env-row">
-            <span class="env-row-label">Daily 1σ</span>
-            <span class="env-row-value">±${daily1s} pts (68% probability)</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Daily 2σ</span>
-            <span class="env-row-value">±${(daily1s * 2)} pts (95% ceiling)</span>
-        </div>
-        <div class="env-row">
-            <span class="env-row-label">Trade duration 1σ (${b.bnfTDTE}T)</span>
-            <span class="env-row-value" style="color: var(--accent)">±${trade1s} pts</span>
-        </div>
+        <table class="oi-table">
+            <thead><tr><th></th><th class="oi-th">BNF</th><th class="oi-th">NF</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td class="oi-td-label">Daily 1σ</td>
+                    <td class="oi-td-val">±${daily1s}</td>
+                    <td class="oi-td-val">±${b.dailySigmaNf || 0}</td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Daily 2σ</td>
+                    <td class="oi-td-val">±${daily1s * 2}</td>
+                    <td class="oi-td-val">±${(b.dailySigmaNf || 0) * 2}</td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Trade 1σ</td>
+                    <td class="oi-td-val" style="color:var(--accent)">±${trade1s} (${b.bnfTDTE}T)</td>
+                    <td class="oi-td-val" style="color:var(--accent)">±${b.tradeSigmaNf || 0} (${b.nfTDTE || b.bnfTDTE}T)</td>
+                </tr>
+            </tbody>
+        </table>
 
         <!-- CONTRARIAN PCR (alert only when triggered) -->
         ${(STATE.contrarianPCR || []).length > 0 ? `
@@ -2386,101 +2411,105 @@ function renderOI() {
         return;
     }
 
-    const formatOI = (oi) => {
-        if (!oi) return '0';
+    const fmtOI = (oi) => {
+        if (!oi) return '--';
         if (oi >= 1e7) return (oi / 1e7).toFixed(1) + 'Cr';
         if (oi >= 1e5) return (oi / 1e5).toFixed(1) + 'L';
         if (oi >= 1e3) return (oi / 1e3).toFixed(1) + 'K';
         return oi.toString();
     };
 
-    // BNF data
+    // BNF
     const bnfPCR = l.nearAtmPCR;
-    const bnfFullPCR = l.pcr;
     const bnfMP = l.maxPainBnf || b.maxPainBnf;
-    const bnfMPDist = bnfMP ? (l.bnfSpot - bnfMP) : 0;
-    const bnfCallWall = l.bnfCallWall || b.bnfCallWall;
-    const bnfCallWallOI = l.bnfCallWallOI || b.bnfCallWallOI;
-    const bnfPutWall = l.bnfPutWall || b.bnfPutWall;
-    const bnfPutWallOI = l.bnfPutWallOI || b.bnfPutWallOI;
+    const bnfMPDist = bnfMP ? Math.round(l.bnfSpot - bnfMP) : 0;
+    const bnfCW = l.bnfCallWall || b.bnfCallWall;
+    const bnfCWOI = l.bnfCallWallOI || b.bnfCallWallOI;
+    const bnfPW = l.bnfPutWall || b.bnfPutWall;
+    const bnfPWOI = l.bnfPutWallOI || b.bnfPutWallOI;
     const bnfCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
     const bnfPutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
-    const bnfTotalOI = bnfCallOI + bnfPutOI;
-    const bnfCallPct = bnfTotalOI > 0 ? ((bnfCallOI / bnfTotalOI) * 100).toFixed(0) : 50;
+    const bnfTotal = bnfCallOI + bnfPutOI;
+    const bnfCPct = bnfTotal > 0 ? Math.round(bnfCallOI / bnfTotal * 100) : 50;
     const bnfFP = l.futuresPremBnf;
 
-    // NF data (from nfChain if available)
+    // NF
     const nfc = STATE.nfChain;
     const nfPCR = nfc?.nearAtmPCR;
-    const nfFullPCR = nfc?.pcr;
     const nfMP = nfc?.maxPain || b.maxPainNf;
-    const nfMPDist = nfMP && l.nfSpot ? (l.nfSpot - nfMP) : 0;
-    const nfCallWall = nfc?.callWallStrike;
-    const nfCallWallOI = nfc?.callWallOI;
-    const nfPutWall = nfc?.putWallStrike;
-    const nfPutWallOI = nfc?.putWallOI;
+    const nfMPDist = nfMP && l.nfSpot ? Math.round(l.nfSpot - nfMP) : 0;
+    const nfCW = nfc?.callWallStrike;
+    const nfCWOI = nfc?.callWallOI;
+    const nfPW = nfc?.putWallStrike;
+    const nfPWOI = nfc?.putWallOI;
     const nfCallOI = nfc?.totalCallOI || 0;
     const nfPutOI = nfc?.totalPutOI || 0;
-    const nfTotalOI = nfCallOI + nfPutOI;
-    const nfCallPct = nfTotalOI > 0 ? ((nfCallOI / nfTotalOI) * 100).toFixed(0) : 50;
+    const nfTotal = nfCallOI + nfPutOI;
+    const nfCPct = nfTotal > 0 ? Math.round(nfCallOI / nfTotal * 100) : 50;
     const nfFP = nfc?.futuresPremium;
 
-    const pcrColor = (v) => v > 1.2 ? 'var(--green)' : v < 0.9 ? 'var(--danger)' : 'var(--text-primary)';
-    const pcrLabel = (v) => v > 1.2 ? 'Bullish' : v < 0.9 ? 'Bearish' : 'Neutral';
-    const mpLabel = (d) => d > 100 ? 'above ↑' : d < -100 ? 'below ↓' : 'near →';
-
-    const scanTime = API.istNow();
+    const pc = (v) => !v ? 'var(--text-muted)' : v > 1.2 ? 'var(--green)' : v < 0.9 ? 'var(--danger)' : 'var(--text-primary)';
+    const pl = (v) => !v ? '--' : v > 1.2 ? 'Bull' : v < 0.9 ? 'Bear' : 'Neut';
+    const md = (d) => d > 100 ? `↑${d}` : d < -100 ? `↓${Math.abs(d)}` : `→${Math.abs(d)}`;
+    const fpC = (v) => !v ? 'var(--text-muted)' : v > 0.05 ? 'var(--green)' : v < -0.05 ? 'var(--danger)' : 'var(--text-muted)';
 
     el.innerHTML = `
-        <div class="section-timestamp">Updated: ${scanTime}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
+        <div class="section-timestamp">Updated: ${API.istNow()}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
 
-        <!-- BNF vs NF SIDE BY SIDE -->
-        <div class="oi-compare">
-            <div class="oi-compare-col">
-                <div class="oi-col-header">Bank Nifty</div>
-                <div class="oi-hero" style="margin-bottom:6px">
-                    <div class="oi-hero-label">Near-ATM PCR</div>
-                    <div class="oi-hero-value" style="color:${pcrColor(bnfPCR || 0)}">${bnfPCR?.toFixed(2) || '--'}</div>
-                    <div class="oi-hero-sub">${pcrLabel(bnfPCR || 0)} · Full: ${bnfFullPCR?.toFixed(2) || '--'}</div>
-                </div>
-                <div class="env-row"><span class="env-row-label">Max Pain</span><span class="env-row-value">${bnfMP || '--'}</span></div>
-                <div class="env-row"><span class="env-row-label">MP dist</span><span class="env-row-value">${mpLabel(bnfMPDist)} ${Math.abs(bnfMPDist).toFixed(0)}</span></div>
-                <div class="env-row"><span class="env-row-label">Call Wall</span><span class="env-row-value" style="color:var(--danger)">${bnfCallWall || '--'} · ${formatOI(bnfCallWallOI)}</span></div>
-                <div class="env-row"><span class="env-row-label">Put Wall</span><span class="env-row-value" style="color:var(--green)">${bnfPutWall || '--'} · ${formatOI(bnfPutWallOI)}</span></div>
-                <div class="env-row"><span class="env-row-label">OI split</span><span class="env-row-value">CE ${bnfCallPct}% / PE ${100 - bnfCallPct}%</span></div>
-                <div class="oi-bar">
-                    <div class="oi-bar-fill call" style="width:${bnfCallPct}%;float:left"></div>
-                    <div class="oi-bar-fill put" style="width:${100 - bnfCallPct}%;float:right"></div>
-                </div>
-                <div class="env-row"><span class="env-row-label">Fut Prem</span><span class="env-row-value" style="color:${(bnfFP || 0) > 0.05 ? 'var(--green)' : (bnfFP || 0) < -0.05 ? 'var(--danger)' : 'var(--text-muted)'}">${bnfFP?.toFixed(3) || '--'}%</span></div>
-            </div>
+        <!-- COMPARISON TABLE -->
+        <table class="oi-table">
+            <thead>
+                <tr><th></th><th class="oi-th">Bank Nifty</th><th class="oi-th">Nifty 50</th></tr>
+            </thead>
+            <tbody>
+                <tr class="oi-pcr-row">
+                    <td class="oi-td-label">PCR</td>
+                    <td class="oi-td-val" style="color:${pc(bnfPCR)}"><span class="oi-big">${bnfPCR?.toFixed(2) || '--'}</span><br><span class="oi-sub">${pl(bnfPCR)} · F:${l.pcr?.toFixed(2) || '--'}</span></td>
+                    <td class="oi-td-val" style="color:${pc(nfPCR)}"><span class="oi-big">${nfPCR?.toFixed(2) || '--'}</span><br><span class="oi-sub">${pl(nfPCR)} · F:${nfc?.pcr?.toFixed(2) || '--'}</span></td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Max Pain</td>
+                    <td class="oi-td-val">${bnfMP || '--'}<br><span class="oi-sub">${md(bnfMPDist)}</span></td>
+                    <td class="oi-td-val">${nfMP || '--'}<br><span class="oi-sub">${md(nfMPDist)}</span></td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Call Wall</td>
+                    <td class="oi-td-val" style="color:var(--danger)">${bnfCW || '--'}<br><span class="oi-sub">${fmtOI(bnfCWOI)}</span></td>
+                    <td class="oi-td-val" style="color:var(--danger)">${nfCW || '--'}<br><span class="oi-sub">${fmtOI(nfCWOI)}</span></td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Put Wall</td>
+                    <td class="oi-td-val" style="color:var(--green)">${bnfPW || '--'}<br><span class="oi-sub">${fmtOI(bnfPWOI)}</span></td>
+                    <td class="oi-td-val" style="color:var(--green)">${nfPW || '--'}<br><span class="oi-sub">${fmtOI(nfPWOI)}</span></td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">OI Split</td>
+                    <td class="oi-td-val">CE ${bnfCPct}% / PE ${100-bnfCPct}%
+                        <div class="oi-bar-mini"><div class="oi-bar-fill call" style="width:${bnfCPct}%"></div><div class="oi-bar-fill put" style="width:${100-bnfCPct}%"></div></div>
+                    </td>
+                    <td class="oi-td-val">CE ${nfCPct}% / PE ${100-nfCPct}%
+                        <div class="oi-bar-mini"><div class="oi-bar-fill call" style="width:${nfCPct}%"></div><div class="oi-bar-fill put" style="width:${100-nfCPct}%"></div></div>
+                    </td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Fut Prem</td>
+                    <td class="oi-td-val" style="color:${fpC(bnfFP)}">${bnfFP?.toFixed(3) || '--'}%</td>
+                    <td class="oi-td-val" style="color:${fpC(nfFP)}">${nfFP?.toFixed(3) || '--'}%</td>
+                </tr>
+                <tr>
+                    <td class="oi-td-label">Spot</td>
+                    <td class="oi-td-val">${l.bnfSpot?.toFixed(0) || '--'}</td>
+                    <td class="oi-td-val">${l.nfSpot?.toFixed(0) || '--'}</td>
+                </tr>
+            </tbody>
+        </table>
 
-            <div class="oi-compare-col">
-                <div class="oi-col-header">Nifty 50</div>
-                <div class="oi-hero" style="margin-bottom:6px">
-                    <div class="oi-hero-label">Near-ATM PCR</div>
-                    <div class="oi-hero-value" style="color:${pcrColor(nfPCR || 0)}">${nfPCR?.toFixed(2) || '--'}</div>
-                    <div class="oi-hero-sub">${pcrLabel(nfPCR || 0)} · Full: ${nfFullPCR?.toFixed(2) || '--'}</div>
-                </div>
-                <div class="env-row"><span class="env-row-label">Max Pain</span><span class="env-row-value">${nfMP || '--'}</span></div>
-                <div class="env-row"><span class="env-row-label">MP dist</span><span class="env-row-value">${mpLabel(nfMPDist)} ${Math.abs(nfMPDist).toFixed(0)}</span></div>
-                <div class="env-row"><span class="env-row-label">Call Wall</span><span class="env-row-value" style="color:var(--danger)">${nfCallWall || '--'} · ${formatOI(nfCallWallOI)}</span></div>
-                <div class="env-row"><span class="env-row-label">Put Wall</span><span class="env-row-value" style="color:var(--green)">${nfPutWall || '--'} · ${formatOI(nfPutWallOI)}</span></div>
-                <div class="env-row"><span class="env-row-label">OI split</span><span class="env-row-value">CE ${nfCallPct}% / PE ${100 - nfCallPct}%</span></div>
-                <div class="oi-bar">
-                    <div class="oi-bar-fill call" style="width:${nfCallPct}%;float:left"></div>
-                    <div class="oi-bar-fill put" style="width:${100 - nfCallPct}%;float:right"></div>
-                </div>
-                <div class="env-row"><span class="env-row-label">Fut Prem</span><span class="env-row-value" style="color:${(nfFP || 0) > 0.05 ? 'var(--green)' : (nfFP || 0) < -0.05 ? 'var(--danger)' : 'var(--text-muted)'}">${nfFP?.toFixed(3) || '--'}%</span></div>
-            </div>
-        </div>
-
-        <!-- BREADTH — shared section below -->
+        <!-- BREADTH -->
         <div class="env-section-title">📊 Market Breadth</div>
         ${STATE.bnfBreadth ? `
         <div class="env-row">
-            <span class="env-row-label">BNF Weighted (79%)</span>
-            <span class="env-row-value" style="color: ${STATE.bnfBreadth.weightedPct > 0 ? 'var(--green)' : STATE.bnfBreadth.weightedPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+            <span class="env-row-label">BNF (5 stocks, 79%)</span>
+            <span class="env-row-value" style="color:${STATE.bnfBreadth.weightedPct > 0 ? 'var(--green)' : STATE.bnfBreadth.weightedPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
                 ${STATE.bnfBreadth.weightedPct > 0 ? '+' : ''}${STATE.bnfBreadth.weightedPct}% · ${STATE.bnfBreadth.advancing}↑ ${STATE.bnfBreadth.declining}↓
             </span>
         </div>
@@ -2491,14 +2520,9 @@ function renderOI() {
         ${STATE.nf50Breadth ? `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>
-            <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing · ${STATE.nf50Breadth.matched}/50 matched</span>
+            <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing</span>
         </div>
         ` : ''}
-
-        <div class="env-row">
-            <span class="env-row-label">Synth Futures BNF</span>
-            <span class="env-row-value">${b.bnfSynthFutures?.toFixed(0) || '--'} (spot ${l.bnfSpot?.toFixed(0) || '--'})</span>
-        </div>
     `;
 }
 

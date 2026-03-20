@@ -154,8 +154,12 @@
     <script src="api.js?v=27"></script>
     <script src="app.js?v=27"></script>
     <script>
+        // KILL all service workers — they cause cache hell
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js').catch(() => {});
+            navigator.serviceWorker.getRegistrations().then(regs => {
+                regs.forEach(r => r.unregister());
+            });
+            caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
         }
     </script>
 </body>

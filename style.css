@@ -789,34 +789,60 @@ main {
     font-feature-settings: 'tnum';
 }
 
-/* ═══ OI COMPARE — BNF vs NF side by side ═══ */
-.oi-compare {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+/* ═══ OI COMPARISON TABLE — mobile-first ═══ */
+.oi-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-feature-settings: 'tnum';
     margin-bottom: 8px;
 }
-.oi-compare-col {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 10px;
-}
-.oi-col-header {
+.oi-table thead { border-bottom: 2px solid var(--accent); }
+.oi-th {
+    text-align: center;
     font-size: 12px;
     font-weight: 600;
     color: var(--accent);
+    padding: 6px 4px;
+    width: 38%;
+}
+.oi-td-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 5px 2px;
+    width: 24%;
+    vertical-align: top;
+}
+.oi-td-val {
     text-align: center;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 6px;
+    padding: 5px 2px;
+    font-weight: 500;
+    vertical-align: top;
+    border-bottom: 1px solid #F0F0F0;
 }
-.oi-compare-col .env-row {
-    font-size: 12px;
-    padding: 3px 0;
+.oi-big {
+    font-size: 20px;
+    font-weight: 700;
+    display: block;
+    line-height: 1.2;
 }
-.oi-compare-col .env-row-label { font-size: 11px; }
-.oi-compare-col .env-row-value { font-size: 12px; }
+.oi-sub {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+.oi-pcr-row td { padding: 8px 2px; }
+.oi-bar-mini {
+    height: 4px;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 3px;
+    display: flex;
+}
+.oi-bar-mini .oi-bar-fill.call { background: var(--danger); }
+.oi-bar-mini .oi-bar-fill.put { background: var(--green); }
+body.dark .oi-td-val { border-bottom-color: #2D2D40; }
+body.dark .oi-table thead { border-bottom-color: var(--accent); }
 
 /* ═══ TRAJECTORY ═══ */
 .trajectory-grid {
@@ -1179,7 +1205,6 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
     .env-grid-3 { gap: 4px; }
     .env-value { font-size: 16px; }
     .input-grid { gap: 6px; }
-    .oi-hero-value { font-size: 26px; }
-    .oi-compare { grid-template-columns: 1fr; }
+    .oi-big { font-size: 18px; }
     .global-context-grid { grid-template-columns: 1fr 1fr; }
 }
