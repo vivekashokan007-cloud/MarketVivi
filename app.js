@@ -1309,6 +1309,41 @@ async function initialFetch() {
             dbg('SIGNAL_VALIDATION', STATE.signalValidation);
         }
 
+        // ═══ CHECK: Did today's 2PM / 3:15PM snapshots already get saved? ═══
+        // This survives page refreshes, code pushes, Clear & Reset
+        const existing2pm = await DB.getChainSnapshot(today, '2pm');
+        const existing315pm = await DB.getChainSnapshot(today, '315pm');
+        if (existing2pm) {
+            STATE._captured2pm = true;
+            STATE.afternoonBaseline = existing2pm;
+            dbg('RESTORE_2PM', { date: today, status: 'Found in Supabase — flag set, will NOT re-capture' });
+        }
+        if (existing315pm) {
+            STATE._captured315pm = true;
+            dbg('RESTORE_315PM', { date: today, signal: existing315pm.tomorrow_signal, strength: existing315pm.signal_strength });
+            // Restore tomorrow signal + positioning result
+            if (existing315pm.tomorrow_signal) {
+                STATE.tomorrowSignal = { signal: existing315pm.tomorrow_signal, strength: existing315pm.signal_strength || 0 };
+                // Re-generate positioning trades with restored signal
+                const tSignal = STATE.tomorrowSignal.signal;
+                const positioningBias = {
+                    bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
+                    strength: STATE.tomorrowSignal.strength >= 3 ? 'STRONG' : 'MILD',
+                    net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
+                    votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
+                    signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${STATE.tomorrowSignal.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
+                    label: `${STATE.tomorrowSignal.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
+                };
+                const posBnf = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
+                const posNf = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
+                STATE.positioningCandidates = rankCandidates([...posBnf, ...posNf]).slice(0, 10);
+                // Restore positioning comparison for display
+                if (existing2pm) {
+                    STATE.positioningResult = computePositioning(existing2pm, existing315pm);
+                }
+            }
+        }
+
         statusEl.textContent = '';
         // Reset button after successful scan
         document.getElementById('btn-lock').disabled = true;
