@@ -80,6 +80,44 @@ body {
     border: 1px solid var(--border);
 }
 
+/* ═══ LIVE TICKER BAR ═══ */
+.live-ticker {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    position: sticky;
+    top: 44px;
+    z-index: 99;
+}
+
+.ticker-spots {
+    display: flex;
+    gap: 10px;
+}
+
+.ticker-item { color: var(--text-secondary); }
+.ticker-item.up { color: var(--green); }
+.ticker-item.down { color: var(--danger); }
+
+.ticker-capital {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.ticker-margin {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+.ticker-pnl-pos { color: var(--green); font-weight: 600; }
+.ticker-pnl-neg { color: var(--danger); font-weight: 600; }
+
 /* ═══ SECTIONS ═══ */
 main {
     max-width: 600px;

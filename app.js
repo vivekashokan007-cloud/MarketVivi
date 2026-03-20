@@ -1720,18 +1720,34 @@ function startWatchLoop() {
     STATE.isWatching = true;
     STATE.lastRoutineNotify = Date.now();
 
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
+    // Run first poll immediately (don't wait 5 min)
+    setTimeout(async () => {
+        if (API.isMarketHours()) {
+            await lightFetch();
+        }
+    }, 3000);
+
     STATE.pollTimer = setInterval(async () => {
         if (!API.isMarketHours()) {
-            document.getElementById('watch-status').textContent = '⏸ Market closed';
+            const el = document.getElementById('watch-status');
+            if (el) el.textContent = '⏸ Market closed';
             return;
         }
-        document.getElementById('watch-status').textContent = '🔴 Polling...';
+        const el = document.getElementById('watch-status');
+        if (el) el.textContent = '🔴 Polling...';
         await lightFetch();
-        document.getElementById('watch-status').textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
+        if (el) el.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
     }, C.POLL_INTERVAL_MS);
 
-    document.getElementById('watch-status').textContent = '🟢 Watching';
-    document.getElementById('btn-stop').style.display = 'inline-block';
+    const el = document.getElementById('watch-status');
+    if (el) el.textContent = '🟢 Watching';
+    const stopBtn = document.getElementById('btn-stop');
+    if (stopBtn) stopBtn.style.display = 'inline-block';
 }
 
 function stopWatchLoop() {
@@ -1913,11 +1929,57 @@ function alignmentDots(aligned) {
 }
 
 function renderAll() {
+    renderTicker();
     renderPremiumEnvironment();
     renderWatchlist();
     renderPosition();
     renderDebug();
     renderFooter();
+}
+
+function renderTicker() {
+    const ticker = document.getElementById('live-ticker');
+    if (!ticker) return;
+
+    const l = STATE.live || STATE.baseline;
+    if (!l) { ticker.style.display = 'none'; return; }
+
+    ticker.style.display = 'flex';
+
+    // Spots
+    const bnfEl = document.getElementById('tk-bnf');
+    const nfEl = document.getElementById('tk-nf');
+    const vixEl = document.getElementById('tk-vix');
+    if (bnfEl && l.bnfSpot) bnfEl.textContent = `BNF ${l.bnfSpot.toFixed(0)}`;
+    if (nfEl && l.nfSpot) nfEl.textContent = `NF ${l.nfSpot.toFixed(0)}`;
+    if (vixEl && l.vix) {
+        vixEl.textContent = `VIX ${l.vix.toFixed(1)}`;
+        vixEl.className = 'ticker-item ' + (l.vix > 22 ? 'down' : l.vix < 18 ? 'up' : '');
+    }
+
+    // Capital & margin
+    const capEl = document.getElementById('tk-capital');
+    const marginEl = document.getElementById('tk-margin');
+    const pnlEl = document.getElementById('tk-pnl');
+
+    let marginUsed = 0;
+    if (STATE.openTrade) {
+        // Estimate margin from trade
+        const t = STATE.openTrade;
+        marginUsed = t.is_credit ? Math.round((t.width - t.entry_premium) * (t.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT) * 1.2) : t.max_loss;
+    }
+    const available = C.CAPITAL - marginUsed;
+
+    if (capEl) capEl.textContent = `₹${(C.CAPITAL / 1000).toFixed(1)}K`;
+    if (marginEl) marginEl.textContent = marginUsed > 0 ? `Blocked: ₹${(marginUsed / 1000).toFixed(1)}K · Free: ₹${(available / 1000).toFixed(1)}K` : `Free: ₹${(C.CAPITAL / 1000).toFixed(1)}K`;
+
+    if (pnlEl && STATE.openTrade) {
+        const pnl = STATE.openTrade.current_pnl || 0;
+        pnlEl.textContent = `P&L: ${pnl >= 0 ? '+' : ''}₹${pnl}`;
+        pnlEl.className = pnl >= 0 ? 'ticker-pnl-pos' : 'ticker-pnl-neg';
+    } else if (pnlEl) {
+        pnlEl.textContent = '';
+    }
 }
 
 function renderDebug() {
