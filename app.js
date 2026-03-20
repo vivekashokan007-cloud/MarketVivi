@@ -1736,15 +1736,26 @@ function sendNotification(title, body, type) {
     // Play sound
     playSound(type);
 
-    // PWA notification (if permission granted)
+    // PWA notification — use Service Worker for mobile support
     if (Notification.permission === 'granted') {
-        try {
-            new Notification(title, {
-                body, icon: '/favicon.ico',
-                tag: type + '_' + Date.now(),
-                silent: true // we play our own sound
-            });
-        } catch (e) { /* mobile might not support */ }
+        const options = {
+            body,
+            icon: '/favicon.ico',
+            tag: type + '_' + Date.now(),
+            vibrate: type === 'urgent' ? [200, 100, 200, 100, 200] : [200],
+            requireInteraction: type === 'urgent',
+            silent: false
+        };
+
+        // Service Worker method (works on mobile Chrome)
+        if (navigator.serviceWorker?.controller) {
+            navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification(title, options);
+            }).catch(() => {});
+        } else {
+            // Fallback for desktop
+            try { new Notification(title, options); } catch (e) {}
+        }
     }
 
     // Log to UI
