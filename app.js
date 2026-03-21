@@ -1925,8 +1925,12 @@ function sendNotification(title, body, type) {
     // Play sound
     playSound(type);
 
-    // PWA notification
-    if ('Notification' in window && Notification.permission === 'granted') {
+    // Native APK notification (if running in APK)
+    if (window.NativeBridge && window.NativeBridge.isNative()) {
+        try { window.NativeBridge.sendNotification(title, body, type); } catch(e) {}
+    }
+    // PWA notification fallback
+    else if ('Notification' in window && Notification.permission === 'granted') {
         try {
             new Notification(title, {
                 body,
@@ -1966,6 +1970,11 @@ function startWatchLoop() {
     STATE.isWatching = true;
     STATE.lastRoutineNotify = Date.now();
 
+    // Start native foreground service (keeps app alive in APK)
+    if (window.NativeBridge && window.NativeBridge.isNative()) {
+        try { window.NativeBridge.startMarketService(); } catch(e) {}
+    }
+
     // Request notification permission
     if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission();
@@ -1999,6 +2008,12 @@ function startWatchLoop() {
 function stopWatchLoop() {
     STATE.isWatching = false;
     if (STATE.pollTimer) { clearInterval(STATE.pollTimer); STATE.pollTimer = null; }
+
+    // Stop native foreground service
+    if (window.NativeBridge && window.NativeBridge.isNative()) {
+        try { window.NativeBridge.stopMarketService(); } catch(e) {}
+    }
+
     document.getElementById('watch-status').textContent = '⏹ Stopped';
     document.getElementById('btn-stop').style.display = 'none';
 }
