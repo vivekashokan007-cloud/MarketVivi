@@ -1041,6 +1041,15 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol
     // Margin estimate (simplified)
     const margin = isCredit ? (width - netPremium) * lotSize * 1.5 : maxLoss;
 
+    // Greeks — net position
+    const sellDeltaVal = BS.delta(spot, pair.sell, T, vol, pair.sellType);
+    const netDelta = isCredit ? sellDeltaVal : -sellDeltaVal;
+
+    // R:R and targets
+    const riskReward = maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--';
+    const targetProfit = Math.round(maxProfit * 0.5);
+    const stopLoss = Math.round(maxLoss * 0.5);
+
     const id = `${sType}_${isBNF ? 'BNF' : 'NF'}_${pair.sell}_${pair.buy}_W${width}`;
 
     return {
@@ -1057,7 +1066,11 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol
         probProfit: +probProfit.toFixed(3),
         ev: Math.round(ev),
         netTheta: Math.round(netTheta),
+        netDelta: +netDelta.toFixed(4),
         margin: Math.round(margin),
+        riskReward,
+        targetProfit,
+        stopLoss,
         liq,
         isCredit,
         lotSize
@@ -2425,40 +2438,6 @@ function renderMarket() {
             </tbody>
         </table>
 
-        <!-- CONTRARIAN PCR (alert only when triggered) -->
-        ${(STATE.contrarianPCR || []).length > 0 ? `
-        <div class="env-section-title">⚡ Contrarian Alert</div>
-        ${STATE.contrarianPCR.map(f =>
-            `<div class="traj-alert ${f.severity === 'high' ? 'warn' : ''}">${f.text}</div>`
-        ).join('')}` : ''}
-
-        <!-- FII SHORT% TREND -->
-        ${STATE.fiiTrend ? `
-        <div class="env-row">
-            <span class="env-row-label">FII Short% Trend</span>
-            <span class="env-row-value" style="color: ${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--text-secondary)'}">
-                ${STATE.fiiTrend.label}${STATE.fiiTrend.accel ? ' ⚡ACCELERATING' : ''}${STATE.fiiTrend.aggressive ? ' 🔴 AGGRESSIVE' : ''}
-            </span>
-        </div>
-        ` : ''}
-
-        <!-- SESSION TRAJECTORY (collapsible) -->
-        ${STATE.trajectory ? `
-        <details class="trajectory-details">
-            <summary class="env-section-title" style="cursor:pointer; user-select:none;">📅 Session Trajectory (${STATE.trajectory.dates?.length || 0} sessions) ▸</summary>
-            <div class="trajectory-grid">
-                ${STATE.trajectory.trajectory.map(row => `
-                    <div class="traj-row">
-                        <span class="traj-label">${row.label}</span>
-                        ${row.arrows.map(a => `<span class="traj-arrow ${a === '↑' ? 'up' : a === '↓' ? 'down' : 'flat'}">${a}</span>`).join('')}
-                    </div>
-                `).join('')}
-            </div>
-            ${STATE.trajectory.reversal ? `<div class="traj-alert warn">${STATE.trajectory.reversal}</div>` : ''}
-            ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
-        </details>
-        ` : ''}
-
         ${yday ? `
         <!-- OVERNIGHT: Yesterday Close → Today Morning -->
         <details>
@@ -2605,6 +2584,48 @@ function renderOI() {
             <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing</span>
         </div>
         ` : ''}
+
+        <!-- INTELLIGENCE SECTION (moved from Trade tab) -->
+        ${STATE.contrarianPCR?.length ? `
+        <div class="env-section-title">⚡ Contrarian Alert</div>
+        ${STATE.contrarianPCR.map(f => `<div class="traj-alert ${f.severity === 'high' ? 'warn' : ''}">${f.text}</div>`).join('')}
+        ` : ''}
+
+        ${STATE.fiiTrend ? `
+        <div class="env-section-title">📊 FII Short% Trend</div>
+        <div class="env-row">
+            <span class="env-row-label">3-Session</span>
+            <span class="env-row-value" style="color:${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--warn)'}">
+                ${STATE.fiiTrend.label}${STATE.fiiTrend.accel ? ' ACCELERATING' : ''}${STATE.fiiTrend.aggressive ? ' ⚠️ AGGRESSIVE' : ''}
+            </span>
+        </div>
+        ` : ''}
+
+        ${STATE.trajectory ? `
+        <details class="traj-details">
+            <summary>📅 Session Trajectory (${STATE.trajectory.dates?.length || 0} sessions) ▸</summary>
+            <div class="traj-grid">
+            ${STATE.trajectory.trajectory.map(row =>
+                `<div class="traj-row"><span class="traj-label">${row.label}</span>${row.arrows.map(a =>
+                    `<span class="traj-arrow ${a === '↑' ? 'up' : a === '↓' ? 'down' : ''}">${a}</span>`
+                ).join('')}</div>`
+            ).join('')}
+            </div>
+            ${STATE.trajectory.reversal ? `<div class="traj-alert">${STATE.trajectory.reversal}</div>` : ''}
+            ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
+        </details>
+        ` : ''}
+
+        ${STATE.signalValidation ? (() => {
+            const sv = STATE.signalValidation;
+            return `<div class="env-section-title">📡 Yesterday's Signal</div>
+            <div class="traj-alert ${sv.correct ? '' : 'warn'}">
+                ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
+                ${STATE.signalAccuracyStats ? ` · Accuracy: ${STATE.signalAccuracyStats.correct}/${STATE.signalAccuracyStats.total} (${STATE.signalAccuracyStats.pct}%)` : ''}
+            </div>`;
+        })() : ''}
+
+        ${renderPositioning()}
     `;
 }
 
@@ -2613,112 +2634,97 @@ function renderWatchlist() {
     if (!el) return;
 
     if (!STATE.watchlist.length && !STATE.candidates.length) {
-        el.innerHTML = '<div class="empty-state">Press Lock & Scan to generate candidates</div>';
+        el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
 
-    const scanTime = API.istNow();
-    const atm = STATE.bnfChain?.atm || STATE.baseline?.bnfAtm || 0;
+    const bnfAtm = STATE.bnfChain?.atm || STATE.baseline?.bnfAtm || 0;
+    const nfAtm = STATE.nfChain?.atm || STATE.baseline?.nfAtm || 0;
 
-    // Separate BNF and NF candidates
-    const bnfCands = STATE.watchlist.filter(c => c.index === 'BNF');
-    const nfCands = STATE.candidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 3);
-    const nfBlocked = STATE.candidates.some(c => c.index === 'NF' && c.capitalBlocked);
+    // Count executable (2/3+ alignment)
+    const executable = STATE.candidates.filter(c => c.forces.aligned >= 2 && !c.capitalBlocked).length;
+    const total = STATE.candidates.length;
 
-    let html = `<div class="section-timestamp">Generated: ${scanTime} · ${STATE.candidates.length} total candidates</div>`;
+    // ═══ GO VERDICT BANNER ═══
+    const biasLabel = STATE.live?.bias?.label || STATE.baseline?.bias?.label || 'NEUTRAL';
+    const vix = STATE.live?.vix || STATE.baseline?.vix || 0;
+    const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
+    const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
 
-    // ═══ COLLAPSIBLE INTELLIGENCE DROPDOWN ═══
-    const hasPositioning = STATE.positioningCandidates?.length > 0 && STATE.tomorrowSignal;
-    const hasValidation = STATE.signalValidation;
-    const has2pm = STATE._captured2pm;
-    const showIntel = hasPositioning || hasValidation || has2pm;
+    let html = `<div class="${goClass}">
+        <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'}</div>
+        <div class="go-detail">${executable} executable (of ${total} viable) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+    </div>`;
 
-    html += `<details class="intel-dropdown" ${hasPositioning ? 'open' : ''}>
-        <summary class="intel-summary">
-            🔮 Intelligence & Positioning
-            ${STATE.tomorrowSignal ? `<span class="intel-badge" style="color:${STATE.tomorrowSignal.signal === 'BEARISH' ? 'var(--danger)' : STATE.tomorrowSignal.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)'}"> · ${STATE.tomorrowSignal.signal} (${STATE.tomorrowSignal.strength}/5)</span>` : ''}
-        </summary>
-        <div class="intel-body">
-
-            <!-- GLOBAL CONTEXT -->
-            <div class="env-section-title">🌍 Global Context</div>
-            <div class="global-context-grid">
-                <div class="input-group compact">
-                    <label>GIFT Nifty %</label>
-                    <input type="text" inputmode="decimal" id="in-gift-nifty" class="input-field input-sm" placeholder="+0.3"
-                        value="${STATE.globalContext.giftNifty ?? ''}">
-                </div>
-                <div class="input-group compact">
-                    <label>Europe %</label>
-                    <input type="text" inputmode="decimal" id="in-europe" class="input-field input-sm" placeholder="+0.5"
-                        value="${STATE.globalContext.europe ?? ''}">
-                </div>
-                <div class="input-group compact">
-                    <label>Crude %</label>
-                    <input type="text" inputmode="decimal" id="in-crude" class="input-field input-sm" placeholder="-1.2"
-                        value="${STATE.globalContext.crude ?? ''}">
-                </div>
+    // ═══ GLOBAL CONTEXT INPUTS ═══
+    html += `<div class="global-context-section">
+        <div class="gc-title">🌍 Global Context</div>
+        <div class="global-context-grid">
+            <div class="input-group compact">
+                <label>GIFT Nifty %</label>
+                <input type="text" inputmode="decimal" id="in-gift-nifty" class="input-field input-sm" placeholder="+0.3"
+                    value="${STATE.globalContext.giftNifty ?? ''}">
             </div>
-
-            <!-- YESTERDAY'S SIGNAL VALIDATION -->
-            ${hasValidation ? (() => {
-                const sv = STATE.signalValidation;
-                return `<div class="traj-alert ${sv.correct ? '' : 'warn'}">
-                    Yesterday: ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap} pts
-                    ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
-                </div>`;
-            })() : ''}
-
-            <!-- AFTERNOON POSITIONING -->
-            ${renderPositioning()}
-
+            <div class="input-group compact">
+                <label>Europe %</label>
+                <input type="text" inputmode="decimal" id="in-europe" class="input-field input-sm" placeholder="+0.5"
+                    value="${STATE.globalContext.europe ?? ''}">
+            </div>
+            <div class="input-group compact">
+                <label>Crude %</label>
+                <input type="text" inputmode="decimal" id="in-crude" class="input-field input-sm" placeholder="-1.2"
+                    value="${STATE.globalContext.crude ?? ''}">
+            </div>
         </div>
-    </details>`;
+    </div>`;
 
-    // ═══ POSITIONING TRADES (after 3:15 PM scan) ═══
+    // ═══ POSITIONING TRADES (after 3:15 PM) ═══
     if (STATE.positioningCandidates?.length > 0 && STATE.tomorrowSignal) {
         const sig = STATE.tomorrowSignal;
         const sigColor = sig.signal === 'BEARISH' ? 'var(--danger)' : sig.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)';
-        html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin-bottom:12px">
+        html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin:12px 0">
             <div class="signal-label">⚡ POSITION FOR TOMORROW</div>
             <div class="signal-value" style="color:${sigColor}">${sig.signal} (${sig.strength}/5)</div>
-            <div class="signal-detail">Enter NOW at today's IV. Tomorrow's gap = your profit.</div>
         </div>`;
 
         const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF').slice(0, 3);
         const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 2);
-
         if (posBnf.length) {
-            html += '<div class="strat-section-title" style="color:var(--green)">🎯 BNF — Positioning Trades</div>';
-            html += posBnf.map(cand => renderCandidateCard(cand, atm)).join('');
+            html += '<div class="strat-header">BNF — POSITIONING</div>';
+            posBnf.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
         }
         if (posNf.length) {
-            html += '<div class="strat-section-title" style="color:var(--green)">🎯 NF — Positioning Trades</div>';
-            html += posNf.map(cand => renderCandidateCard(cand, STATE.nfChain?.atm || 0)).join('');
+            html += '<div class="strat-header">NF — POSITIONING</div>';
+            posNf.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
         }
-
-        html += '<div class="strat-section-title" style="border-color:var(--border)">Morning Scan Strategies</div>';
+        html += '<hr class="strat-divider">';
     }
 
-    // BNF Strategies
-    html += '<div class="strat-section-title">Bank Nifty</div>';
-    html += bnfCands.map(cand => renderCandidateCard(cand, atm)).join('');
-    if (!bnfCands.length) html += '<div class="empty-state">No BNF candidates found</div>';
-
-    // NF Strategies
-    html += '<div class="strat-section-title">Nifty 50</div>';
-    if (nfBlocked && !nfCands.length) {
-        html += '<div class="empty-state">NF credit spreads need ~₹97K margin (88% of ₹1.1L capital). Hidden until capital allows.</div>';
-    } else if (nfCands.length) {
-        html += nfCands.map(cand => renderCandidateCard(cand, STATE.nfChain?.atm || 0)).join('');
+    // ═══ BANK NIFTY — TOP 5 ═══
+    const bnfCands = STATE.watchlist.filter(c => c.index === 'BNF');
+    html += '<div class="strat-header">BANK NIFTY — TOP 5</div>';
+    if (bnfCands.length) {
+        bnfCands.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
     } else {
-        html += '<div class="empty-state">No NF candidates found</div>';
+        html += '<div class="empty-state">No BNF candidates</div>';
+    }
+
+    // ═══ NIFTY 50 — TOP 5 ═══
+    const nfCands = STATE.candidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 5);
+    const nfBlocked = STATE.candidates.some(c => c.index === 'NF' && c.capitalBlocked);
+    html += '<div class="strat-header">NIFTY 50 — TOP 5</div>';
+    if (nfCands.length) {
+        nfCands.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
+    } else if (nfBlocked) {
+        html += '<div class="empty-state">NF credit needs ~₹97K margin. Capital insufficient.</div>';
+    } else {
+        html += '<div class="empty-state">No NF candidates</div>';
     }
 
     el.innerHTML = html;
 }
 
-function renderCandidateCard(cand, atm) {
+function renderCandidateCard(cand, atm, rank) {
     const forces = cand.forces;
     const dots = alignmentDots(forces.aligned);
     const alignLabel = forces.aligned === 3 ? '🟢 ALIGNED — Entry Ready' :
@@ -2727,78 +2733,54 @@ function renderCandidateCard(cand, atm) {
         forces.aligned === 2 ? 'align-2' : 'align-1';
 
     const is4Leg = cand.legs === 4;
+    const otmDist = Math.abs(cand.sellStrike - atm);
+    const otmLabel = otmDist < 50 ? 'ATM' : 'OTM';
+    const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
+    const thetaLabel = cand.netTheta >= 0 ? `+₹${cand.netTheta}/day` : `-₹${Math.abs(cand.netTheta)}/day`;
 
-    // Build legs display
-    let legsHtml = '';
+    // Legs — v1 style: "SELL 54600 CE (OTM) @₹667 | BUY 54800 CE (OTM) @₹578"
+    let legsText = '';
     if (is4Leg) {
-        // 4-leg: IC, IB, DDS
-        if (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') {
-            legsHtml = `
-                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
-                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
-                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike2} ${cand.sellType2} @ ₹${cand.sellLTP2?.toFixed(1) || '--'}</div>
-                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike2} ${cand.buyType2} @ ₹${cand.buyLTP2?.toFixed(1) || '--'}</div>
-            `;
-        } else if (cand.type === 'DOUBLE_DEBIT') {
-            legsHtml = `
-                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
-                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
-                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike2} ${cand.buyType2} @ ₹${cand.buyLTP2?.toFixed(1) || '--'}</div>
-                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike2} ${cand.sellType2} @ ₹${cand.sellLTP2?.toFixed(1) || '--'}</div>
-            `;
-        }
+        legsText = `SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} | BUY ${cand.buyStrike} ${cand.buyType} @₹${cand.buyLTP?.toFixed(1)}<br>` +
+            `SELL ${cand.sellStrike2} ${cand.sellType2} @₹${cand.sellLTP2?.toFixed(1)} | BUY ${cand.buyStrike2} ${cand.buyType2} @₹${cand.buyLTP2?.toFixed(1)}`;
+    } else if (cand.isCredit) {
+        legsText = `SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} | BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)}`;
     } else {
-        // 2-leg: directional spreads
-        if (cand.isCredit) {
-            legsHtml = `
-                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
-                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
-            `;
-        } else {
-            legsHtml = `
-                <div class="leg buy-leg">🟢 BUY ${cand.buyStrike} ${cand.buyType} @ ₹${cand.buyLTP?.toFixed(1) || '--'}</div>
-                <div class="leg sell-leg">🔴 SELL ${cand.sellStrike} ${cand.sellType} @ ₹${cand.sellLTP?.toFixed(1) || '--'}</div>
-            `;
-        }
+        legsText = `BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)} | SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)}`;
     }
 
-    const otmDist = is4Leg ? Math.abs(cand.sellStrike - atm) : Math.abs(cand.sellStrike - atm);
-    const otmLabel = otmDist < 50 ? 'ATM' : `${otmDist} OTM`;
-    const legLabel = is4Leg ? '4-leg' : '2-leg';
-    const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
-    const thetaLabel = cand.netTheta >= 0 ? `+₹${cand.netTheta}/day for you` : `₹${Math.abs(cand.netTheta)}/day against you`;
-
     return `
-        <div class="candidate-card ${alignClass}" data-id="${cand.id}">
-            <div class="cand-header">
-                <span class="cand-dots">${dots}</span>
-                <span class="cand-type">${friendlyType(cand.type)}</span>
-                <span class="cand-width">W:${cand.width} · ${otmLabel} · ${legLabel}</span>
+    <div class="v1-card ${alignClass}" data-id="${cand.id}">
+        <div class="v1-header">
+            <div>
+                <span class="v1-type">${friendlyType(cand.type)}</span>
+                <span class="v1-tier">${dots}</span>
             </div>
-            <div class="cand-legs">
-                ${legsHtml}
-                <div class="leg-info">${premLabel} ₹${cand.netPremium}/share · Exp: ${cand.expiry || '--'}</div>
-            </div>
-            <div class="cand-forces">
-                <span>Δ ${forceIcon(forces.f1)} Direction</span>
-                <span>Θ ${forceIcon(forces.f2)} Time</span>
-                <span>IV ${forceIcon(forces.f3)} Vol</span>
-            </div>
-            <div class="cand-metrics">
-                <div class="metric"><span class="metric-label">Prob</span><span class="metric-value">${(cand.probProfit * 100).toFixed(0)}%</span></div>
-                <div class="metric"><span class="metric-label">Profit</span><span class="metric-value" style="color:var(--green)">+₹${cand.maxProfit.toLocaleString()}</span></div>
-                <div class="metric"><span class="metric-label">Risk</span><span class="metric-value" style="color:var(--danger)">₹${cand.maxLoss.toLocaleString()}</span></div>
-                <div class="metric"><span class="metric-label">EV</span><span class="metric-value">₹${cand.ev.toLocaleString()}</span></div>
-            </div>
-            <div class="cand-ev">
-                Θ: ${thetaLabel} · DTE: ${cand.tDTE || '--'}T
-            </div>
-            <div class="cand-align ${alignClass}">${alignLabel}</div>
-            ${forces.aligned >= 2 ? `
-                <button class="btn-take" onclick="takeTrade('${cand.id}')">📌 I TOOK THIS TRADE</button>
-            ` : ''}
+            <span class="v1-rank">#${rank || ''}</span>
         </div>
-    `;
+        <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE || '--'}T</div>
+        <div class="v1-legs">${legsText}</div>
+        <div class="v1-prem">${premLabel} ₹${cand.netPremium}/share · W:${cand.width}</div>
+
+        <div class="v1-metrics">
+            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${cand.maxProfit.toLocaleString()}</span></div>
+            <div class="v1-metric"><span class="v1-label">Max Loss</span><span class="v1-val red">₹${cand.maxLoss.toLocaleString()}</span></div>
+            <div class="v1-metric"><span class="v1-label">R:R</span><span class="v1-val">${cand.riskReward || '--'}</span></div>
+            <div class="v1-metric"><span class="v1-label">P(Profit)</span><span class="v1-val">${(cand.probProfit * 100).toFixed(1)}%</span></div>
+        </div>
+
+        <div class="v1-target">🎯 Target: ₹${cand.targetProfit?.toLocaleString() || '--'} | 🔴 SL: ₹${cand.stopLoss?.toLocaleString() || '--'}</div>
+
+        <div class="v1-forces">
+            Δ ${forceIcon(forces.f1)} Direction  Θ ${forceIcon(forces.f2)} Time  IV ${forceIcon(forces.f3)} Vol
+        </div>
+
+        <div class="v1-greeks">Δ ${cand.netDelta || '--'} · θ ${(cand.netTheta / (cand.lotSize || 30)).toFixed(2)} · Θ/day: ${thetaLabel}</div>
+        <div class="v1-footer">EV: ₹${cand.ev.toLocaleString()} | W:${cand.width} | Margin: ₹${cand.margin?.toLocaleString() || '--'}</div>
+
+        <div class="v1-align ${alignClass}">${alignLabel}</div>
+        ${forces.aligned >= 2 ? `<button class="btn-take" onclick="takeTrade('${cand.id}')">📌 I TOOK THIS TRADE</button>` : ''}
+    </div>`;
 }
 
 function renderPosition() {
@@ -2988,21 +2970,7 @@ function restoreMorningData() {
     } catch (e) { /* ignore */ }
 }
 
-function setupTokenInput() {
-    const token = API.getToken();
-    const tokenEl = document.getElementById('in-token');
-    if (tokenEl && token) {
-        tokenEl.value = token.substring(0, 20) + '...';
-    }
-}
-
-function saveToken() {
-    const tokenEl = document.getElementById('in-token');
-    if (tokenEl && tokenEl.value && !tokenEl.value.includes('...')) {
-        API.setToken(tokenEl.value);
-        tokenEl.value = tokenEl.value.substring(0, 20) + '...';
-    }
-}
+// Token is hardcoded via Analytics Token in api.js — no UI needed
 
 async function loadOpenTrade() {
     const trades = await DB.getOpenTrades();
@@ -3069,7 +3037,6 @@ function switchTab(tabName) {
 document.addEventListener('DOMContentLoaded', async () => {
     DB.init();
     restoreMorningData();
-    setupTokenInput();
     initTheme();
     await loadOpenTrade();
 
@@ -3088,7 +3055,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Event listeners
     document.getElementById('btn-lock')?.addEventListener('click', lockMorningData);
     document.getElementById('btn-stop')?.addEventListener('click', stopWatchLoop);
-    document.getElementById('btn-save-token')?.addEventListener('click', saveToken);
     document.getElementById('btn-rescan')?.addEventListener('click', () => {
         stopWatchLoop();
         expandMorning();

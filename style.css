@@ -1254,3 +1254,223 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
     padding: 10px;
     margin-bottom: 10px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   V1-STYLE STRATEGY CARDS — Professional, information-dense
+   ═══════════════════════════════════════════════════════════════ */
+
+/* GO VERDICT BANNER */
+.go-banner {
+    text-align: center;
+    padding: 14px 12px;
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    border: 2px solid;
+}
+.go-banner .go-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+.go-banner .go-detail {
+    font-size: 13px;
+    margin-top: 4px;
+    opacity: 0.85;
+}
+.go-green { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+.go-yellow { background: var(--warn-dim); border-color: var(--warn); color: var(--warn); }
+.go-grey { background: var(--bg-card); border-color: var(--border); color: var(--text-muted); }
+
+/* SECTION HEADERS */
+.strat-header {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--accent);
+    padding: 10px 0 6px 0;
+    margin-top: 8px;
+    border-bottom: 2px solid var(--accent);
+    letter-spacing: 0.5px;
+}
+.strat-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+}
+
+/* GLOBAL CONTEXT */
+.global-context-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    margin-bottom: 12px;
+}
+.gc-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+.global-context-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+}
+
+/* V1 CARD */
+.v1-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 10px;
+    position: relative;
+}
+.v1-card.align-3 { border-left: 3px solid var(--green); }
+.v1-card.align-2 { border-left: 3px solid var(--warn); }
+.v1-card.align-1 { border-left: 3px solid var(--text-muted); }
+
+.v1-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2px;
+}
+.v1-type {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.v1-tier {
+    margin-left: 8px;
+    font-size: 13px;
+}
+.v1-rank {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.v1-sub {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.v1-legs {
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
+    line-height: 1.5;
+    font-family: var(--font-mono);
+}
+
+.v1-prem {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+}
+
+/* 4-COLUMN METRICS GRID */
+.v1-metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 4px;
+    text-align: center;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+}
+.v1-metric { display: flex; flex-direction: column; gap: 2px; }
+.v1-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.v1-val {
+    font-size: 15px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+.v1-val.green { color: var(--green); }
+.v1-val.red { color: var(--danger); }
+
+.v1-target {
+    text-align: center;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 6px 0;
+    color: var(--text-primary);
+}
+
+.v1-forces {
+    font-size: 13px;
+    text-align: center;
+    padding: 6px 0;
+    color: var(--text-secondary);
+    letter-spacing: 0.3px;
+}
+
+.v1-greeks {
+    font-size: 12px;
+    text-align: center;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    padding: 4px 0;
+}
+
+.v1-footer {
+    font-size: 13px;
+    text-align: center;
+    color: var(--accent);
+    font-weight: 500;
+    padding: 4px 0;
+}
+
+.v1-align {
+    text-align: center;
+    padding: 8px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    margin: 8px 0;
+}
+.v1-align.align-3 { background: var(--green-dim); color: var(--green); }
+.v1-align.align-2 { background: var(--warn-dim); color: var(--warn); }
+.v1-align.align-1 { background: rgba(107,107,130,0.1); color: var(--text-muted); }
+
+/* Intelligence in OI tab */
+.traj-details {
+    margin-top: 8px;
+}
+.traj-details summary {
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    padding: 6px 0;
+}
+.traj-grid {
+    padding: 8px 0;
+}
+.traj-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 13px;
+}
+.traj-label {
+    min-width: 80px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.traj-arrow { font-size: 15px; }
+.traj-arrow.up { color: var(--green); }
+.traj-arrow.down { color: var(--danger); }

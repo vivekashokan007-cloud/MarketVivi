@@ -18,12 +18,12 @@ const API = (() => {
         '2026-11-10', '2026-11-24', '2026-12-25'
     ];
 
-    function getToken() {
-        return localStorage.getItem('mr2_upstox_token') || '';
-    }
+    // Analytics Token — read-only, 1-year expiry (11 Mar 2026 → 11 Mar 2027)
+    // Covers: market data feeds, historical OHLC. Cannot place orders.
+    const ANALYTICS_TOKEN = localStorage.getItem('mr2_upstox_token') || '';
 
-    function setToken(token) {
-        localStorage.setItem('mr2_upstox_token', token.trim());
+    function getToken() {
+        return ANALYTICS_TOKEN;
     }
 
     // ═══ DEBUG LOG — accessible via window._API_DEBUG in console ═══
@@ -502,7 +502,7 @@ const API = (() => {
         fetchHistoricalOHLC, calcCloseChar, classifyGap,
         tradingDTE, calendarDTE, nearestExpiry,
         isMarketHours, minutesSinceOpen, istNow,
-        getToken, setToken,
+        getToken,
         NF_KEY, BNF_KEY, NSE_HOLIDAYS
     };
 })();
