@@ -2673,18 +2673,18 @@ function renderWatchlist() {
         <div class="gc-title">🌍 Global Context</div>
         <div class="global-context-grid">
             <div class="input-group compact">
-                <label>GIFT Nifty %</label>
-                <input type="text" inputmode="decimal" id="in-gift-nifty" class="input-field input-sm" placeholder="+0.3"
+                <label>GIFT %</label>
+                <input type="text" inputmode="text" id="in-gift-nifty" class="input-field input-sm" placeholder="-0.3"
                     value="${STATE.globalContext.giftNifty ?? ''}">
             </div>
             <div class="input-group compact">
                 <label>Europe %</label>
-                <input type="text" inputmode="decimal" id="in-europe" class="input-field input-sm" placeholder="+0.5"
+                <input type="text" inputmode="text" id="in-europe" class="input-field input-sm" placeholder="+0.5"
                     value="${STATE.globalContext.europe ?? ''}">
             </div>
             <div class="input-group compact">
                 <label>Crude %</label>
-                <input type="text" inputmode="decimal" id="in-crude" class="input-field input-sm" placeholder="-1.2"
+                <input type="text" inputmode="text" id="in-crude" class="input-field input-sm" placeholder="-1.2"
                     value="${STATE.globalContext.crude ?? ''}">
             </div>
         </div>
