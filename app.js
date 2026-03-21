@@ -78,8 +78,8 @@ const STATE = {
     candidates: [],
     watchlist: [],      // top candidates being tracked
 
-    // Open trade
-    openTrade: null,
+    // Open trades (multiple positions supported)
+    openTrades: [],
 
     // Premium history (from Supabase, for IV percentile)
     premiumHistory: [],
@@ -101,6 +101,7 @@ const STATE = {
     positioningResult: null,   // 3:15PM comparison result
     tomorrowSignal: null,      // BEARISH/BULLISH/NEUTRAL + strength
     signalAccuracy: null,      // { correct, total, history }
+    signalAccuracyStats: null,  // { correct, total, pct }
     positioningCandidates: [],  // strategies aligned with tomorrow signal
     positioningBias: null,      // bias derived from tomorrow signal
 
@@ -1307,6 +1308,24 @@ async function initialFetch() {
         STATE.signalValidation = await validateYesterdaySignal(STATE.gapInfo);
         if (STATE.signalValidation) {
             dbg('SIGNAL_VALIDATION', STATE.signalValidation);
+            // Accumulate accuracy in localStorage
+            const accKey = 'mr2_signal_accuracy';
+            let accHistory = [];
+            try { accHistory = JSON.parse(localStorage.getItem(accKey) || '[]'); } catch(e) {}
+            // Don't duplicate same date
+            if (!accHistory.find(h => h.date === STATE.signalValidation.date)) {
+                accHistory.push({
+                    date: STATE.signalValidation.date,
+                    predicted: STATE.signalValidation.predicted,
+                    actual: STATE.signalValidation.actualDir,
+                    correct: STATE.signalValidation.correct
+                });
+                // Keep last 30
+                if (accHistory.length > 30) accHistory = accHistory.slice(-30);
+                localStorage.setItem(accKey, JSON.stringify(accHistory));
+            }
+            const correct = accHistory.filter(h => h.correct).length;
+            STATE.signalAccuracyStats = { correct, total: accHistory.length, pct: accHistory.length > 0 ? Math.round(correct / accHistory.length * 100) : 0 };
         }
 
         // ═══ CHECK: Did today's 2PM / 3:15PM snapshots already get saved? ═══
@@ -1382,7 +1401,7 @@ async function lightFetch() {
 
         // Fetch NF chain if NF trade is open OR for OI tab display
         let nfChain = STATE.nfChain; // keep morning chain as fallback
-        if (STATE.openTrade?.index_key === 'NF' || STATE.nfExpiry) {
+        if (STATE.openTrades.some(t => t.index_key === 'NF') || STATE.nfExpiry) {
             try {
                 const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
                 nfChain = API.parseChain(nfRaw, spots.nfSpot);
@@ -1445,7 +1464,7 @@ async function lightFetch() {
         // Check: is any σ move significant enough to recalculate?
         const absSpotSigma = Math.abs(spotSigma);
         const absVixSigma = Math.abs(vixSigma);
-        const threshold = STATE.openTrade ? C.SIGMA_EXIT_THRESHOLD : C.SIGMA_ENTRY_THRESHOLD;
+        const threshold = STATE.openTrades.length > 0 ? C.SIGMA_EXIT_THRESHOLD : C.SIGMA_ENTRY_THRESHOLD;
 
         const significantMove = absSpotSigma > threshold || absVixSigma > threshold;
 
@@ -1454,22 +1473,21 @@ async function lightFetch() {
             updateWatchlistForces(bnfChain, spots, biasResult, ivPctl);
         }
 
-        // Update open trade P&L — use correct chain based on trade index
-        if (STATE.openTrade) {
-            const tradeChain = STATE.openTrade.index_key === 'NF' ? nfChain : bnfChain;
-            const tradeSpot = STATE.openTrade.index_key === 'NF' ? spots.nfSpot : spots.bnfSpot;
-            updateOpenTradePnL(tradeChain, spots, tradeSpot);
+        // Update ALL open trade P&Ls — use correct chain based on trade index
+        for (const trade of STATE.openTrades) {
+            const tradeChain = trade.index_key === 'NF' ? nfChain : bnfChain;
+            const tradeSpot = trade.index_key === 'NF' ? spots.nfSpot : spots.bnfSpot;
+            updateOpenTradePnL(trade, tradeChain, spots, tradeSpot);
             // Adversarial Control Index — use correct chain
-            STATE.controlIndex = computeControlIndex(STATE.openTrade, tradeChain, tradeSpot, STATE.bnfBreadth);
-            if (STATE.openTrade) STATE.openTrade.controlIndex = STATE.controlIndex;
+            trade.controlIndex = computeControlIndex(trade, tradeChain, tradeSpot, STATE.bnfBreadth);
         }
 
         // Check for notifications
         await handleNotifications(absSpotSigma, absVixSigma, significantMove);
 
         // ═══ POSITION HEALTH CHECK — runs EVERY poll, not just σ moves ═══
-        if (STATE.openTrade) {
-            const trade = STATE.openTrade;
+        for (const trade of STATE.openTrades) {
+            const tradeLabel = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
             const pnlPct = trade.max_profit > 0 ? trade.current_pnl / trade.max_profit : 0;
             const lossPct = trade.max_loss > 0 ? Math.abs(trade.current_pnl) / trade.max_loss : 0;
             const ci = trade.controlIndex;
@@ -1477,47 +1495,41 @@ async function lightFetch() {
             // First poll — always show status
             if (STATE.pollCount <= 1) {
                 addNotificationLog('📊 Position Status',
-                    `${trade.index_key} ${friendlyType(trade.strategy_type)} | P&L: ₹${trade.current_pnl} | Spot: ${trade.current_spot?.toFixed(0)} | Ctrl: ${ci ?? '--'}`,
+                    `${tradeLabel} | P&L: ₹${trade.current_pnl} | Spot: ${trade.current_spot?.toFixed(0)} | Ctrl: ${ci ?? '--'}`,
                     'routine');
             }
 
-            // Target approaching (>50% of max profit)
             if (pnlPct >= 0.5 && pnlPct < 0.8 && !trade._notified50) {
                 trade._notified50 = true;
-                sendNotification('💰 50% Target Hit', `P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max). Consider booking.`, 'important');
+                sendNotification('💰 50% Target Hit', `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max). Consider booking.`, 'important');
             }
 
-            // Target hit (>80%)
             if (pnlPct >= 0.8 && !trade._notifiedTarget) {
                 trade._notifiedTarget = true;
-                sendNotification('🎯 Target! Book Profit', `P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max ₹${trade.max_profit}). BOOK NOW.`, 'urgent');
+                sendNotification('🎯 Target! Book Profit', `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max ₹${trade.max_profit}). BOOK NOW.`, 'urgent');
             }
 
-            // P&L dropping from peak
             if (trade.peak_pnl > 500 && trade.current_pnl < trade.peak_pnl * 0.5 && !trade._notifiedDrop) {
                 trade._notifiedDrop = true;
-                sendNotification('⚠️ P&L Dropping', `Was ₹${trade.peak_pnl}, now ₹${trade.current_pnl}. Peak erosion >50%.`, 'important');
+                sendNotification('⚠️ P&L Dropping', `${tradeLabel} Was ₹${trade.peak_pnl}, now ₹${trade.current_pnl}. Peak erosion >50%.`, 'important');
             }
 
-            // Control Index danger
             if (ci !== null && ci <= -30 && !trade._notifiedControl) {
                 trade._notifiedControl = true;
-                sendNotification('🛑 Opponent in Control', `Control Index: ${ci}. Consider exiting.`, 'urgent');
+                sendNotification('🛑 Opponent in Control', `${tradeLabel} Control Index: ${ci}. Consider exiting.`, 'urgent');
             }
 
-            // Stop loss approaching (>60% of max loss)
             if (trade.current_pnl < 0 && lossPct >= 0.6 && !trade._notifiedSL) {
                 trade._notifiedSL = true;
-                sendNotification('🛑 Stop Loss Near', `P&L ₹${trade.current_pnl} (${Math.round(lossPct * 100)}% of max loss). EXIT.`, 'urgent');
+                sendNotification('🛑 Stop Loss Near', `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(lossPct * 100)}% of max loss). EXIT.`, 'urgent');
             }
 
-            // Spot approaching sold strike (for credit spreads)
             if (trade.is_credit && trade.current_spot && trade.sell_strike) {
                 const cushion = Math.abs(trade.sell_strike - trade.current_spot);
                 const width = trade.width || 300;
                 if (cushion < width && !trade._notifiedCushion) {
                     trade._notifiedCushion = true;
-                    sendNotification('⚡ Spot Near Sold Strike', `Only ${cushion} pts cushion left. Sold: ${trade.sell_strike}, Spot: ${trade.current_spot.toFixed(0)}`, 'urgent');
+                    sendNotification('⚡ Spot Near Sold Strike', `${tradeLabel} Only ${cushion} pts cushion. Sold: ${trade.sell_strike}, Spot: ${trade.current_spot.toFixed(0)}`, 'urgent');
                 }
             }
         }
@@ -1609,8 +1621,7 @@ function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
     }
 }
 
-function updateOpenTradePnL(chain, spots, tradeSpot) {
-    const trade = STATE.openTrade;
+function updateOpenTradePnL(trade, chain, spots, tradeSpot) {
     if (!trade || !chain) return;
 
     const sellData = chain.strikes[trade.sell_strike]?.[trade.sell_type];
@@ -1689,15 +1700,15 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             }
         }
 
-        // Check position exit signals
-        if (STATE.openTrade) {
-            const trade = STATE.openTrade;
+        // Check position exit signals (all open trades)
+        for (const trade of STATE.openTrades) {
+            const tradeLabel = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
 
             // Target hit
             if (trade.current_pnl >= trade.max_profit * 0.8) {
                 sendNotification(
                     '💰 Target Near',
-                    `P&L ₹${trade.current_pnl} (${Math.round(trade.current_pnl / trade.max_profit * 100)}% of max). Book profit.`,
+                    `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(trade.current_pnl / trade.max_profit * 100)}% of max). Book profit.`,
                     'urgent'
                 );
             }
@@ -1706,7 +1717,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             if (trade.current_pnl <= -trade.max_loss * 0.7) {
                 sendNotification(
                     '🛑 Stop Loss Near',
-                    `P&L ₹${trade.current_pnl}. Cut position.`,
+                    `${tradeLabel} P&L ₹${trade.current_pnl}. Cut position.`,
                     'urgent'
                 );
             }
@@ -1715,7 +1726,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             if (trade.forces && trade.forces.aligned <= 1 && trade.current_pnl > 0) {
                 sendNotification(
                     '⚡ Book Profit',
-                    `Forces ${trade.forces.aligned}/3 but profitable ₹${trade.current_pnl}. Take it.`,
+                    `${tradeLabel} Forces ${trade.forces.aligned}/3 but profitable ₹${trade.current_pnl}. Take it.`,
                     'urgent'
                 );
             }
@@ -1736,11 +1747,12 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         STATE.lastRoutineNotify = now;
 
         let body = `BNF ${STATE.live.bnfSpot?.toFixed(0)} | VIX ${STATE.live.vix?.toFixed(1)}`;
-        if (STATE.openTrade) {
-            body += ` | P&L ₹${STATE.openTrade.current_pnl}`;
+        if (STATE.openTrades.length > 0) {
+            const totalPnL = STATE.openTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+            body += ` | ${STATE.openTrades.length} pos P&L ₹${totalPnL}`;
         }
         const top = STATE.watchlist[0];
-        if (top && !STATE.openTrade) {
+        if (top && STATE.openTrades.length === 0) {
             body += ` | Top: ${top.forces.aligned}/3 ${friendlyType(top.type)}`;
         }
 
@@ -2016,7 +2028,7 @@ async function takeTrade(candidateId) {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        STATE.openTrade = trade;
+        STATE.openTrades.push(trade);
         playSound('entry');
         switchTab('positions');
         renderAll();
@@ -2085,7 +2097,7 @@ async function logManualTrade() {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        STATE.openTrade = trade;
+        STATE.openTrades.push(trade);
         playSound('entry');
         switchTab('positions');
         renderAll();
@@ -2094,10 +2106,10 @@ async function logManualTrade() {
     }
 }
 
-async function closeTrade(exitReason) {
-    if (!STATE.openTrade) return;
+async function closeTrade(tradeId, exitReason) {
+    const trade = STATE.openTrades.find(t => t.id === tradeId);
+    if (!trade) return;
 
-    const trade = STATE.openTrade;
     await DB.updateTrade(trade.id, {
         status: 'CLOSED',
         exit_date: new Date().toISOString(),
@@ -2109,8 +2121,8 @@ async function closeTrade(exitReason) {
         exit_force_alignment: trade.forces?.aligned
     });
 
-    addNotificationLog('Trade Closed', `P&L: ₹${trade.current_pnl}. Reason: ${exitReason || 'Manual'}`, trade.current_pnl >= 0 ? 'entry' : 'urgent');
-    STATE.openTrade = null;
+    addNotificationLog('Trade Closed', `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike} P&L: ₹${trade.current_pnl}. Reason: ${exitReason || 'Manual'}`, trade.current_pnl >= 0 ? 'entry' : 'urgent');
+    STATE.openTrades = STATE.openTrades.filter(t => t.id !== tradeId);
     renderAll();
 }
 
@@ -2179,18 +2191,16 @@ function renderTicker() {
     const pnlEl = document.getElementById('tk-pnl');
 
     let marginUsed = 0;
-    if (STATE.openTrade) {
-        // Estimate margin from trade
-        const t = STATE.openTrade;
-        marginUsed = t.is_credit ? Math.round((t.width - t.entry_premium) * (t.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT) * 1.2) : t.max_loss;
+    for (const t of STATE.openTrades) {
+        marginUsed += t.is_credit ? Math.round((t.width - t.entry_premium) * (t.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT) * 1.2) : t.max_loss;
     }
     const available = C.CAPITAL - marginUsed;
 
     if (capEl) capEl.textContent = `₹${(C.CAPITAL / 1000).toFixed(1)}K`;
     if (marginEl) marginEl.textContent = marginUsed > 0 ? `Blocked: ₹${(marginUsed / 1000).toFixed(1)}K · Free: ₹${(available / 1000).toFixed(1)}K` : `Free: ₹${(C.CAPITAL / 1000).toFixed(1)}K`;
 
-    if (pnlEl && STATE.openTrade) {
-        const pnl = STATE.openTrade.current_pnl || 0;
+    if (pnlEl && STATE.openTrades.length > 0) {
+        const pnl = STATE.openTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
         pnlEl.textContent = `P&L: ${pnl >= 0 ? '+' : ''}₹${pnl}`;
         pnlEl.className = pnl >= 0 ? 'ticker-pnl-pos' : 'ticker-pnl-neg';
     } else if (pnlEl) {
@@ -2216,7 +2226,7 @@ function renderDebug() {
             baseline: 'SET',
             candidates: STATE.candidates.length,
             watchlist: STATE.watchlist.length,
-            openTrade: STATE.openTrade ? 'YES' : 'NO',
+            openTrades: STATE.openTrades.length,
             premiumHistoryDays: STATE.premiumHistory.length,
             ivPercentile: STATE.baseline.ivPercentile,
             isWatching: STATE.isWatching,
@@ -2784,7 +2794,7 @@ function renderCandidateCard(cand, atm) {
                 Θ: ${thetaLabel} · DTE: ${cand.tDTE || '--'}T
             </div>
             <div class="cand-align ${alignClass}">${alignLabel}</div>
-            ${forces.aligned >= 2 && !STATE.openTrade ? `
+            ${forces.aligned >= 2 ? `
                 <button class="btn-take" onclick="takeTrade('${cand.id}')">📌 I TOOK THIS TRADE</button>
             ` : ''}
         </div>
@@ -2795,114 +2805,130 @@ function renderPosition() {
     const el = document.getElementById('position');
     if (!el) return;
 
-    if (!STATE.openTrade) {
-        el.innerHTML = `
-        <div class="empty-state">No open position</div>
-        <div class="manual-trade-form">
-            <div class="env-section-title">📝 Log Manual Trade</div>
-            <div class="input-grid">
-                <div class="input-group">
-                    <label>Type</label>
-                    <select id="mt-type" class="input-field">
-                        <option value="BEAR_CALL">Bear Call</option>
-                        <option value="BULL_PUT">Bull Put</option>
-                        <option value="BEAR_PUT">Bear Put</option>
-                        <option value="BULL_CALL">Bull Call</option>
-                        <option value="IRON_CONDOR">Iron Condor</option>
-                    </select>
-                </div>
-                <div class="input-group">
-                    <label>Index</label>
-                    <select id="mt-index" class="input-field">
-                        <option value="BNF">Bank Nifty</option>
-                        <option value="NF">Nifty 50</option>
-                    </select>
-                </div>
-                <div class="input-group">
-                    <label>Sell Strike</label>
-                    <input type="text" inputmode="numeric" id="mt-sell" class="input-field" placeholder="55500">
-                </div>
-                <div class="input-group">
-                    <label>Buy Strike</label>
-                    <input type="text" inputmode="numeric" id="mt-buy" class="input-field" placeholder="55800">
-                </div>
-                <div class="input-group">
-                    <label>Sell LTP (₹)</label>
-                    <input type="text" inputmode="decimal" id="mt-sell-ltp" class="input-field" placeholder="429.3">
-                </div>
-                <div class="input-group">
-                    <label>Buy LTP (₹)</label>
-                    <input type="text" inputmode="decimal" id="mt-buy-ltp" class="input-field" placeholder="334.85">
-                </div>
-            </div>
-            <button class="btn-primary" onclick="logManualTrade()" style="margin-top:8px">📌 Log This Trade</button>
-        </div>
-        `;
-        return;
-    }
-
-    const t = STATE.openTrade;
-    // Reconstruct forces object from flat fields (works for both manual and auto trades)
-    const forces = t.forces || {
-        f1: t.force_f1 || 0,
-        f2: t.force_f2 || 0,
-        f3: t.force_f3 || 0,
-        aligned: t.force_alignment || 0
-    };
-    const pnlClass = t.current_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
-    const dots = alignmentDots(forces.aligned);
+    let html = '';
     const lastUpdate = STATE.lastPollTime ? new Date(STATE.lastPollTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
 
-    // Control Index
-    const ci = t.controlIndex || STATE.controlIndex;
-    let ciColor = 'var(--text-muted)';
-    let ciLabel = 'Calculating...';
-    if (ci !== null && ci !== undefined) {
-        ciColor = ci > 20 ? 'var(--green)' : ci < -20 ? 'var(--danger)' : 'var(--warn)';
-        ciLabel = ci > 30 ? 'You in control' : ci > 0 ? 'Slight advantage' : ci > -30 ? 'Opponent gaining' : 'Opponent in control';
+    // ═══ SIGNAL ACCURACY (if available) ═══
+    if (STATE.signalValidation) {
+        const sv = STATE.signalValidation;
+        html += `<div class="signal-accuracy-card">
+            <div class="env-section-title">📡 Yesterday's Signal</div>
+            <div class="env-row"><span class="env-row-label">Predicted</span><span class="env-row-value">${sv.predicted} (${sv.strength}/5)</span></div>
+            <div class="env-row"><span class="env-row-label">Actual Gap</span><span class="env-row-value" style="color:${sv.correct ? 'var(--green)' : 'var(--danger)'}">${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts → ${sv.actualDir} ${sv.correct ? '✅' : '❌'}</span></div>
+            ${STATE.signalAccuracyStats ? `<div class="env-row"><span class="env-row-label">Accuracy</span><span class="env-row-value" style="color:var(--accent)">${STATE.signalAccuracyStats.correct}/${STATE.signalAccuracyStats.total} (${STATE.signalAccuracyStats.pct}%)</span></div>` : ''}
+        </div>`;
     }
-    const ciPct = ci !== null ? Math.max(0, Math.min(100, (ci + 100) / 2)) : 50;
 
-    el.innerHTML = `
-        <div class="section-timestamp">Last updated: ${lastUpdate || API.istNow()}</div>
-        <div class="position-card">
-            <div class="pos-header">
-                <span class="pos-title">📌 ${t.index_key} ${friendlyType(t.strategy_type)}</span>
-                <span class="pos-strikes">${t.sell_strike}/${t.buy_strike} W:${t.width}</span>
-            </div>
-            <div class="pos-pnl ${pnlClass}">
-                P&L: ₹${t.current_pnl?.toLocaleString() || 0}
-                ${t.peak_pnl > 0 ? `<span class="pos-peak">(peak ₹${t.peak_pnl.toLocaleString()})</span>` : ''}
-            </div>
-            <div class="pos-detail">
-                Entry: ₹${t.entry_premium} ${t.is_credit ? 'credit' : 'debit'}
-                · Now: ₹${t.current_premium || '--'}
-                · Spot: ${t.current_spot?.toFixed(0) || '--'}
-            </div>
-            <div class="pos-forces">
-                ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
-            </div>
+    // ═══ OPEN TRADES ═══
+    if (STATE.openTrades.length === 0) {
+        html += '<div class="empty-state">No open positions</div>';
+    } else {
+        // Total P&L bar if multiple trades
+        if (STATE.openTrades.length > 1) {
+            const totalPnL = STATE.openTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+            const totalClass = totalPnL >= 0 ? 'pnl-pos' : 'pnl-neg';
+            html += `<div class="total-pnl-bar ${totalClass}">Total P&L: ₹${totalPnL.toLocaleString()} (${STATE.openTrades.length} positions)</div>`;
+        }
 
-            <!-- Control Index -->
-            <div class="control-section">
-                <div class="env-row">
-                    <span class="env-row-label">Control Index</span>
-                    <span class="env-row-value" style="color:${ciColor}">${ci !== null && ci !== undefined ? ci : '--'} · ${ciLabel}</span>
+        html += `<div class="section-timestamp">Last updated: ${lastUpdate || API.istNow()}</div>`;
+
+        for (const t of STATE.openTrades) {
+            const forces = t.forces || {
+                f1: t.force_f1 || 0, f2: t.force_f2 || 0, f3: t.force_f3 || 0,
+                aligned: t.force_alignment || 0
+            };
+            const pnlClass = t.current_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+            const dots = alignmentDots(forces.aligned);
+
+            const ci = t.controlIndex;
+            let ciColor = 'var(--text-muted)', ciLabel = 'Calculating...';
+            if (ci !== null && ci !== undefined) {
+                ciColor = ci > 20 ? 'var(--green)' : ci < -20 ? 'var(--danger)' : 'var(--warn)';
+                ciLabel = ci > 30 ? 'You in control' : ci > 0 ? 'Slight advantage' : ci > -30 ? 'Opponent gaining' : 'Opponent in control';
+            }
+            const ciPct = ci !== null && ci !== undefined ? Math.max(0, Math.min(100, (ci + 100) / 2)) : 50;
+
+            html += `
+            <div class="position-card">
+                <div class="pos-header">
+                    <span class="pos-title">📌 ${t.index_key} ${friendlyType(t.strategy_type)}</span>
+                    <span class="pos-strikes">${t.sell_strike}/${t.buy_strike} W:${t.width}</span>
                 </div>
-                <div class="control-bar">
-                    <div class="control-fill" style="width:${ciPct}%; background:${ciColor}"></div>
+                <div class="pos-pnl ${pnlClass}">
+                    P&L: ₹${t.current_pnl?.toLocaleString() || 0}
+                    ${t.peak_pnl > 0 ? `<span class="pos-peak">(peak ₹${t.peak_pnl.toLocaleString()})</span>` : ''}
                 </div>
-            </div>
+                <div class="pos-detail">
+                    Entry: ₹${t.entry_premium} ${t.is_credit ? 'credit' : 'debit'}
+                    · Now: ₹${t.current_premium || '--'}
+                    · Spot: ${t.current_spot?.toFixed(0) || '--'}
+                </div>
+                <div class="pos-forces">
+                    ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
+                </div>
+                <div class="control-section">
+                    <div class="env-row">
+                        <span class="env-row-label">Control Index</span>
+                        <span class="env-row-value" style="color:${ciColor}">${ci !== null && ci !== undefined ? ci : '--'} · ${ciLabel}</span>
+                    </div>
+                    <div class="control-bar">
+                        <div class="control-fill" style="width:${ciPct}%; background:${ciColor}"></div>
+                    </div>
+                </div>
+                <div class="pos-detail">
+                    Entry VIX: ${t.entry_vix?.toFixed(1) || '--'} · Bias: ${t.entry_bias || '--'} · Forces: ${t.force_alignment}/3
+                </div>
+                <div class="pos-actions">
+                    <button class="btn-close-profit" onclick="closeTrade('${t.id}', 'Profit booked')">💰 Book Profit</button>
+                    <button class="btn-close-loss" onclick="closeTrade('${t.id}', 'Stop loss')">🛑 Exit</button>
+                </div>
+            </div>`;
+        }
+    }
 
-            <div class="pos-detail">
-                Entry VIX: ${t.entry_vix?.toFixed(1) || '--'} · Entry Bias: ${t.entry_bias || '--'} · Forces at entry: ${t.force_alignment}/3
+    // ═══ MANUAL TRADE FORM — always visible ═══
+    html += `
+    <div class="manual-trade-form" style="margin-top:12px">
+        <div class="env-section-title">📝 Log Manual Trade</div>
+        <div class="input-grid">
+            <div class="input-group">
+                <label>Type</label>
+                <select id="mt-type" class="input-field">
+                    <option value="BEAR_CALL">Bear Call</option>
+                    <option value="BULL_PUT">Bull Put</option>
+                    <option value="BEAR_PUT">Bear Put</option>
+                    <option value="BULL_CALL">Bull Call</option>
+                    <option value="IRON_CONDOR">Iron Condor</option>
+                </select>
             </div>
-            <div class="pos-actions">
-                <button class="btn-close-profit" onclick="closeTrade('Profit booked')">💰 Book Profit</button>
-                <button class="btn-close-loss" onclick="closeTrade('Stop loss')">🛑 Exit</button>
+            <div class="input-group">
+                <label>Index</label>
+                <select id="mt-index" class="input-field">
+                    <option value="BNF">Bank Nifty</option>
+                    <option value="NF">Nifty 50</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label>Sell Strike</label>
+                <input type="text" inputmode="numeric" id="mt-sell" class="input-field" placeholder="55500">
+            </div>
+            <div class="input-group">
+                <label>Buy Strike</label>
+                <input type="text" inputmode="numeric" id="mt-buy" class="input-field" placeholder="55800">
+            </div>
+            <div class="input-group">
+                <label>Sell LTP (₹)</label>
+                <input type="text" inputmode="decimal" id="mt-sell-ltp" class="input-field" placeholder="429.3">
+            </div>
+            <div class="input-group">
+                <label>Buy LTP (₹)</label>
+                <input type="text" inputmode="decimal" id="mt-buy-ltp" class="input-field" placeholder="334.85">
             </div>
         </div>
-    `;
+        <button class="btn-primary" onclick="logManualTrade()" style="margin-top:8px">📌 Log This Trade</button>
+    </div>`;
+
+    el.innerHTML = html;
 }
 
 function renderFooter() {
@@ -2980,9 +3006,7 @@ function saveToken() {
 
 async function loadOpenTrade() {
     const trades = await DB.getOpenTrades();
-    if (trades.length > 0) {
-        STATE.openTrade = trades[0];
-    }
+    STATE.openTrades = trades || [];
 }
 
 function requestNotificationPermission() {
@@ -3049,8 +3073,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     initTheme();
     await loadOpenTrade();
 
-    // If open trade exists, show positions tab
-    if (STATE.openTrade) {
+    // If open trades exist, show positions tab
+    if (STATE.openTrades.length > 0) {
         switchTab('positions');
     }
 
