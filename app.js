@@ -1333,24 +1333,13 @@ async function initialFetch() {
         STATE.signalValidation = await validateYesterdaySignal(STATE.gapInfo);
         if (STATE.signalValidation) {
             dbg('SIGNAL_VALIDATION', STATE.signalValidation);
-            // Accumulate accuracy in localStorage
-            const accKey = 'mr2_signal_accuracy';
-            let accHistory = [];
-            try { accHistory = JSON.parse(localStorage.getItem(accKey) || '[]'); } catch(e) {}
-            // Don't duplicate same date
-            if (!accHistory.find(h => h.date === STATE.signalValidation.date)) {
-                accHistory.push({
-                    date: STATE.signalValidation.date,
-                    predicted: STATE.signalValidation.predicted,
-                    actual: STATE.signalValidation.actualDir,
-                    correct: STATE.signalValidation.correct
-                });
-                // Keep last 30
-                if (accHistory.length > 30) accHistory = accHistory.slice(-30);
-                localStorage.setItem(accKey, JSON.stringify(accHistory));
+            // Save result to Supabase (on yesterday's 315pm chain_snapshot row)
+            const ydayDate = STATE.signalValidation.date;
+            if (ydayDate) {
+                await DB.updateSignalResult(ydayDate, STATE.signalValidation.correct, STATE.signalValidation.actualDir);
             }
-            const correct = accHistory.filter(h => h.correct).length;
-            STATE.signalAccuracyStats = { correct, total: accHistory.length, pct: accHistory.length > 0 ? Math.round(correct / accHistory.length * 100) : 0 };
+            // Load accuracy stats from Supabase
+            STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
         }
 
         // ═══ CHECK: Did today's 2PM / 3:15PM snapshots already get saved? ═══
@@ -3069,6 +3058,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     restoreGlobalContext();
     initTheme();
     await loadOpenTrade();
+    STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
 
     // If open trades exist, show positions tab
     if (STATE.openTrades.length > 0) {

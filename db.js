@@ -235,9 +235,44 @@ const DB = (() => {
         } catch (e) { return []; }
     }
 
+    // ═══ SIGNAL ACCURACY — stored on chain_snapshots 315pm rows ═══
+
+    async function updateSignalResult(date, correct, actualGap) {
+        if (!init()) return null;
+        try {
+            const { data, error } = await sb
+                .from('chain_snapshots')
+                .update({ signal_correct: correct, signal_actual_gap: actualGap })
+                .eq('date', date)
+                .eq('session', '315pm')
+                .select();
+            if (error) { console.warn('DB updateSignalResult:', error.message); return null; }
+            console.log(`[DB] Signal result saved: ${date} correct=${correct} gap=${actualGap}`);
+            return data?.[0] || null;
+        } catch (e) { return null; }
+    }
+
+    async function getSignalAccuracyStats() {
+        if (!init()) return { correct: 0, total: 0, pct: 0 };
+        try {
+            const { data, error } = await sb
+                .from('chain_snapshots')
+                .select('date, tomorrow_signal, signal_strength, signal_correct, signal_actual_gap')
+                .eq('session', '315pm')
+                .not('signal_correct', 'is', null)
+                .order('date', { ascending: false })
+                .limit(30);
+            if (error) return { correct: 0, total: 0, pct: 0 };
+            const total = data?.length || 0;
+            const correct = (data || []).filter(d => d.signal_correct).length;
+            return { correct, total, pct: total > 0 ? Math.round(correct / total * 100) : 0, history: data || [] };
+        } catch (e) { return { correct: 0, total: 0, pct: 0 }; }
+    }
+
     return {
         init, savePremiumSnapshot, getPremiumHistory, getMorningSnapshot,
         insertTrade, updateTrade, getOpenTrades, getClosedTrades,
-        saveChainSnapshot, getChainSnapshot, getRecentSignals
+        saveChainSnapshot, getChainSnapshot, getRecentSignals,
+        updateSignalResult, getSignalAccuracyStats
     };
 })();
