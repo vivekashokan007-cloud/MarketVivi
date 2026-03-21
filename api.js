@@ -20,7 +20,7 @@ const API = (() => {
 
     // Analytics Token — read-only, 1-year expiry (11 Mar 2026 → 11 Mar 2027)
     // Covers: market data feeds, historical OHLC. Cannot place orders.
-    const ANALYTICS_TOKEN = localStorage.getItem('mr2_upstox_token') || '';
+    const ANALYTICS_TOKEN = localStorage.getItem('mr2_upstox_token') || 'eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI1OENGSzgiLCJqdGkiOiI2OWJkZWYzMjkzM2UwNzZmNTU4NGU4YmEiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaXNFeHRlbmRlZCI6dHJ1ZSwiaWF0IjoxNzc0MDU1MjE4LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE4MDU2NjY0MDB9.M5Cz8febVmf_zuDrBqKO3bhHlj20qGWqwseBS_XCISU';
 
     function getToken() {
         return ANALYTICS_TOKEN;
