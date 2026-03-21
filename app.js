@@ -813,6 +813,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 netPremium: +totalCredit.toFixed(2),
                 maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
                 ev, netTheta, isCredit: true, lotSize,
+                netDelta: +(Math.abs(BS.delta(spot, sellCall, T, vol, 'CE')) - Math.abs(BS.delta(spot, sellPut, T, vol, 'PE'))).toFixed(4),
+                riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
+                targetProfit: Math.round(maxProfit * 0.5),
+                stopLoss: Math.round(maxProfit),
                 forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
                 index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
                 margin: Math.round(maxLossPerShare * lotSize * 1.2) // IC margin is ~one side
@@ -870,6 +874,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             netPremium: +totalCredit.toFixed(2),
             maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
             ev, netTheta, isCredit: true, lotSize,
+            netDelta: 0, // IB is delta-neutral at entry
+            riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
+            targetProfit: Math.round(maxProfit * 0.5),
+            stopLoss: Math.round(maxProfit),
             forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
             margin: Math.round(maxLossPerShare * lotSize * 1.2)
@@ -931,6 +939,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             netPremium: +totalDebit.toFixed(2),
             maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
             ev, netTheta, isCredit: false, lotSize,
+            netDelta: 0, // DDS is delta-neutral (long both sides)
+            riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
+            targetProfit: Math.round(maxProfit * 0.5),
+            stopLoss: Math.round(maxLoss * 0.5),
             forces: getForceAlignment('DOUBLE_DEBIT', biasResult, vix, ivPercentile),
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
             margin: maxLoss
@@ -1048,12 +1060,12 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol
     // R:R and targets
     const riskReward = maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--';
     const targetProfit = Math.round(maxProfit * 0.5);
-    const stopLoss = Math.round(maxLoss * 0.5);
+    const stopLoss = isCredit ? Math.round(maxProfit) : Math.round(maxLoss * 0.5);
 
     const id = `${sType}_${isBNF ? 'BNF' : 'NF'}_${pair.sell}_${pair.buy}_W${width}`;
 
     return {
-        id, type: sType, width,
+        id, type: sType, width, legs: 2,
         sellStrike: pair.sell, buyStrike: pair.buy,
         sellType: pair.sellType, buyType: pair.buyType,
         sellLTP: sellPrice, buyLTP: buyPrice,
@@ -2775,7 +2787,7 @@ function renderCandidateCard(cand, atm, rank) {
             Δ ${forceIcon(forces.f1)} Direction  Θ ${forceIcon(forces.f2)} Time  IV ${forceIcon(forces.f3)} Vol
         </div>
 
-        <div class="v1-greeks">Δ ${cand.netDelta || '--'} · θ ${(cand.netTheta / (cand.lotSize || 30)).toFixed(2)} · Θ/day: ${thetaLabel}</div>
+        <div class="v1-greeks">Δ ${cand.netDelta != null ? cand.netDelta : '--'} · θ ${(cand.netTheta / (cand.lotSize || 30)).toFixed(2)} · Θ/day: ${thetaLabel}</div>
         <div class="v1-footer">EV: ₹${cand.ev.toLocaleString()} | W:${cand.width} | Margin: ₹${cand.margin?.toLocaleString() || '--'}</div>
 
         <div class="v1-align ${alignClass}">${alignLabel}</div>
