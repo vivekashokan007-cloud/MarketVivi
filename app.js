@@ -2984,6 +2984,15 @@ function restoreMorningData() {
 
 // Token is hardcoded via Analytics Token in api.js — no UI needed
 
+function restoreGlobalContext() {
+    try {
+        const saved = localStorage.getItem('mr2_global_context');
+        if (saved) {
+            STATE.globalContext = JSON.parse(saved);
+        }
+    } catch (e) { /* ignore */ }
+}
+
 async function loadOpenTrade() {
     const trades = await DB.getOpenTrades();
     STATE.openTrades = trades || [];
@@ -2996,13 +3005,6 @@ function requestNotificationPermission() {
 }
 
 // ═══ MORNING COLLAPSE ═══
-function toggleSign(inputId) {
-    const el = document.getElementById(inputId);
-    if (!el) return;
-    const val = el.value.trim();
-    if (!val) { el.value = '-'; el.focus(); return; }
-    el.value = val.startsWith('-') ? val.substring(1) : '-' + val;
-}
 
 function collapseMorning() {
     const section = document.getElementById('morning-section');
@@ -3049,6 +3051,7 @@ function switchTab(tabName) {
 document.addEventListener('DOMContentLoaded', async () => {
     DB.init();
     restoreMorningData();
+    restoreGlobalContext();
     initTheme();
     await loadOpenTrade();
 
@@ -3075,7 +3078,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
     });
 
-    // Global Context inputs — live update on change
+    // Global Context inputs — live update on change + auto-save to localStorage
     document.addEventListener('change', (e) => {
         if (e.target.id === 'in-gift-nifty') {
             STATE.globalContext.giftNifty = e.target.value ? parseFloat(e.target.value) : null;
@@ -3083,7 +3086,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             STATE.globalContext.europe = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-crude') {
             STATE.globalContext.crude = e.target.value ? parseFloat(e.target.value) : null;
-        }
+        } else { return; }
+        // Auto-save to localStorage
+        localStorage.setItem('mr2_global_context', JSON.stringify(STATE.globalContext));
     });
 
     // Theme toggle — light is default, dark is toggled

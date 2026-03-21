@@ -1474,3 +1474,10 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
 .traj-arrow { font-size: 15px; }
 .traj-arrow.up { color: var(--green); }
 .traj-arrow.down { color: var(--danger); }
+
+/* Small ± button for compact inputs */
+.sign-toggle.sign-sm {
+    padding: 4px 6px;
+    font-size: 13px;
+    min-width: 28px;
+}
