@@ -1481,3 +1481,15 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
     font-size: 13px;
     min-width: 28px;
 }
+
+/* Wall + Gamma tags on strategy cards */
+.v1-wall-tag {
+    font-size: 11px;
+    color: var(--green);
+    margin-left: 4px;
+}
+.v1-gamma-tag {
+    font-size: 11px;
+    color: var(--warn);
+    margin-left: 4px;
+}
