@@ -11,13 +11,13 @@
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=39">
+    <link rel="stylesheet" href="style.css?v=40">
 </head>
 <body>
     <header class="app-header">
         <div class="header-left">
             <h1>Market Radar</h1>
-            <span class="version">v2.1 · b39</span>
+            <span class="version">v2.1 · b40</span>
         </div>
         <div class="header-right">
             <label class="theme-toggle" title="Toggle theme">
@@ -64,6 +64,25 @@
                             <input type="text" inputmode="text" id="in-fii-short" class="input-field morning-input" placeholder="88">
                         </div>
                     </div>
+                    <details class="institutional-flow">
+                        <summary>📊 Institutional Flow...</summary>
+                        <div class="input-grid" style="margin-top:6px">
+                            <div class="input-group">
+                                <label>DII Cash (₹Cr)</label>
+                                <input type="text" inputmode="text" id="in-dii-cash" class="input-field morning-input" placeholder="5706">
+                            </div>
+                            <div class="input-group">
+                                <label>FII Idx Fut (₹Cr)</label>
+                                <input type="text" inputmode="text" id="in-fii-idx-fut" class="input-field morning-input" placeholder="-824">
+                            </div>
+                        </div>
+                        <div class="input-grid" style="margin-top:6px">
+                            <div class="input-group">
+                                <label>FII Stk Fut (₹Cr)</label>
+                                <input type="text" inputmode="text" id="in-fii-stk-fut" class="input-field morning-input" placeholder="436">
+                            </div>
+                        </div>
+                    </details>
                     <details class="upstox-compare">
                         <summary>Upstox says... <span id="upstox-badge"></span></summary>
                         <div class="input-grid" style="margin-top:6px">
@@ -114,10 +133,10 @@
     <footer class="app-footer"><span id="footer-status">Ready</span></footer>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="bs.js?v=39"></script>
-    <script src="db.js?v=39"></script>
-    <script src="api.js?v=39"></script>
-    <script src="app.js?v=39"></script>
+    <script src="bs.js?v=40"></script>
+    <script src="db.js?v=40"></script>
+    <script src="api.js?v=40"></script>
+    <script src="app.js?v=40"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));

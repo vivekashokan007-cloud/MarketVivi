@@ -41,6 +41,9 @@ const DB = (() => {
                 pcr: data.pcr,
                 fii_cash: data.fiiCash,
                 fii_short_pct: data.fiiShortPct,
+                dii_cash: data.diiCash || null,
+                fii_idx_fut: data.fiiIdxFut || null,
+                fii_stk_fut: data.fiiStkFut || null,
                 futures_premium_bnf: data.futuresPremBnf,
                 bias: data.bias,
                 bias_net: data.biasNet

@@ -292,6 +292,76 @@ function computeBias(morning, chainData) {
 
 
 // ═══════════════════════════════════════════════════════════════
+// INSTITUTIONAL REGIME CLASSIFIER — Phase 7
+// Uses FII Cash, DII Cash, FII Idx Fut, FII Stk Fut to classify
+// market regime. This does NOT add bias votes — it adds CONFIDENCE
+// to existing forces. Premium is king; this tells us how safely.
+// ═══════════════════════════════════════════════════════════════
+
+function computeInstitutionalRegime(morning) {
+    const fiiCash = parseFloat(morning.fiiCash) || 0;
+    const diiCash = parseFloat(morning.diiCash) || 0;
+    const fiiIdxFut = parseFloat(morning.fiiIdxFut) || 0;
+    const fiiStkFut = parseFloat(morning.fiiStkFut) || 0;
+
+    // Skip if no institutional data entered
+    if (!morning.diiCash && !morning.fiiIdxFut && !morning.fiiStkFut) {
+        return null;
+    }
+
+    // Derived metrics
+    const absFiiCash = Math.abs(fiiCash);
+    const absorptionRatio = absFiiCash > 0 ? +(diiCash / absFiiCash).toFixed(2) : null;
+    const fiiDerivNet = +(fiiIdxFut + fiiStkFut).toFixed(0); // simplified: idx fut + stk fut
+    const isRotation = fiiCash < -500 && fiiStkFut > 200; // selling cash, buying stock futures
+    const isPanic = fiiCash < -500 && absorptionRatio !== null && absorptionRatio < 0.5 && fiiStkFut < 0;
+    const isAccumulation = fiiCash > 500 && diiCash > 0;
+    const isRepositioning = fiiCash < -500 && fiiIdxFut > 0; // selling cash but buying idx futures = setting up bounce
+
+    // Classify regime
+    let regime, regimeColor, regimeDetail, creditConfidence;
+
+    if (isPanic) {
+        regime = 'PANIC';
+        regimeColor = 'var(--danger)';
+        regimeDetail = 'No floor — DII not absorbing, FII selling everything. Avoid credit near ATM.';
+        creditConfidence = 'LOW';
+    } else if (isRepositioning) {
+        regime = 'REPOSITIONING';
+        regimeColor = 'var(--warn)';
+        regimeDetail = 'FII selling cash but buying futures — setting up for bounce. Direction may flip.';
+        creditConfidence = 'MEDIUM';
+    } else if (isRotation) {
+        regime = 'ROTATION';
+        regimeColor = 'var(--green)';
+        regimeDetail = 'Orderly rotation — selling index, buying stocks. Floor exists. Credit spreads safe.';
+        creditConfidence = 'HIGH';
+    } else if (isAccumulation) {
+        regime = 'ACCUMULATION';
+        regimeColor = 'var(--green)';
+        regimeDetail = 'FII + DII both buying. Rally likely. Credit bull spreads ride it.';
+        creditConfidence = 'HIGH';
+    } else if (absorptionRatio !== null && absorptionRatio >= 0.8 && fiiCash < -500) {
+        regime = 'DEFENDED';
+        regimeColor = '#2196F3';
+        regimeDetail = `DII absorbing ${(absorptionRatio * 100).toFixed(0)}% of FII selling. Support holding.`;
+        creditConfidence = 'HIGH';
+    } else {
+        regime = 'NORMAL';
+        regimeColor = 'var(--text-muted)';
+        regimeDetail = 'No extreme institutional pattern detected.';
+        creditConfidence = 'MEDIUM';
+    }
+
+    return {
+        regime, regimeColor, regimeDetail, creditConfidence,
+        fiiCash, diiCash, fiiIdxFut, fiiStkFut,
+        absorptionRatio, fiiDerivNet, isRotation
+    };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
 // FORCE ALIGNMENT ENGINE — The heart of v2
 // ═══════════════════════════════════════════════════════════════
 
@@ -1315,10 +1385,16 @@ async function initialFetch() {
             pcr: STATE.bnfChain.pcr,
             fiiCash: parseFloat(STATE.morningInput.fiiCash) || null,
             fiiShortPct: parseFloat(STATE.morningInput.fiiShortPct) || null,
+            diiCash: parseFloat(STATE.morningInput.diiCash) || null,
+            fiiIdxFut: parseFloat(STATE.morningInput.fiiIdxFut) || null,
+            fiiStkFut: parseFloat(STATE.morningInput.fiiStkFut) || null,
             futuresPremBnf: STATE.bnfChain.futuresPremium,
             bias: biasResult.label,
             biasNet: biasResult.net
         }, 'morning');
+
+        // Compute institutional regime
+        STATE.institutionalRegime = computeInstitutionalRegime(STATE.morningInput);
 
         // Save FII short% as yesterday's baseline for next session
         if (STATE.morningInput.fiiShortPct) {
@@ -1560,6 +1636,9 @@ async function lightFetch() {
             pcr: bnfChain.pcr,
             fiiCash: parseFloat(STATE.morningInput?.fiiCash) || null,
             fiiShortPct: parseFloat(STATE.morningInput?.fiiShortPct) || null,
+            diiCash: parseFloat(STATE.morningInput?.diiCash) || null,
+            fiiIdxFut: parseFloat(STATE.morningInput?.fiiIdxFut) || null,
+            fiiStkFut: parseFloat(STATE.morningInput?.fiiStkFut) || null,
             futuresPremBnf: bnfChain.futuresPremium,
             bias: STATE.live.bias?.label,
             biasNet: STATE.live.bias?.net
@@ -2343,6 +2422,14 @@ function renderMarket() {
             const diff = l.bnfSpot - yday.bnf_spot;
             items.push(`BNF: ${yday.bnf_spot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
+        if (yday.dii_cash != null && STATE.morningInput?.diiCash) {
+            const diff = parseFloat(STATE.morningInput.diiCash) - yday.dii_cash;
+            items.push(`DII: ₹${yday.dii_cash}→₹${STATE.morningInput.diiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        }
+        if (yday.fii_stk_fut != null && STATE.morningInput?.fiiStkFut) {
+            const diff = parseFloat(STATE.morningInput.fiiStkFut) - yday.fii_stk_fut;
+            items.push(`FII Stk Fut: ₹${yday.fii_stk_fut}→₹${STATE.morningInput.fiiStkFut} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        }
         ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
     }
 
@@ -2354,6 +2441,22 @@ function renderMarket() {
 
         <!-- VERDICT -->
         <div class="env-verdict ${verdictClass}">${verdict}</div>
+
+        <!-- INSTITUTIONAL REGIME -->
+        ${STATE.institutionalRegime ? `
+        <div class="env-regime" style="border-left: 3px solid ${STATE.institutionalRegime.regimeColor}; padding: 8px 12px; margin: 8px 0; background: var(--bg-input); border-radius: var(--radius-sm);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:700; color:${STATE.institutionalRegime.regimeColor};">📊 ${STATE.institutionalRegime.regime}</span>
+                <span style="font-size:12px; color:var(--text-muted);">Credit confidence: <strong>${STATE.institutionalRegime.creditConfidence}</strong></span>
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">${STATE.institutionalRegime.regimeDetail}</div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+                FII: ₹${STATE.institutionalRegime.fiiCash}Cr · DII: ₹${STATE.institutionalRegime.diiCash > 0 ? '+' : ''}${STATE.institutionalRegime.diiCash}Cr
+                ${STATE.institutionalRegime.absorptionRatio !== null ? ` · Absorption: ${STATE.institutionalRegime.absorptionRatio}×` : ''}
+                · Idx Fut: ₹${STATE.institutionalRegime.fiiIdxFut}Cr · Stk Fut: ₹${STATE.institutionalRegime.fiiStkFut > 0 ? '+' : ''}${STATE.institutionalRegime.fiiStkFut}Cr
+            </div>
+        </div>
+        ` : ''}
 
         <!-- GAP CLASSIFICATION -->
         ${STATE.gapInfo && STATE.gapInfo.type !== 'UNKNOWN' ? `
@@ -2954,9 +3057,12 @@ function lockMorningData() {
     const fiiCash = document.getElementById('in-fii-cash').value;
     const fiiShortPct = document.getElementById('in-fii-short').value;
     const upstoxBias = document.getElementById('in-upstox-bias')?.value || '';
+    const diiCash = document.getElementById('in-dii-cash')?.value || '';
+    const fiiIdxFut = document.getElementById('in-fii-idx-fut')?.value || '';
+    const fiiStkFut = document.getElementById('in-fii-stk-fut')?.value || '';
 
     // closeChar will be auto-calculated from yesterday's OHLC
-    STATE.morningInput = { fiiCash, fiiShortPct, upstoxBias };
+    STATE.morningInput = { fiiCash, fiiShortPct, upstoxBias, diiCash, fiiIdxFut, fiiStkFut };
 
     // Save to localStorage for restore
     localStorage.setItem('mr2_morning', JSON.stringify({ ...STATE.morningInput, date: new Date().toISOString().split('T')[0] }));
@@ -2979,6 +3085,9 @@ function restoreMorningData() {
         if (data.date && data.date !== today) return;
         if (data.fiiCash) document.getElementById('in-fii-cash').value = data.fiiCash;
         if (data.fiiShortPct) document.getElementById('in-fii-short').value = data.fiiShortPct;
+        if (data.diiCash) { const el = document.getElementById('in-dii-cash'); if (el) el.value = data.diiCash; }
+        if (data.fiiIdxFut) { const el = document.getElementById('in-fii-idx-fut'); if (el) el.value = data.fiiIdxFut; }
+        if (data.fiiStkFut) { const el = document.getElementById('in-fii-stk-fut'); if (el) el.value = data.fiiStkFut; }
         if (data.upstoxBias) {
             const el = document.getElementById('in-upstox-bias');
             if (el) el.value = data.upstoxBias;
@@ -3022,8 +3131,10 @@ function collapseMorning() {
 
     full.style.display = 'none';
     collapsed.style.display = 'block';
+    const regime = STATE.institutionalRegime;
+    const regimeTag = regime ? ` · <span style="color:${regime.regimeColor}">${regime.regime}</span>` : '';
     collapsed.innerHTML = `<div class="morning-collapsed-bar" onclick="expandMorning()">
-        ☀️ FII ₹${fii}Cr · Short ${short}% · Scanned ${time}
+        ☀️ FII ₹${fii}Cr · Short ${short}%${regimeTag} · Scanned ${time}
         <span style="color:var(--text-muted)">▸</span>
     </div>`;
     section.classList.add('collapsed');
