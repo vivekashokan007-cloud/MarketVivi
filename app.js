@@ -767,6 +767,102 @@ function renderPositioning() {
 // CANDIDATE GENERATION
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// WALL PROXIMITY + GAMMA RISK — Premium safety scores
+// Wall = institutional bodyguards on your sell strike
+// Gamma = how fast your premium can turn against you
+// ═══════════════════════════════════════════════════════════════
+
+function computeWallScore(cand, chain, isBNF) {
+    const step = isBNF ? 200 : 100; // strike step size
+    const callWall = chain.callWallStrike;
+    const putWall = chain.putWallStrike;
+    if (!callWall || !putWall) return { wallScore: 0, wallTag: '' };
+
+    const isCredit = cand.isCredit;
+    const type = cand.type;
+    let score = 0, tag = '';
+
+    if (type === 'BEAR_CALL' || type === 'IRON_CONDOR') {
+        // Credit call side: sell strike near call wall = institutions defending above
+        const distToCallWall = Math.abs(cand.sellStrike - callWall);
+        if (distToCallWall === 0) { score = 1.0; tag = '🛡️ Wall'; }
+        else if (distToCallWall <= step) { score = 0.7; tag = '🛡️'; }
+        else if (distToCallWall <= step * 2) { score = 0.4; }
+    }
+
+    if (type === 'BULL_PUT' || type === 'IRON_CONDOR') {
+        // Credit put side: sell strike near put wall = institutions defending below
+        const sellPut = cand.sellStrike2 || cand.sellStrike; // IC has sellStrike2 for put side
+        const distToPutWall = Math.abs(sellPut - putWall);
+        const putScore = distToPutWall === 0 ? 1.0 : distToPutWall <= step ? 0.7 : distToPutWall <= step * 2 ? 0.4 : 0;
+
+        if (type === 'IRON_CONDOR') {
+            score = (score + putScore) / 2; // average both sides
+            if (score >= 0.5) tag = '🛡️🛡️'; // both sides backed
+            else if (score >= 0.3) tag = '🛡️';
+        } else {
+            score = putScore;
+            if (score >= 0.7) tag = '🛡️ Wall';
+            else if (score >= 0.4) tag = '🛡️';
+        }
+    }
+
+    if (type === 'IRON_BUTTERFLY') {
+        // ATM sell — check distance from both walls
+        const distCall = Math.abs(cand.sellStrike - callWall);
+        const distPut = Math.abs(cand.sellStrike - putWall);
+        // IB is best when ATM is between walls (pinning zone)
+        if (distCall > step * 3 && distPut > step * 3) { score = 0.6; tag = '📌 Pinned'; }
+    }
+
+    // DEBIT spreads: wall BLOCKS your target — penalty
+    if (type === 'BULL_CALL') {
+        const distToCallWall = Math.abs(cand.buyStrike - callWall);
+        if (distToCallWall <= step) { score = -0.5; tag = '⚠️ Wall blocks'; }
+    }
+    if (type === 'BEAR_PUT') {
+        const distToPutWall = Math.abs(cand.buyStrike - putWall);
+        if (distToPutWall <= step) { score = -0.5; tag = '⚠️ Wall blocks'; }
+    }
+
+    return { wallScore: +score.toFixed(2), wallTag: tag };
+}
+
+function computeGammaRisk(cand, spot, tDTE) {
+    // Gamma risk = how fast delta changes. Dangerous when:
+    // 1. Sell strike is near ATM (high gamma zone)
+    // 2. DTE is low (gamma increases as expiry approaches)
+    // Credit sellers lose when gamma spikes against them
+
+    if (!cand.isCredit) return { gammaRisk: 0, gammaTag: '' }; // debit buyers want gamma
+
+    const distFromATM = Math.abs(cand.sellStrike - spot);
+    const step = spot > 30000 ? 200 : 100; // BNF vs NF step
+    const stepsAway = distFromATM / step;
+
+    // Gamma risk score: 0 (safe) to 1 (dangerous)
+    let risk = 0;
+
+    // Near ATM = high gamma
+    if (stepsAway <= 2) risk += 0.5;
+    else if (stepsAway <= 4) risk += 0.3;
+    else if (stepsAway <= 6) risk += 0.1;
+
+    // Low DTE amplifies gamma
+    if (tDTE <= 2) risk += 0.5;
+    else if (tDTE <= 3) risk += 0.3;
+    else if (tDTE <= 5) risk += 0.1;
+
+    risk = Math.min(1.0, risk);
+
+    let tag = '';
+    if (risk >= 0.7) tag = '⚡ High γ';
+    else if (risk >= 0.4) tag = '⚡ γ';
+
+    return { gammaRisk: +risk.toFixed(2), gammaTag: tag };
+}
+
 function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPercentile) {
     const isBNF = indexKey === 'BNF';
     const lotSize = isBNF ? C.BNF_LOT : C.NF_LOT;
@@ -814,6 +910,13 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 cand.index = isBNF ? 'BNF' : 'NF';
                 cand.expiry = expiry;
                 cand.tDTE = tDTE;
+                // Wall proximity + Gamma risk
+                const wall = computeWallScore(cand, parsed, isBNF);
+                cand.wallScore = wall.wallScore;
+                cand.wallTag = wall.wallTag;
+                const gamma = computeGammaRisk(cand, spot, tDTE);
+                cand.gammaRisk = gamma.gammaRisk;
+                cand.gammaTag = gamma.gammaTag;
                 if (!isBNF && C.DIRECTIONAL_BEAR.concat(C.DIRECTIONAL_BULL).includes(sType)) {
                     if (C.CREDIT_TYPES.includes(sType) && C.NF_MARGIN_EST > C.CAPITAL * C.NF_MARGIN_THRESHOLD) {
                         cand.capitalBlocked = true;
@@ -891,6 +994,12 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
                 margin: Math.round(maxLossPerShare * lotSize * 1.2) // IC margin is ~one side
             });
+            // Wall + Gamma on last pushed candidate
+            const icCand = candidates[candidates.length - 1];
+            const icWall = computeWallScore(icCand, parsed, isBNF);
+            icCand.wallScore = icWall.wallScore; icCand.wallTag = icWall.wallTag;
+            const icGamma = computeGammaRisk(icCand, spot, tDTE);
+            icCand.gammaRisk = icGamma.gammaRisk; icCand.gammaTag = icGamma.gammaTag;
         }
     }
 
@@ -952,6 +1061,12 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
             margin: Math.round(maxLossPerShare * lotSize * 1.2)
         });
+        // Wall + Gamma on last pushed candidate
+        const ibCand = candidates[candidates.length - 1];
+        const ibWall = computeWallScore(ibCand, parsed, isBNF);
+        ibCand.wallScore = ibWall.wallScore; ibCand.wallTag = ibWall.wallTag;
+        const ibGamma = computeGammaRisk(ibCand, spot, tDTE);
+        ibCand.gammaRisk = ibGamma.gammaRisk; ibCand.gammaTag = ibGamma.gammaTag;
     }
 
     // ═══ 4. DOUBLE DEBIT SPREAD (Bull Call + Bear Put — straddle replacement) ═══
@@ -1017,6 +1132,12 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
             margin: maxLoss
         });
+        // Wall + Gamma on last pushed candidate
+        const ddsCand = candidates[candidates.length - 1];
+        const ddsWall = computeWallScore(ddsCand, parsed, isBNF);
+        ddsCand.wallScore = ddsWall.wallScore; ddsCand.wallTag = ddsWall.wallTag;
+        const ddsGamma = computeGammaRisk(ddsCand, spot, tDTE);
+        ddsCand.gammaRisk = ddsGamma.gammaRisk; ddsCand.gammaTag = ddsGamma.gammaTag;
     }
 
     return candidates;
@@ -1172,9 +1293,15 @@ function rankCandidates(candidates) {
             if (b.forces.aligned !== a.forces.aligned) return b.forces.aligned - a.forces.aligned;
             // Secondary: fewer forces against
             if (a.forces.against !== b.forces.against) return a.forces.against - b.forces.against;
-            // Tertiary: EV — sweet spot trades (higher credit, moderate prob) rank higher
+            // Tertiary: EV — sweet spot trades rank higher
             if (Math.abs(b.ev - a.ev) > 100) return b.ev - a.ev;
-            // Quaternary: probability as tiebreaker
+            // Quaternary: wall-backed candidates rank higher (institutional bodyguards)
+            const wallDiff = (b.wallScore || 0) - (a.wallScore || 0);
+            if (Math.abs(wallDiff) > 0.2) return wallDiff;
+            // Quinary: lower gamma risk is better
+            const gammaDiff = (a.gammaRisk || 0) - (b.gammaRisk || 0);
+            if (Math.abs(gammaDiff) > 0.2) return gammaDiff;
+            // Final: probability as tiebreaker
             return b.probProfit - a.probProfit;
         });
 }
@@ -2874,6 +3001,8 @@ function renderCandidateCard(cand, atm, rank) {
             <div>
                 <span class="v1-type">${friendlyType(cand.type)}</span>
                 <span class="v1-tier">${dots}</span>
+                ${cand.wallTag ? `<span class="v1-wall-tag">${cand.wallTag}</span>` : ''}
+                ${cand.gammaTag ? `<span class="v1-gamma-tag">${cand.gammaTag}</span>` : ''}
             </div>
             <span class="v1-rank">#${rank || ''}</span>
         </div>
