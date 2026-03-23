@@ -87,7 +87,8 @@ const STATE = {
     // Direction intelligence
     bnfBreadth: null,
     nf50Breadth: null,
-    contrarianPCR: [],
+    contrarianPCR: [],      // legacy — kept for compatibility
+    pcrContext: null,       // Phase 8.1: dynamic institutional PCR read
     fiiTrend: null,
     trajectory: null,
     controlIndex: null,
@@ -442,6 +443,121 @@ function getContrarianPCR(currentPCR, history) {
     return flags;
 }
 
+// 3b. Dynamic Institutional PCR — context-aware, 3 phases
+// Phase A (9:15→2PM): PCR level + VIX + gap → context
+// Phase B (2PM→3:15PM): + live OI delta vs 2PM baseline → transitional
+// Phase C (3:15PM+): merged into positioning signal
+function getInstitutionalPCR(currentPCR, vix, gapInfo, history, afternoonBaseline, liveChain) {
+    if (!currentPCR) return null;
+
+    const pcr = currentPCR;
+    const isHighPCR = pcr > 1.3;
+    const isLowPCR = pcr < 0.7;
+    const isExtremePCR = pcr > 1.5 || pcr < 0.6;
+    const highVix = vix >= 20;
+    const veryHighVix = vix >= 24;
+    const bigGapDown = gapInfo && (gapInfo.type === 'GAP_DOWN' || (gapInfo.sigma && gapInfo.sigma <= -1));
+    const bigGapUp = gapInfo && (gapInfo.type === 'GAP_UP' || (gapInfo.sigma && gapInfo.sigma >= 1));
+
+    // Yesterday's PCR for direction
+    const ydayPCR = history?.length > 0 ? history[0]?.pcr : null;
+    const pcrVsYday = ydayPCR ? pcr - ydayPCR : null;
+    const pcrRising = pcrVsYday !== null && pcrVsYday > 0.05;
+    const pcrFalling = pcrVsYday !== null && pcrVsYday < -0.05;
+
+    // Multi-session trend (preserved from contrarian)
+    let sessionTrend = null;
+    if (history?.length >= 2) {
+        const recentPCRs = history.slice(0, 2).map(h => h.pcr).filter(Boolean);
+        if (recentPCRs.length >= 2 && recentPCRs.every(p => p < 0.8) && pcr < 0.8) {
+            sessionTrend = { text: 'PCR < 0.8 for 3+ sessions — sustained bearish, watch for snap reversal.', dir: 'BEAR_SUSTAINED' };
+        }
+        if (recentPCRs.length >= 2 && recentPCRs.every(p => p > 1.3) && pcr > 1.3) {
+            sessionTrend = { text: 'PCR > 1.3 for 3+ sessions — institutions heavily defending.', dir: 'BULL_SUSTAINED' };
+        }
+    }
+
+    // ═══ PHASE A: Level + VIX + Gap context ═══
+    let reading = '', bias = 'NEUTRAL', confidence = 'LOW', severity = 'medium';
+
+    if (isHighPCR && veryHighVix && bigGapDown) {
+        // Today's exact case: high PCR during crash = fear hedging
+        reading = `PCR ${pcr.toFixed(2)} — Fear hedging (VIX ${vix.toFixed(1)}, ${gapInfo.sigma}σ gap-down). Panic puts, not institutional conviction.`;
+        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 'medium';
+    } else if (isHighPCR && highVix && bigGapDown) {
+        reading = `PCR ${pcr.toFixed(2)} — Defensive hedging (VIX ${vix.toFixed(1)}, gap-down). Floor may hold but driven by fear.`;
+        bias = 'MILD_BULL'; confidence = 'LOW'; severity = 'medium';
+    } else if (isHighPCR && highVix && !bigGapDown) {
+        reading = `PCR ${pcr.toFixed(2)} — Institutional floor + elevated IV (VIX ${vix.toFixed(1)}). Support exists, credit sellers favored.`;
+        bias = 'BULL'; confidence = 'MEDIUM'; severity = 'high';
+    } else if (isHighPCR && !highVix && !bigGapDown) {
+        reading = `PCR ${pcr.toFixed(2)} — Institutional floor (VIX ${vix.toFixed(1)}, normal day). Deliberate put writing = support.`;
+        bias = 'BULL'; confidence = 'HIGH'; severity = 'high';
+    } else if (isHighPCR && pcrRising && !bigGapDown) {
+        reading = `PCR ${pcr.toFixed(2)} — Active floor building (rising from ${ydayPCR?.toFixed(2)}). Institutions adding support.`;
+        bias = 'BULL'; confidence = 'MEDIUM'; severity = 'high';
+    } else if (isHighPCR && pcrFalling) {
+        reading = `PCR ${pcr.toFixed(2)} — Floor unwinding (was ${ydayPCR?.toFixed(2)}). Support weakening.`;
+        bias = 'BEAR'; confidence = 'MEDIUM'; severity = 'high';
+    } else if (isLowPCR && highVix && bigGapUp) {
+        reading = `PCR ${pcr.toFixed(2)} — Euphoria calls (VIX ${vix.toFixed(1)}, gap-up). Caution — VIX still elevated.`;
+        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 'medium';
+    } else if (isLowPCR && !highVix) {
+        reading = `PCR ${pcr.toFixed(2)} — Institutions buying calls. Directional bullish bet.`;
+        bias = 'BEAR'; confidence = 'HIGH'; severity = 'high';
+    } else if (isLowPCR && highVix) {
+        reading = `PCR ${pcr.toFixed(2)} — Low PCR despite high VIX. Aggressive call buying or put unwinding.`;
+        bias = 'BEAR'; confidence = 'MEDIUM'; severity = 'high';
+    } else if (isExtremePCR) {
+        reading = `PCR ${pcr.toFixed(2)} — Extreme level. Watch for reversal.`;
+        bias = pcr > 1.5 ? 'BULL' : 'BEAR'; confidence = 'MEDIUM'; severity = 'high';
+    } else {
+        reading = `PCR ${pcr.toFixed(2)} — Normal range. No extreme institutional signal.`;
+        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 'low';
+    }
+
+    // ═══ PHASE B: After 2PM — add live OI delta vs baseline ═══
+    let oiDelta = null;
+    if (afternoonBaseline && liveChain) {
+        const baseCallOI = afternoonBaseline.bnfTotalCallOi || afternoonBaseline.bnf_total_call_oi || 0;
+        const basePutOI = afternoonBaseline.bnfTotalPutOi || afternoonBaseline.bnf_total_put_oi || 0;
+        const liveCallOI = liveChain.totalCallOI || 0;
+        const livePutOI = liveChain.totalPutOI || 0;
+
+        if (baseCallOI > 0 && basePutOI > 0) {
+            const callDelta = liveCallOI - baseCallOI;
+            const putDelta = livePutOI - basePutOI;
+            const fmtOI = (v) => { const l = Math.abs(v) / 100000; return `${v > 0 ? '+' : '-'}${l.toFixed(1)}L`; };
+
+            oiDelta = { callDelta, putDelta };
+
+            // Enrich the reading with OI direction (DISPLAY ONLY — do NOT override bias)
+            // Bias stays from Phase A (level context). OI delta is already signal #1 in computePositioning.
+            let oiReading = '';
+            if (callDelta > putDelta * 1.5 && callDelta > 50000) {
+                oiReading = `Since 2PM: Calls ${fmtOI(callDelta)} vs Puts ${fmtOI(putDelta)} — ceiling building.`;
+                if (isHighPCR) reading += ` Ceiling over floor — range/down likely.`;
+            } else if (putDelta > callDelta * 1.5 && putDelta > 50000) {
+                oiReading = `Since 2PM: Puts ${fmtOI(putDelta)} vs Calls ${fmtOI(callDelta)} — active floor building.`;
+                if (isHighPCR) reading += ` Floor strengthening.`;
+            } else if (Math.abs(callDelta) < 30000 && Math.abs(putDelta) < 30000) {
+                oiReading = `Since 2PM: Minimal OI change — no new conviction.`;
+            } else {
+                oiReading = `Since 2PM: Calls ${fmtOI(callDelta)}, Puts ${fmtOI(putDelta)} — balanced activity.`;
+            }
+
+            if (oiReading) reading += ' ' + oiReading;
+        }
+    }
+
+    return {
+        pcr, reading, bias, confidence, severity,
+        sessionTrend, oiDelta,
+        phase: afternoonBaseline ? 'B' : 'A',
+        vix, gapSigma: gapInfo?.sigma || 0
+    };
+}
+
 // 4. FII Short% 3-Session Trend Tracker
 function getFiiShortTrend(currentShort, history) {
     const vals = [];
@@ -673,6 +789,14 @@ function computePositioning(snap2pm, snap315pm) {
     // 5. BNF Breadth direction
     if (delta.breadthChange < -0.5) bearScore += 1;
     else if (delta.breadthChange > 0.5) bullScore += 1;
+
+    // 6. PCR context — dynamic institutional read (Phase 8.1)
+    // Uses the pcrContext that's been building all afternoon
+    if (STATE.pcrContext && STATE.pcrContext.confidence !== 'LOW') {
+        if (STATE.pcrContext.bias === 'BULL') bullScore += 1;
+        else if (STATE.pcrContext.bias === 'BEAR') bearScore += 1;
+        else if (STATE.pcrContext.bias === 'MILD_BULL') bullScore += 0.5;
+    }
 
     // Generate signal
     const netScore = bullScore - bearScore;
@@ -1490,6 +1614,11 @@ async function initialFetch() {
 
         // Direction intelligence (use yesterdayHistory to avoid comparing today with today)
         STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.nearAtmPCR || STATE.bnfChain.pcr, STATE.yesterdayHistory);
+        STATE.pcrContext = getInstitutionalPCR(
+            STATE.bnfChain.nearAtmPCR || STATE.bnfChain.pcr,
+            spots.vix, STATE.gapInfo, STATE.yesterdayHistory,
+            STATE.afternoonBaseline, STATE.bnfChain
+        );
         STATE.fiiTrend = getFiiShortTrend(STATE.morningInput?.fiiShortPct, STATE.yesterdayHistory);
         STATE.trajectory = getSessionTrajectory(STATE.yesterdayHistory);
 
@@ -1774,6 +1903,11 @@ async function lightFetch() {
 
         // Update contrarian PCR with live near-ATM PCR
         STATE.contrarianPCR = getContrarianPCR(bnfChain.nearAtmPCR || bnfChain.pcr, STATE.yesterdayHistory);
+        STATE.pcrContext = getInstitutionalPCR(
+            bnfChain.nearAtmPCR || bnfChain.pcr,
+            spots.vix, STATE.gapInfo, STATE.yesterdayHistory,
+            STATE.afternoonBaseline, bnfChain
+        );
 
         // Check: is any σ move significant enough to recalculate?
         const absSpotSigma = Math.abs(spotSigma);
@@ -3084,8 +3218,24 @@ function renderOI() {
         </div>
         ` : ''}
 
-        <!-- INTELLIGENCE SECTION (moved from Trade tab) -->
-        ${STATE.contrarianPCR?.length ? `
+        <!-- INSTITUTIONAL PCR READ — Dynamic context-aware (Phase 8.1) -->
+        ${STATE.pcrContext ? (() => {
+            const ctx = STATE.pcrContext;
+            const biasColor = ctx.bias === 'BULL' ? 'var(--green)' : ctx.bias === 'BEAR' ? 'var(--danger)' : ctx.bias === 'MILD_BULL' ? 'var(--green)' : 'var(--text-muted)';
+            const phaseLabel = ctx.phase === 'B' ? '🔄 Live vs 2PM' : '📊 Morning Read';
+            const confDot = ctx.confidence === 'HIGH' ? '🟢' : ctx.confidence === 'MEDIUM' ? '🟡' : '⚪';
+            return `
+            <div class="env-section-title">🏛️ Institutional PCR Read <span style="font-weight:400;font-size:11px;color:var(--text-muted)">${phaseLabel}</span></div>
+            <div class="traj-alert ${ctx.severity === 'high' ? 'warn' : ''}" style="border-left:3px solid ${biasColor}">
+                ${ctx.reading}
+            </div>
+            <div class="env-row">
+                <span class="env-row-label">Confidence</span>
+                <span class="env-row-value">${confDot} ${ctx.confidence}</span>
+            </div>
+            ${ctx.sessionTrend ? `<div class="traj-alert">${ctx.sessionTrend.text}</div>` : ''}
+            `;
+        })() : STATE.contrarianPCR?.length ? `
         <div class="env-section-title">⚡ Contrarian Alert</div>
         ${STATE.contrarianPCR.map(f => `<div class="traj-alert ${f.severity === 'high' ? 'warn' : ''}">${f.text}</div>`).join('')}
         ` : ''}
