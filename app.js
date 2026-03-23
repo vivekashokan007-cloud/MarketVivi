@@ -2746,8 +2746,8 @@ function renderOI() {
     const bnfCWOI = l.bnfCallWallOI || b.bnfCallWallOI;
     const bnfPW = l.bnfPutWall || b.bnfPutWall;
     const bnfPWOI = l.bnfPutWallOI || b.bnfPutWallOI;
-    const bnfCallOI = l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
-    const bnfPutOI = l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
+    const bnfCallOI = STATE.bnfChain?.nearTotalCallOI || l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
+    const bnfPutOI = STATE.bnfChain?.nearTotalPutOI || l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
     const bnfTotal = bnfCallOI + bnfPutOI;
     const bnfCPct = bnfTotal > 0 ? Math.round(bnfCallOI / bnfTotal * 100) : 50;
     const bnfFP = l.futuresPremBnf;
@@ -2761,8 +2761,8 @@ function renderOI() {
     const nfCWOI = nfc?.callWallOI;
     const nfPW = nfc?.putWallStrike;
     const nfPWOI = nfc?.putWallOI;
-    const nfCallOI = nfc?.totalCallOI || 0;
-    const nfPutOI = nfc?.totalPutOI || 0;
+    const nfCallOI = nfc?.nearTotalCallOI || nfc?.totalCallOI || 0;
+    const nfPutOI = nfc?.nearTotalPutOI || nfc?.totalPutOI || 0;
     const nfTotal = nfCallOI + nfPutOI;
     const nfCPct = nfTotal > 0 ? Math.round(nfCallOI / nfTotal * 100) : 50;
     const nfFP = nfc?.futuresPremium;
