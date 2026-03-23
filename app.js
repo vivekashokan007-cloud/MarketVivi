@@ -1044,7 +1044,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 stopLoss: Math.round(maxProfit),
                 forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
                 index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
-                margin: Math.round(maxLossPerShare * lotSize * 1.2) // IC margin is ~one side
+                margin: isBNF ? C.BNF_MARGIN_EST : C.NF_MARGIN_EST // Broker SPAN margin for IC
             });
             // Wall + Gamma on last pushed candidate
             const icCand = candidates[candidates.length - 1];
@@ -1053,6 +1053,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             const icGamma = computeGammaRisk(icCand, spot, tDTE);
             icCand.gammaRisk = icGamma.gammaRisk; icCand.gammaTag = icGamma.gammaTag;
             icCand.varsityTier = varsity.primary.includes('IRON_CONDOR') ? 'PRIMARY' : 'ALLOWED';
+            // Block if margin exceeds capital
+            if (icCand.margin > C.CAPITAL * 0.9) icCand.capitalBlocked = true;
         }
     }
     } // end IC Varsity gate
@@ -1116,7 +1118,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             stopLoss: Math.round(maxProfit),
             forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
-            margin: Math.round(maxLossPerShare * lotSize * 1.2)
+            margin: (isBNF ? C.BNF_MARGIN_EST : C.NF_MARGIN_EST) * 2 // IB = 2 ATM naked sells, very high margin
         });
         // Wall + Gamma on last pushed candidate
         const ibCand = candidates[candidates.length - 1];
@@ -1125,6 +1127,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         const ibGamma = computeGammaRisk(ibCand, spot, tDTE);
         ibCand.gammaRisk = ibGamma.gammaRisk; ibCand.gammaTag = ibGamma.gammaTag;
         ibCand.varsityTier = 'ALLOWED'; // IB is never PRIMARY
+        ibCand.capitalBlocked = true; // IB always exceeds ₹1.1L account margin
     }
     } // end IB Varsity gate
 
@@ -2293,6 +2296,51 @@ function stopWatchLoop() {
     document.getElementById('btn-stop').style.display = 'none';
 }
 
+// ═══ RESCAN STRATEGIES — regenerate candidates with live data ═══
+function rescanStrategies() {
+    if (!STATE.bnfChain || !STATE.nfChain || !STATE.live) {
+        alert('No live data yet. Run Lock & Scan first.');
+        return;
+    }
+
+    const spots = STATE.live;
+    const biasResult = spots.bias || STATE.baseline?.bias;
+    if (!biasResult) {
+        alert('No bias data. Run Lock & Scan first.');
+        return;
+    }
+
+    const ivPctl = STATE.live.ivPercentile || STATE.baseline?.ivPercentile || null;
+
+    const bnfCandidates = generateCandidates(
+        STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, biasResult, ivPctl
+    );
+    const nfCandidates = generateCandidates(
+        STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, biasResult, ivPctl
+    );
+
+    const allCandidates = [...bnfCandidates, ...nfCandidates];
+    STATE.candidates = rankCandidates(allCandidates);
+    STATE.watchlist = STATE.candidates.slice(0, 6);
+
+    // Add diverse picks to watchlist for live updates
+    const seenIds = new Set(STATE.watchlist.map(c => c.id));
+    for (const index of ['BNF', 'NF']) {
+        const seen = new Set();
+        for (const c of STATE.candidates.filter(c => c.index === index && !c.capitalBlocked)) {
+            if (!seen.has(c.type) && !seenIds.has(c.id)) {
+                seen.add(c.type);
+                seenIds.add(c.id);
+                STATE.watchlist.push(c);
+            }
+            if (seen.size >= 5) break;
+        }
+    }
+
+    console.log(`[RESCAN] ${allCandidates.length} candidates, ${STATE.candidates.length} ranked, spot BNF=${spots.bnfSpot} NF=${spots.nfSpot}`);
+    renderAll();
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 // TRADE MANAGEMENT
@@ -2354,9 +2402,52 @@ async function takeTrade(candidateId) {
         switchTab('positions');
         renderAll();
     } else {
-        // Show visible error — don't fail silently
-        alert('❌ Trade log failed! Check Debug for error. Try Manual Log on Position tab.');
-        console.error('[TAKE_TRADE] Insert failed. Trade object:', JSON.stringify(trade, null, 2));
+        // Retry with essential fields only (some columns may not exist in Supabase)
+        console.warn('[TAKE_TRADE] Full insert failed. Retrying with essential fields...');
+        const essentialTrade = {
+            strategy_type: trade.strategy_type,
+            index_key: trade.index_key,
+            expiry: trade.expiry,
+            entry_date: trade.entry_date,
+            entry_spot: trade.entry_spot,
+            entry_vix: trade.entry_vix,
+            entry_premium: trade.entry_premium,
+            width: trade.width,
+            sell_strike: trade.sell_strike,
+            sell_type: trade.sell_type,
+            sell_ltp: trade.sell_ltp,
+            buy_strike: trade.buy_strike,
+            buy_type: trade.buy_type,
+            buy_ltp: trade.buy_ltp,
+            max_profit: trade.max_profit,
+            max_loss: trade.max_loss,
+            is_credit: trade.is_credit,
+            force_alignment: trade.force_alignment,
+            entry_bias: trade.entry_bias,
+            status: 'OPEN',
+            current_pnl: 0,
+            peak_pnl: 0,
+            lots: 1
+        };
+        const retry = await DB.insertTrade(essentialTrade);
+        if (retry) {
+            trade.id = retry.id;
+            STATE.openTrades.push(trade);
+            playSound('entry');
+            switchTab('positions');
+            renderAll();
+            // Now try to update with full context (non-blocking)
+            DB.updateTrade(retry.id, {
+                force_f1: trade.force_f1, force_f2: trade.force_f2, force_f3: trade.force_f3,
+                entry_atm_iv: trade.entry_atm_iv, entry_pcr: trade.entry_pcr,
+                entry_bias_net: trade.entry_bias_net, prob_profit: trade.prob_profit,
+                entry_regime: trade.entry_regime, entry_wall_score: trade.entry_wall_score,
+                entry_gamma_risk: trade.entry_gamma_risk, entry_dii_cash: trade.entry_dii_cash,
+                entry_absorption_ratio: trade.entry_absorption_ratio
+            }).catch(() => {});
+        } else {
+            alert('❌ Trade log failed! Use Manual Log on Position tab.\nCheck Debug panel for error details.');
+        }
     }
 }
 
@@ -2432,11 +2523,45 @@ async function logManualTrade() {
         playSound('entry');
         switchTab('positions');
         renderAll();
-        // Start watch loop for live P&L tracking
         if (!STATE.isWatching) startWatchLoop();
     } else {
-        alert('❌ Manual trade log failed! Check Debug for error.');
-        console.error('[MANUAL_TRADE] Insert failed. Trade object:', JSON.stringify(trade, null, 2));
+        // Retry with essential fields only
+        const essentialTrade = {
+            strategy_type: trade.strategy_type,
+            index_key: trade.index_key,
+            expiry: trade.expiry,
+            entry_date: trade.entry_date,
+            entry_spot: trade.entry_spot,
+            entry_vix: trade.entry_vix,
+            entry_premium: trade.entry_premium,
+            width: trade.width,
+            sell_strike: trade.sell_strike,
+            sell_type: trade.sell_type,
+            sell_ltp: trade.sell_ltp,
+            buy_strike: trade.buy_strike,
+            buy_type: trade.buy_type,
+            buy_ltp: trade.buy_ltp,
+            max_profit: trade.max_profit,
+            max_loss: trade.max_loss,
+            is_credit: trade.is_credit,
+            force_alignment: trade.force_alignment,
+            entry_bias: trade.entry_bias,
+            status: 'OPEN',
+            current_pnl: 0,
+            peak_pnl: 0,
+            lots: 1
+        };
+        const retry = await DB.insertTrade(essentialTrade);
+        if (retry) {
+            trade.id = retry.id;
+            STATE.openTrades.push(trade);
+            playSound('entry');
+            switchTab('positions');
+            renderAll();
+            if (!STATE.isWatching) startWatchLoop();
+        } else {
+            alert('❌ Manual trade log failed! Check Debug panel for error.');
+        }
     }
 }
 
@@ -3006,6 +3131,7 @@ function renderWatchlist() {
         <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'}</div>
         <div class="go-detail">${executable} executable (of ${total} viable) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
         ${varsityLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">📖 Varsity: ${varsityLabel} · ${varsityAction}</div>` : ''}
+        <button onclick="rescanStrategies()" style="margin-top:8px; padding:6px 16px; font-size:13px; background:var(--accent); color:white; border:none; border-radius:var(--radius-sm); cursor:pointer;">🔄 Rescan with Live Data</button>
     </div>`;
 
     // ═══ GLOBAL CONTEXT INPUTS ═══
