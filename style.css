@@ -1493,3 +1493,47 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
     color: var(--warn);
     margin-left: 4px;
 }
+
+/* ═══ PHASE 8: Positioning Section ═══ */
+.positioning-section {
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.positioning-summary {
+    padding: 10px 14px;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+    background: var(--bg-input);
+    list-style: none;
+    display: flex;
+    align-items: center;
+}
+.positioning-summary::-webkit-details-marker { display: none; }
+.positioning-summary::before {
+    content: '▸';
+    margin-right: 8px;
+    transition: transform 0.2s;
+    color: var(--text-muted);
+}
+.positioning-section[open] > .positioning-summary::before {
+    transform: rotate(90deg);
+}
+.pos-signal-badge {
+    font-weight: 700;
+    font-size: 13px;
+}
+.positioning-body {
+    padding: 8px 14px 14px;
+}
+.positioning-gate {
+    padding: 12px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    background: var(--bg-input);
+    border-radius: var(--radius-sm);
+    margin: 8px 0;
+}
