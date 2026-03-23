@@ -1420,7 +1420,21 @@ async function initialFetch() {
 
         const allCandidates = [...bnfCandidates, ...nfCandidates];
         STATE.candidates = rankCandidates(allCandidates);
-        STATE.watchlist = STATE.candidates.slice(0, 6); // top 6
+        STATE.watchlist = STATE.candidates.slice(0, 6); // top 6 overall
+
+        // Add diverse picks to watchlist so they get live updates during polls
+        const seenIds = new Set(STATE.watchlist.map(c => c.id));
+        for (const index of ['BNF', 'NF']) {
+            const seen = new Set();
+            for (const c of STATE.candidates.filter(c => c.index === index && !c.capitalBlocked)) {
+                if (!seen.has(c.type) && !seenIds.has(c.id)) {
+                    seen.add(c.type);
+                    seenIds.add(c.id);
+                    STATE.watchlist.push(c);
+                }
+                if (seen.size >= 5) break;
+            }
+        }
         dbg('CANDIDATES', {
             bnf: bnfCandidates.length, nf: nfCandidates.length, total: allCandidates.length,
             ranked: STATE.candidates.length, watchlist: STATE.watchlist.length,
@@ -2958,8 +2972,38 @@ function renderWatchlist() {
         html += '<hr class="strat-divider">';
     }
 
+    // ═══ DIVERSE TOP 5 — Best of each strategy type per index ═══
+    // Instead of 5 Iron Butterflies, show: best IC, best IB, best Bear Call, best Bull Put, best debit
+    // Gives trader the full picture in one screen
+
+    function diverseTop5(candidates, index) {
+        const filtered = candidates.filter(c => c.index === index && !c.capitalBlocked);
+        // Already ranked by scoring engine — first of each type IS the best of that type
+        const seen = new Set();
+        const diverse = [];
+        for (const c of filtered) {
+            if (!seen.has(c.type)) {
+                seen.add(c.type);
+                diverse.push(c);
+            }
+            if (diverse.length >= 5) break;
+        }
+        // If less than 5 types, fill with next best unique strikes (avoid duplicate strikes)
+        if (diverse.length < 5) {
+            const seenStrikes = new Set(diverse.map(c => `${c.sellStrike}-${c.buyStrike}`));
+            for (const c of filtered) {
+                const key = `${c.sellStrike}-${c.buyStrike}`;
+                if (!seenStrikes.has(key) && diverse.length < 5) {
+                    seenStrikes.add(key);
+                    diverse.push(c);
+                }
+            }
+        }
+        return diverse;
+    }
+
     // ═══ BANK NIFTY — TOP 5 ═══
-    const bnfCands = STATE.watchlist.filter(c => c.index === 'BNF');
+    const bnfCands = diverseTop5(STATE.candidates, 'BNF');
     html += '<div class="strat-header">BANK NIFTY — TOP 5</div>';
     if (bnfCands.length) {
         bnfCands.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
@@ -2968,7 +3012,7 @@ function renderWatchlist() {
     }
 
     // ═══ NIFTY 50 — TOP 5 ═══
-    const nfCands = STATE.candidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 5);
+    const nfCands = diverseTop5(STATE.candidates, 'NF');
     const nfBlocked = STATE.candidates.some(c => c.index === 'NF' && c.capitalBlocked);
     html += '<div class="strat-header">NIFTY 50 — TOP 5</div>';
     if (nfCands.length) {
