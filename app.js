@@ -768,6 +768,51 @@ function renderPositioning() {
 // ═══════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════
+// VARSITY STRATEGY FILTER — Market condition → Strategy type
+// This is the FIRST decision. Premium is king, Varsity picks
+// which premium side to be on. Then we find the best strike.
+// Iron Butterfly ALWAYS blocked for ₹1.1L account.
+// ═══════════════════════════════════════════════════════════════
+
+function getVarsityFilter(biasResult, vix) {
+    const bias = biasResult?.bias || 'NEUTRAL';
+    const strength = biasResult?.strength || '';
+    const isStrong = strength === 'STRONG';
+    const ivHigh = vix >= C.IV_HIGH; // VIX ≥ 20
+
+    let primary = [], allowed = [], blocked = ['IRON_BUTTERFLY']; // IB always blocked
+
+    if (bias === 'BEAR' && ivHigh) {
+        primary = ['BEAR_CALL'];
+        allowed = isStrong ? [] : ['BULL_PUT', 'IRON_CONDOR'];
+        blocked.push('BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT');
+    } else if (bias === 'BULL' && ivHigh) {
+        primary = ['BULL_PUT'];
+        allowed = isStrong ? [] : ['BEAR_CALL', 'IRON_CONDOR'];
+        blocked.push('BULL_CALL', 'BEAR_PUT', 'DOUBLE_DEBIT');
+    } else if (bias === 'NEUTRAL' && ivHigh) {
+        primary = ['IRON_CONDOR'];
+        allowed = ['BEAR_CALL', 'BULL_PUT'];
+        blocked.push('BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT');
+    } else if (bias === 'BEAR' && !ivHigh) {
+        primary = ['BEAR_PUT'];
+        allowed = isStrong ? [] : ['BEAR_CALL'];
+        blocked.push('BULL_PUT', 'BULL_CALL', 'IRON_CONDOR', 'DOUBLE_DEBIT');
+    } else if (bias === 'BULL' && !ivHigh) {
+        primary = ['BULL_CALL'];
+        allowed = isStrong ? [] : ['BULL_PUT'];
+        blocked.push('BEAR_CALL', 'BEAR_PUT', 'IRON_CONDOR', 'DOUBLE_DEBIT');
+    } else { // NEUTRAL + low IV
+        primary = ['DOUBLE_DEBIT'];
+        allowed = ['IRON_CONDOR'];
+        blocked.push('BEAR_PUT', 'BULL_CALL', 'BEAR_CALL', 'BULL_PUT');
+    }
+
+    blocked = [...new Set(blocked)];
+    return { primary, allowed, blocked };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // WALL PROXIMITY + GAMMA RISK — Premium safety scores
 // Wall = institutional bodyguards on your sell strike
 // Gamma = how fast your premium can turn against you
@@ -880,8 +925,13 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
     const allStrikes = parsed.allStrikes;
     const step = allStrikes.length > 1 ? allStrikes[1] - allStrikes[0] : (isBNF ? 100 : 50);
 
-    // ═══ 1. DIRECTIONAL SPREADS (4 types) ═══
-    const stratTypes = ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL'];
+    // ═══ VARSITY FILTER — only generate allowed strategy types ═══
+    const varsity = getVarsityFilter(biasResult, vix);
+    const allowedTypes = [...varsity.primary, ...varsity.allowed];
+
+    // ═══ 1. DIRECTIONAL SPREADS (only Varsity-approved types) ═══
+    const stratTypes = ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL']
+        .filter(t => allowedTypes.includes(t));
 
     // ═══ RANGE BUDGET for debit spreads ═══
     // Reject if width > remaining 1σ in trade direction (uses multi-day sigma)
@@ -910,6 +960,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 cand.index = isBNF ? 'BNF' : 'NF';
                 cand.expiry = expiry;
                 cand.tDTE = tDTE;
+                cand.varsityTier = varsity.primary.includes(sType) ? 'PRIMARY' : 'ALLOWED';
                 // Wall proximity + Gamma risk
                 const wall = computeWallScore(cand, parsed, isBNF);
                 cand.wallScore = wall.wallScore;
@@ -927,7 +978,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         }
     }
 
-    // ═══ 2. IRON CONDOR (Bear Call + Bull Put combined) ═══
+    // ═══ 2. IRON CONDOR (Varsity-gated) ═══
+    if (allowedTypes.includes('IRON_CONDOR')) {
     for (const width of widths) {
         const range = isBNF ? 2000 : 800;
         // Try symmetric distances from ATM
@@ -1000,10 +1052,15 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             icCand.wallScore = icWall.wallScore; icCand.wallTag = icWall.wallTag;
             const icGamma = computeGammaRisk(icCand, spot, tDTE);
             icCand.gammaRisk = icGamma.gammaRisk; icCand.gammaTag = icGamma.gammaTag;
+            icCand.varsityTier = varsity.primary.includes('IRON_CONDOR') ? 'PRIMARY' : 'ALLOWED';
         }
     }
+    } // end IC Varsity gate
 
-    // ═══ 3. IRON BUTTERFLY (sell ATM CE+PE, buy wings) ═══
+    // ═══ 3. IRON BUTTERFLY — ALWAYS BLOCKED for ₹1.1L account ═══
+    // IB needs ₹55-95K margin (2 ATM naked sells) + extreme gamma risk
+    // Varsity: never recommended for small accounts
+    if (allowedTypes.includes('IRON_BUTTERFLY')) {
     for (const width of widths) {
         const sellCall = atm;
         const buyCall = atm + width;
@@ -1067,9 +1124,12 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         ibCand.wallScore = ibWall.wallScore; ibCand.wallTag = ibWall.wallTag;
         const ibGamma = computeGammaRisk(ibCand, spot, tDTE);
         ibCand.gammaRisk = ibGamma.gammaRisk; ibCand.gammaTag = ibGamma.gammaTag;
+        ibCand.varsityTier = 'ALLOWED'; // IB is never PRIMARY
     }
+    } // end IB Varsity gate
 
-    // ═══ 4. DOUBLE DEBIT SPREAD (Bull Call + Bear Put — straddle replacement) ═══
+    // ═══ 4. DOUBLE DEBIT SPREAD (Varsity-gated) ═══
+    if (allowedTypes.includes('DOUBLE_DEBIT')) {
     for (const width of widths) {
         // Buy ATM-ish CE spread + Buy ATM-ish PE spread
         const buyCall = atm;
@@ -1138,7 +1198,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         ddsCand.wallScore = ddsWall.wallScore; ddsCand.wallTag = ddsWall.wallTag;
         const ddsGamma = computeGammaRisk(ddsCand, spot, tDTE);
         ddsCand.gammaRisk = ddsGamma.gammaRisk; ddsCand.gammaTag = ddsGamma.gammaTag;
+        ddsCand.varsityTier = varsity.primary.includes('DOUBLE_DEBIT') ? 'PRIMARY' : 'ALLOWED';
     }
+    } // end DDS Varsity gate
 
     return candidates;
 }
@@ -1289,19 +1351,23 @@ function rankCandidates(candidates) {
     return candidates
         .filter(c => !c.capitalBlocked)
         .sort((a, b) => {
-            // Primary: force alignment (3/3 > 2/3 > 1/3)
+            // 1st: force alignment (3/3 > 2/3 > 1/3)
             if (b.forces.aligned !== a.forces.aligned) return b.forces.aligned - a.forces.aligned;
-            // Secondary: fewer forces against
+            // 2nd: Varsity tier — PRIMARY before ALLOWED (Varsity picks strategy type)
+            const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
+            const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
+            if (tierDiff !== 0) return tierDiff;
+            // 3rd: fewer forces against
             if (a.forces.against !== b.forces.against) return a.forces.against - b.forces.against;
-            // Tertiary: EV — sweet spot trades rank higher
-            if (Math.abs(b.ev - a.ev) > 100) return b.ev - a.ev;
-            // Quaternary: wall-backed candidates rank higher (institutional bodyguards)
-            const wallDiff = (b.wallScore || 0) - (a.wallScore || 0);
-            if (Math.abs(wallDiff) > 0.2) return wallDiff;
-            // Quinary: lower gamma risk is better
+            // 4th: lower gamma risk (penalize ATM credit sellers)
             const gammaDiff = (a.gammaRisk || 0) - (b.gammaRisk || 0);
             if (Math.abs(gammaDiff) > 0.2) return gammaDiff;
-            // Final: probability as tiebreaker
+            // 5th: wall-backed candidates rank higher
+            const wallDiff = (b.wallScore || 0) - (a.wallScore || 0);
+            if (Math.abs(wallDiff) > 0.2) return wallDiff;
+            // 6th: EV
+            if (Math.abs(b.ev - a.ev) > 100) return b.ev - a.ev;
+            // 7th: probability as tiebreaker
             return b.probProfit - a.probProfit;
         });
 }
@@ -2287,6 +2353,10 @@ async function takeTrade(candidateId) {
         playSound('entry');
         switchTab('positions');
         renderAll();
+    } else {
+        // Show visible error — don't fail silently
+        alert('❌ Trade log failed! Check Debug for error. Try Manual Log on Position tab.');
+        console.error('[TAKE_TRADE] Insert failed. Trade object:', JSON.stringify(trade, null, 2));
     }
 }
 
@@ -2364,6 +2434,9 @@ async function logManualTrade() {
         renderAll();
         // Start watch loop for live P&L tracking
         if (!STATE.isWatching) startWatchLoop();
+    } else {
+        alert('❌ Manual trade log failed! Check Debug for error.');
+        console.error('[MANUAL_TRADE] Insert failed. Trade object:', JSON.stringify(trade, null, 2));
     }
 }
 
@@ -2923,9 +2996,16 @@ function renderWatchlist() {
     const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
     const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
 
+    // Varsity recommendation
+    const biasObj = STATE.live?.bias || STATE.baseline?.bias;
+    const varsityInfo = biasObj ? getVarsityFilter(biasObj, vix) : null;
+    const varsityLabel = varsityInfo?.primary?.[0] ? friendlyType(varsityInfo.primary[0]) : '';
+    const varsityAction = vix >= C.IV_HIGH ? 'SELL premium' : 'BUY premium';
+
     let html = `<div class="${goClass}">
         <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'}</div>
         <div class="go-detail">${executable} executable (of ${total} viable) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        ${varsityLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">📖 Varsity: ${varsityLabel} · ${varsityAction}</div>` : ''}
     </div>`;
 
     // ═══ GLOBAL CONTEXT INPUTS ═══
