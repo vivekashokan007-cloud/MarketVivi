@@ -1375,6 +1375,21 @@ function rankCandidates(candidates) {
         });
 }
 
+// ═══ PHASE 8: Free capital filter — positioning candidates check against available margin ═══
+function applyFreeCapitalFilter(candidates) {
+    let marginUsed = 0;
+    for (const t of STATE.openTrades) {
+        marginUsed += t.is_credit ? Math.round((t.width - t.entry_premium) * (t.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT) * 1.2) : t.max_loss;
+    }
+    const freeCapital = C.CAPITAL - marginUsed;
+    return candidates.filter(c => {
+        const estMargin = c.is_credit
+            ? (c.index === 'BNF' ? C.BNF_MARGIN_EST : C.NF_MARGIN_EST)
+            : c.maxLoss;
+        return estMargin <= freeCapital * 0.9; // 90% of free capital
+    });
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 // WATCH LOOP — Single continuous loop, σ-filtered
@@ -1655,8 +1670,7 @@ async function initialFetch() {
                 };
                 const posBnf = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
                 const posNf = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
-                STATE.positioningCandidates = rankCandidates([...posBnf, ...posNf]).slice(0, 10);
-                // Restore positioning comparison for display
+                STATE.positioningCandidates = applyFreeCapitalFilter(rankCandidates([...posBnf, ...posNf])).slice(0, 10);
                 if (existing2pm) {
                     STATE.positioningResult = computePositioning(existing2pm, existing315pm);
                 }
@@ -2184,7 +2198,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             const posNfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
             const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
 
-            STATE.positioningCandidates = allPosCands.slice(0, 10);
+            STATE.positioningCandidates = applyFreeCapitalFilter(allPosCands).slice(0, 10);
             STATE.positioningBias = positioningBias;
 
             addNotificationLog('🎯 Positioning Trades Ready',
@@ -2304,10 +2318,18 @@ function rescanStrategies() {
     }
 
     const spots = STATE.live;
-    const biasResult = spots.bias || STATE.baseline?.bias;
-    if (!biasResult) {
+    const morningBias = spots.bias || STATE.baseline?.bias;
+    if (!morningBias) {
         alert('No bias data. Run Lock & Scan first.');
         return;
+    }
+
+    // ═══ PHASE 8: After 3:15PM with positioning data, use institutional bias ═══
+    const useInstitutional = STATE._captured315pm && STATE.positioningBias;
+    const biasResult = useInstitutional ? STATE.positioningBias : morningBias;
+
+    if (useInstitutional) {
+        addNotificationLog('🔄 Rescan', `Using institutional bias: ${STATE.positioningBias.label}`, 'important');
     }
 
     const ivPctl = STATE.live.ivPercentile || STATE.baseline?.ivPercentile || null;
@@ -2337,7 +2359,14 @@ function rescanStrategies() {
         }
     }
 
-    console.log(`[RESCAN] ${allCandidates.length} candidates, ${STATE.candidates.length} ranked, spot BNF=${spots.bnfSpot} NF=${spots.nfSpot}`);
+    // ═══ PHASE 8: Also regenerate positioning candidates if they exist ═══
+    if (STATE._captured315pm && STATE.positioningBias) {
+        const posBnf = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, STATE.positioningBias, ivPctl);
+        const posNf = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, STATE.positioningBias, ivPctl);
+        STATE.positioningCandidates = applyFreeCapitalFilter(rankCandidates([...posBnf, ...posNf])).slice(0, 10);
+    }
+
+    console.log(`[RESCAN] ${allCandidates.length} candidates, ${STATE.candidates.length} ranked, spot BNF=${spots.bnfSpot} NF=${spots.nfSpot}${useInstitutional ? ' (institutional bias)' : ''}`);
     renderAll();
 }
 
@@ -3134,9 +3163,24 @@ function renderWatchlist() {
         <button onclick="rescanStrategies()" style="margin-top:8px; padding:6px 16px; font-size:13px; background:var(--accent); color:white; border:none; border-radius:var(--radius-sm); cursor:pointer;">🔄 Rescan with Live Data</button>
     </div>`;
 
-    // ═══ GLOBAL CONTEXT INPUTS ═══
+    // ═══ PHASE 8: INSTITUTIONAL POSITIONING CYCLE ═══
+    // Collapsible section: auto-expanded after 3:15PM, collapsed before
+    // Global context is MANDATORY — gates positioning strategies
+    const has315 = STATE._captured315pm && STATE.tomorrowSignal;
+    const posOpen = has315 ? 'open' : '';
+    const sig = STATE.tomorrowSignal;
+    const sigColor = sig ? (sig.signal === 'BEARISH' ? 'var(--danger)' : sig.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)') : 'var(--text-muted)';
+
+    html += `<details class="positioning-section" ${posOpen}>
+        <summary class="positioning-summary">
+            ⚡ Position for Tomorrow
+            ${sig ? `<span class="pos-signal-badge" style="color:${sigColor}"> · ${sig.signal} (${sig.strength}/5)</span>` : STATE._captured2pm ? ' · ⏳ Awaiting 3:15 PM' : ''}
+        </summary>
+        <div class="positioning-body">`;
+
+    // Global context inputs — INSIDE positioning section
     html += `<div class="global-context-section">
-        <div class="gc-title">🌍 Global Context</div>
+        <div class="gc-title">🌍 Global Context <span style="color:var(--danger);font-size:11px">(required)</span></div>
         <div class="global-context-grid">
             <div class="input-group compact">
                 <label>GIFT %</label>
@@ -3156,27 +3200,56 @@ function renderWatchlist() {
         </div>
     </div>`;
 
-    // ═══ POSITIONING TRADES (after 3:15 PM) ═══
-    if (STATE.positioningCandidates?.length > 0 && STATE.tomorrowSignal) {
-        const sig = STATE.tomorrowSignal;
-        const sigColor = sig.signal === 'BEARISH' ? 'var(--danger)' : sig.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)';
-        html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin:12px 0">
-            <div class="signal-label">⚡ POSITION FOR TOMORROW</div>
-            <div class="signal-value" style="color:${sigColor}">${sig.signal} (${sig.strength}/5)</div>
-        </div>`;
+    // ═══ POSITIONING TRADES — gated by global context ═══
+    if (has315 && STATE.positioningCandidates?.length > 0) {
+        const gcFilled = STATE.globalContext.giftNifty !== null && STATE.globalContext.europe !== null && STATE.globalContext.crude !== null;
 
-        const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF').slice(0, 3);
-        const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 2);
-        if (posBnf.length) {
-            html += '<div class="strat-header">BNF — POSITIONING</div>';
-            posBnf.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
+        if (!gcFilled) {
+            html += `<div class="positioning-gate">🔒 Enter GIFT, Europe & Crude above to unlock positioning strategies.</div>`;
+        } else {
+            // Positioning Varsity label
+            const posVarsity = STATE.positioningBias ? getVarsityFilter(STATE.positioningBias, vix) : null;
+            const posVarsityLabel = posVarsity?.primary?.[0] ? friendlyType(posVarsity.primary[0]) : '';
+            const posVarsityAction = vix >= C.IV_HIGH ? 'SELL premium' : 'BUY premium';
+
+            html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin:12px 0">
+                <div class="signal-label">⚡ POSITION FOR TOMORROW</div>
+                <div class="signal-value" style="color:${sigColor}">${sig.signal} (${sig.strength}/5)</div>
+                ${sig.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global boost: ${sig.globalBoost > 0 ? '+' : ''}${sig.globalBoost}</div>` : ''}
+                ${posVarsityLabel ? `<div class="signal-detail" style="font-weight:700">📖 Varsity: ${posVarsityLabel} · ${posVarsityAction}</div>` : ''}
+            </div>`;
+
+            // Free capital check for positioning
+            let marginUsed = 0;
+            for (const t of STATE.openTrades) {
+                marginUsed += t.is_credit ? Math.round((t.width - t.entry_premium) * (t.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT) * 1.2) : t.max_loss;
+            }
+            const freeCapital = C.CAPITAL - marginUsed;
+
+            if (freeCapital < C.BNF_MARGIN_EST) {
+                html += `<div class="positioning-gate" style="color:var(--warn)">⚠️ Free capital ₹${(freeCapital/1000).toFixed(1)}K — may not cover positioning margin.</div>`;
+            }
+
+            const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF').slice(0, 3);
+            const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 2);
+            if (posBnf.length) {
+                html += '<div class="strat-header">BNF — POSITIONING</div>';
+                posBnf.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
+            }
+            if (posNf.length) {
+                html += '<div class="strat-header">NF — POSITIONING</div>';
+                posNf.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
+            }
         }
-        if (posNf.length) {
-            html += '<div class="strat-header">NF — POSITIONING</div>';
-            posNf.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
-        }
-        html += '<hr class="strat-divider">';
+    } else if (!has315) {
+        const statusMsg = STATE._captured2pm
+            ? '✅ 2:00 PM baseline captured. Waiting for 3:15 PM comparison.'
+            : 'Positioning analysis starts at 2:00 PM. Enter global cues at 3:15 PM.';
+        html += `<div class="positioning-gate" style="color:var(--text-muted)">${statusMsg}</div>`;
     }
+
+    html += `</div></details>`;
+    // ═══ END POSITIONING SECTION ═══
 
     // ═══ DIVERSE TOP 5 — Best of each strategy type per index ═══
     // Instead of 5 Iron Butterflies, show: best IC, best IB, best Bear Call, best Bull Put, best debit
@@ -3445,6 +3518,17 @@ function lockMorningData() {
         Notification.requestPermission();
     }
 
+    // ═══ PHASE 8: Clear stale positioning from yesterday/previous scan ═══
+    STATE.positioningResult = null;
+    STATE.tomorrowSignal = null;
+    STATE.positioningCandidates = [];
+    STATE.positioningBias = null;
+    STATE._captured2pm = false;
+    STATE._captured315pm = false;
+    STATE.afternoonBaseline = null;
+    STATE.globalContext = { giftNifty: null, europe: null, crude: null };
+    localStorage.removeItem('mr2_global_context');
+
     const fiiCash = document.getElementById('in-fii-cash').value;
     const fiiShortPct = document.getElementById('in-fii-short').value;
     const upstoxBias = document.getElementById('in-upstox-bias')?.value || '';
@@ -3492,7 +3576,14 @@ function restoreGlobalContext() {
     try {
         const saved = localStorage.getItem('mr2_global_context');
         if (saved) {
-            STATE.globalContext = JSON.parse(saved);
+            const parsed = JSON.parse(saved);
+            // ═══ PHASE 8: Only restore if saved today ═══
+            const today = new Date().toISOString().split('T')[0];
+            if (parsed._date && parsed._date !== today) {
+                localStorage.removeItem('mr2_global_context');
+                return; // stale — don't restore yesterday's global context
+            }
+            STATE.globalContext = { giftNifty: parsed.giftNifty ?? null, europe: parsed.europe ?? null, crude: parsed.crude ?? null };
         }
     } catch (e) { /* ignore */ }
 }
@@ -3594,8 +3685,42 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else if (e.target.id === 'in-crude') {
             STATE.globalContext.crude = e.target.value ? parseFloat(e.target.value) : null;
         } else { return; }
-        // Auto-save to localStorage
-        localStorage.setItem('mr2_global_context', JSON.stringify(STATE.globalContext));
+        // Auto-save to localStorage with date stamp (Phase 8: prevents stale restore)
+        const saveData = { ...STATE.globalContext, _date: new Date().toISOString().split('T')[0] };
+        localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
+
+        // ═══ PHASE 8: Recalculate globalBoost when global context changes ═══
+        if (STATE.tomorrowSignal && STATE.positioningResult && STATE.tomorrowSignal.signal !== 'NEUTRAL') {
+            // Reset to base strength from positioning result
+            STATE.tomorrowSignal.strength = STATE.positioningResult.strength;
+            STATE.tomorrowSignal.globalBoost = 0;
+
+            const gc = STATE.globalContext;
+            const isBull = STATE.tomorrowSignal.signal === 'BULLISH';
+            let boost = 0;
+            const THRESHOLD = 0.2;
+
+            if (gc.giftNifty !== null && Math.abs(gc.giftNifty) >= THRESHOLD) {
+                if ((gc.giftNifty > 0 && isBull) || (gc.giftNifty < 0 && !isBull)) boost++;
+                else boost--;
+            }
+            if (gc.europe !== null && Math.abs(gc.europe) >= THRESHOLD) {
+                if ((gc.europe > 0 && isBull) || (gc.europe < 0 && !isBull)) boost++;
+                else boost--;
+            }
+            if (gc.crude !== null && Math.abs(gc.crude) >= THRESHOLD) {
+                if ((gc.crude < 0 && isBull) || (gc.crude > 0 && !isBull)) boost++;
+                else boost--;
+            }
+
+            if (boost !== 0) {
+                STATE.tomorrowSignal.strength = Math.max(1, Math.min(5, STATE.positioningResult.strength + boost));
+                STATE.tomorrowSignal.globalBoost = boost;
+            }
+            renderAll(); // re-render to show updated boost + unlock gate
+        } else {
+            renderAll(); // re-render to check if gate unlocks
+        }
     });
 
     // Theme toggle — light is default, dark is toggled
