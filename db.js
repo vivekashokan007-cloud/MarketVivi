@@ -108,10 +108,15 @@ const DB = (() => {
                 .from('trades_v2')
                 .insert(trade)
                 .select();
-            if (error) { console.warn('DB insertTrade:', error.message); return null; }
+            if (error) {
+                console.warn('DB insertTrade:', error.message, error.details, error.hint, error.code);
+                if (window._API_DEBUG) window._API_DEBUG.push({ time: '', label: 'DB_INSERT_TRADE_ERROR', message: error.message, details: error.details, hint: error.hint, code: error.code });
+                return null;
+            }
             return data?.[0] || null;
         } catch (e) {
             console.warn('DB insertTrade error:', e);
+            if (window._API_DEBUG) window._API_DEBUG.push({ time: '', label: 'DB_INSERT_TRADE_EXCEPTION', message: e.message });
             return null;
         }
     }
