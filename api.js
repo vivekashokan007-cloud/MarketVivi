@@ -206,13 +206,20 @@ const API = (() => {
             debugLog('ATM_IV_CALC', { method: 'BS_fallback', ceIv: ceIv?.toFixed(4), peIv: peIv?.toFixed(4), atmIv: atmIv?.toFixed(2) });
         }
 
-        // OI Walls — highest concentration strikes
+        // OI Walls — near-ATM highest concentration (±15 strikes from ATM)
+        // Far OTM strikes accumulate massive irrelevant OI (lottery tickets)
+        // Upstox/institutions care about walls within tradeable range
+        const wallRange = allStrikes.slice(Math.max(0, atmIdx - 15), atmIdx + 16);
         let callWallStrike = atm, callWallOI = 0;
         let putWallStrike = atm, putWallOI = 0;
-        for (const s of allStrikes) {
+        for (const s of wallRange) {
             if (strikes[s]?.CE?.oi > callWallOI) { callWallOI = strikes[s].CE.oi; callWallStrike = s; }
             if (strikes[s]?.PE?.oi > putWallOI) { putWallOI = strikes[s].PE.oi; putWallStrike = s; }
         }
+
+        // Near-ATM total OI for split (same ±10 range as PCR)
+        const nearTotalCallOI = nearCallOI;
+        const nearTotalPutOI = nearPutOI;
 
         debugLog('CHAIN_PARSED', {
             spot, atm, strikeCount: allStrikes.length,
@@ -226,6 +233,7 @@ const API = (() => {
         return {
             strikes, allStrikes, atm,
             totalCallOI, totalPutOI, pcr, nearAtmPCR,
+            nearTotalCallOI, nearTotalPutOI,
             maxPain, synthFutures, futuresPremium,
             atmIv,
             callWallStrike, callWallOI, putWallStrike, putWallOI
