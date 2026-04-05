@@ -199,7 +199,7 @@ const DB = (() => {
                 bnf_breadth_pct: data.bnfBreadthPct,
                 nf50_advancing: data.nf50Advancing,
                 tomorrow_signal: data.tomorrowSignal || null,
-                signal_strength: data.signalStrength || null
+                signal_strength: data.signalStrength ?? null
             };
             const { data: result, error } = await sb
                 .from('chain_snapshots')
@@ -356,11 +356,39 @@ const DB = (() => {
         }
     }
 
+    // ═══ POLL HISTORY CLEANUP — delete poll_history_* keys older than N days ═══
+    async function cleanOldPolls(daysToKeep = 7) {
+        if (!init()) return;
+        try {
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - daysToKeep);
+            const cutoffStr = cutoff.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+            // Fetch all poll_history keys
+            const { data, error } = await sb
+                .from('app_config')
+                .select('key')
+                .like('key', 'poll_history_%');
+            if (error || !data) return;
+            const toDelete = data.filter(row => {
+                const dateStr = row.key.replace('poll_history_', '');
+                return dateStr < cutoffStr;
+            }).map(row => row.key);
+            if (toDelete.length === 0) return;
+            for (const key of toDelete) {
+                await sb.from('app_config').delete().eq('key', key);
+                try { localStorage.removeItem('mr2_cfg_' + key); } catch(e) {}
+            }
+            console.log(`[DB] Cleaned ${toDelete.length} old poll keys (before ${cutoffStr})`);
+        } catch (e) {
+            console.warn('[DB] cleanOldPolls error:', e.message);
+        }
+    }
+
     return {
         init, savePremiumSnapshot, getPremiumHistory, getMorningSnapshot,
         insertTrade, updateTrade, getOpenTrades, getClosedTrades,
         saveChainSnapshot, getChainSnapshot, getRecentSignals,
         updateSignalResult, getSignalAccuracyStats,
-        setConfig, getConfig, getAllConfig
+        setConfig, getConfig, getAllConfig, cleanOldPolls
     };
 })();
