@@ -468,7 +468,11 @@ def position_regime_fit(trade, polls, baseline, regime, strike_oi):
                 "impact": "neutral", "strength": 2}
     if is_directional and rtype == 'trend':
         is_bear = 'BEAR' in stype
-        trend_bull = regime["direction"] > 0
+        trend_dir = regime["direction"]
+        # Only flag trend conflict when direction is definitive (not neutral/zero)
+        if abs(trend_dir) < 0.01:
+            return None
+        trend_bull = trend_dir > 0
         if (is_bear and trend_bull) or (not is_bear and not trend_bull):
             return {"icon": "🔴", "label": "Against the trend",
                     "detail": f"Your {'bearish' if is_bear else 'bullish'} trade vs {'bullish' if trend_bull else 'bearish'} trend.",
@@ -674,7 +678,8 @@ def risk_kelly_headroom(polls, baseline, open_trades, closed_trades):
     r = avg_w / avg_l if avg_l > 0 else 1
     kelly = max(0, w - ((1 - w) / r)) if r > 0 else 0
     kelly_pct = kelly * 100
-    optimal = kelly * 110000
+    capital = _capital  # set from context in analyze()
+    optimal = kelly * capital
     current_exposure = sum(abs(t.get('max_loss', 0)) for t in open_trades if not t.get('paper'))
     headroom = optimal - current_exposure
     if headroom > 5000:
@@ -719,6 +724,7 @@ def risk_regime_shift(polls, baseline, open_trades, closed_trades):
 
 _calibration = None
 _cal_count = 0
+_capital = 110000
 
 def build_calibration(closed_trades):
     global _calibration, _cal_count
@@ -970,7 +976,12 @@ def fii_trend(polls, ctx):
     """5-day FII trend from premiumHistory."""
     hist = ctx.get('fiiHistory', [])
     if len(hist) < 3: return None
-    fii_vals = [h.get('fiiCash') for h in hist if h.get('fiiCash') is not None]
+    fii_vals = []
+    for h in hist:
+        v = h.get('fiiCash')
+        if v is not None:
+            try: fii_vals.append(float(v))
+            except (ValueError, TypeError): pass
     if len(fii_vals) < 3: return None
     total = sum(fii_vals)
     avg = total / len(fii_vals)
@@ -1292,6 +1303,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": []}
     if len(polls) < 3:
         return json.dumps(result)
+
+    # Set capital from JS context (single source of truth: C.CAPITAL)
+    global _capital
+    _capital = ctx.get('capital', 110000)
 
     build_calibration(closed_trades)
     regime = detect_regime(polls, baseline)
@@ -3295,10 +3310,22 @@ function estimateCost(cand) {
     return { total, pctOfMax, costExceedsThreshold, stt: Math.round(sttEntry + sttExit), brokerage, slippage: Math.round(slippage) };
 }
 
+// ═══ DIRECTION SAFETY — directional trades with F1 against bias must NEVER rank #1 ═══
+// IB/IC are exempt (non-directional, F1 doesn't apply)
+// This prevents: STRONG BULL bias → Bear Call #1 (the Trade #5 trap)
+function isDirectionSafe(candidate) {
+    if (candidate.legs === 4) return true; // IB/IC are non-directional
+    return candidate.forces.f1 >= 0; // F1 must be aligned or neutral
+}
+
 function rankCandidates(candidates) {
     return candidates
         .filter(c => !c.capitalBlocked)
         .sort((a, b) => {
+            // 0th: DIRECTION SAFETY — F1-against directional ALWAYS ranks last
+            const aSafe = isDirectionSafe(a) ? 0 : 1;
+            const bSafe = isDirectionSafe(b) ? 0 : 1;
+            if (aSafe !== bSafe) return aSafe - bSafe;
             // 1st: Varsity tier — PRIMARY before ALLOWED
             const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
             const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
@@ -3353,6 +3380,10 @@ function applyBrainScores() {
 
     // Re-sort watchlist with brain scores included (rankCandidates uses contextScore + brainScore)
     STATE.watchlist.sort((a, b) => {
+        // 0th: DIRECTION SAFETY — F1-against directional ALWAYS ranks last
+        const aSafe = isDirectionSafe(a) ? 0 : 1;
+        const bSafe = isDirectionSafe(b) ? 0 : 1;
+        if (aSafe !== bSafe) return aSafe - bSafe;
         // Same sort logic as rankCandidates but on existing watchlist
         const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
         const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
@@ -4732,7 +4763,9 @@ async function runBrain() {
             bnfOHLC: STATE.baseline?.bnfOHLC ?? null,
             nfOHLC: STATE.baseline?.nfOHLC ?? null,
             // Morning bias
-            morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null
+            morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null,
+            // Capital — single source of truth for Kelly and position sizing
+            capital: C.CAPITAL
         }));
 
         const resultJson = py.runPython(
@@ -6195,9 +6228,11 @@ function renderWatchlist() {
     const bnfAtm = STATE.bnfChain?.atm || STATE.baseline?.bnfAtm || 0;
     const nfAtm = STATE.nfChain?.atm || STATE.baseline?.nfAtm || 0;
 
-    // Count candidates that ACTUALLY fit market conditions (same filter as diverseTop)
+    // Count candidates that ACTUALLY fit market conditions
+    // isDirectionSafe: directional strategies with F1 against are NOT executable
     const executable = STATE.candidates.filter(c =>
         !c.capitalBlocked && c.forces.aligned >= 2 && (c.contextScore || 0) >= -0.3 && c.ev > 0
+        && isDirectionSafe(c)
     ).length;
     const total = STATE.candidates.length;
 
@@ -6315,8 +6350,8 @@ function renderWatchlist() {
                 html += `<div class="positioning-gate" style="color:var(--warn)">⚠️ Free capital ₹${(freeCapital/1000).toFixed(1)}K — may not cover buy leg ₹${(minPeakNeeded/1000).toFixed(1)}K.</div>`;
             }
 
-            const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF').slice(0, 3);
-            const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked).slice(0, 2);
+            const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF' && isDirectionSafe(c)).slice(0, 3);
+            const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked && isDirectionSafe(c)).slice(0, 2);
             if (posBnf.length) {
                 html += '<div class="strat-header">BNF — POSITIONING</div>';
                 posBnf.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
@@ -6345,6 +6380,7 @@ function renderWatchlist() {
             c.index === index &&
             !c.capitalBlocked &&
             c.forces.aligned >= 2 &&          // at least 2/3 forces aligned
+            isDirectionSafe(c) &&             // NEVER show direction-against as recommendation
             (c.contextScore || 0) >= -0.3 &&   // not fighting market condition
             c.ev > 0                            // positive expected value
         );
@@ -6373,7 +6409,10 @@ function renderWatchlist() {
             html += '</details>';
         }
     } else if (nfTotal > 0) {
-        html += `<div class="empty-state">NF: ${nfTotal} strategies generated but none fit current conditions. ${STATE.tradeMode === 'swing' ? 'Try INTRADAY mode?' : 'WAIT for better setup.'}</div>`;
+        const nfAgainst = STATE.candidates.filter(c => c.index === 'NF' && !isDirectionSafe(c)).length;
+        const reason = nfAgainst > 0 ? `${nfAgainst} strategies exist but go AGAINST your bias. WAIT for aligned setup.` :
+            STATE.tradeMode === 'swing' ? 'None fit conditions. Try INTRADAY mode?' : 'WAIT for better setup.';
+        html += `<div class="empty-state">NF: ${nfTotal} generated — ${reason}</div>`;
     } else {
         html += '<div class="empty-state">No NF candidates</div>';
     }
@@ -6386,7 +6425,9 @@ function renderWatchlist() {
         bnfCands.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
         html += '</details>';
     } else if (bnfTotal > 0) {
-        html += `<div class="empty-state">BNF: ${bnfTotal} strategies generated but none fit current conditions.</div>`;
+        const bnfAgainst = STATE.candidates.filter(c => c.index === 'BNF' && !isDirectionSafe(c)).length;
+        const reason = bnfAgainst > 0 ? `${bnfAgainst} strategies exist but go AGAINST your bias. WAIT.` : 'None fit current conditions.';
+        html += `<div class="empty-state">BNF: ${bnfTotal} generated — ${reason}</div>`;
     } else {
         html += '<div class="empty-state">No BNF candidates</div>';
     }
@@ -6397,9 +6438,12 @@ function renderWatchlist() {
 function renderCandidateCard(cand, atm, rank) {
     const forces = cand.forces;
     const dots = alignmentDots(forces.aligned);
-    const alignLabel = forces.aligned === 3 ? '🟢 ALIGNED — Entry Ready' :
+    const dirSafe = isDirectionSafe(cand);
+    const alignLabel = !dirSafe ? '⛔ AGAINST BIAS' :
+        forces.aligned === 3 ? '🟢 ALIGNED — Entry Ready' :
         forces.aligned === 2 ? '🟡 CONDITIONAL' : '⚫ WATCHING';
-    const alignClass = forces.aligned === 3 ? 'align-3' :
+    const alignClass = !dirSafe ? 'align-1' :
+        forces.aligned === 3 ? 'align-3' :
         forces.aligned === 2 ? 'align-2' : 'align-1';
 
     const is4Leg = cand.legs === 4;
@@ -7272,7 +7316,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b78' }
+            { metric: 'App Version', value: 'v2.1 b79' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
