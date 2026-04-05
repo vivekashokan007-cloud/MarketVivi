@@ -3729,6 +3729,11 @@ async function initialFetch() {
         renderAll();
         startWatchLoop();
 
+        // Ensure brain is loaded — fallback if DOMContentLoaded path didn't fire
+        if (!STATE.brainReady && !STATE.brainError) {
+            initBrain().catch(e => console.warn('[Brain] Init from scan failed:', e));
+        }
+
     } catch (err) {
         statusEl.textContent = `Error: ${err.message}`;
         console.error('initialFetch error:', err);
@@ -4033,6 +4038,11 @@ async function lightFetch() {
         DB.setConfig('poll_history_' + today, STATE.pollHistory);
 
         // Phase 12: Run Pyodide brain — Python analysis on poll history
+        // Init brain if not ready (belt + suspenders — catches any init failure)
+        if (!STATE.brainReady && !STATE._brainInitAttempted) {
+            STATE._brainInitAttempted = true;
+            try { await initBrain(); } catch(e) { console.warn('[Brain] Poll-triggered init failed:', e); }
+        }
         await runBrain();
 
         renderAll();
@@ -4515,6 +4525,7 @@ async function initBrain() {
     if (typeof loadPyodide !== 'function') {
         STATE.brainError = 'loadPyodide not available — CDN script may have failed';
         console.error('[Brain] loadPyodide not found');
+        renderFooter();
         return;
     }
 
@@ -4535,6 +4546,7 @@ async function initBrain() {
         STATE.brainReady = true;
         const elapsed = ((performance.now() - STATE.brainLoadStart) / 1000).toFixed(1);
         console.log(`[Brain] Ready in ${elapsed}s`);
+        renderFooter();
 
         // Run brain immediately if we already have poll data
         if (STATE.pollHistory.length >= 3) {
@@ -4545,6 +4557,7 @@ async function initBrain() {
         console.error('[Brain] Init failed:', err);
         STATE.brainError = err.message;
         STATE.brainReady = false;
+        renderFooter();
     }
 }
 
@@ -7259,7 +7272,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b76' }
+            { metric: 'App Version', value: 'v2.1 b78' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
