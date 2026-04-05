@@ -4512,25 +4512,43 @@ function stopWatchLoop() {
 // ═══════════════════════════════════════════════════════════════
 
 async function initBrain(attempt = 1) {
-    // Guard: Pyodide CDN script must have loaded
+    // Step 1: Dynamically load Pyodide CDN script if not available
     if (typeof loadPyodide !== 'function') {
-        if (attempt <= 5) {
-            console.warn(`[Brain] Pyodide CDN not ready, retry ${attempt}/5 in 3s`);
-            setTimeout(() => initBrain(attempt + 1).catch(e => console.warn('[Brain] Retry failed:', e)), 3000);
+        if (attempt === 1) {
+            // Inject script tag with explicit onload/onerror
+            console.log('[Brain] Loading Pyodide CDN script...');
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js';
+            script.onload = () => {
+                console.log('[Brain] CDN script loaded, initializing...');
+                initBrain(2).catch(e => console.error('[Brain] Init after load failed:', e));
+            };
+            script.onerror = () => {
+                STATE.brainError = 'Pyodide CDN script failed to download';
+                console.error('[Brain] CDN script download failed');
+            };
+            document.head.appendChild(script);
             return;
         }
-        STATE.brainError = 'Pyodide CDN not loaded after 5 retries';
+        // Script loaded but loadPyodide still not defined — retry
+        if (attempt <= 5) {
+            console.warn(`[Brain] loadPyodide not ready, retry ${attempt}/5`);
+            setTimeout(() => initBrain(attempt + 1).catch(e => console.warn('[Brain] Retry failed:', e)), 2000);
+            return;
+        }
+        STATE.brainError = 'loadPyodide not defined after CDN loaded';
         return;
     }
 
+    // Step 2: loadPyodide is available — download WASM + init Python
     STATE.brainLoadStart = performance.now();
-    console.log(`[Brain] Loading Pyodide (attempt ${attempt})...`);
+    console.log('[Brain] Loading Python WASM runtime...');
 
     try {
         // Timeout: abort if WASM download takes >30s
         const pyPromise = loadPyodide();
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Pyodide download timeout (30s)')), 30000)
+            setTimeout(() => reject(new Error('Pyodide WASM download timeout (30s)')), 30000)
         );
         STATE._pyodide = await Promise.race([pyPromise, timeoutPromise]);
 
@@ -7264,7 +7282,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b74' }
+            { metric: 'App Version', value: 'v2.1 b75' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
