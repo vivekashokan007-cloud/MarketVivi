@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#FFFFFF">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Market Radar v2.1</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=71">
+    <style>
+        /* Paper Trade Styles — b71 */
+        .v1-trade-btns { display:flex; gap:8px; margin-top:8px; }
+        .v1-trade-btns .btn-take { flex:1; font-size:12px; padding:8px 4px; }
+        .btn-paper { flex:1; font-size:12px; padding:8px 4px; background:transparent; color:var(--accent); border:1.5px dashed var(--accent); border-radius:8px; cursor:pointer; font-weight:600; }
+        .btn-paper:active { background:var(--accent); color:#fff; }
+        .paper-card { border-style:dashed !important; opacity:0.92; }
+        .paper-header { font-size:14px; font-weight:600; color:var(--accent); padding:12px 0 4px; border-top:1px solid var(--border); margin-top:12px; }
+        .paper-pnl { font-size:12px; border-style:dashed; }
+        .cross-test-insight { font-size:11px; color:var(--accent); background:var(--surface); padding:6px 10px; border-radius:6px; margin:4px 0 8px; border-left:3px solid var(--accent); }
+        .mode-tag { font-size:9px; padding:1px 5px; border-radius:3px; font-weight:600; text-transform:uppercase; vertical-align:middle; margin-left:4px; }
+        .pos-timing { font-size:11px; color:var(--text-muted); padding:2px 0 0; }
+        .mode-swing { background:#E3F2FD; color:#1565C0; }
+        .mode-intraday { background:#FFF3E0; color:#E65100; }
+        .dark .mode-swing { background:#1a237e; color:#90CAF9; }
+        .dark .mode-intraday { background:#4e342e; color:#FFAB91; }
+        /* Brain Insights — b71 Pyodide */
+        .brain-section { margin:8px 0; padding:0; }
+        .brain-header { font-size:13px; font-weight:700; color:var(--text-primary); padding:6px 0 4px; display:flex; align-items:center; gap:6px; }
+        .brain-meta { font-size:10px; font-weight:400; color:var(--text-muted); }
+        .brain-loading { font-size:11px; color:var(--text-muted); padding:4px 0; font-style:italic; }
+        .brain-card { background:var(--surface); border-radius:8px; padding:8px 10px; margin:4px 0; border-left:3px solid var(--text-muted); }
+        .brain-card-header { display:flex; align-items:center; gap:6px; }
+        .brain-icon { font-size:14px; flex-shrink:0; }
+        .brain-label { font-size:12px; font-weight:600; color:var(--text-primary); flex:1; }
+        .brain-strength { font-size:9px; letter-spacing:1px; flex-shrink:0; }
+        .brain-detail { font-size:11px; color:var(--text-secondary); margin-top:3px; line-height:1.4; }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <h1>Market Radar</h1>
+            <span class="version">v2.1 · b71</span>
+        </div>
+        <div class="header-right">
+            <label class="theme-toggle" title="Toggle theme">
+                <input type="checkbox" id="theme-switch">
+                <span class="toggle-slider"></span>
+                <span class="toggle-icon">☀️</span>
+            </label>
+            <span id="watch-status" class="watch-badge">⏹ Ready</span>
+        </div>
+    </header>
+
+    <div id="live-ticker" class="live-ticker" style="display:none">
+        <div class="ticker-spots">
+            <span class="ticker-item" id="tk-bnf">BNF --</span>
+            <span class="ticker-item" id="tk-nf">NF --</span>
+            <span class="ticker-item" id="tk-vix">VIX --</span>
+        </div>
+        <div class="ticker-capital">
+            <span id="tk-capital"></span>
+            <span id="tk-margin" class="ticker-margin"></span>
+            <span id="tk-pnl"></span>
+        </div>
+    </div>
+
+    <main>
+        <nav class="tab-bar" id="tab-bar">
+            <button class="tab-btn active" data-tab="market">📊 Market</button>
+            <button class="tab-btn" data-tab="oi">🔍 OI</button>
+            <button class="tab-btn" data-tab="strategies">🎯 Trade</button>
+            <button class="tab-btn" data-tab="positions">📌 Position</button>
+        </nav>
+
+        <!-- TAB 1: MARKET -->
+        <div class="tab-content active" id="tab-market">
+            <section class="section morning-section" id="morning-section">
+                <div id="morning-full">
+                    <div class="input-grid">
+                        <div class="input-group">
+                            <label>FII Cash (₹Cr)</label>
+                            <input type="text" inputmode="text" id="in-fii-cash" class="input-field morning-input" placeholder="-1200">
+                        </div>
+                        <div class="input-group">
+                            <label>FII Short %</label>
+                            <input type="text" inputmode="text" id="in-fii-short" class="input-field morning-input" placeholder="88">
+                        </div>
+                    </div>
+                    <details class="institutional-flow">
+                        <summary>📊 Institutional Flow...</summary>
+                        <div class="input-grid" style="margin-top:6px">
+                            <div class="input-group">
+                                <label>DII Cash (₹Cr)</label>
+                                <input type="text" inputmode="text" id="in-dii-cash" class="input-field morning-input" placeholder="5706">
+                            </div>
+                            <div class="input-group">
+                                <label>FII Idx Fut (₹Cr)</label>
+                                <input type="text" inputmode="text" id="in-fii-idx-fut" class="input-field morning-input" placeholder="-824">
+                            </div>
+                        </div>
+                        <div class="input-grid" style="margin-top:6px">
+                            <div class="input-group">
+                                <label>FII Stk Fut (₹Cr)</label>
+                                <input type="text" inputmode="text" id="in-fii-stk-fut" class="input-field morning-input" placeholder="436">
+                            </div>
+                        </div>
+                        <div class="input-grid" style="margin-top:6px">
+                            <div class="input-group">
+                                <label>Dow Close</label>
+                                <input type="text" inputmode="text" id="in-dow-close" class="input-field morning-input" placeholder="46394">
+                            </div>
+                            <div class="input-group">
+                                <label>Crude Settle</label>
+                                <input type="text" inputmode="text" id="in-crude-settle" class="input-field morning-input" placeholder="96.00">
+                            </div>
+                        </div>
+                    </details>
+                    <details class="upstox-compare">
+                        <summary>Upstox says... <span id="upstox-badge"></span></summary>
+                        <div class="input-grid" style="margin-top:6px">
+                            <div class="input-group">
+                                <label>Upstox Bias <span class="label-hint">(comparison only)</span></label>
+                                <select id="in-upstox-bias" class="input-field morning-input">
+                                    <option value="">Not entered</option>
+                                    <option value="Bullish">Bullish</option>
+                                    <option value="Bearish">Bearish</option>
+                                    <option value="Neutral">Neutral</option>
+                                </select>
+                            </div>
+                        </div>
+                    </details>
+                    <div class="morning-actions">
+                        <button id="btn-lock" class="btn-primary">🔒 Lock & Scan</button>
+                        <button id="btn-rescan" class="btn-ghost">↻ Reset</button>
+                        <button id="btn-stop" class="btn-ghost" style="display:none">⏹ Stop</button>
+                    </div>
+                    <div id="status" class="status-text"></div>
+                </div>
+                <div id="morning-collapsed" style="display:none"></div>
+            </section>
+            <div id="market-content"><div class="empty-state">Enter morning data and scan</div></div>
+            <!-- EVENING CLOSE — store reference for overnight delta -->
+            <details class="section" id="evening-section" style="margin-top:8px">
+                <summary style="cursor:pointer; user-select:none; font-weight:600; font-size:13px;">🌙 Store Evening Close ▸</summary>
+                <div style="padding:8px 0 4px">
+                    <div class="input-grid">
+                        <div class="input-group">
+                            <label>Dow Close (final)</label>
+                            <input type="text" inputmode="text" id="in-eve-dow" class="input-field" placeholder="42031">
+                        </div>
+                        <div class="input-group">
+                            <label>Crude Settle (final)</label>
+                            <input type="text" inputmode="text" id="in-eve-crude" class="input-field" placeholder="100.00">
+                        </div>
+                    </div>
+                    <div class="input-grid" style="margin-top:6px">
+                        <div class="input-group">
+                            <label>GIFT Close (9:15 PM)</label>
+                            <input type="text" inputmode="text" id="in-eve-gift" class="input-field" placeholder="23300">
+                        </div>
+                        <div class="input-group" style="display:flex;align-items:flex-end">
+                            <button id="btn-save-evening" class="btn-primary" style="width:100%;padding:8px">💾 Save</button>
+                        </div>
+                    </div>
+                    <div id="evening-status" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
+                </div>
+            </details>
+            <button id="btn-export" onclick="exportAllData()" style="width:100%;padding:10px;margin-top:8px;background:var(--accent);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📊 Export All Data (Excel)</button>
+            <div id="export-status" style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:center"></div>
+            <details class="section debug-section"><summary>🔧 Debug</summary><div id="debug-log" class="debug-log"><div class="empty-state">Debug data appears after scan</div></div></details>
+        </div>
+
+        <!-- TAB 2: OI -->
+        <div class="tab-content" id="tab-oi">
+            <div id="oi-content"><div class="empty-state">Scan to see OI structure</div></div>
+        </div>
+
+        <!-- TAB 3: TRADE -->
+        <div class="tab-content" id="tab-strategies">
+            <div id="watchlist"><div class="empty-state">Lock & Scan to generate strategies</div></div>
+        </div>
+
+        <!-- TAB 4: POSITION -->
+        <div class="tab-content" id="tab-positions">
+            <div id="position"><div class="empty-state">No open positions</div></div>
+            <section class="section notif-section">
+                <h2>🔔 Notifications</h2>
+                <div id="notif-log"><div class="empty-state">Notifications appear during watch mode</div></div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="app-footer"><span id="footer-status">Ready</span></footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js" async></script>
+    <script src="bs.js?v=71"></script>
+    <script src="db.js?v=71"></script>
+    <script src="api.js?v=71"></script>
+    <script src="app.js?v=71"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+            caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+        }
+    </script>
+</body>
+</html>

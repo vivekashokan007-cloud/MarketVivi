@@ -1,0 +1,17 @@
+{
+    "name": "Market Radar v2",
+    "short_name": "MR2",
+    "description": "Premium-first options trading dashboard",
+    "start_url": "/MarketVivi/",
+    "display": "standalone",
+    "background_color": "#121218",
+    "theme_color": "#121218",
+    "orientation": "portrait",
+    "icons": [
+        {
+            "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230a0e17' width='100' height='100' rx='20'/><text x='50' y='65' text-anchor='middle' font-size='50' fill='%2300d4aa'>📊</text></svg>",
+            "sizes": "any",
+            "type": "image/svg+xml"
+        }
+    ]
+}
