@@ -265,7 +265,7 @@ const API = (() => {
         end.setHours(0, 0, 0, 0);
         while (d <= end) {
             const day = d.getDay();
-            const dateStr = d.toLocaleDateString('en-CA');
+            const dateStr = dateToIST(d);
             if (day !== 0 && day !== 6 && !NSE_HOLIDAYS.includes(dateStr)) {
                 count++;
             }
@@ -299,7 +299,7 @@ const API = (() => {
         const mins = h * 60 + m;
         const day = ist.getDay();
         if (day === 0 || day === 6) return false;
-        const dateStr = ist.toLocaleDateString('en-CA');
+        const dateStr = todayIST();
         if (NSE_HOLIDAYS.includes(dateStr)) return false;
         return mins >= 555 && mins <= 930; // 9:15 - 15:30
     }
@@ -319,9 +319,13 @@ const API = (() => {
         });
     }
 
-    // Today's date in IST as YYYY-MM-DD (safe — never uses UTC)
+    // IST date as YYYY-MM-DD — safe for holiday checks, DTE, poll keys
+    // Fixes: toISOString().split('T')[0] gives UTC, wrong after 6:30 PM IST
     function todayIST() {
         return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    }
+    function dateToIST(d) {
+        return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     }
 
     // ═══ BNF BREADTH — Top 5 constituents (79% of BNF weight) ═══
@@ -472,7 +476,7 @@ const API = (() => {
             // to_date = next day (Upstox range is exclusive on to_date)
             const d = new Date(date);
             d.setDate(d.getDate() + 1);
-            const toDate = d.toISOString().split('T')[0];
+            const toDate = dateToIST(d);
 
             const data = await apiCall(`/historical-candle/${encoded}/day/${toDate}/${date}`);
             const candles = data?.data?.candles;
@@ -527,7 +531,7 @@ const API = (() => {
         fetchBnfBreadth, fetchNf50Breadth, BNF_CONSTITUENTS,
         fetchHistoricalOHLC, calcCloseChar, classifyGap,
         tradingDTE, calendarDTE, nearestExpiry,
-        isMarketHours, minutesSinceOpen, istNow, todayIST,
+        isMarketHours, minutesSinceOpen, istNow, todayIST, dateToIST,
         getToken,
         NF_KEY, BNF_KEY, NSE_HOLIDAYS
     };
