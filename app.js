@@ -919,35 +919,399 @@ def risk_streak_warning(polls, baseline, open_trades, closed_trades):
     return None
 
 # ═══════════════════════════════════════════
+# PART 7: SYNTHESIS — ONE answer, not 14 whispers
+# Uses ALL signals + context + calibration
+# ═══════════════════════════════════════════
+
+def signal_coherence(polls, ctx):
+    """Are VIX, spot, breadth telling the same story?"""
+    vixs = get_vix_vals(polls)
+    spots = [p.get('bnf') for p in last_n(polls, 4) if p.get('bnf')]
+    if len(vixs) < 3 or len(spots) < 3: return None
+    vix_dir = 1 if vixs[-1] > vixs[0] + 0.3 else -1 if vixs[-1] < vixs[0] - 0.3 else 0
+    spot_dir = 1 if spots[-1] > spots[0] + 30 else -1 if spots[-1] < spots[0] - 30 else 0
+    breadth = ctx.get('bnfBreadth') or {}
+    b_dir = 1 if breadth.get('pct', 50) > 60 else -1 if breadth.get('pct', 50) < 40 else 0
+    # Normal: VIX opposes spot. Abnormal: same direction
+    vix_spot_coherent = (vix_dir * spot_dir) <= 0  # opposite or flat = coherent
+    breadth_spot_coherent = (b_dir == spot_dir) or b_dir == 0 or spot_dir == 0
+    if not vix_spot_coherent:
+        return {"type": "coherence", "icon": "⚠️", "label": "VIX-Spot divergence",
+                "detail": f"VIX {'rising' if vix_dir>0 else 'falling'} WITH spot {'rising' if spot_dir>0 else 'falling'}. Unusual — proceed with caution.",
+                "impact": "caution", "strength": 4}
+    if not breadth_spot_coherent:
+        return {"type": "coherence", "icon": "⚠️", "label": "Narrow {'rally' if spot_dir>0 else 'decline'}",
+                "detail": f"Spot moving {'up' if spot_dir>0 else 'down'} but breadth {'bearish' if b_dir<0 else 'neutral'}. Move may reverse.",
+                "impact": "caution", "strength": 3}
+    if vix_spot_coherent and breadth_spot_coherent and spot_dir != 0:
+        return {"type": "coherence", "icon": "✅", "label": "Signals aligned",
+                "detail": f"VIX, spot, breadth all consistent. Move is real.", "impact": "bullish" if spot_dir > 0 else "bearish", "strength": 3}
+    return None
+
+def max_pain_gravity(polls, ctx):
+    """Max pain as magnet — strongest on DTE 0-1."""
+    dte = ctx.get('bnfDTE', 5)
+    profile = ctx.get('bnfProfile') or {}
+    mp = profile.get('maxPain')
+    spot = profile.get('spot')
+    if not mp or not spot: return None
+    dist = spot - mp
+    if dte <= 1 and abs(dist) > 50:
+        d = "DOWN" if dist > 0 else "UP"
+        return {"type": "maxpain", "icon": "🧲", "label": f"Max pain pull {d} ({abs(dist):.0f}pts)",
+                "detail": f"DTE {dte}. Spot {spot:.0f}, max pain {mp:.0f}. Expiry day magnet.",
+                "impact": "bearish" if dist > 0 else "bullish", "strength": 4}
+    elif dte <= 3 and abs(dist) > 100:
+        return {"type": "maxpain", "icon": "🧲", "label": f"Max pain at {mp:.0f} ({abs(dist):.0f}pts away)",
+                "detail": f"DTE {dte}. Gravitational pull building.", "impact": "neutral", "strength": 2}
+    return None
+
+def fii_trend(polls, ctx):
+    """5-day FII trend from premiumHistory."""
+    hist = ctx.get('fiiHistory', [])
+    if len(hist) < 3: return None
+    fii_vals = [h.get('fiiCash') for h in hist if h.get('fiiCash') is not None]
+    if len(fii_vals) < 3: return None
+    total = sum(fii_vals)
+    avg = total / len(fii_vals)
+    if total < -3000:
+        return {"type": "fii", "icon": "🏦", "label": f"FII selling {len(fii_vals)} days (₹{total:.0f}Cr)",
+                "detail": f"Sustained institutional selling. Bearish conviction.", "impact": "bearish", "strength": 4}
+    elif total > 3000:
+        return {"type": "fii", "icon": "🏦", "label": f"FII buying {len(fii_vals)} days (₹{total:.0f}Cr)",
+                "detail": f"Sustained institutional buying. Bullish conviction.", "impact": "bullish", "strength": 4}
+    elif total < -1000:
+        return {"type": "fii", "icon": "🏦", "label": f"FII net sellers (₹{total:.0f}Cr/{len(fii_vals)}d)",
+                "detail": f"Mild selling pressure.", "impact": "bearish", "strength": 2}
+    return None
+
+def nf_bnf_divergence(polls, ctx):
+    """NF and BNF moving in different directions?"""
+    bnf_pct = (ctx.get('bnfProfile') or {}).get('pctFromOpen', 0)
+    nf_pct = (ctx.get('nfProfile') or {}).get('pctFromOpen', 0)
+    if abs(bnf_pct - nf_pct) > 0.3:
+        leader = "BNF" if abs(bnf_pct) > abs(nf_pct) else "NF"
+        return {"type": "diverge", "icon": "↔️", "label": f"NF-BNF divergence",
+                "detail": f"BNF {bnf_pct:+.1f}% vs NF {nf_pct:+.1f}%. {leader} leading. Watch for convergence.",
+                "impact": "caution", "strength": 2}
+    return None
+
+def day_range_position(polls, ctx):
+    """Where in today's range — near high (caution for bears) or low?"""
+    profile = ctx.get('bnfProfile') or {}
+    pos = profile.get('dayRange', 0.5)
+    if pos > 0.85:
+        return {"type": "range_pos", "icon": "📍", "label": "At day HIGH",
+                "detail": f"BNF at {pos*100:.0f}% of day range. Breakout or reversal zone.",
+                "impact": "caution", "strength": 2}
+    elif pos < 0.15:
+        return {"type": "range_pos", "icon": "📍", "label": "At day LOW",
+                "detail": f"BNF at {pos*100:.0f}% of day range. Bounce or breakdown zone.",
+                "impact": "caution", "strength": 2}
+    return None
+
+def wall_freshness(polls, ctx):
+    """Are OI walls actively defended today or stale from yesterday?"""
+    profile = ctx.get('bnfProfile') or {}
+    cwF = profile.get('cwFresh', 0)
+    pwF = profile.get('pwFresh', 0)
+    cwChg = profile.get('cwOiChg')
+    insights = []
+    if cwF > 0.25 and cwChg and cwChg > 0:
+        insights.append({"type": "fresh", "icon": "🏗️", "label": "Call wall FRESH — actively built today",
+                "detail": f"Volume/OI ratio {cwF:.1%}. +{cwChg:,.0f} new OI. Resistance is real.",
+                "impact": "bearish", "strength": 3})
+    elif cwF < 0.05 and cwChg is not None and cwChg <= 0:
+        insights.append({"type": "fresh", "icon": "💨", "label": "Call wall STALE — no fresh defense",
+                "detail": f"Volume/OI {cwF:.1%}. May not hold if tested.", "impact": "caution", "strength": 2})
+    return insights[0] if insights else None
+
+def yesterday_signal_prior(polls, ctx):
+    """Yesterday's positioning signal as morning prior."""
+    sig = ctx.get('yesterdaySignal')
+    acc = ctx.get('signalAccuracy')
+    if not sig: return None
+    pct = acc.get('pct', 0) if acc else 0
+    return {"type": "prior", "icon": "📡", "label": f"Yesterday: {sig['signal']} ({sig['strength']}/5)",
+            "detail": f"Signal accuracy: {pct}% over {acc.get('total',0) if acc else 0} signals.",
+            "impact": "bearish" if sig['signal']=='BEARISH' else "bullish" if sig['signal']=='BULLISH' else "neutral",
+            "strength": 2 if pct < 60 else 3}
+
+def dte_urgency(polls, ctx):
+    """DTE-aware urgency for timing."""
+    dte = ctx.get('bnfDTE', 5)
+    if dte <= 1:
+        return {"type": "timing", "icon": "⏰", "label": "EXPIRY DAY — theta maximum",
+                "detail": "Credit sellers: theta melting fastest. Debit buyers: theta death zone. IB/IC exit by 3PM.",
+                "impact": "neutral", "strength": 4}
+    elif dte == 2:
+        return {"type": "timing", "icon": "⏰", "label": "DTE 2 — theta accelerating",
+                "detail": "Credit favored. Debit positions lose value rapidly.", "impact": "neutral", "strength": 2}
+    return None
+
+def daily_pnl_check(polls, ctx):
+    """Prevent overtrading and chasing losses."""
+    pnl = ctx.get('dailyPnl', 0)
+    count = ctx.get('dailyTradeCount', 0)
+    if count >= 3:
+        return {"type": "risk", "icon": "🛑", "label": f"3+ trades today — slow down",
+                "detail": f"Net today: ₹{pnl:.0f} from {count} trades. Overtrading risk. Stop if losing.",
+                "impact": "caution", "strength": 4}
+    if pnl < -2000 and count >= 2:
+        return {"type": "risk", "icon": "🛑", "label": f"Down ₹{abs(pnl):.0f} today — STOP trading",
+                "detail": f"Chasing losses kills capital. Walk away.", "impact": "caution", "strength": 5}
+    if pnl > 3000:
+        return {"type": "risk", "icon": "💰", "label": f"Up ₹{pnl:.0f} today — protect gains",
+                "detail": f"Good day. Only high-confidence entries from here.", "impact": "neutral", "strength": 2}
+    return None
+
+def candidate_liquidity(cand, ctx):
+    """Bid-ask spread assessment from chain profile."""
+    profile = ctx.get('bnfProfile' if cand.get('index')=='BNF' else 'nfProfile') or {}
+    spread = profile.get('atmSpread', 0)
+    if spread > 8:
+        return {"icon": "⚠️", "label": f"Wide spreads (₹{spread:.0f})",
+                "detail": "Slippage will eat into profits. Use limit orders.", "impact": "caution", "strength": 2}
+    elif spread < 2:
+        return {"icon": "✅", "label": "Tight spreads",
+                "detail": "Good liquidity. Entry/exit efficient.", "impact": "bullish", "strength": 1}
+    return None
+
+def position_gamma_alert(trade, polls, strike_oi):
+    """Track gamma acceleration at traded strikes across polls."""
+    soi = strike_oi if isinstance(strike_oi, list) else []
+    if len(soi) < 3: return None
+    is_bear = 'BEAR' in trade.get('strategy_type', '')
+    field = 'sellCOI' if is_bear else 'sellPOI'
+    # Check if OI at sell strike is rapidly changing
+    ois = [s.get(field) for s in soi if s.get(field) is not None]
+    if len(ois) < 3: return None
+    # Compute acceleration (rate of change of rate of change)
+    changes = [ois[i] - ois[i-1] for i in range(1, len(ois))]
+    if len(changes) < 2: return None
+    accel = changes[-1] - changes[0]
+    if abs(accel) > 5000:
+        d = "building" if accel > 0 else "unwinding"
+        return {"icon": "⚡", "label": f"OI {d} at sell strike",
+                "detail": f"Acceleration detected. Position dynamics shifting.", "impact": "caution" if accel < 0 else "bullish", "strength": 3}
+    return None
+
+# ═══ THE VERDICT ═══
+
+def synthesize_verdict(all_insights, regime, ctx, polls, baseline):
+    """THE function. All intelligence in. ONE answer out."""
+    bull = bear = 0.0
+    cautions = 0
+    for ins in all_insights:
+        w = (ins.get('strength', 1)) / 5.0
+        imp = ins.get('impact', 'neutral')
+        if imp == 'bullish': bull += w
+        elif imp == 'bearish': bear += w
+        elif imp == 'caution': cautions += 1
+
+    # Context signals (numeric, not insights)
+    profile = ctx.get('bnfProfile') or {}
+    breadth = ctx.get('bnfBreadth') or {}
+    b_pct = breadth.get('pct', 50)
+    if b_pct > 65: bull += 0.4
+    elif b_pct < 35: bear += 0.4
+    skew = profile.get('ivSkew', 0)
+    if skew > 3: bear += 0.2
+    elif skew < -2: bull += 0.2
+    cwF = profile.get('cwFresh', 0)
+    pwF = profile.get('pwFresh', 0)
+    if cwF > 0.25: bear += 0.15
+    if pwF > 0.25: bull += 0.15
+    fii_hist = ctx.get('fiiHistory', [])
+    fii_sum = sum(h.get('fiiCash', 0) or 0 for h in fii_hist[:5])
+    if fii_sum < -3000: bear += 0.3
+    elif fii_sum > 3000: bull += 0.3
+
+    # Direction
+    if bull > bear + 0.4: direction = 'BULL'
+    elif bear > bull + 0.4: direction = 'BEAR'
+    else: direction = 'NEUTRAL'
+
+    # Confidence
+    total = bull + bear + 0.001
+    dominant = max(bull, bear)
+    confidence = int(dominant / total * 80)  # base max 80
+    if cautions >= 3: confidence -= 15
+    if bull > 0.5 and bear > 0.5: confidence -= 20  # conflicting
+    rtype = regime.get('type', 'unknown')
+    if rtype in ('range', 'trend'): confidence += 10  # clear regime = higher confidence
+    if rtype == 'choppy': confidence -= 10
+
+    # Personal calibration boost/penalty
+    vixs = get_vix_vals(polls)
+    vix = vixs[-1] if vixs else 20
+    dte = ctx.get('bnfDTE', 5)
+
+    # Strategy selection
+    conflicts = []
+    if rtype == 'range':
+        action = 'SELL PREMIUM'
+        if vix >= 20 and dte <= 1:
+            strategy = 'IRON_BUTTERFLY'
+        else:
+            strategy = 'IRON_CONDOR'
+        if direction != 'NEUTRAL':
+            conflicts.append(f"Range but bias {direction}")
+    elif direction == 'BULL':
+        if vix >= 24: action, strategy = 'BUY PREMIUM', 'BULL_CALL'
+        else: action, strategy = 'SELL PREMIUM', 'BULL_PUT'
+    elif direction == 'BEAR':
+        if vix >= 24: action, strategy = 'BUY PREMIUM', 'BEAR_PUT'
+        else: action, strategy = 'SELL PREMIUM', 'BEAR_CALL'
+    else:
+        if rtype == 'choppy' or cautions >= 3:
+            action, strategy = 'WAIT', None
+        elif vix >= 20:
+            action, strategy = 'SELL PREMIUM', 'IRON_CONDOR'
+        else:
+            action, strategy = 'WAIT', None
+
+    # Calibration check — do you WIN with this strategy?
+    if _calibration and strategy:
+        cal = _calibration.get('strategy', {}).get(strategy, {})
+        n = cal.get('total', 0)
+        rate = cal.get('rate', 0.5)
+        if n >= 5 and rate < 0.3:
+            confidence -= 20
+            conflicts.append(f"Your {strategy}: {cal.get('wins',0)}/{n} ({rate*100:.0f}%)")
+        elif n >= 5 and rate > 0.7:
+            confidence += 10
+
+    # Urgency
+    mins = get_time_mins(polls[-1].get('t', '')) - 555 if polls else 0
+    if 135 <= mins <= 315: urgency = 'ENTER NOW'
+    elif mins < 15: urgency = 'WAIT — opening noise'
+    elif mins > 345: urgency = 'WINDOW CLOSED'
+    else: urgency = 'READY'
+
+    # Daily P&L gate
+    if ctx.get('dailyPnl', 0) < -2000:
+        action, strategy, urgency = 'STOP', None, 'DONE FOR TODAY'
+        confidence = 0
+    elif ctx.get('dailyTradeCount', 0) >= 3:
+        confidence -= 15
+        if confidence < 50: urgency = 'CAUTION — 3+ trades today'
+
+    confidence = max(0, min(100, confidence))
+    if action == 'WAIT' or action == 'STOP':
+        confidence = 0
+
+    # Build reasoning
+    reasons = []
+    if rtype != 'unknown': reasons.append(f"{'Range' if rtype=='range' else 'Trend' if rtype=='trend' else rtype.title()} {regime.get('sigma',0):.1f}σ")
+    if vix >= 24: reasons.append(f"VIX {vix:.1f} (VERY HIGH)")
+    elif vix >= 20: reasons.append(f"VIX {vix:.1f} (HIGH)")
+    if abs(b_pct - 50) > 10: reasons.append(f"Breadth {'strong' if b_pct>60 else 'weak'} ({b_pct:.0f}%)")
+    if abs(fii_sum) > 1000: reasons.append(f"FII {'+' if fii_sum>0 else ''}₹{fii_sum:.0f}Cr/5d")
+    if abs(skew) > 2: reasons.append(f"Skew {'steep' if skew>0 else 'flat'} ({skew:.0f})")
+    if dte <= 1: reasons.append(f"EXPIRY (DTE {dte})")
+    if _calibration and strategy:
+        cal = _calibration.get('strategy', {}).get(strategy, {})
+        if cal.get('total', 0) >= 3:
+            reasons.append(f"Your {strategy}: {cal.get('wins',0)}/{cal['total']}")
+    reasons.append(f"Bull {bull:.1f} vs Bear {bear:.1f}")
+
+    return {
+        "action": action, "strategy": strategy, "direction": direction,
+        "confidence": confidence, "urgency": urgency,
+        "reasoning": " · ".join(reasons[:6]),
+        "conflicts": conflicts, "bull": round(bull, 2), "bear": round(bear, 2)
+    }
+
+def position_verdict(trade, insights, regime, ctx):
+    """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason."""
+    pnl = trade.get('current_pnl', 0)
+    max_p = trade.get('max_profit', 1)
+    max_l = trade.get('max_loss', 1)
+    ci = trade.get('controlIndex')
+    pnl_pct = pnl / max_p if max_p > 0 else 0
+    loss_pct = abs(pnl) / max_l if max_l > 0 and pnl < 0 else 0
+    stype = trade.get('strategy_type', '')
+    is_4leg = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
+    dte = ctx.get('bnfDTE' if trade.get('index_key') == 'BNF' else 'nfDTE', 5)
+
+    # Check insights for strong signals
+    has_wall = any(i.get('label', '').startswith('Wall') for i in insights)
+    against_trend = any('Against' in i.get('label', '') for i in insights)
+    momentum_threat = any('sell strike' in i.get('label', '').lower() for i in insights)
+
+    # EXIT signals
+    if momentum_threat:
+        return {"action": "EXIT", "urgency": "NOW", "reason": f"Spot approaching sell strike."}
+    if against_trend and pnl < 0 and loss_pct > 0.3:
+        return {"action": "EXIT", "urgency": "NOW", "reason": f"Against trend, {loss_pct*100:.0f}% of max loss."}
+    if is_4leg and dte <= 1:
+        if pnl > 0:
+            return {"action": "BOOK", "urgency": "NOW", "reason": f"4-leg + expiry day. 0% overnight survival."}
+        else:
+            return {"action": "EXIT", "urgency": "NOW", "reason": f"4-leg + expiry. Cut loss, don't hold overnight."}
+    if ci is not None and ci < -40:
+        return {"action": "EXIT", "urgency": "SOON", "reason": f"Opponent in control (CI {ci})."}
+
+    # BOOK signals
+    if pnl_pct >= 0.5:
+        capture = 60
+        if _calibration and _calibration.get('exit'):
+            capture = _calibration['exit'].get('capture_pct', 60)
+        if regime.get('type') == 'range':
+            return {"action": "BOOK", "urgency": "NOW", "reason": f"{pnl_pct*100:.0f}% profit in range. You capture {capture:.0f}% avg."}
+        return {"action": "BOOK", "urgency": "SOON", "reason": f"{pnl_pct*100:.0f}% of max. Consider booking."}
+    if pnl_pct >= 0.3 and against_trend:
+        return {"action": "BOOK", "urgency": "SOON", "reason": f"{pnl_pct*100:.0f}% profit but against trend. Don't give it back."}
+
+    # HOLD signals
+    if pnl > 0 and ci and ci > 20 and has_wall:
+        return {"action": "HOLD", "urgency": "WATCH", "reason": f"Profitable + CI {ci} + wall protection. Let it run."}
+    if pnl > 0 and regime.get('type') == 'range':
+        return {"action": "HOLD", "urgency": "WATCH", "reason": f"Profitable in range. Theta working."}
+
+    # Default
+    if pnl >= 0:
+        return {"action": "HOLD", "urgency": "WATCH", "reason": f"P&L ₹{pnl:.0f}. No exit signals."}
+    else:
+        return {"action": "HOLD", "urgency": "MONITOR", "reason": f"Loss ₹{pnl:.0f} ({loss_pct*100:.0f}%). Watch CI and momentum."}
+
+# ═══════════════════════════════════════════
 # MAIN ENTRY POINT
 # ═══════════════════════════════════════════
 
-def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json):
+def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
     baseline = json.loads(baseline_json) if baseline_json else {}
     open_trades = json.loads(open_trades_json) if open_trades_json else []
     candidates = json.loads(candidates_json) if candidates_json else []
     strike_oi = json.loads(strike_oi_json) if strike_oi_json else {}
+    ctx = json.loads(context_json) if context_json else {}
 
-    result = {"market": [], "positions": {}, "candidates": {}, "timing": [], "risk": []}
+    result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": []}
     if len(polls) < 3:
         return json.dumps(result)
 
-    # Build learning calibration (cached — only recomputes when trade count changes)
     build_calibration(closed_trades)
-
     regime = detect_regime(polls, baseline)
 
-    # Market
+    # Market (existing 8 + new 7)
     for fn in [pcr_velocity, oi_wall_shift, vix_momentum, spot_exhaustion,
                regime_detector, futures_premium_trend, oi_velocity, institutional_clock]:
         try:
             r = fn(polls, baseline)
             if r: result["market"].append(r)
         except: pass
+    # New context-aware market functions
+    for fn in [signal_coherence, max_pain_gravity, fii_trend, nf_bnf_divergence,
+               day_range_position, wall_freshness, yesterday_signal_prior]:
+        try:
+            r = fn(polls, ctx)
+            if r: result["market"].append(r)
+        except: pass
 
-    # Positions
+    # Positions — verdict + insights
     for t in open_trades:
         tid = t.get("id", "")
         ins = []
@@ -958,9 +1322,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 r = fn(t, polls, baseline, regime, soi)
                 if r: ins.append(r)
             except: pass
-        if ins: result["positions"][tid] = ins
+        try:
+            r = position_gamma_alert(t, polls, soi)
+            if r: ins.append(r)
+        except: pass
+        pv = position_verdict(t, ins, regime, ctx)
+        result["positions"][tid] = {"verdict": pv, "insights": ins}
 
-    # Candidates — now includes pattern match from YOUR history
+    # Candidates — existing + liquidity + pattern match
     for c in candidates:
         cid = c.get("id", "")
         ins = []
@@ -969,21 +1338,39 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 r = fn(c, polls, baseline, regime)
                 if r: ins.append(r)
             except: pass
+        try:
+            r = candidate_liquidity(c, ctx)
+            if r: ins.append(r)
+        except: pass
         if ins: result["candidates"][cid] = ins
 
-    # Timing
+    # Timing — existing + DTE urgency
     for fn in [timing_entry_window, timing_wait_signal]:
         try:
             r = fn(polls, baseline, regime)
             if r: result["timing"].append(r)
         except: pass
+    try:
+        r = dte_urgency(polls, ctx)
+        if r: result["timing"].append(r)
+    except: pass
 
-    # Risk — now includes exit analysis + factor importance + streak warning
+    # Risk — existing + daily PnL
     for fn in [risk_kelly_headroom, risk_regime_shift, risk_exit_analysis, risk_factor_importance, risk_streak_warning]:
         try:
             r = fn(polls, baseline, open_trades, closed_trades)
             if r: result["risk"].append(r)
         except: pass
+    try:
+        r = daily_pnl_check(polls, ctx)
+        if r: result["risk"].append(r)
+    except: pass
+
+    # ═══ THE VERDICT ═══
+    all_insights = result["market"] + result["timing"] + result["risk"]
+    try:
+        result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline)
+    except: pass
 
     return json.dumps(result)
 `;
@@ -1077,7 +1464,7 @@ const STATE = {
 
     // Phase 12: Pyodide Brain — Python analysis in WebAssembly
     brainReady: false,        // true after Pyodide loaded + Python code initialized
-    brainInsights: { market: [], positions: {}, candidates: {}, timing: [], risk: [] },
+    brainInsights: { verdict: null, market: [], positions: {}, candidates: {}, timing: [], risk: [] },
     brainLastRun: 0,          // timestamp of last brain run
     brainError: null,         // last error (for debug)
     brainLoadStart: 0,        // perf tracking
@@ -3598,8 +3985,8 @@ async function lightFetch() {
                 if (!ce && !pe) continue;
                 result.push({
                     k: strike,
-                    c: ce ? { o: ce.oi ?? 0, v: ce.volume ?? 0, l: +(ce.ltp?.toFixed(2) ?? 0), i: +(ce.iv?.toFixed(1) ?? 0), d: +(ce.delta?.toFixed(3) ?? 0), p: +(ce.pop?.toFixed(1) ?? 0) } : null,
-                    p: pe ? { o: pe.oi ?? 0, v: pe.volume ?? 0, l: +(pe.ltp?.toFixed(2) ?? 0), i: +(pe.iv?.toFixed(1) ?? 0), d: +(pe.delta?.toFixed(3) ?? 0), p: +(pe.pop?.toFixed(1) ?? 0) } : null
+                    c: ce ? { o: ce.oi ?? 0, v: ce.volume ?? 0, l: +(ce.ltp?.toFixed(2) ?? 0), i: +(ce.iv?.toFixed(1) ?? 0), d: +(ce.delta?.toFixed(3) ?? 0), g: +(ce.gamma?.toFixed(5) ?? 0), p: +(ce.pop?.toFixed(1) ?? 0) } : null,
+                    p: pe ? { o: pe.oi ?? 0, v: pe.volume ?? 0, l: +(pe.ltp?.toFixed(2) ?? 0), i: +(pe.iv?.toFixed(1) ?? 0), d: +(pe.delta?.toFixed(3) ?? 0), g: +(pe.gamma?.toFixed(5) ?? 0), p: +(pe.pop?.toFixed(1) ?? 0) } : null
                 });
             }
             return result;
@@ -4160,6 +4547,75 @@ async function initBrain() {
     }
 }
 
+// ═══ CHAIN PROFILE — compress per-strike intelligence into ~25 numbers for Python ═══
+function computeChainProfile(chain, spot, ohlc) {
+    if (!chain?.strikes || !chain?.atm || !chain?.allStrikes) return null;
+    const strikes = chain.strikes;
+    const allK = chain.allStrikes;
+    const vix = STATE.live?.vix ?? STATE.baseline?.vix ?? 20;
+    const dailySigma = BS.dailySigma(spot, vix);
+    if (dailySigma <= 0) return null;
+    const step = allK.length > 1 ? allK[1] - allK[0] : (spot > 30000 ? 100 : 50);
+
+    // IV Skew: OTM put IV vs OTM call IV at ~0.5σ
+    const otmDist = Math.round(dailySigma * 0.5 / step) * step || step;
+    const callIV = strikes[chain.atm + otmDist]?.CE?.iv ?? 0;
+    const putIV = strikes[chain.atm - otmDist]?.PE?.iv ?? 0;
+
+    // Sigma-zone PCR
+    const zonePCR = (lo, hi) => {
+        let c = 0, p = 0;
+        for (const k of allK) {
+            const sigma = Math.abs(k - chain.atm) / dailySigma;
+            if (sigma >= lo && sigma < hi) { c += strikes[k]?.CE?.oi ?? 0; p += strikes[k]?.PE?.oi ?? 0; }
+        }
+        return c > 0 ? +(p / c).toFixed(2) : 0;
+    };
+
+    // Wall freshness + OI change from prev_oi
+    const wallFresh = (strike, type) => {
+        const d = strikes[strike]?.[type];
+        if (!d) return { fresh: 0, oiChg: null };
+        return { fresh: +((d.volume || 0) / Math.max(1, d.oi || 1)).toFixed(3), oiChg: d.prev_oi != null ? d.oi - d.prev_oi : null };
+    };
+    const cw = wallFresh(chain.callWallStrike, 'CE');
+    const pw = wallFresh(chain.putWallStrike, 'PE');
+
+    // ATM bid-ask spread
+    const atmCE = strikes[chain.atm]?.CE;
+    const atmPE = strikes[chain.atm]?.PE;
+
+    // Day range position
+    const dayRange = ohlc && ohlc.high > ohlc.low ? +((spot - ohlc.low) / (ohlc.high - ohlc.low)).toFixed(2) : 0.5;
+
+    // OI concentration (top 3 strikes % of near-ATM total)
+    const nearK = allK.filter(k => Math.abs(k - chain.atm) / dailySigma < 1.5);
+    const cOIs = nearK.map(k => strikes[k]?.CE?.oi ?? 0).sort((a, b) => b - a);
+    const pOIs = nearK.map(k => strikes[k]?.PE?.oi ?? 0).sort((a, b) => b - a);
+    const cTotal = cOIs.reduce((s, v) => s + v, 0) || 1;
+    const pTotal = pOIs.reduce((s, v) => s + v, 0) || 1;
+
+    // Gap fill %
+    const gapFill = ohlc && STATE.gapInfo?.gap && Math.abs(STATE.gapInfo.gap) > 10 ?
+        +Math.min(1, Math.abs(spot - ohlc.open) / Math.abs(STATE.gapInfo.gap)).toFixed(2) : null;
+
+    // Gamma at ATM (for regime assessment)
+    const atmGamma = atmCE?.gamma ?? null;
+
+    return {
+        ivSkew: +(putIV - callIV).toFixed(1),
+        pcrZ1: zonePCR(0.3, 0.5), pcrZ2: zonePCR(0.5, 0.8), pcrZ3: zonePCR(0.8, 1.2),
+        cwFresh: cw.fresh, cwOiChg: cw.oiChg, pwFresh: pw.fresh, pwOiChg: pw.oiChg,
+        atmSpread: +((atmCE ? atmCE.ask - atmCE.bid : 0) + (atmPE ? atmPE.ask - atmPE.bid : 0)).toFixed(1),
+        dayRange, gapFill,
+        callConc: +((cOIs[0] + (cOIs[1] || 0) + (cOIs[2] || 0)) / cTotal).toFixed(3),
+        putConc: +((pOIs[0] + (pOIs[1] || 0) + (pOIs[2] || 0)) / pTotal).toFixed(3),
+        pctFromOpen: ohlc?.open ? +((spot - ohlc.open) / ohlc.open * 100).toFixed(2) : 0,
+        maxPain: chain.maxPain, callWall: chain.callWallStrike, putWall: chain.putWallStrike,
+        atm: chain.atm, spot, atmGamma
+    };
+}
+
 async function runBrain() {
     if (!STATE.brainReady || !STATE._pyodide) return;
     if (STATE.pollHistory.length < 3) return;
@@ -4224,8 +4680,49 @@ async function runBrain() {
         py.globals.set('_candidates_json', JSON.stringify(candsLite));
         py.globals.set('_strike_oi_json', JSON.stringify(strikeOI));
 
+        // 7. CONTEXT — everything the brain was blind to (b72 upgrade)
+        const todayTrades = STATE.openTrades.filter(t => {
+            const d = t.entry_date ? t.entry_date.split('T')[0] : '';
+            return d === API.todayIST();
+        });
+        const closedToday = (STATE._brainTradesCache || []).filter(t => {
+            const d = t.exit_date ? t.exit_date.split('T')[0] : '';
+            return d === API.todayIST() && t.status === 'CLOSED';
+        });
+        const dailyPnl = closedToday.reduce((s, t) => s + (t.actual_pnl ?? 0), 0);
+
+        py.globals.set('_context_json', JSON.stringify({
+            // Chain profiles (20 numbers each)
+            bnfProfile: computeChainProfile(STATE.bnfChain, STATE.live?.bnfSpot ?? STATE.baseline?.bnfSpot, STATE.baseline?.bnfOHLC),
+            nfProfile: computeChainProfile(STATE.nfChain, STATE.live?.nfSpot ?? STATE.baseline?.nfSpot, STATE.baseline?.nfOHLC),
+            // Breadth
+            bnfBreadth: STATE.bnfBreadth ? { pct: STATE.bnfBreadth.weightedPct, adv: STATE.bnfBreadth.advancing, dec: STATE.bnfBreadth.declining, total: STATE.bnfBreadth.total } : null,
+            nf50Breadth: STATE.nf50Breadth ? { adv: STATE.nf50Breadth.advancing, dec: STATE.nf50Breadth.declining, scaled: STATE.nf50Breadth.scaled } : null,
+            // FII 5-day history (already in memory)
+            fiiHistory: (STATE.premiumHistory || []).slice(0, 5).map(p => ({
+                date: p.date, fiiCash: p.fii_cash, fiiShort: p.fii_short_pct,
+                diiCash: p.dii_cash, fiiIdxFut: p.fii_idx_fut, fiiStkFut: p.fii_stk_fut,
+                vix: p.vix, bias: p.bias_net
+            })),
+            // Gap info
+            gap: STATE.gapInfo ? { type: STATE.gapInfo.type, pts: STATE.gapInfo.gap, sigma: STATE.gapInfo.sigma, pct: STATE.gapInfo.pct } : null,
+            // Signal accuracy + yesterday's signal
+            signalAccuracy: STATE.signalAccuracyStats ? { pct: STATE.signalAccuracyStats.pct, total: STATE.signalAccuracyStats.total } : null,
+            yesterdaySignal: STATE.tomorrowSignal ? { signal: STATE.tomorrowSignal.signal, strength: STATE.tomorrowSignal.strength } : null,
+            // DTE
+            bnfDTE: STATE.baseline?.bnfTDTE ?? 5,
+            nfDTE: STATE.baseline?.nfTDTE ?? 5,
+            // Daily P&L discipline
+            dailyPnl, dailyTradeCount: closedToday.length + todayTrades.length,
+            // OHLC for day range
+            bnfOHLC: STATE.baseline?.bnfOHLC ?? null,
+            nfOHLC: STATE.baseline?.nfOHLC ?? null,
+            // Morning bias
+            morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null
+        }));
+
         const resultJson = py.runPython(
-            'analyze(_poll_json, _trades_json, _baseline_json, _open_trades_json, _candidates_json, _strike_oi_json)'
+            'analyze(_poll_json, _trades_json, _baseline_json, _open_trades_json, _candidates_json, _strike_oi_json, _context_json)'
         );
         const result = JSON.parse(resultJson);
 
@@ -4234,14 +4731,34 @@ async function runBrain() {
             const prevKeys = new Set();
             const prev = STATE.brainInsights;
             [...(prev?.market || []), ...(prev?.timing || []), ...(prev?.risk || [])].forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
-            for (const tid in (prev?.positions || {})) (prev.positions[tid] || []).forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
+            for (const tid in (prev?.positions || {})) ((prev.positions[tid]?.insights) || []).forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
 
             const allNew = [...(result.market || []), ...(result.timing || []), ...(result.risk || [])];
-            for (const tid in (result.positions || {})) allNew.push(...(result.positions[tid] || []));
+            for (const tid in (result.positions || {})) allNew.push(...((result.positions[tid]?.insights) || []));
             for (const ins of allNew) {
                 const key = (ins.type || '') + '|' + (ins.label || '');
                 if (ins.strength >= 4 && !prevKeys.has(key)) {
                     addNotificationLog(`🧠 ${ins.label}`, ins.detail, ins.strength >= 5 ? 'urgent' : 'important');
+                }
+            }
+
+            // Verdict change notification
+            const prevAction = prev?.verdict?.action;
+            const newAction = result.verdict?.action;
+            if (newAction && prevAction && newAction !== prevAction && newAction !== 'WAIT') {
+                addNotificationLog(`🧠 Verdict: ${newAction}`,
+                    `${result.verdict.strategy || ''} · Confidence ${result.verdict.confidence}% · ${result.verdict.urgency || ''}`,
+                    'important');
+            }
+
+            // Position verdict notifications (EXIT/BOOK urgency NOW)
+            for (const tid in (result.positions || {})) {
+                const pv = result.positions[tid]?.verdict;
+                const prevPv = prev?.positions?.[tid]?.verdict;
+                if (pv && pv.urgency === 'NOW' && pv.action !== prevPv?.action) {
+                    const trade = STATE.openTrades.find(t => t.id === tid);
+                    const label = trade ? `${trade.index_key} ${trade.strategy_type}` : tid;
+                    addNotificationLog(`🧠 ${pv.action} ${label}`, pv.reason, pv.action === 'EXIT' ? 'urgent' : 'important');
                 }
             }
 
@@ -4907,35 +5424,58 @@ function renderBrainCard(ins) {
 
 function renderBrainInsights() {
     const bi = STATE.brainInsights;
+    const verdict = bi?.verdict;
     const market = bi?.market || [];
     const timing = bi?.timing || [];
     const risk = bi?.risk || [];
     const all = [...market, ...timing, ...risk];
 
-    if (!all.length && !STATE.brainReady && !STATE.brainError) {
+    if (!all.length && !verdict && !STATE.brainReady && !STATE.brainError) {
         if (STATE.pollCount > 0 && typeof loadPyodide === 'function') {
             return `<div class="brain-section"><div class="brain-header">🧠 Brain</div><div class="brain-loading">Loading Python engine...</div></div>`;
         }
         return '';
     }
-    if (!all.length) return '';
 
     const age = STATE.brainLastRun > 0 ? Math.round((Date.now() - STATE.brainLastRun) / 1000) : null;
     const ageText = age !== null ? (age < 60 ? `${age}s ago` : `${Math.round(age/60)}m ago`) : '';
 
-    // Sort: risk first (most important), then high-strength market, then timing
+    // VERDICT CARD — the ONE answer
+    let verdictHtml = '';
+    if (verdict && verdict.action) {
+        const vColor = verdict.action === 'WAIT' || verdict.action === 'STOP' ? 'var(--warn)' :
+            verdict.direction === 'BULL' ? 'var(--green)' : verdict.direction === 'BEAR' ? 'var(--danger)' : 'var(--accent)';
+        const confBar = verdict.confidence > 0 ? `<div style="height:3px;background:var(--border);border-radius:2px;margin-top:4px"><div style="height:100%;width:${verdict.confidence}%;background:${vColor};border-radius:2px"></div></div>` : '';
+        verdictHtml = `<div class="brain-card" style="border-left-color:${vColor};border-left-width:4px;padding:10px 12px">
+            <div style="font-size:14px;font-weight:700;color:${vColor}">${verdict.action}${verdict.strategy ? ' — ' + verdict.strategy.replace('_', ' ') : ''}</div>
+            <div style="font-size:12px;font-weight:600;margin-top:2px">${verdict.urgency || ''} ${verdict.confidence > 0 ? '· Confidence: ' + verdict.confidence + '%' : ''}</div>
+            ${confBar}
+            <div class="brain-detail" style="margin-top:4px">${verdict.reasoning || ''}</div>
+            ${verdict.conflicts?.length ? `<div style="font-size:10px;color:var(--warn);margin-top:3px">⚠️ ${verdict.conflicts.join(' · ')}</div>` : ''}
+        </div>`;
+    }
+
+    // Details — collapsible
     const sorted = [...risk, ...market.filter(i => i.strength >= 3), ...timing, ...market.filter(i => i.strength < 3)];
+    const detailsHtml = sorted.length ? `<details style="margin-top:4px"><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">▸ ${sorted.length} signals</summary>${sorted.map(renderBrainCard).join('')}</details>` : '';
 
     return `<div class="brain-section">
-        <div class="brain-header">🧠 Brain <span class="brain-meta">${all.length} insights · ${ageText}</span></div>
-        ${sorted.map(renderBrainCard).join('')}
+        <div class="brain-header">🧠 Copilot <span class="brain-meta">${ageText}</span></div>
+        ${verdictHtml}
+        ${detailsHtml}
     </div>`;
 }
 
 function renderBrainForTrade(tradeId) {
-    const insights = STATE.brainInsights?.positions?.[tradeId];
-    if (!insights || !insights.length) return '';
-    return `<div class="brain-section" style="margin:6px 0 2px">${insights.map(renderBrainCard).join('')}</div>`;
+    const data = STATE.brainInsights?.positions?.[tradeId];
+    if (!data) return '';
+    const v = data.verdict;
+    const insights = data.insights || [];
+    if (!v && !insights.length) return '';
+    const vColor = v?.action === 'EXIT' ? 'var(--danger)' : v?.action === 'BOOK' ? 'var(--green)' : 'var(--text-muted)';
+    const verdictLine = v ? `<div style="font-size:12px;font-weight:700;color:${vColor};padding:4px 0">🧠 ${v.action} ${v.urgency ? '· ' + v.urgency : ''}</div><div style="font-size:11px;color:var(--text-secondary)">${v.reason || ''}</div>` : '';
+    const detailsHtml = insights.length ? `<details style="margin-top:2px"><summary style="font-size:10px;color:var(--text-muted);cursor:pointer">▸ ${insights.length} factors</summary>${insights.map(renderBrainCard).join('')}</details>` : '';
+    return `<div class="brain-section" style="margin:6px 0 2px">${verdictLine}${detailsHtml}</div>`;
 }
 
 function renderBrainForCandidate(candId) {
@@ -5036,11 +5576,13 @@ function renderDebug() {
     // Brain debug
     const bdi = STATE.brainInsights || {};
     const bdiTotal = (bdi.market || []).length + (bdi.timing || []).length + (bdi.risk || []).length
-        + Object.values(bdi.positions || {}).reduce((s, a) => s + a.length, 0)
+        + Object.values(bdi.positions || {}).reduce((s, p) => s + (p?.insights?.length || 0), 0)
         + Object.values(bdi.candidates || {}).reduce((s, a) => s + a.length, 0);
+    const v = bdi.verdict;
     stateInfo.push({
         time: '', label: 'BRAIN',
         ready: STATE.brainReady,
+        verdict: v ? `${v.action} ${v.strategy || ''} ${v.confidence}% ${v.urgency || ''}` : 'none',
         insights: `${bdiTotal} (mkt:${(bdi.market||[]).length} pos:${Object.keys(bdi.positions||{}).length} cand:${Object.keys(bdi.candidates||{}).length} time:${(bdi.timing||[]).length} risk:${(bdi.risk||[]).length})`,
         lastRun: STATE.brainLastRun > 0 ? new Date(STATE.brainLastRun).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : 'never',
         error: STATE.brainError || 'none',
@@ -6155,16 +6697,13 @@ function renderFooter() {
     const time = API.istNow();
     const watching = STATE.isWatching ? '🟢' : '⏹';
     const polls = STATE.pollCount;
-    // Count all brain insights across categories
     const bi = STATE.brainInsights || {};
-    const mktCount = (bi.market || []).length + (bi.timing || []).length;
-    const posCount = Object.values(bi.positions || {}).reduce((s, arr) => s + arr.length, 0);
-    const candCount = Object.values(bi.candidates || {}).reduce((s, arr) => s + arr.length, 0);
-    const riskCount = (bi.risk || []).length;
-    const total = mktCount + posCount + candCount + riskCount;
-    const brain = STATE.brainReady ? `🧠${total}` : (STATE.brainError ? '🧠✗' : '🧠…');
-    const riskAlert = riskCount > 0 && (bi.risk || []).some(r => r.strength >= 4) ? ' ⚠️' : '';
-    el.textContent = `${watching} ${time} · Polls: ${polls} · ${brain}${riskAlert} · Candidates: ${STATE.candidates.length}`;
+    const verdict = bi.verdict;
+    const brain = STATE.brainReady ?
+        (verdict?.action ? `🧠 ${verdict.action}${verdict.confidence ? ' ' + verdict.confidence + '%' : ''}` : '🧠 ready') :
+        (STATE.brainError ? '🧠✗' : '🧠…');
+    const riskAlert = (bi.risk || []).some(r => r.strength >= 4) ? ' ⚠️' : '';
+    el.textContent = `${watching} ${time} · ${brain}${riskAlert} · Polls: ${polls}`;
 }
 
 
