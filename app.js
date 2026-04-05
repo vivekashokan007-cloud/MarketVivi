@@ -6795,17 +6795,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const todayPolls = await DB.getConfig(todayKey);
     if (todayPolls) STATE.pollHistory = todayPolls;
 
-    // Cleanup old poll_history_ keys (>7 days) to prevent DB bloat
-    try {
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - 7);
-        for (let d = 0; d < 30; d++) {
-            const past = new Date(cutoff);
-            past.setDate(past.getDate() - d);
-            const oldKey = 'poll_history_' + past.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-            localStorage.removeItem('mr2_cfg_' + oldKey);
-        }
-    } catch (e) { /* non-critical cleanup */ }
+    // Cleanup poll_history keys older than 7 days (fire-and-forget)
+    DB.cleanOldPolls(7).catch(() => {});
 
     initTheme(cloudConfig);
     await loadOpenTrade();
