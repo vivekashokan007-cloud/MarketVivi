@@ -4511,22 +4511,28 @@ function stopWatchLoop() {
 // Loads async (non-blocking). Runs every poll. Graceful degradation.
 // ═══════════════════════════════════════════════════════════════
 
-async function initBrain() {
-    // Guard: Pyodide CDN must be loaded
+async function initBrain(attempt = 1) {
+    // Guard: Pyodide CDN script must have loaded
     if (typeof loadPyodide !== 'function') {
-        console.warn('[Brain] Pyodide CDN not loaded — brain disabled');
-        STATE.brainError = 'Pyodide CDN not loaded';
+        if (attempt <= 5) {
+            console.warn(`[Brain] Pyodide CDN not ready, retry ${attempt}/5 in 3s`);
+            setTimeout(() => initBrain(attempt + 1).catch(e => console.warn('[Brain] Retry failed:', e)), 3000);
+            return;
+        }
+        STATE.brainError = 'Pyodide CDN not loaded after 5 retries';
         return;
     }
 
     STATE.brainLoadStart = performance.now();
-    console.log('[Brain] Loading Pyodide...');
+    console.log(`[Brain] Loading Pyodide (attempt ${attempt})...`);
 
     try {
-        STATE._pyodide = await loadPyodide({
-            // Minimal packages — no pandas/numpy (saves 40MB+)
-            // indexURL defaults to CDN, which auto-detects
-        });
+        // Timeout: abort if WASM download takes >30s
+        const pyPromise = loadPyodide();
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Pyodide download timeout (30s)')), 30000)
+        );
+        STATE._pyodide = await Promise.race([pyPromise, timeoutPromise]);
 
         // Load the Python brain code
         STATE._pyodide.runPython(BRAIN_PYTHON);
@@ -7258,7 +7264,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b72' }
+            { metric: 'App Version', value: 'v2.1 b73' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
