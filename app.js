@@ -1134,7 +1134,11 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline):
     if cwF > 0.25: bear += 0.15
     if pwF > 0.25: bull += 0.15
     fii_hist = ctx.get('fiiHistory', [])
-    fii_sum = sum(h.get('fiiCash', 0) or 0 for h in fii_hist[:5])
+    fii_sum = 0
+    for h in fii_hist[:5]:
+        v = h.get('fiiCash', 0)
+        try: fii_sum += float(v) if v is not None else 0
+        except (ValueError, TypeError): pass
     if fii_sum < -3000: bear += 0.3
     elif fii_sum > 3000: bull += 0.3
 
@@ -1482,6 +1486,7 @@ const STATE = {
     brainInsights: { verdict: null, market: [], positions: {}, candidates: {}, timing: [], risk: [] },
     brainLastRun: 0,          // timestamp of last brain run
     brainError: null,         // last error (for debug)
+    _brainLoading: false,     // prevents double-init race condition
     brainLoadStart: 0,        // perf tracking
     _pyodide: null,           // Pyodide runtime reference
 
@@ -4553,6 +4558,8 @@ function stopWatchLoop() {
 // ═══════════════════════════════════════════════════════════════
 
 async function initBrain() {
+    // Race condition guard — prevent double loadPyodide which crashes WASM
+    if (STATE.brainReady || STATE._brainLoading) return;
     if (typeof loadPyodide !== 'function') {
         STATE.brainError = 'loadPyodide not available — CDN script may have failed';
         console.error('[Brain] loadPyodide not found');
@@ -4560,6 +4567,7 @@ async function initBrain() {
         return;
     }
 
+    STATE._brainLoading = true;
     STATE.brainLoadStart = performance.now();
     console.log('[Brain] Loading Python WASM runtime...');
 
@@ -4575,6 +4583,7 @@ async function initBrain() {
         STATE._pyodide.runPython(BRAIN_PYTHON);
 
         STATE.brainReady = true;
+        STATE._brainLoading = false;
         const elapsed = ((performance.now() - STATE.brainLoadStart) / 1000).toFixed(1);
         console.log(`[Brain] Ready in ${elapsed}s`);
         renderFooter();
@@ -4588,6 +4597,7 @@ async function initBrain() {
         console.error('[Brain] Init failed:', err);
         STATE.brainError = err.message;
         STATE.brainReady = false;
+        STATE._brainLoading = false;
         renderFooter();
     }
 }
@@ -4653,8 +4663,8 @@ function computeChainProfile(chain, spot, ohlc) {
         cwFresh: cw.fresh, cwOiChg: cw.oiChg, pwFresh: pw.fresh, pwOiChg: pw.oiChg,
         atmSpread: +((atmCE ? atmCE.ask - atmCE.bid : 0) + (atmPE ? atmPE.ask - atmPE.bid : 0)).toFixed(1),
         dayRange, gapFill,
-        callConc: +((cOIs[0] + (cOIs[1] || 0) + (cOIs[2] || 0)) / cTotal).toFixed(3),
-        putConc: +((pOIs[0] + (pOIs[1] || 0) + (pOIs[2] || 0)) / pTotal).toFixed(3),
+        callConc: +(((cOIs[0] || 0) + (cOIs[1] || 0) + (cOIs[2] || 0)) / cTotal).toFixed(3),
+        putConc: +(((pOIs[0] || 0) + (pOIs[1] || 0) + (pOIs[2] || 0)) / pTotal).toFixed(3),
         pctFromOpen: ohlc?.open ? +((spot - ohlc.open) / ohlc.open * 100).toFixed(2) : 0,
         maxPain: chain.maxPain, callWall: chain.callWallStrike, putWall: chain.putWallStrike,
         atm: chain.atm, spot, atmGamma
@@ -7316,7 +7326,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b79' }
+            { metric: 'App Version', value: 'v2.1 b80' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
