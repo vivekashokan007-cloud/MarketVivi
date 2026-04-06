@@ -6248,8 +6248,11 @@ function renderWatchlist() {
 
     // Count candidates that ACTUALLY fit market conditions
     // isDirectionSafe: directional strategies with F1 against are NOT executable
+    // Range-detected: 4-leg strategies exempt from ev>0 (range detection IS the edge)
+    const rangeActive = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
     const executable = STATE.candidates.filter(c =>
-        !c.capitalBlocked && c.forces.aligned >= 2 && (c.contextScore || 0) >= -0.3 && c.ev > 0
+        !c.capitalBlocked && c.forces.aligned >= 2 && (c.contextScore || 0) >= -0.3
+        && (c.ev > 0 || (rangeActive && c.legs === 4))
         && isDirectionSafe(c)
     ).length;
     const total = STATE.candidates.length;
@@ -6394,13 +6397,14 @@ function renderWatchlist() {
     // Max 3 per index: one per strategy type, truly different risk profiles
 
     function diverseTop(candidates, index) {
+        const rangeOK = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
         const filtered = candidates.filter(c =>
             c.index === index &&
             !c.capitalBlocked &&
             c.forces.aligned >= 2 &&          // at least 2/3 forces aligned
             isDirectionSafe(c) &&             // NEVER show direction-against as recommendation
             (c.contextScore || 0) >= -0.3 &&   // not fighting market condition
-            c.ev > 0                            // positive expected value
+            (c.ev > 0 || (rangeOK && c.legs === 4))  // range: 4-leg exempt from ev>0
         );
         // Engine already ranked by 8-step waterfall. First of each type IS the best.
         // Max 3: truly different strategies, not 3 Bear Calls at different strikes.
@@ -7334,7 +7338,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b82' }
+            { metric: 'App Version', value: 'v2.1 b83' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
