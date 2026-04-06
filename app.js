@@ -10,7 +10,7 @@
 
 // ═══ CONSTANTS ═══
 const C = {
-    CAPITAL: 110000,
+    CAPITAL: 250000,
     MAX_RISK_PCT: 10,
     NF_LOT: 65,
     BNF_LOT: 30,
@@ -7326,7 +7326,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b80' }
+            { metric: 'App Version', value: 'v2.1 b81' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
