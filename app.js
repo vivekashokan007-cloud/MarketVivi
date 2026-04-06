@@ -2094,14 +2094,32 @@ function computeControlIndex(trade, chain, spot, bnfBreadth) {
     const sellStrikeData = chain.strikes[trade.sell_strike]?.[trade.sell_type];
     if (sellStrikeData && trade.entry_sell_oi) {
         const oiChange = sellStrikeData.oi - trade.entry_sell_oi;
-        score += (oiChange > 0 ? 1 : oiChange < 0 ? -1 : 0) * 30;
+        if (isIC) {
+            // IC: OI increase at sell strikes = more writers defending = good
+            score += (oiChange > 0 ? 1 : oiChange < 0 ? -1 : 0) * 15; // half weight per side
+            // Check put side too if available
+            if (trade.sell_strike2 && trade.sell_type2) {
+                const sellData2 = chain.strikes[trade.sell_strike2]?.[trade.sell_type2];
+                const entryOi2 = trade.entry_snapshot?.sell_oi2 ?? null;
+                if (sellData2 && entryOi2) {
+                    const oiChange2 = sellData2.oi - entryOi2;
+                    score += (oiChange2 > 0 ? 1 : oiChange2 < 0 ? -1 : 0) * 15;
+                }
+            }
+        } else {
+            score += (oiChange > 0 ? 1 : oiChange < 0 ? -1 : 0) * 30;
+        }
     }
 
     // Signal 3: PCR Shift (25%)
     if (trade.entry_pcr && chain.pcr) {
         const pcrChange = chain.pcr - trade.entry_pcr;
         let pcrScore = 0;
-        if (isBear && pcrChange < -0.05) pcrScore = 1;   // PCR dropping = more bearish
+        if (isIC) {
+            // IC wants stable PCR — big shift either way is bad
+            if (Math.abs(pcrChange) < 0.05) pcrScore = 1;      // stable = good
+            else if (Math.abs(pcrChange) > 0.15) pcrScore = -1; // big shift = bad
+        } else if (isBear && pcrChange < -0.05) pcrScore = 1;
         else if (isBear && pcrChange > 0.05) pcrScore = -1;
         else if (isBull && pcrChange > 0.05) pcrScore = 1;
         else if (isBull && pcrChange < -0.05) pcrScore = -1;
@@ -2129,9 +2147,13 @@ function computeControlIndex(trade, chain, spot, bnfBreadth) {
         if (isBear && spot > sellStrike) strikeBreach = true;  // Bear Call: spot above sell = danger
         if (isBull && spot < sellStrike) strikeBreach = true;  // Bull Put: spot below sell = danger
         if (isIC) {
-            // IC: check both sides
-            const sellStrike2 = trade.sell_strike2 || sellStrike; // put side for IC
-            if (spot > sellStrike || spot < sellStrike2) strikeBreach = true;
+            // IC: check both sides — only if both sell strikes are known
+            const sellStrike2 = trade.sell_strike2;
+            if (sellStrike2) {
+                // sellStrike = CE sell (upper), sellStrike2 = PE sell (lower)
+                if (spot > sellStrike || spot < sellStrike2) strikeBreach = true;
+            }
+            // If sell_strike2 missing (old trades), skip breach check — better than false alarm
         }
         if (strikeBreach) {
             // Force CI strongly negative — override all other signals
@@ -2778,10 +2800,22 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
     const tDTE = API.tradingDTE(expiry);
     const T = tDTE / BS.DAYS_PER_YEAR;
 
+    // INTRADAY mode: probability should reflect TODAY's remaining time, not full DTE
+    // Chain deltas reflect full-DTE probability (wrong for intraday exit)
+    // BS.delta with T_prob gives correct intraday probability
+    const minsLeft = STATE.tradeMode === 'intraday' ? Math.max(30, 375 - (API.minutesSinceOpen?.() ?? 0)) : null;
+    const T_prob = minsLeft != null ? minsLeft / (252 * 375) : T;
+
     const candidates = [];
 
     const atmIv = parsed.atmIv || (vix / 100);
     const vol = atmIv > 1 ? atmIv / 100 : atmIv;
+
+    // Probability delta — uses intraday time horizon for intraday mode, chain delta for swing
+    const probDelta = (strikes, price, type) =>
+        STATE.tradeMode === 'intraday'
+            ? BS.delta(spot, price, T_prob, vol, type)
+            : chainDeltaAtPrice(strikes, price, type, spot, T, vol);
 
     const allStrikes = parsed.allStrikes;
     const step = allStrikes.length > 1 ? allStrikes[1] - allStrikes[0] : (isBNF ? 100 : 50);
@@ -2808,7 +2842,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         for (const width of widths) {
             const strikePairs = getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF);
             for (const pair of strikePairs) {
-                const cand = buildCandidate(sType, pair, parsed.strikes, spot, lotSize, width, T, tDTE, vol, expiry, isBNF, vix);
+                const cand = buildCandidate(sType, pair, parsed.strikes, spot, lotSize, width, T, T_prob, tDTE, vol, expiry, isBNF, vix);
                 if (!cand) continue;
 
                 // ═══ RANGE BUDGET FILTER (debit spreads only) ═══
@@ -2882,8 +2916,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             // b71 FIX: Use chain delta (IV smile) instead of flat ATM IV
             const upperBE = sellCall + totalCredit;
             const lowerBE = sellPut - totalCredit;
-            const probAbovePut = 1 - Math.abs(chainDeltaAtPrice(parsed.strikes, lowerBE, 'PE', spot, T, vol));
-            const probBelowCall = 1 - Math.abs(chainDeltaAtPrice(parsed.strikes, upperBE, 'CE', spot, T, vol));
+            const probAbovePut = 1 - Math.abs(probDelta(parsed.strikes, lowerBE, 'PE'));
+            const probBelowCall = 1 - Math.abs(probDelta(parsed.strikes, upperBE, 'CE'));
             const probProfit = Math.max(0, probAbovePut + probBelowCall - 1);
             if (probProfit < C.MIN_PROB) continue;
             if (totalCredit / width < C.MIN_CREDIT_RATIO) continue;
@@ -2969,8 +3003,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         // b71 FIX: Use chain delta like IC — was using width/sigma heuristic before
         const ibUpperBE = atm + totalCredit;
         const ibLowerBE = atm - totalCredit;
-        const ibProbAbovePut = 1 - Math.abs(chainDeltaAtPrice(parsed.strikes, ibLowerBE, 'PE', spot, T, vol));
-        const ibProbBelowCall = 1 - Math.abs(chainDeltaAtPrice(parsed.strikes, ibUpperBE, 'CE', spot, T, vol));
+        const ibProbAbovePut = 1 - Math.abs(probDelta(parsed.strikes, ibLowerBE, 'PE'));
+        const ibProbBelowCall = 1 - Math.abs(probDelta(parsed.strikes, ibUpperBE, 'CE'));
         const probProfit = Math.max(0, ibProbAbovePut + ibProbBelowCall - 1);
         if (probProfit < C.MIN_PROB) { ibDebug.push(`W${width}:prob(${probProfit.toFixed(2)}<${C.MIN_PROB})`); continue; }
 
@@ -3146,7 +3180,7 @@ function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
     return pairs.slice(0, 8); // limit per width
 }
 
-function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol, expiry, isBNF, vix) {
+function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, tDTE, vol, expiry, isBNF, vix) {
     const sellData = strikes[pair.sell]?.[pair.sellType];
     const buyData = strikes[pair.buy]?.[pair.buyType];
     if (!sellData || !buyData) return null;
@@ -3199,15 +3233,19 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, tDTE, vol
     }
 
     // Probability — use BREAKEVEN, not sell strike
-    // b71 FIX: Use per-strike chain delta (includes IV smile from Upstox)
-    // Falls back to BS.delta with ATM IV only if chain delta unavailable
+    // b84: INTRADAY uses BS.delta with today's remaining time (T_prob)
+    // SWING uses chain delta interpolation with full DTE
+    const deltaFn = (price, type) => STATE.tradeMode === 'intraday'
+        ? BS.delta(spot, price, T_prob, vol, type)
+        : chainDeltaAtPrice(strikes, price, type, spot, T, vol);
+
     let probProfit;
     if (isCredit) {
         const breakeven = pair.sellType === 'CE' ? pair.sell + netPremium : pair.sell - netPremium;
-        probProfit = 1 - Math.abs(chainDeltaAtPrice(strikes, breakeven, pair.sellType, spot, T, vol));
+        probProfit = 1 - Math.abs(deltaFn(breakeven, pair.sellType));
     } else {
         const breakeven = pair.buyType === 'CE' ? pair.buy + netPremium : pair.buy - netPremium;
-        probProfit = Math.abs(chainDeltaAtPrice(strikes, breakeven, pair.buyType, spot, T, vol));
+        probProfit = Math.abs(deltaFn(breakeven, pair.buyType));
     }
 
     // ═══ IV EDGE PROBABILITY BOOST — DISABLED (b67) ═══
@@ -5028,6 +5066,13 @@ async function takeTrade(candidateId, isPaper = false) {
         buy_strike: cand.buyStrike,
         buy_type: cand.buyType,
         buy_ltp: cand.buyLTP,
+        // 4-leg second side (IC/IB put side)
+        sell_strike2: cand.sellStrike2 ?? null,
+        sell_type2: cand.sellType2 ?? null,
+        sell_ltp2: cand.sellLTP2 ?? null,
+        buy_strike2: cand.buyStrike2 ?? null,
+        buy_type2: cand.buyType2 ?? null,
+        buy_ltp2: cand.buyLTP2 ?? null,
         max_profit: cand.maxProfit,
         max_loss: cand.maxLoss,
         is_credit: cand.isCredit,
@@ -5074,6 +5119,7 @@ async function takeTrade(candidateId, isPaper = false) {
             target_profit: cand.targetProfit ?? null,
             stop_loss: cand.stopLoss ?? null,
             sell_oi: chain?.strikes[cand.sellStrike]?.[cand.sellType]?.oi ?? null,
+            sell_oi2: cand.sellStrike2 ? (chain?.strikes[cand.sellStrike2]?.[cand.sellType2]?.oi ?? null) : null,
             buy_oi: chain?.strikes[cand.buyStrike]?.[cand.buyType]?.oi ?? null,
             sigma_from_atm: daily1Sigma > 0 ? +((Math.abs(cand.sellStrike - spot)) / daily1Sigma).toFixed(2) : null,
             // Market environment
@@ -6267,7 +6313,9 @@ function renderWatchlist() {
     // Varsity recommendation
     const biasObj = STATE.live?.bias || STATE.baseline?.bias;
     const varsityInfo = biasObj ? getVarsityFilter(biasObj, vix) : null;
-    const varsityLabel = varsityInfo?.primary?.[0] ? friendlyType(varsityInfo.primary[0]) : '';
+    // Show first PRIMARY that actually has candidates, not just primary[0]
+    const actualPrimary = varsityInfo?.primary?.find(p => STATE.candidates.some(c => c.type === p)) || varsityInfo?.primary?.[0];
+    const varsityLabel = actualPrimary ? friendlyType(actualPrimary) : '';
     const varsityAction = vix >= C.IV_HIGH ? 'SELL premium' : 'BUY premium';
 
     let html = `<div class="${goClass}">
@@ -7338,7 +7386,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b83' }
+            { metric: 'App Version', value: 'v2.1 b84' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
