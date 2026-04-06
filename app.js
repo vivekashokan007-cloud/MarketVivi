@@ -2880,18 +2880,39 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
     }
 
     // ═══ 2. IRON CONDOR (Varsity-gated) ═══
+    // b84: Wall-anchored — tries sell at OI walls (asymmetric) alongside symmetric
     if (allowedTypes.includes('IRON_CONDOR')) {
+    const cw = parsed.callWallStrike;
+    const pw = parsed.putWallStrike;
     for (const width of widths) {
         const range = isBNF ? 2000 : 800;
-        // Try symmetric distances from ATM
+        // Build distance pairs: symmetric + wall-anchored asymmetric
+        const distPairs = [];
         for (let dist = width; dist <= range; dist += step) {
-            const sellCall = atm + dist;
+            distPairs.push([dist, dist]); // symmetric from ATM
+        }
+        // Wall-anchored: sell CE at/near call wall, sell PE at/near put wall
+        if (cw && pw && cw > atm && pw < atm) {
+            const cwDist = cw - atm;
+            const pwDist = atm - pw;
+            if (cwDist >= step && pwDist >= step) {
+                distPairs.push([cwDist, pwDist]);  // exact wall
+                // Also try 1 step inside wall (tighter, more credit)
+                if (cwDist - step >= step && pwDist - step >= step) distPairs.push([cwDist - step, pwDist - step]);
+            }
+        }
+        const seen = new Set();
+        for (const [callDist, putDist] of distPairs) {
+            const sellCall = atm + callDist;
             const buyCall = sellCall + width;
-            const sellPut = atm - dist;
+            const sellPut = atm - putDist;
             const buyPut = sellPut - width;
 
             if (!allStrikes.includes(sellCall) || !allStrikes.includes(buyCall)) continue;
             if (!allStrikes.includes(sellPut) || !allStrikes.includes(buyPut)) continue;
+            const pairKey = `${sellCall}_${sellPut}_${width}`;
+            if (seen.has(pairKey)) continue;
+            seen.add(pairKey);
 
             const ceS = parsed.strikes[sellCall]?.CE;
             const ceB = parsed.strikes[buyCall]?.CE;
@@ -2944,8 +2965,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 ev, netTheta, isCredit: true, lotSize,
                 netDelta: +(Math.abs(chainDelta(parsed.strikes, sellCall, 'CE', spot, T, vol)) - Math.abs(chainDelta(parsed.strikes, sellPut, 'PE', spot, T, vol))).toFixed(4),
                 riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-                targetProfit: Math.round(maxProfit * 0.5),
-                stopLoss: Math.round(maxProfit),
+                // Intraday far-DTE: target/SL based on daily theta capture, not full-DTE max
+                targetProfit: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
+                stopLoss: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
+                intradayTheta: netTheta > 0 ? netTheta : null,
                 forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
                 index: isBNF ? 'BNF' : 'NF', expiry, tDTE
             });
@@ -3028,8 +3051,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             ev, netTheta, isCredit: true, lotSize,
             netDelta: 0, // IB is delta-neutral at entry
             riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-            targetProfit: Math.round(maxProfit * 0.5),
-            stopLoss: Math.round(maxProfit),
+            targetProfit: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
+            stopLoss: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
+            intradayTheta: netTheta > 0 ? netTheta : null,
             forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE
         });
@@ -3277,8 +3301,12 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
 
     // R:R and targets
     const riskReward = maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--';
-    const targetProfit = Math.round(maxProfit * 0.5);
-    const stopLoss = isCredit ? Math.round(maxProfit) : Math.round(maxLoss * 0.5);
+    // Intraday far-DTE: target/SL based on daily theta capture, not full-DTE max
+    const useIntradayTheta = STATE.tradeMode === 'intraday' && tDTE > 2 && isCredit && Math.abs(netTheta) > 0;
+    const targetProfit = useIntradayTheta ? Math.round(Math.abs(netTheta) * 0.5) : Math.round(maxProfit * 0.5);
+    const stopLoss = isCredit
+        ? (useIntradayTheta ? Math.round(Math.abs(netTheta)) : Math.round(maxProfit))
+        : Math.round(maxLoss * 0.5);
 
     const id = `${sType}_${isBNF ? 'BNF' : 'NF'}_${pair.sell}_${pair.buy}_W${width}`;
 
@@ -3304,7 +3332,8 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
         isCredit,
         lotSize,
         upstoxPop: sellData.pop ?? null,
-        sigmaOTM  // b70: strike distance from ATM in σ (null for IB/IC/debit)
+        sigmaOTM,  // b70: strike distance from ATM in σ (null for IB/IC/debit)
+        intradayTheta: isCredit && Math.abs(netTheta) > 0 ? Math.round(Math.abs(netTheta)) : null
     };
 }
 
@@ -4830,12 +4859,18 @@ async function runBrain() {
         const result = JSON.parse(resultJson);
 
         if (result && typeof result === 'object') {
-            // Dedup notifications — only NEW high-strength insights across ALL categories
+            // ═══ SMART NOTIFICATIONS — brain-driven, 3 tiers ═══
+            // Tier 1: ACT NOW (sendNotification — sound + vibrate)
+            // Tier 2: WATCH (addNotificationLog — silent, in panel)
+            // Tier 3: FYI (addNotificationLog — bundled)
+
+            // Dedup — only NEW insights
             const prevKeys = new Set();
             const prev = STATE.brainInsights;
             [...(prev?.market || []), ...(prev?.timing || []), ...(prev?.risk || [])].forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
             for (const tid in (prev?.positions || {})) ((prev.positions[tid]?.insights) || []).forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
 
+            // Tier 3 (FYI): New high-strength insights
             const allNew = [...(result.market || []), ...(result.timing || []), ...(result.risk || [])];
             for (const tid in (result.positions || {})) allNew.push(...((result.positions[tid]?.insights) || []));
             for (const ins of allNew) {
@@ -4845,24 +4880,50 @@ async function runBrain() {
                 }
             }
 
-            // Verdict change notification
-            const prevAction = prev?.verdict?.action;
-            const newAction = result.verdict?.action;
-            if (newAction && prevAction && newAction !== prevAction && newAction !== 'WAIT') {
-                addNotificationLog(`🧠 Verdict: ${newAction}`,
-                    `${result.verdict.strategy || ''} · Confidence ${result.verdict.confidence}% · ${result.verdict.urgency || ''}`,
-                    'important');
-            }
-
-            // Position verdict notifications (EXIT/BOOK urgency NOW)
+            // Tier 1 (ACT NOW): Position BOOK/EXIT with urgency NOW
             for (const tid in (result.positions || {})) {
                 const pv = result.positions[tid]?.verdict;
                 const prevPv = prev?.positions?.[tid]?.verdict;
-                if (pv && pv.urgency === 'NOW' && pv.action !== prevPv?.action) {
+                if (pv && pv.action !== prevPv?.action) {
                     const trade = STATE.openTrades.find(t => t.id === tid);
-                    const label = trade ? `${trade.index_key} ${trade.strategy_type}` : tid;
-                    addNotificationLog(`🧠 ${pv.action} ${label}`, pv.reason, pv.action === 'EXIT' ? 'urgent' : 'important');
+                    if (!trade) continue;
+                    const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
+                    const pnl = trade.current_pnl != null ? `₹${trade.current_pnl.toLocaleString()}` : '';
+                    if (pv.action === 'BOOK' && pv.urgency === 'NOW') {
+                        sendNotification(`💰 BOOK ${pnl} ${label}`, `${pv.reason}`, 'urgent');
+                    } else if (pv.action === 'EXIT' && pv.urgency === 'NOW') {
+                        sendNotification(`🚨 EXIT ${pnl} ${label}`, `${pv.reason}`, 'urgent');
+                    } else if (pv.action === 'EXIT' && pv.urgency === 'SOON') {
+                        sendNotification(`⚠️ EXIT SOON ${label}`, `${pnl}. ${pv.reason}`, 'important');
+                    } else if (pv.action === 'BOOK') {
+                        addNotificationLog(`💰 BOOK ${label}`, `${pnl}. ${pv.reason}`, 'important');
+                    } else {
+                        addNotificationLog(`🧠 ${pv.action} ${label}`, pv.reason, 'routine');
+                    }
                 }
+            }
+
+            // Tier 1 (ACT NOW): New entry opportunity
+            const newV = result.verdict;
+            const prevV = prev?.verdict;
+            if (newV && newV.action !== 'WAIT' && newV.action !== 'STOP') {
+                const actionChanged = newV.action !== prevV?.action || newV.strategy !== prevV?.strategy;
+                const confJumped = newV.confidence >= 50 && (prevV?.confidence || 0) < 40;
+                if (actionChanged && newV.confidence >= 50 && newV.urgency === 'ENTER NOW') {
+                    sendNotification(
+                        `⚡ ${newV.action === 'SELL PREMIUM' ? 'SELL' : 'BUY'} ${friendlyType(newV.strategy || '')} · ${newV.confidence}%`,
+                        `${newV.reasoning || ''} Brain says ENTER NOW.`, 'urgent');
+                } else if (actionChanged || confJumped) {
+                    // Tier 2 (WATCH): Verdict changed or confidence jumped
+                    addNotificationLog(
+                        `🧠 ${newV.action} — ${friendlyType(newV.strategy || '')}`,
+                        `Confidence ${newV.confidence}% · ${newV.urgency || ''} · ${newV.reasoning || ''}`, 'important');
+                }
+            }
+
+            // Tier 2 (WATCH): Verdict downgraded to STOP
+            if (newV?.action === 'STOP' && prevV?.action !== 'STOP') {
+                sendNotification('🛑 STOP TRADING', `${newV.reasoning || 'Brain says stop. Overtrading risk.'}`, 'urgent');
             }
 
             STATE.brainInsights = result;
@@ -6551,14 +6612,14 @@ function renderCandidateCard(cand, atm, rank) {
         ${renderBrainForCandidate(cand.id)}
 
         <div class="v1-metrics">
-            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${cand.maxProfit.toLocaleString()}</span></div>
+            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${cand.maxProfit.toLocaleString()}${cand.intradayTheta && cand.tDTE > 2 ? ` <span style="font-size:9px;color:var(--text-muted)">(Θ ₹${cand.intradayTheta.toLocaleString()}/day)</span>` : ''}</span></div>
             <div class="v1-metric"><span class="v1-label">Max Loss</span><span class="v1-val red">₹${cand.maxLoss.toLocaleString()}</span></div>
             <div class="v1-metric"><span class="v1-label">R:R</span><span class="v1-val">${cand.riskReward || '--'}</span></div>
             <div class="v1-metric"><span class="v1-label">P(Profit)</span><span class="v1-val${cand.upstoxPop && Math.abs(cand.probProfit * 100 - cand.upstoxPop) > 20 ? '" style="color:var(--danger)' : ''}">${(cand.probProfit * 100).toFixed(1)}%${cand.upstoxPop ? ` <span style="font-size:9px;color:var(--text-muted)">(UPX:${cand.upstoxPop.toFixed(0)}%)</span>` : ''}</span></div>
             ${CALIBRATION.win_rates[cand.type] && CALIBRATION.win_rates[cand.type].total > 0 ? `<div class="v1-metric"><span class="v1-label">Track Record</span><span class="v1-val" style="color:${CALIBRATION.win_rates[cand.type].rate >= 0.7 ? 'var(--green)' : CALIBRATION.win_rates[cand.type].rate >= 0.4 ? 'var(--warn)' : 'var(--danger)'}">${CALIBRATION.win_rates[cand.type].verdict} ${CALIBRATION.win_rates[cand.type].wins}/${CALIBRATION.win_rates[cand.type].total} (${(CALIBRATION.win_rates[cand.type].rate * 100).toFixed(0)}%)</span></div>` : ''}
         </div>
 
-        <div class="v1-target">🎯 Target: ₹${cand.targetProfit?.toLocaleString() || '--'} | 🔴 SL: ₹${cand.stopLoss?.toLocaleString() || '--'}</div>
+        <div class="v1-target">🎯 Target: ₹${cand.targetProfit?.toLocaleString() || '--'} | 🔴 SL: ₹${cand.stopLoss?.toLocaleString() || '--'}${cand.intradayTheta && cand.tDTE > 2 ? ' <span style="font-size:9px;color:var(--text-muted)">(intraday Θ)</span>' : ''}</div>
         ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${cand.estCost.toLocaleString()} (${cand.estCostPct}% of max) · Net profit: ₹${(cand.netMaxProfit ?? 0).toLocaleString()}</div>` : ''}
 
         <div class="v1-forces">
@@ -7386,7 +7447,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b84' }
+            { metric: 'App Version', value: 'v2.1 b85' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
