@@ -6444,6 +6444,8 @@ function renderWatchlist() {
                 ${crudePct !== null ? `<div style="font-size:10px;color:${crudePct > 0 ? 'var(--danger)' : crudePct < 0 ? 'var(--green)' : 'var(--text-muted)'}">${crudePct > 0 ? '+' : ''}${crudePct}% ${dirIcon(crudeDir)} India</div>` : ''}
             </div>
         </div>
+        <button id="btn-save-global-dir" class="btn btn-sm" style="margin-top:6px;padding:4px 16px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer">💾 Save</button>
+        <span id="global-dir-saved" style="font-size:10px;color:var(--green);margin-left:8px;display:none">✓ Saved</span>
         ${(dowDir || crudeDir || giftDir) ? `<div style="font-size:11px;margin-top:4px">
             ${giftDir ? `GIFT: ${dirIcon(giftDir)}` : ''} ${dowDir ? `Dow: ${dirIcon(dowDir)}` : ''} ${crudeDir ? `Crude: ${dirIcon(crudeDir)}` : ''}
         </div>` : ''}
@@ -7447,7 +7449,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b85' }
+            { metric: 'App Version', value: 'v2.1 b86' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -7574,6 +7576,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Recompute globalBoost with new direction data
         computeGlobalBoost(STATE.tomorrowSignal, STATE.positioningResult);
+        renderAll();
+    });
+
+    // Global Direction explicit save button (mobile-friendly — change event may not fire)
+    document.addEventListener('click', (e) => {
+        if (e.target.id !== 'btn-save-global-dir') return;
+        const dowEl = document.getElementById('in-dow-now');
+        const crudeEl = document.getElementById('in-crude-now');
+        if (dowEl) STATE.globalDirection.dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
+        if (crudeEl) STATE.globalDirection.crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
+        const saveData = { ...STATE.globalDirection, _date: API.todayIST() };
+        localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
+        DB.setConfig('global_direction', saveData);
+        computeGlobalBoost(STATE.tomorrowSignal, STATE.positioningResult);
+        // Show saved feedback
+        const badge = document.getElementById('global-dir-saved');
+        if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 2000); }
         renderAll();
     });
 
