@@ -1867,7 +1867,14 @@ function assessForce3_IV(strategyType, vix, ivPercentile) {
     if (vix >= C.IV_VERY_HIGH || (ivPercentile !== null && ivPercentile > 85)) regime = 'VERY_HIGH';
     if (vix <= C.IV_LOW || (ivPercentile !== null && ivPercentile < 25)) regime = 'LOW';
 
-    if (regime === 'HIGH' || regime === 'VERY_HIGH') {
+    if (regime === 'VERY_HIGH') {
+        // Backtest Table 3: VIX ≥24 debit 91.7% > credit 86.4%. Both viable, debit edge.
+        // Non-directional credit (IC/IB): high VIX = rich premiums to sell → +1
+        if (isDebit) return 1;
+        const isNeutralStrat = C.NEUTRAL_TYPES.includes(strategyType);
+        return isNeutralStrat ? 1 : 0; // IC/IB benefit, directional credit neutral
+    }
+    if (regime === 'HIGH') {
         return isCredit ? 1 : -1;
     } else if (regime === 'LOW') {
         return isDebit ? 1 : -1;
@@ -2928,27 +2935,26 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
     }
     } // end IC Varsity gate
 
-    // ═══ 3. IRON BUTTERFLY — ALWAYS BLOCKED for ₹1.1L account ═══
-    // IB needs ₹55-95K margin (2 ATM naked sells) + extreme gamma risk
-    // Varsity: never recommended for small accounts
+    // ═══ 3. IRON BUTTERFLY ═══
     if (allowedTypes.includes('IRON_BUTTERFLY')) {
+    const ibDebug = [];
     for (const width of widths) {
         const sellCall = atm;
         const buyCall = atm + width;
         const sellPut = atm;
         const buyPut = atm - width;
 
-        if (!allStrikes.includes(buyCall) || !allStrikes.includes(buyPut)) continue;
+        if (!allStrikes.includes(buyCall) || !allStrikes.includes(buyPut)) { ibDebug.push(`W${width}:no_strikes`); continue; }
 
         const ceS = parsed.strikes[atm]?.CE;
         const ceB = parsed.strikes[buyCall]?.CE;
         const peS = parsed.strikes[atm]?.PE;
         const peB = parsed.strikes[buyPut]?.PE;
-        if (!ceS || !ceB || !peS || !peB) continue;
+        if (!ceS || !ceB || !peS || !peB) { ibDebug.push(`W${width}:no_data`); continue; }
 
         const callCredit = (ceS.bid || 0) - (ceB.ask || 0);
         const putCredit = (peS.bid || 0) - (peB.ask || 0);
-        if (callCredit <= 0 || putCredit <= 0) continue;
+        if (callCredit <= 0 || putCredit <= 0) { ibDebug.push(`W${width}:neg_credit(c${callCredit.toFixed(0)}/p${putCredit.toFixed(0)},bids:${ceS.bid}/${peS.bid})`); continue; }
 
         const totalCredit = callCredit + putCredit;
         const maxLossPerShare = width - totalCredit;
@@ -2956,8 +2962,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
         const maxProfit = Math.round(totalCredit * lotSize);
         const maxLoss = Math.round(maxLossPerShare * lotSize);
-        if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) continue;
-        if (maxLoss <= 0 || maxProfit <= 0) continue;
+        if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) { ibDebug.push(`W${width}:risk(${maxLoss}>${Math.round(C.CAPITAL*C.MAX_RISK_PCT/100)})`); continue; }
+        if (maxLoss <= 0 || maxProfit <= 0) { ibDebug.push(`W${width}:zero(mL${maxLoss}/mP${maxProfit})`); continue; }
 
         // IB breakevens: upper = ATM + totalCredit, lower = ATM - totalCredit
         // b71 FIX: Use chain delta like IC — was using width/sigma heuristic before
@@ -2966,7 +2972,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         const ibProbAbovePut = 1 - Math.abs(chainDeltaAtPrice(parsed.strikes, ibLowerBE, 'PE', spot, T, vol));
         const ibProbBelowCall = 1 - Math.abs(chainDeltaAtPrice(parsed.strikes, ibUpperBE, 'CE', spot, T, vol));
         const probProfit = Math.max(0, ibProbAbovePut + ibProbBelowCall - 1);
-        if (probProfit < C.MIN_PROB) continue;
+        if (probProfit < C.MIN_PROB) { ibDebug.push(`W${width}:prob(${probProfit.toFixed(2)}<${C.MIN_PROB})`); continue; }
 
         const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
         const netTheta = Math.round(Math.abs(
@@ -3004,7 +3010,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         // IB capital block — skip in paper mode (no real money at risk)
         const hasRealTradesIB = STATE.openTrades.some(t => !t.paper);
         if (hasRealTradesIB) ibCand.capitalBlocked = true;
+        ibDebug.push(`W${width}:✅OK(cr${totalCredit.toFixed(0)},mL${maxLoss},p${probProfit.toFixed(2)},ev${ev})`);
     }
+    if (ibDebug.length) console.log(`[IB_DEBUG] ${isBNF?'BNF':'NF'} ATM=${atm}:`, ibDebug.join(' | '));
     } // end IB Varsity gate
 
     // ═══ 4. DOUBLE DEBIT SPREAD (Varsity-gated) ═══
@@ -7326,7 +7334,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b81' }
+            { metric: 'App Version', value: 'v2.1 b82' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
