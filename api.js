@@ -223,10 +223,10 @@ const API = (() => {
         // Log greeks sample for verification (first parse only)
         debugLog('GREEKS_SAMPLE', { atm, ceIv: atmData?.CE?.iv, ceDelta: atmData?.CE?.delta, cePop: atmData?.CE?.pop, peIv: atmData?.PE?.iv, peDelta: atmData?.PE?.delta, pePop: atmData?.PE?.pop });
 
-        // OI Walls — near-ATM highest concentration (±15 strikes from ATM)
-        // Far OTM strikes accumulate massive irrelevant OI (lottery tickets)
-        // Upstox/institutions care about walls within tradeable range
-        const wallRange = allStrikes.slice(Math.max(0, atmIdx - 15), atmIdx + 16);
+        // OI Walls — expanded range (±25 strikes from ATM)
+        // b84: Was ±15, missed far OTM concentration (Upstox 23500 vs app 23000)
+        // On expiry days, far OTM writers hedge and full chain walls become magnets
+        const wallRange = allStrikes.slice(Math.max(0, atmIdx - 25), atmIdx + 26);
         let callWallStrike = atm, callWallOI = 0;
         let putWallStrike = atm, putWallOI = 0;
         for (const s of wallRange) {
