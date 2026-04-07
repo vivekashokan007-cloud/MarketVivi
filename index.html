@@ -11,9 +11,9 @@
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=86">
+    <link rel="stylesheet" href="style.css?v=87">
     <style>
-        /* Paper Trade Styles — b86 */
+        /* Paper Trade Styles — b87 */
         .v1-trade-btns { display:flex; gap:8px; margin-top:8px; }
         .v1-trade-btns .btn-take { flex:1; font-size:12px; padding:8px 4px; }
         .btn-paper { flex:1; font-size:12px; padding:8px 4px; background:transparent; color:var(--accent); border:1.5px dashed var(--accent); border-radius:8px; cursor:pointer; font-weight:600; }
@@ -28,7 +28,7 @@
         .mode-intraday { background:#FFF3E0; color:#E65100; }
         .dark .mode-swing { background:#1a237e; color:#90CAF9; }
         .dark .mode-intraday { background:#4e342e; color:#FFAB91; }
-        /* Brain Insights — b86 Pyodide */
+        /* Brain Insights — b87 Pyodide */
         .brain-section { margin:8px 0; padding:0; }
         .brain-header { font-size:13px; font-weight:700; color:var(--text-primary); padding:6px 0 4px; display:flex; align-items:center; gap:6px; }
         .brain-meta { font-size:10px; font-weight:400; color:var(--text-muted); }
@@ -45,7 +45,7 @@
     <header class="app-header">
         <div class="header-left">
             <h1>Market Radar</h1>
-            <span class="version">v2.1 · b86</span>
+            <span class="version">v2.1 · b87</span>
         </div>
         <div class="header-right">
             <label class="theme-toggle" title="Toggle theme">
@@ -201,10 +201,10 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
-    <script src="bs.js?v=86"></script>
-    <script src="db.js?v=86"></script>
-    <script src="api.js?v=86"></script>
-    <script src="app.js?v=86"></script>
+    <script src="bs.js?v=87"></script>
+    <script src="db.js?v=87"></script>
+    <script src="api.js?v=87"></script>
+    <script src="app.js?v=87"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
