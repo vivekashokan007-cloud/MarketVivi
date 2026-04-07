@@ -2164,7 +2164,74 @@ function computeControlIndex(trade, chain, spot, bnfBreadth) {
     return Math.round(Math.max(-100, Math.min(100, score)));
 }
 
-// 8. Session Trajectory — last 5 sessions with arrows
+// ═══ WALL DRIFT MONITOR — detects when OI wall moves away from your sell strike ═══
+// Walls are institutional defense lines. If the wall retreats, your sell strike is exposed.
+// Entry wall saved in trade.entry_snapshot. Current wall from live chain.
+function computeWallDrift(trade, chain) {
+    if (!trade || !chain || !trade.entry_snapshot) return null;
+    if (!trade.is_credit) return null; // debit strategies don't rely on walls
+
+    const isBear = trade.strategy_type?.includes('BEAR');
+    const isBull = trade.strategy_type?.includes('BULL');
+    const isIC = trade.strategy_type === 'IRON_CONDOR';
+    const isIB = trade.strategy_type === 'IRON_BUTTERFLY';
+    if (isIB) return null; // IB is ATM — walls provide pinning, not directional defense
+
+    const step = trade.index_key === 'BNF' ? 100 : 50;
+    const entryCallWall = trade.entry_snapshot.call_wall;
+    const entryPutWall = trade.entry_snapshot.put_wall;
+    const currentCallWall = chain.callWallStrike;
+    const currentPutWall = chain.putWallStrike;
+
+    const result = { callSide: null, putSide: null, warning: null, severity: 0 };
+
+    // Bear Call / IC call side: call wall should be AT or ABOVE sell strike
+    if ((isBear || isIC) && entryCallWall && currentCallWall) {
+        const sellCE = trade.sell_strike; // CE sell for BC/IC
+        const entryGap = entryCallWall - sellCE;   // positive = wall above sell (good)
+        const currentGap = currentCallWall - sellCE; // positive = wall still above
+        const wallMove = currentCallWall - entryCallWall; // negative = wall retreated down
+
+        if (wallMove < -step) {
+            // Wall retreated DOWN — less protection
+            result.callSide = {
+                entry: entryCallWall, current: currentCallWall,
+                drift: wallMove, status: currentGap < 0 ? 'EXPOSED' : 'WEAKENED'
+            };
+            result.severity = Math.max(result.severity, currentGap < 0 ? 2 : 1);
+        }
+    }
+
+    // Bull Put / IC put side: put wall should be AT or BELOW sell strike
+    if ((isBull || isIC) && entryPutWall && currentPutWall) {
+        const sellPE = isIC ? (trade.sell_strike2 || trade.sell_strike) : trade.sell_strike;
+        const entryGap = sellPE - entryPutWall;    // positive = wall below sell (good)
+        const currentGap = sellPE - currentPutWall; // positive = wall still below
+        const wallMove = currentPutWall - entryPutWall; // positive = wall retreated up
+
+        if (wallMove > step) {
+            // Wall retreated UP — less protection
+            result.putSide = {
+                entry: entryPutWall, current: currentPutWall,
+                drift: wallMove, status: currentGap < 0 ? 'EXPOSED' : 'WEAKENED'
+            };
+            result.severity = Math.max(result.severity, currentGap < 0 ? 2 : 1);
+        }
+    }
+
+    // Build warning message
+    if (result.callSide) {
+        const s = result.callSide;
+        result.warning = `🛡️↓ Call wall ${s.entry}→${s.current} (${s.drift > 0 ? '+' : ''}${s.drift}). ${s.status === 'EXPOSED' ? 'SELL EXPOSED — wall below you!' : 'Protection weakened.'}`;
+    }
+    if (result.putSide) {
+        const s = result.putSide;
+        const putMsg = `🛡️↑ Put wall ${s.entry}→${s.current} (+${s.drift}). ${s.status === 'EXPOSED' ? 'SELL EXPOSED — wall above you!' : 'Protection weakened.'}`;
+        result.warning = result.warning ? result.warning + ' | ' + putMsg : putMsg;
+    }
+
+    return result.severity > 0 ? result : null;
+}
 function getSessionTrajectory(history) {
     if (!history || history.length < 2) return null;
     const sessions = history.slice(0, 5).reverse(); // oldest first
@@ -2840,7 +2907,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
     for (const sType of stratTypes) {
         for (const width of widths) {
-            const strikePairs = getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF);
+            const strikePairs = getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF, parsed.callWallStrike, parsed.putWallStrike);
             for (const pair of strikePairs) {
                 const cand = buildCandidate(sType, pair, parsed.strikes, spot, lotSize, width, T, T_prob, tDTE, vol, expiry, isBNF, vix);
                 if (!cand) continue;
@@ -3163,8 +3230,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
     return candidates;
 }
 
-function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
+function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF, callWall, putWall) {
     const pairs = [];
+    const seen = new Set();
     const range = isBNF ? 2000 : 800;
 
     switch (sType) {
@@ -3173,7 +3241,20 @@ function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
                 const buy = sell + width;
                 if (allStrikes.includes(sell) && allStrikes.includes(buy)) {
                     pairs.push({ sell, buy, sellType: 'CE', buyType: 'CE' });
+                    seen.add(sell);
                 }
+            }
+            // Wall-anchored: sell AT call wall (institutional resistance protects us)
+            if (callWall && callWall > atm && !seen.has(callWall)) {
+                const buy = callWall + width;
+                if (allStrikes.includes(callWall) && allStrikes.includes(buy))
+                    pairs.push({ sell: callWall, buy, sellType: 'CE', buyType: 'CE' });
+            }
+            // 1 step inside wall — more credit, wall 1 step above
+            if (callWall && callWall - step > atm && !seen.has(callWall - step)) {
+                const sell = callWall - step, buy = sell + width;
+                if (allStrikes.includes(sell) && allStrikes.includes(buy))
+                    pairs.push({ sell, buy, sellType: 'CE', buyType: 'CE' });
             }
             break;
         case 'BULL_PUT': // Sell PE near, Buy PE far (credit)
@@ -3181,10 +3262,23 @@ function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
                 const buy = sell - width;
                 if (allStrikes.includes(sell) && allStrikes.includes(buy)) {
                     pairs.push({ sell, buy, sellType: 'PE', buyType: 'PE' });
+                    seen.add(sell);
                 }
             }
+            // Wall-anchored: sell AT put wall (institutional support protects us)
+            if (putWall && putWall < atm && !seen.has(putWall)) {
+                const buy = putWall - width;
+                if (allStrikes.includes(putWall) && allStrikes.includes(buy))
+                    pairs.push({ sell: putWall, buy, sellType: 'PE', buyType: 'PE' });
+            }
+            // 1 step inside wall — more credit, wall 1 step below
+            if (putWall && putWall + step < atm && !seen.has(putWall + step)) {
+                const sell = putWall + step, buy = sell - width;
+                if (allStrikes.includes(sell) && allStrikes.includes(buy))
+                    pairs.push({ sell, buy, sellType: 'PE', buyType: 'PE' });
+            }
             break;
-        case 'BEAR_PUT': // Buy PE near, Sell PE far (debit)
+        case 'BEAR_PUT': // Buy PE near, Sell PE far (debit) — no wall anchoring
             for (let buyStrike = atm; buyStrike >= atm - range; buyStrike -= step) {
                 const sellStrike = buyStrike - width;
                 if (allStrikes.includes(buyStrike) && allStrikes.includes(sellStrike)) {
@@ -3192,7 +3286,7 @@ function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
                 }
             }
             break;
-        case 'BULL_CALL': // Buy CE near, Sell CE far (debit)
+        case 'BULL_CALL': // Buy CE near, Sell CE far (debit) — no wall anchoring
             for (let buyStrike = atm; buyStrike <= atm + range; buyStrike += step) {
                 const sellStrike = buyStrike + width;
                 if (allStrikes.includes(buyStrike) && allStrikes.includes(sellStrike)) {
@@ -3201,7 +3295,7 @@ function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF) {
             }
             break;
     }
-    return pairs.slice(0, 8); // limit per width
+    return pairs.slice(0, 10); // increased from 8 to accommodate wall pairs
 }
 
 function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, tDTE, vol, expiry, isBNF, vix) {
@@ -3981,6 +4075,19 @@ async function lightFetch() {
             updateOpenTradePnL(trade, tradeChain, spots, tradeSpot);
             // Adversarial Control Index — use correct chain
             trade.controlIndex = computeControlIndex(trade, tradeChain, tradeSpot, STATE.bnfBreadth);
+
+            // Wall Drift Monitor — detect when institutional defense moves away
+            const drift = computeWallDrift(trade, tradeChain);
+            trade.wallDrift = drift;
+            if (drift && drift.severity >= 2 && !trade._notifiedWallExposed) {
+                trade._notifiedWallExposed = true;
+                const label = `${trade.paper ? '📋 ' : ''}${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
+                sendNotification('🛡️ WALL RETREATED — EXPOSED', `${label}: ${drift.warning}`, 'urgent');
+            } else if (drift && drift.severity === 1 && !trade._notifiedWallWeakened) {
+                trade._notifiedWallWeakened = true;
+                const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
+                addNotificationLog('🛡️ Wall shifted', `${label}: ${drift.warning}`, 'important');
+            }
         }
 
         // Check for notifications
@@ -6708,6 +6815,9 @@ function renderTradeCard(t, isPaper) {
             <div class="control-bar">
                 <div class="control-fill" style="width:${ciPct}%; background:${ciColor}"></div>
             </div>
+            ${t.wallDrift ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.wallDrift.severity >= 2 ? 'var(--danger)' : 'var(--warn)'}">
+                ${t.wallDrift.warning}
+            </div>` : ''}
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
@@ -7449,7 +7559,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b86' }
+            { metric: 'App Version', value: 'v2.1 b87' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
