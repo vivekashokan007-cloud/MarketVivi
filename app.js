@@ -1428,6 +1428,8 @@ const STATE = {
     trajectory: null,
     controlIndex: null,
     gapInfo: null,
+    nfGapInfo: null,
+    marketPhase: null,
     yesterdayHistory: [],
     morningBias: null,      // Morning plan bias (persisted to localStorage)
     biasDrift: 0,           // live.biasNet - morningBias.net
@@ -2150,8 +2152,16 @@ function computeControlIndex(trade, chain, spot, bnfBreadth) {
             // IC: check both sides — only if both sell strikes are known
             const sellStrike2 = trade.sell_strike2;
             if (sellStrike2) {
-                // sellStrike = CE sell (upper), sellStrike2 = PE sell (lower)
-                if (spot > sellStrike || spot < sellStrike2) strikeBreach = true;
+                const isIB = trade.strategy_type === 'IRON_BUTTERFLY';
+                if (isIB) {
+                    // IB sells CE+PE at SAME strike (ATM) — spot touching sell is NORMAL.
+                    // Only breach when spot moves beyond width/4 from sell (meaningful move).
+                    const tolerance = (trade.width || 300) / 4;
+                    if (spot > sellStrike + tolerance || spot < sellStrike2 - tolerance) strikeBreach = true;
+                } else {
+                    // IC: sell strikes are OTM — exact breach means spot reached them
+                    if (spot > sellStrike || spot < sellStrike2) strikeBreach = true;
+                }
             }
             // If sell_strike2 missing (old trades), skip breach check — better than false alarm
         }
@@ -2595,6 +2605,7 @@ function getVarsityFilter(biasResult, vix) {
     // "The gap IS the move" — after gap absorbed, sell volatility not direction.
     // Range = last 3 polls within ±0.3σ AND minutes since open > 75 (after 10:30 AM)
     const rangeDetected = detectRange();
+    detectMarketPhase(); // b89: market phase for Trade tab banner
     const minutesSinceOpen = API.minutesSinceOpen?.() ?? 0;
     const afterSweetSpot = minutesSinceOpen > 75; // past 10:30 AM
 
@@ -2647,6 +2658,114 @@ function detectRange() {
     STATE.rangeDetected = rangeSigma < 0.3;
     STATE.rangeSigma = +rangeSigma.toFixed(3);
     return STATE.rangeDetected;
+}
+
+// ═══ MARKET PHASE DETECTION — "What is the market doing RIGHT NOW?" (b89) ═══
+// Combines gap info, range detection, time of day, and spot momentum
+// Returns phase label + strategy hint for Trade tab GO banner
+function detectMarketPhase() {
+    const minsOpen = API.minutesSinceOpen?.() ?? 0;
+    const gap = STATE.gapInfo;
+    const gapSigma = gap?.sigma ?? 0;
+    const rangeSigma = STATE.rangeSigma ?? 0;
+    const polls = STATE.pollHistory || [];
+    const bias = STATE.live?.bias?.label || STATE.baseline?.bias?.label || 'NEUTRAL';
+    const vix = STATE.live?.vix || STATE.baseline?.vix || 20;
+
+    // Default
+    let phase = { id: 'UNKNOWN', label: '—', detail: '', hint: '' };
+
+    // ── BEFORE MARKET or NO DATA ──
+    if (minsOpen <= 0 || polls.length < 2) {
+        phase = { id: 'PRE_MARKET', label: '⏳ Pre-market', detail: 'Waiting for market data', hint: 'Run Lock & Scan after 9:20 AM' };
+        STATE.marketPhase = phase;
+        return phase;
+    }
+
+    // ── AFTERNOON POSITIONING (after 2 PM) ──
+    if (minsOpen >= 285) { // 2:00 PM = 285 min from 9:15
+        phase = { id: 'POSITIONING', label: '🏦 Institutional positioning', detail: 'OI changes reveal tomorrow\'s direction', hint: 'Watch 2PM→3:15PM OI delta' };
+        STATE.marketPhase = phase;
+        return phase;
+    }
+
+    // Compute spot trend from polls
+    let trendSigma = 0;
+    let trendDir = 'FLAT';
+    if (polls.length >= 3) {
+        const recent = polls.slice(-6); // last 30 min
+        const firstSpot = recent[0]?.nf || recent[0]?.bnf || 0;
+        const lastSpot = recent[recent.length - 1]?.nf || recent[recent.length - 1]?.bnf || 0;
+        if (firstSpot > 0) {
+            const spot = lastSpot;
+            const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+            if (dailySigma > 0) {
+                trendSigma = (lastSpot - firstSpot) / dailySigma;
+                trendDir = trendSigma > 0.15 ? 'UP' : trendSigma < -0.15 ? 'DOWN' : 'FLAT';
+            }
+        }
+    }
+
+    // Compute gap fill percentage
+    const openPrice = polls[0]?.nf || polls[0]?.bnf || 0;
+    const currentSpot = polls[polls.length - 1]?.nf || polls[polls.length - 1]?.bnf || 0;
+    const gapFillPct = gap?.gap && Math.abs(gap.gap) > 10 && openPrice > 0
+        ? Math.min(1, Math.abs(currentSpot - openPrice) / Math.abs(gap.gap))
+        : 0;
+    const fillingGap = gapFillPct > 0.3 && ((gapSigma > 0 && trendDir === 'DOWN') || (gapSigma < 0 && trendDir === 'UP'));
+
+    // ── GAP MOMENTUM (first 45 min, big gap, spot not reversing) ──
+    if (minsOpen <= 45 && Math.abs(gapSigma) >= 0.5 && !fillingGap) {
+        const dir = gapSigma > 0 ? 'up' : 'down';
+        phase = {
+            id: 'GAP_MOMENTUM',
+            label: `🚀 Gap-${dir} momentum`,
+            detail: `${Math.abs(gapSigma).toFixed(1)}σ gap, ${minsOpen}m since open — directional move`,
+            hint: gapSigma > 0 ? 'Bull Call / Bull Put favored' : 'Bear Call / Bear Put favored'
+        };
+    }
+    // ── GAP FILL / REVERSAL ──
+    else if (Math.abs(gapSigma) >= 0.5 && fillingGap) {
+        phase = {
+            id: 'REVERSAL',
+            label: '🔄 Gap filling',
+            detail: `${(gapFillPct * 100).toFixed(0)}% of gap filled — reversal in progress`,
+            hint: 'Caution — wait for direction to settle'
+        };
+    }
+    // ── CONSOLIDATION (range < 0.3σ, at least 30 min in) ──
+    else if (rangeSigma < 0.3 && minsOpen >= 30) {
+        const rangeHigh = polls.slice(-3).reduce((m, p) => Math.max(m, p.nf || 0), 0);
+        const rangeLow = polls.slice(-3).reduce((m, p) => Math.min(m, p.nf || Infinity), Infinity);
+        phase = {
+            id: 'CONSOLIDATION',
+            label: '📊 Consolidation',
+            detail: `Range ${rangeSigma}σ (${rangeLow.toFixed(0)}–${rangeHigh.toFixed(0)}) — premium decaying`,
+            hint: 'IC/IB favored — sell premium on range'
+        };
+    }
+    // ── TRENDING (range > 0.5σ, clear direction) ──
+    else if (rangeSigma >= 0.5 || Math.abs(trendSigma) >= 0.3) {
+        const dir = trendDir === 'UP' ? 'bullish' : trendDir === 'DOWN' ? 'bearish' : 'choppy';
+        phase = {
+            id: 'TRENDING',
+            label: `📈 Trending ${dir}`,
+            detail: `${Math.abs(trendSigma).toFixed(2)}σ move in last 30m — directional`,
+            hint: dir === 'bullish' ? 'Bull Call favored' : dir === 'bearish' ? 'Bear Put favored' : 'Wait for clarity'
+        };
+    }
+    // ── QUIET / LOW VOLATILITY ──
+    else {
+        phase = {
+            id: 'QUIET',
+            label: '😴 Low activity',
+            detail: `Range ${rangeSigma}σ, trend ${Math.abs(trendSigma).toFixed(2)}σ — waiting`,
+            hint: 'IC/IB possible, or wait for breakout'
+        };
+    }
+
+    STATE.marketPhase = phase;
+    return phase;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3724,7 +3843,9 @@ async function initialFetch() {
         // Gap classification (uses yesterday's actual close, not today's seeded data)
         const ydayClose = ydayBnfOHLC?.close || ydayRow?.bnf_spot || null;
         STATE.gapInfo = API.classifyGap(spots.bnfSpot, ydayClose, spots.vix);
-        dbg('GAP', STATE.gapInfo);
+        const ydayNfClose = ydayNfOHLC?.close || ydayRow?.nf_spot || null;
+        STATE.nfGapInfo = ydayNfClose ? API.classifyGap(spots.nfSpot, ydayNfClose, spots.vix) : null;
+        dbg('GAP', { bnf: STATE.gapInfo, nf: STATE.nfGapInfo });
 
         // Phase 10: Overnight Delta — compare evening close (stored at 6 AM) vs morning inputs
         const overnightDelta = computeOvernightDelta(spots.nfSpot);
@@ -3792,6 +3913,7 @@ async function initialFetch() {
 
         const allCandidates = [...bnfCandidates, ...nfCandidates];
         STATE.candidates = rankCandidates(allCandidates);
+        STATE.lastScanTime = Date.now(); // Track when candidates were generated
         STATE.watchlist = STATE.candidates.slice(0, 6); // top 6 overall
 
         // Add diverse picks to watchlist so they get live updates during polls
@@ -4081,6 +4203,7 @@ async function lightFetch() {
                 const bnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, biasResult, ivPctl);
                 const nfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, biasResult, ivPctl);
                 STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
+                STATE.lastScanTime = Date.now(); // Track when candidates were regenerated
                 STATE.watchlist = STATE.candidates.slice(0, 6);
                 const seenIds = new Set(STATE.watchlist.map(c => c.id));
                 for (const idx of ['BNF', 'NF']) {
@@ -5107,6 +5230,7 @@ function toggleTradeMode() {
         const bnfCands = generateCandidates(STATE.bnfChain, STATE.live.bnfSpot, 'BNF', STATE.bnfExpiry, vix, STATE.live.bias, ivPctl);
         const nfCands = STATE.nfChain ? generateCandidates(STATE.nfChain, STATE.live.nfSpot, 'NF', STATE.nfExpiry, vix, STATE.live.bias, ivPctl) : [];
         STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
+        STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
         STATE.watchlist = STATE.candidates.filter(c => c.forces.aligned >= 2 && !c.capitalBlocked);
         addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. ${STATE.candidates.filter(c => !c.capitalBlocked).length} candidates.`, 'info');
     }
@@ -5197,6 +5321,7 @@ async function rescanStrategies() {
 
     const allCandidates = [...bnfCandidates, ...nfCandidates];
     STATE.candidates = rankCandidates(allCandidates);
+    STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
     STATE.watchlist = STATE.candidates.slice(0, 6);
 
     // Add diverse picks to watchlist for live updates
@@ -5245,6 +5370,16 @@ async function takeTrade(candidateId, isPaper = false) {
         || STATE.candidates.find(c => c.id === candidateId)
         || STATE.positioningCandidates.find(c => c.id === candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+
+    // Stale scan warning — candidates may be outdated
+    if (STATE.lastScanTime) {
+        const scanAgeMin = Math.floor((Date.now() - STATE.lastScanTime) / 60000);
+        if (scanAgeMin >= 30) {
+            if (!confirm(`⚠️ Candidates are ${scanAgeMin}m old (scanned at ${new Date(STATE.lastScanTime).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})}).\n\nPremiums and walls may have changed.\nRescan first for fresh data?\n\n[OK] = Trade anyway · [Cancel] = Go back`)) {
+                return;
+            }
+        }
+    }
 
     // Paper trade limit enforcement
     if (isPaper && !canPaperTrade(cand.index)) {
@@ -6134,7 +6269,9 @@ function renderMarket() {
         ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
     }
 
-    const scanTime = API.istNow();
+    const scanTime = STATE.lastScanTime
+        ? new Date(STATE.lastScanTime).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})
+        : API.istNow();
 
     el.innerHTML = `
         <!-- TIMESTAMP -->
@@ -6164,9 +6301,17 @@ function renderMarket() {
         <!-- GAP CLASSIFICATION -->
         ${STATE.gapInfo && STATE.gapInfo.type !== 'UNKNOWN' ? `
         <div class="env-row" style="padding: 6px 0;">
-            <span class="env-row-label">Today's Gap</span>
+            <span class="env-row-label">BNF Gap</span>
             <span class="env-row-value" style="color: ${STATE.gapInfo.gap > 0 ? 'var(--green)' : STATE.gapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
                 ${STATE.gapInfo.gap > 0 ? '+' : ''}${STATE.gapInfo.gap} pts (${STATE.gapInfo.pct}%, ${STATE.gapInfo.sigma}σ) — ${STATE.gapInfo.type.replace('_', ' ')}
+            </span>
+        </div>
+        ` : ''}
+        ${STATE.nfGapInfo && STATE.nfGapInfo.type !== 'UNKNOWN' ? `
+        <div class="env-row" style="padding: 6px 0;">
+            <span class="env-row-label">NF Gap</span>
+            <span class="env-row-value" style="color: ${STATE.nfGapInfo.gap > 0 ? 'var(--green)' : STATE.nfGapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+                ${STATE.nfGapInfo.gap > 0 ? '+' : ''}${STATE.nfGapInfo.gap} pts (${STATE.nfGapInfo.pct}%, ${STATE.nfGapInfo.sigma}σ) — ${STATE.nfGapInfo.type.replace('_', ' ')}
             </span>
         </div>
         ` : ''}
@@ -6536,6 +6681,14 @@ function renderWatchlist() {
     let html = `<div class="${goClass}">
         <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'} · ${modeLabel}</div>
         <div class="go-detail">${executable} fit market (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        ${(() => {
+            if (!STATE.lastScanTime) return '';
+            const ageMin = Math.floor((Date.now() - STATE.lastScanTime) / 60000);
+            if (ageMin < 5) return '';
+            const stale = ageMin >= 30;
+            const color = stale ? 'var(--danger)' : ageMin >= 15 ? 'var(--warn)' : 'var(--text-muted)';
+            return `<div class="go-detail" style="font-size:11px;color:${color}">${stale ? '⚠️' : '⏱️'} Scanned ${ageMin}m ago${stale ? ' — tap Rescan for fresh candidates' : ''}</div>`;
+        })()}
         ${STATE.morningBias && STATE.live?.bias ? (() => {
             const drift = STATE.biasDrift || 0;
             const driftColor = Math.abs(drift) >= 2 ? 'var(--danger)' : Math.abs(drift) >= 1 ? 'var(--warn)' : 'var(--green)';
@@ -6548,6 +6701,8 @@ function renderWatchlist() {
         })() : ''}
         ${varsityLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">📖 Varsity: ${varsityLabel} · ${varsityAction}</div>` : ''}
         ${varsityInfo?.rangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — IB/IC prioritized over directional</div>` : (STATE.pollHistory?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Trending (${STATE.rangeSigma}σ) — directional strategies active</div>` : '')}
+        ${STATE.marketPhase && STATE.marketPhase.id !== 'PRE_MARKET' && STATE.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${STATE.marketPhase.label}: ${STATE.marketPhase.hint}</div>
+        <div class="go-detail" style="font-size:10px; color:var(--text-muted);">${STATE.marketPhase.detail}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
             <button onclick="toggleTradeMode()" style="padding:6px 14px;font-size:12px;font-weight:600;border:2px solid ${STATE.tradeMode === 'intraday' ? 'var(--warn)' : 'var(--accent)'};background:${STATE.tradeMode === 'intraday' ? 'var(--warn)' : 'var(--accent)'};color:white;border-radius:var(--radius-sm);cursor:pointer;">
                 ${STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING'}
