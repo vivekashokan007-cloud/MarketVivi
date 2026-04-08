@@ -1060,6 +1060,68 @@ def dte_urgency(polls, ctx):
                 "detail": "Credit favored. Debit positions lose value rapidly.", "impact": "neutral", "strength": 2}
     return None
 
+def chain_intelligence(polls, ctx):
+    """b90: Deep chain analysis from greeks + volume + OI velocity.
+    Uses 8 computed features from computeChainProfile."""
+    profile = ctx.get('bnfProfile') or {}
+    
+    # 1. IV Smile Slope — steepness indicates fear/hedging
+    iv_slope = profile.get('ivSlope', 0)
+    if iv_slope > 5:
+        return {"type": "market", "icon": "📉", "label": f"Fear skew steep ({iv_slope:.1f})",
+                "detail": "Put IV much higher than call. Institutions hedging downside.",
+                "impact": "bearish", "strength": 3}
+    if iv_slope < -2:
+        return {"type": "market", "icon": "📈", "label": f"Call skew unusual ({iv_slope:.1f})",
+                "detail": "Call IV higher than put. Unusual bullish positioning.",
+                "impact": "bullish", "strength": 2}
+    
+    # 2. Gamma Clustering — market coiled for move
+    gamma_c = profile.get('gammaCluster', 0)
+    if gamma_c > 0.6:
+        return {"type": "market", "icon": "⚡", "label": f"Gamma concentrated ({gamma_c:.0%} near ATM)",
+                "detail": "High gamma at ATM. Coiled for sharp move.",
+                "impact": "caution", "strength": 4}
+    
+    # 3. Volume Ratio — real-time institutional flow
+    vol_r = profile.get('volRatio', 1.0)
+    if vol_r > 2.0:
+        return {"type": "market", "icon": "📞", "label": f"Call buying surge ({vol_r:.1f}x)",
+                "detail": "Call volume 2x put. Aggressive bullish flow.",
+                "impact": "bullish", "strength": 3}
+    if vol_r < 0.5:
+        return {"type": "market", "icon": "📉", "label": f"Put buying surge ({vol_r:.1f}x)",
+                "detail": "Put volume 2x call. Aggressive bearish flow.",
+                "impact": "bearish", "strength": 3}
+    
+    # 4. OI Velocity — wall building speed
+    oi_vel = profile.get('oiVelocity', 0)
+    if abs(oi_vel) > 5:
+        direction = "building" if oi_vel > 0 else "unwinding"
+        return {"type": "market", "icon": "🏗️", "label": f"OI {direction} fast ({oi_vel:.1f}L)",
+                "detail": f"Institutional {'conviction' if oi_vel > 0 else 'exit'}.",
+                "impact": "neutral", "strength": 3}
+    
+    # 5. Bid-Ask Quality — liquidity warning
+    baq = profile.get('bidAskQuality', 0)
+    if baq > 15:
+        return {"type": "market", "icon": "⚠️", "label": f"Poor liquidity ({baq:.1f}% spread)",
+                "detail": "Wide spreads. Entry/exit costly.",
+                "impact": "caution", "strength": 3}
+    
+    # 6. Net Delta — institutional directional bias
+    nd = profile.get('netDelta', 0)
+    if nd > 3.0:
+        return {"type": "market", "icon": "📊", "label": f"Net delta bullish ({nd:.1f})",
+                "detail": "OI weighted bullish. Institutions positioned for up.",
+                "impact": "bullish", "strength": 2}
+    if nd < -3.0:
+        return {"type": "market", "icon": "📊", "label": f"Net delta bearish ({nd:.1f})",
+                "detail": "OI weighted bearish. Institutions positioned for down.",
+                "impact": "bearish", "strength": 2}
+    
+    return None
+
 def daily_pnl_check(polls, ctx):
     """Prevent overtrading and chasing losses."""
     pnl = ctx.get('dailyPnl', 0)
@@ -1239,7 +1301,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline):
     }
 
 def position_verdict(trade, insights, regime, ctx):
-    """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason."""
+    """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason.
+    b89: Now receives wallDrift, vixChange, peakErosion from JS poll loop.
+    Brain is the SINGLE decision maker — weighs ALL signals together."""
     pnl = trade.get('current_pnl', 0)
     max_p = trade.get('max_profit', 1)
     max_l = trade.get('max_loss', 1)
@@ -1248,48 +1312,115 @@ def position_verdict(trade, insights, regime, ctx):
     loss_pct = abs(pnl) / max_l if max_l > 0 and pnl < 0 else 0
     stype = trade.get('strategy_type', '')
     is_4leg = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
+    is_ib = stype == 'IRON_BUTTERFLY'
+    is_credit = trade.get('is_credit', False)
     dte = ctx.get('bnfDTE' if trade.get('index_key') == 'BNF' else 'nfDTE', 5)
+    phase = ctx.get('marketPhase', 'UNKNOWN')
+
+    # b89: New signals from poll loop
+    wall = trade.get('wallDrift') or {}
+    wall_sev = wall.get('severity', 0)
+    vix_chg = trade.get('vixChange', 0)
+    peak_erosion = trade.get('peakErosion', 0)  # % of peak lost
+    peak_pnl = trade.get('peak_pnl', 0)
 
     # Check insights for strong signals
     has_wall = any(i.get('label', '').startswith('Wall') for i in insights)
     against_trend = any('Against' in i.get('label', '') for i in insights)
     momentum_threat = any('sell strike' in i.get('label', '').lower() for i in insights)
 
-    # EXIT signals
+    # ═══ DANGER SCORE — compound risk assessment ═══
+    danger = 0
+    reasons = []
+
+    # Wall drift
+    if wall_sev >= 2:
+        danger += 40
+        reasons.append(f"Wall EXPOSED ({wall.get('warning', '')[:50]})")
+    elif wall_sev == 1:
+        danger += 15
+        reasons.append("Wall weakened")
+
+    # VIX spike (worst for credit sellers)
+    if is_credit and vix_chg >= 2.0:
+        danger += 35
+        reasons.append(f"VIX spiked +{vix_chg:.1f} — premiums expanding")
+    elif is_credit and vix_chg >= 1.0:
+        danger += 15
+        reasons.append(f"VIX rising +{vix_chg:.1f}")
+
+    # Peak erosion
+    if peak_erosion > 50 and peak_pnl > 500:
+        danger += 20
+        reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+    elif peak_erosion > 30 and peak_pnl > 300:
+        danger += 10
+        reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
+
+    # CI
+    if ci is not None and ci < -40:
+        danger += 25
+        if not is_ib:  # IB CI -50 is normal (b89 tolerance fix mitigates but brain should know)
+            reasons.append(f"Opponent in control (CI {ci})")
+    elif ci is not None and ci < -20:
+        danger += 10
+
+    # Momentum threat
     if momentum_threat:
-        return {"action": "EXIT", "urgency": "NOW", "reason": f"Spot approaching sell strike."}
-    if against_trend and pnl < 0 and loss_pct > 0.3:
-        return {"action": "EXIT", "urgency": "NOW", "reason": f"Against trend, {loss_pct*100:.0f}% of max loss."}
+        danger += 30
+        reasons.append("Spot approaching sell strike")
+
+    # Phase mismatch (credit in trending phase = danger)
+    if is_credit and phase == 'TRENDING':
+        danger += 10
+        reasons.append("Trending market — credit at risk")
+
+    # ═══ EXIT — compound danger high ═══
+    if danger >= 60:
+        urgency = 'NOW' if danger >= 80 else 'SOON'
+        return {"action": "EXIT", "urgency": urgency,
+                "reason": f"Danger {danger}/100. {'. '.join(reasons[:3])}"}
+
+    # ═══ EXIT — structural threats (independent of danger score) ═══
     if is_4leg and dte <= 1:
         if pnl > 0:
-            return {"action": "BOOK", "urgency": "NOW", "reason": f"4-leg + expiry day. 0% overnight survival."}
+            return {"action": "BOOK", "urgency": "NOW", "reason": "4-leg + expiry day. 0% overnight survival."}
         else:
-            return {"action": "EXIT", "urgency": "NOW", "reason": f"4-leg + expiry. Cut loss, don't hold overnight."}
-    if ci is not None and ci < -40:
-        return {"action": "EXIT", "urgency": "SOON", "reason": f"Opponent in control (CI {ci})."}
+            return {"action": "EXIT", "urgency": "NOW", "reason": "4-leg + expiry. Cut loss, don't hold overnight."}
 
-    # BOOK signals
+    # ═══ BOOK — profitable + reasons to take money ═══
     if pnl_pct >= 0.5:
-        capture = 60
-        if _calibration and _calibration.get('exit'):
-            capture = _calibration['exit'].get('capture_pct', 60)
-        if regime.get('type') == 'range':
-            return {"action": "BOOK", "urgency": "NOW", "reason": f"{pnl_pct*100:.0f}% profit in range. You capture {capture:.0f}% avg."}
-        return {"action": "BOOK", "urgency": "SOON", "reason": f"{pnl_pct*100:.0f}% of max. Consider booking."}
-    if pnl_pct >= 0.3 and against_trend:
-        return {"action": "BOOK", "urgency": "SOON", "reason": f"{pnl_pct*100:.0f}% profit but against trend. Don't give it back."}
+        book_reasons = []
+        if danger >= 30: book_reasons.append(f"rising danger ({danger})")
+        if peak_erosion > 20: book_reasons.append(f"peak fading {peak_erosion:.0f}%")
+        if regime.get('type') == 'range': book_reasons.append("range — theta captured")
+        if vix_chg < -1.0 and is_credit: book_reasons.append(f"VIX crushed {vix_chg:.1f} — lock gains")
+        urgency = 'NOW' if pnl_pct >= 0.7 or danger >= 30 else 'SOON'
+        reason = f"{pnl_pct*100:.0f}% of max."
+        if book_reasons: reason += f" {'. '.join(book_reasons[:2])}"
+        return {"action": "BOOK", "urgency": urgency, "reason": reason}
 
-    # HOLD signals
-    if pnl > 0 and ci and ci > 20 and has_wall:
-        return {"action": "HOLD", "urgency": "WATCH", "reason": f"Profitable + CI {ci} + wall protection. Let it run."}
-    if pnl > 0 and regime.get('type') == 'range':
-        return {"action": "HOLD", "urgency": "WATCH", "reason": f"Profitable in range. Theta working."}
+    if pnl_pct >= 0.3 and (against_trend or danger >= 25):
+        return {"action": "BOOK", "urgency": "SOON",
+                "reason": f"{pnl_pct*100:.0f}% profit + {'risk building' if danger >= 25 else 'against trend'}. Don't give it back."}
 
-    # Default
+    # ═══ HOLD — positive conditions ═══
+    if pnl > 0 and danger < 20:
+        hold_reasons = []
+        if ci and ci > 20: hold_reasons.append(f"CI {ci}")
+        if has_wall and wall_sev == 0: hold_reasons.append("wall protecting")
+        if regime.get('type') == 'range': hold_reasons.append("range — theta working")
+        if vix_chg < 0 and is_credit: hold_reasons.append("VIX falling — good for credit")
+        reason = f"P&L ₹{pnl:.0f} ({pnl_pct*100:.0f}%)."
+        if hold_reasons: reason += f" {'. '.join(hold_reasons[:2])}"
+        return {"action": "HOLD", "urgency": "WATCH", "reason": reason}
+
+    # ═══ DEFAULT ═══
     if pnl >= 0:
-        return {"action": "HOLD", "urgency": "WATCH", "reason": f"P&L ₹{pnl:.0f}. No exit signals."}
+        return {"action": "HOLD", "urgency": "WATCH", "reason": f"P&L ₹{pnl:.0f}. Danger {danger}/100."}
     else:
-        return {"action": "HOLD", "urgency": "MONITOR", "reason": f"Loss ₹{pnl:.0f} ({loss_pct*100:.0f}%). Watch CI and momentum."}
+        return {"action": "HOLD", "urgency": "MONITOR",
+                "reason": f"Loss ₹{pnl:.0f} ({loss_pct*100:.0f}%). Danger {danger}/100. {'. '.join(reasons[:2]) if reasons else 'Watch CI.'}"}
 
 # ═══════════════════════════════════════════
 # MAIN ENTRY POINT
@@ -1324,7 +1455,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         except: pass
     # New context-aware market functions
     for fn in [signal_coherence, max_pain_gravity, fii_trend, nf_bnf_divergence,
-               day_range_position, wall_freshness, yesterday_signal_prior]:
+               day_range_position, wall_freshness, yesterday_signal_prior, chain_intelligence]:
         try:
             r = fn(polls, ctx)
             if r: result["market"].append(r)
@@ -3656,6 +3787,28 @@ function isDirectionSafe(candidate) {
     return candidate.forces.f1 >= 0; // F1 must be aligned or neutral
 }
 
+// ═══ BRAIN VERDICT BOOST — aligns strategy ranking with brain's market call (b89) ═══
+// When brain says BUY PREMIUM → debit strategies boosted, IC/IB penalized
+// When brain says SELL PREMIUM → IC/IB boosted, debit penalized
+// Only applies when brain confidence > 30% (meaningful signal)
+function getBrainVerdictBoost(cand) {
+    const verdict = STATE.brainInsights?.verdict;
+    if (!verdict || !verdict.action || (verdict.confidence || 0) < 30) return 0;
+
+    const isBuy = verdict.action === 'BUY PREMIUM';
+    const isSell = verdict.action === 'SELL PREMIUM';
+    const isDebit = !cand.isCredit;
+    const is4Leg = cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY';
+    const isCredit2Leg = cand.isCredit && !is4Leg; // Bear Call, Bull Put
+
+    if (isBuy && isDebit) return 2;       // Brain says BUY → debit aligned
+    if (isSell && is4Leg) return 2;       // Brain says SELL → IC/IB aligned
+    if (isSell && isCredit2Leg) return 1; // Brain says SELL → 2-leg credit partial
+    if (isBuy && is4Leg) return -1;       // Brain says BUY but IC/IB sells → penalty
+    if (isSell && isDebit) return -1;     // Brain says SELL but debit buys → penalty
+    return 0;
+}
+
 function rankCandidates(candidates) {
     return candidates
         .filter(c => !c.capitalBlocked)
@@ -3668,6 +3821,10 @@ function rankCandidates(candidates) {
             const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
             const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
             if (tierDiff !== 0) return tierDiff;
+            // 1.5: Brain verdict alignment — phase-aware strategy preference (b89)
+            const bvA = getBrainVerdictBoost(a);
+            const bvB = getBrainVerdictBoost(b);
+            if (bvA !== bvB) return bvB - bvA; // higher boost ranks first
             // 2nd: Calibration win rate — strategies that actually WIN rank higher
             const calA = CALIBRATION.win_rates[a.type]?.rate ?? 0.5;
             const calB = CALIBRATION.win_rates[b.type]?.rate ?? 0.5;
@@ -3726,6 +3883,10 @@ function applyBrainScores() {
         const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
         const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
         if (tierDiff !== 0) return tierDiff;
+        // 1.5: Brain verdict alignment (b89)
+        const bvA = getBrainVerdictBoost(a);
+        const bvB = getBrainVerdictBoost(b);
+        if (bvA !== bvB) return bvB - bvA;
         const calA = CALIBRATION.win_rates[a.type]?.rate ?? 0.5;
         const calB = CALIBRATION.win_rates[b.type]?.rate ?? 0.5;
         if (Math.abs(calB - calA) > 0.1) return calB - calA;
@@ -4256,12 +4417,39 @@ async function lightFetch() {
                 const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
                 addNotificationLog('🛡️ Wall shifted', `${label}: ${drift.warning}`, 'important');
             }
+
+            // ═══ VIX SPIKE MONITOR — detect VIX rising against credit positions (b89) ═══
+            // IC/IB profit from VIX falling. VIX rising = premiums expanding = loss accelerating.
+            // VIX asymmetry: a 5pt spike hurts MORE than a 5pt crush helps (convexity).
+            if (trade.is_credit && trade.entry_vix && spots.vix) {
+                const vixChange = spots.vix - trade.entry_vix;
+                const is4Leg = trade.strategy_type === 'IRON_CONDOR' || trade.strategy_type === 'IRON_BUTTERFLY';
+                trade.vixSpike = { entryVix: trade.entry_vix, currentVix: spots.vix, change: +vixChange.toFixed(1) };
+
+                // Tier 2: VIX up ≥2.0 for IC/IB → EXIT (premiums expanding fast)
+                if (is4Leg && vixChange >= 2.0 && !trade._notifiedVixSpike2) {
+                    trade._notifiedVixSpike2 = true;
+                    const label = `${trade.paper ? '📋 ' : ''}${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
+                    sendNotification('🌡️ VIX SPIKE — EXIT IC/IB',
+                        `${label}: VIX ${trade.entry_vix.toFixed(1)}→${spots.vix.toFixed(1)} (+${vixChange.toFixed(1)}). Premiums expanding. EXIT before loss accelerates.`, 'urgent');
+                }
+                // Tier 1: VIX up ≥1.0 for any credit → WATCH
+                else if (vixChange >= 1.0 && !trade._notifiedVixSpike1) {
+                    trade._notifiedVixSpike1 = true;
+                    const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
+                    addNotificationLog('🌡️ VIX rising against you',
+                        `${label}: VIX ${trade.entry_vix.toFixed(1)}→${spots.vix.toFixed(1)} (+${vixChange.toFixed(1)}). Watch closely.`, 'important');
+                }
+            }
         }
 
         // Check for notifications
         await handleNotifications(absSpotSigma, absVixSigma, significantMove);
 
         // ═══ POSITION HEALTH CHECK — runs EVERY poll, not just σ moves ═══
+        // b89: Brain's position_verdict now handles P&L targets, CI, peak erosion, VIX.
+        // Individual alerts REMOVED — brain synthesizes ONE verdict per trade.
+        // KEPT: First poll status, sell strike crossed (circuit breaker), EXIT TODAY reminder.
         for (const trade of STATE.openTrades) {
             const paperPrefix = trade.paper ? '📋 ' : '';
             const tradeLabel = `${paperPrefix}${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
@@ -4274,31 +4462,6 @@ async function lightFetch() {
                 addNotificationLog('📊 Position Status',
                     `${tradeLabel} | P&L: ₹${trade.current_pnl} | Spot: ${trade.current_spot?.toFixed(0)} | Ctrl: ${ci ?? '--'}`,
                     'routine');
-            }
-
-            if (pnlPct >= 0.5 && pnlPct < 0.8 && !trade._notified50) {
-                trade._notified50 = true;
-                sendNotification('💰 50% Target Hit', `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max). Consider booking.`, 'important');
-            }
-
-            if (pnlPct >= 0.8 && !trade._notifiedTarget) {
-                trade._notifiedTarget = true;
-                sendNotification('🎯 Target! Book Profit', `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(pnlPct * 100)}% of max ₹${trade.max_profit}). BOOK NOW.`, 'urgent');
-            }
-
-            if (trade.peak_pnl > 500 && trade.current_pnl < trade.peak_pnl * 0.5 && !trade._notifiedDrop) {
-                trade._notifiedDrop = true;
-                sendNotification('⚠️ P&L Dropping', `${tradeLabel} Was ₹${trade.peak_pnl}, now ₹${trade.current_pnl}. Peak erosion >50%.`, 'important');
-            }
-
-            if (ci !== null && ci <= -30 && !trade._notifiedControl) {
-                trade._notifiedControl = true;
-                sendNotification('🛑 Opponent in Control', `${tradeLabel} Control Index: ${ci}. Consider exiting.`, 'urgent');
-            }
-
-            if (trade.current_pnl < 0 && lossPct >= 0.6 && !trade._notifiedSL) {
-                trade._notifiedSL = true;
-                sendNotification('🛑 Stop Loss Near', `${tradeLabel} P&L ₹${trade.current_pnl} (${Math.round(lossPct * 100)}% of max loss). EXIT.`, 'urgent');
             }
 
             if (trade.is_credit && trade.current_spot && trade.sell_strike) {
@@ -5007,6 +5170,80 @@ function computeChainProfile(chain, spot, ohlc) {
     // Gamma at ATM (for regime assessment)
     const atmGamma = atmCE?.gamma ?? null;
 
+    // ═══ b90: GREEKS + VOLUME + LIQUIDITY FEATURES ═══
+    // Computed features from chain — 10 numbers instead of 1000 raw values
+
+    // 1. IV Smile Slope — steepness of put skew (institutions hedging)
+    const otmDist2 = Math.round(dailySigma * 1.0 / step) * step || step * 2;
+    const farPutIV = strikes[chain.atm - otmDist2]?.PE?.iv ?? 0;
+    const ivSlope = farPutIV > 0 && callIV > 0 ? +((farPutIV - callIV) / 2).toFixed(1) : 0;
+
+    // 2. Gamma Clustering — % of total gamma within ±0.3σ of ATM
+    let gammaTotal = 0, gammaNear = 0;
+    for (const k of nearK) {
+        const g = (Math.abs(strikes[k]?.CE?.gamma ?? 0) + Math.abs(strikes[k]?.PE?.gamma ?? 0));
+        gammaTotal += g;
+        if (Math.abs(k - chain.atm) / dailySigma < 0.3) gammaNear += g;
+    }
+    const gammaCluster = gammaTotal > 0 ? +(gammaNear / gammaTotal).toFixed(3) : 0;
+
+    // 3. Volume Ratio — call volume / put volume near ATM (real-time flow)
+    let callVol = 0, putVol = 0;
+    for (const k of nearK) {
+        callVol += strikes[k]?.CE?.volume ?? 0;
+        putVol += strikes[k]?.PE?.volume ?? 0;
+    }
+    const volRatio = putVol > 0 ? +(callVol / putVol).toFixed(2) : (callVol > 0 ? 5.0 : 1.0);
+
+    // 4. Net Delta near ATM (institutional directional bias from OI × delta)
+    let netDelta = 0;
+    for (const k of nearK) {
+        const ceD = strikes[k]?.CE?.delta ?? 0;
+        const peD = strikes[k]?.PE?.delta ?? 0;
+        const ceOI = strikes[k]?.CE?.oi ?? 0;
+        const peOI = strikes[k]?.PE?.oi ?? 0;
+        netDelta += (ceOI * ceD + peOI * peD);
+    }
+    const normDelta = nearK.length > 0 ? +(netDelta / 100000).toFixed(2) : 0; // normalize to readable scale
+
+    // 5. Net Theta near ATM (daily time decay the market is paying)
+    let netTheta = 0;
+    for (const k of nearK) {
+        netTheta += Math.abs(strikes[k]?.CE?.theta ?? 0) + Math.abs(strikes[k]?.PE?.theta ?? 0);
+    }
+    const avgTheta = nearK.length > 0 ? +(netTheta / nearK.length).toFixed(2) : 0;
+
+    // 6. Aggregate Vega (premium sensitivity to VIX — how much a 1pt VIX move matters)
+    let totalVega = 0;
+    for (const k of nearK) {
+        totalVega += Math.abs(strikes[k]?.CE?.vega ?? 0) + Math.abs(strikes[k]?.PE?.vega ?? 0);
+    }
+    const avgVega = nearK.length > 0 ? +(totalVega / nearK.length).toFixed(2) : 0;
+
+    // 7. OI Velocity — net OI change at top 5 strikes (wall building speed)
+    let oiVelocity = 0;
+    const topCallK = nearK.slice().sort((a, b) => (strikes[b]?.CE?.oi ?? 0) - (strikes[a]?.CE?.oi ?? 0)).slice(0, 5);
+    const topPutK = nearK.slice().sort((a, b) => (strikes[b]?.PE?.oi ?? 0) - (strikes[a]?.PE?.oi ?? 0)).slice(0, 5);
+    for (const k of topCallK) {
+        const d = strikes[k]?.CE;
+        if (d?.prev_oi != null) oiVelocity += d.oi - d.prev_oi;
+    }
+    for (const k of topPutK) {
+        const d = strikes[k]?.PE;
+        if (d?.prev_oi != null) oiVelocity += d.oi - d.prev_oi;
+    }
+    const normOiVelocity = +(oiVelocity / 10000).toFixed(2); // normalize to lakhs
+
+    // 8. Bid-Ask Quality — avg spread as % of premium (liquidity measure)
+    let spreadSum = 0, spreadCount = 0;
+    for (const k of nearK) {
+        const ce = strikes[k]?.CE;
+        const pe = strikes[k]?.PE;
+        if (ce && ce.ltp > 1) { spreadSum += (ce.ask - ce.bid) / ce.ltp; spreadCount++; }
+        if (pe && pe.ltp > 1) { spreadSum += (pe.ask - pe.bid) / pe.ltp; spreadCount++; }
+    }
+    const bidAskQuality = spreadCount > 0 ? +(spreadSum / spreadCount * 100).toFixed(2) : 0; // % of premium
+
     return {
         ivSkew: +(putIV - callIV).toFixed(1),
         pcrZ1: zonePCR(0.3, 0.5), pcrZ2: zonePCR(0.5, 0.8), pcrZ3: zonePCR(0.8, 1.2),
@@ -5017,7 +5254,16 @@ function computeChainProfile(chain, spot, ohlc) {
         putConc: +(((pOIs[0] || 0) + (pOIs[1] || 0) + (pOIs[2] || 0)) / pTotal).toFixed(3),
         pctFromOpen: ohlc?.open ? +((spot - ohlc.open) / ohlc.open * 100).toFixed(2) : 0,
         maxPain: chain.maxPain, callWall: chain.callWallStrike, putWall: chain.putWallStrike,
-        atm: chain.atm, spot, atmGamma
+        atm: chain.atm, spot, atmGamma,
+        // b90: New chain intelligence features
+        ivSlope,          // IV smile steepness (higher = more fear)
+        gammaCluster,     // Gamma near ATM (higher = coiled for big move)
+        volRatio,         // Call/Put volume ratio (>1 = call buying, <1 = put buying)
+        netDelta: normDelta,  // Net directional bias from OI × delta
+        avgTheta,         // Average theta near ATM (daily decay rate)
+        avgVega,          // Average vega near ATM (VIX sensitivity)
+        oiVelocity: normOiVelocity,  // Wall building speed (lakhs/day)
+        bidAskQuality     // Spread as % of premium (lower = better liquidity)
     };
 }
 
@@ -5045,11 +5291,17 @@ async function runBrain() {
         // 3. Open trades — slim to essential fields for Python
         const openTradesLite = STATE.openTrades.map(t => ({
             id: t.id, strategy_type: t.strategy_type, sell_strike: t.sell_strike,
-            buy_strike: t.buy_strike, index_key: t.index_key, is_credit: t.is_credit,
-            current_pnl: t.current_pnl ?? 0, max_profit: t.max_profit ?? 0,
-            max_loss: t.max_loss ?? 0, controlIndex: t.controlIndex ?? null,
-            entry_vix: t.entry_vix ?? null, trade_mode: t.trade_mode ?? 'swing',
-            paper: t.paper ?? false
+            buy_strike: t.buy_strike, sell_strike2: t.sell_strike2 ?? null,
+            index_key: t.index_key, is_credit: t.is_credit,
+            current_pnl: t.current_pnl ?? 0, peak_pnl: t.peak_pnl ?? 0,
+            max_profit: t.max_profit ?? 0, max_loss: t.max_loss ?? 0,
+            controlIndex: t.controlIndex ?? null, width: t.width ?? null,
+            entry_vix: t.entry_vix ?? null, entry_premium: t.entry_premium ?? null,
+            trade_mode: t.trade_mode ?? 'swing', paper: t.paper ?? false,
+            // b89: Feed wall drift + VIX spike + peak erosion to brain
+            wallDrift: t.wallDrift ? { severity: t.wallDrift.severity, warning: t.wallDrift.warning } : null,
+            vixChange: t.vixSpike ? t.vixSpike.change : 0,
+            peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0
         }));
 
         // 4. Candidates — slim to essential fields
@@ -5127,7 +5379,9 @@ async function runBrain() {
             // Morning bias
             morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null,
             // Capital — single source of truth for Kelly and position sizing
-            capital: C.CAPITAL
+            capital: C.CAPITAL,
+            // b89: Market phase for position decisions
+            marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN'
         }));
 
         const resultJson = py.runPython(
@@ -6904,6 +7158,16 @@ function renderCandidateCard(cand, atm, rank) {
         legsText = `BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)} | SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)}`;
     }
 
+    // VIX trend badge for IC/IB candidates
+    let vixTrendBadge = '';
+    if ((cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') && STATE.pollHistory?.length >= 3) {
+        const recentPolls = STATE.pollHistory.slice(-3);
+        const vixTrend = (recentPolls[recentPolls.length-1]?.vix || 0) - (recentPolls[0]?.vix || 0);
+        if (vixTrend >= 0.5) {
+            vixTrendBadge = `<span style="background:var(--warn);color:#000;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">🌡️ VIX↑${vixTrend.toFixed(1)}</span>`;
+        }
+    }
+
     return `
     <div class="v1-card ${alignClass}" data-id="${cand.id}">
         <div class="v1-header">
@@ -6913,6 +7177,7 @@ function renderCandidateCard(cand, atm, rank) {
                 ${cand.wallTag ? `<span class="v1-wall-tag">${cand.wallTag}</span>` : ''}
                 ${cand.gammaTag ? `<span class="v1-gamma-tag">${cand.gammaTag}</span>` : ''}
                 ${(cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') ? `<span style="background:#D32F2F;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">⏱ EXIT TODAY</span>` : ''}
+                ${vixTrendBadge}
             </div>
             <span class="v1-rank">${rank === 1 && cand.brainScore > 0 ? '🧠 ' : ''}#${rank || ''}</span>
         </div>
@@ -7020,6 +7285,9 @@ function renderTradeCard(t, isPaper) {
             </div>
             ${t.wallDrift ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.wallDrift.severity >= 2 ? 'var(--danger)' : 'var(--warn)'}">
                 ${t.wallDrift.warning}
+            </div>` : ''}
+            ${t.vixSpike && t.vixSpike.change >= 0.5 ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.vixSpike.change >= 2.0 ? 'var(--danger)' : t.vixSpike.change >= 1.0 ? 'var(--warn)' : 'var(--text-muted)'}">
+                🌡️ VIX ${t.vixSpike.entryVix.toFixed(1)}→${t.vixSpike.currentVix.toFixed(1)} (${t.vixSpike.change > 0 ? '+' : ''}${t.vixSpike.change}${t.vixSpike.change >= 2.0 ? ' ⚠️ SPIKE — EXIT' : t.vixSpike.change >= 1.0 ? ' — rising' : ''})
             </div>` : ''}
         </div>
         ${renderBrainForTrade(t.id)}
@@ -7773,7 +8041,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b89' }
+            { metric: 'App Version', value: 'v2.1 b90' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
