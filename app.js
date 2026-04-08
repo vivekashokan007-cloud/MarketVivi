@@ -3225,6 +3225,51 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             cand.costWarning = true;
             cand.costBlocked = true; // Always block REAL trades where cost > 5% of max profit
         }
+
+        // ====== P(PROFIT) REALISM ADJUSTMENT — DATA-DRIVEN (43 trades) ======
+        // 1. Store original probability as P(Range)
+        cand.rawProbProfit = cand.probProfit;
+
+        // 2. Cost Ratio (how much of the profit do we lose to spread costs?)
+        let costRatio = cand.maxProfit > 0 ? (cand.estCost / cand.maxProfit) : 0;
+        costRatio = Math.min(1.0, costRatio);
+
+        // 3. Strategy-specific dampening from 43-trade Supabase dataset
+        let strategyFactor = 1.0;
+
+        if (cand.type === 'BULL_PUT') {
+            // DATA: 0/6 wins (0%), shown 69-78%. Massive overestimate.
+            strategyFactor = 0.15;
+
+        } else if (cand.type === 'BEAR_CALL') {
+            // DATA: 7/14 wins (50%), shown 63-80%. ~20% overestimate.
+            if (STATE.tradeMode === 'swing') {
+                strategyFactor = 0.50;  // Swing BC worst: 25% actual vs 63% shown
+            } else {
+                strategyFactor = 0.75;  // Intraday BC: 50-67% actual vs 77-80% shown
+            }
+
+        } else if (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') {
+            // DATA: 22/24 wins (91.7%), shown 55-98%. Under-estimated!
+            // DO NOT dampen probability — it's already conservative
+            strategyFactor = 1.0;
+
+            // For intraday far-DTE, cap display at observed 40% capture rate
+            if (STATE.tradeMode === 'intraday' && cand.tDTE > 2) {
+                cand.realisticMaxProfit = Math.round(cand.maxProfit * 0.40);
+            }
+        }
+
+        // 4. Compute Realistic Probability
+        let adjustedProb = cand.rawProbProfit * (1 - costRatio) * strategyFactor;
+
+        // 5. Hard Floor at 5% (preserve candidates for UI / paper trading)
+        adjustedProb = Math.max(0.05, adjustedProb);
+
+        cand.probProfit = Number(adjustedProb.toFixed(3));
+
+        // 6. Recompute EV based on honest outcome probability
+        cand.ev = Math.round((cand.probProfit * cand.maxProfit) - ((1 - cand.probProfit) * cand.maxLoss));
     }
 
     return candidates;
@@ -6721,9 +6766,10 @@ function renderCandidateCard(cand, atm, rank) {
         ${renderBrainForCandidate(cand.id)}
 
         <div class="v1-metrics">
-            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${cand.maxProfit.toLocaleString()}${cand.intradayTheta && cand.tDTE > 2 ? ` <span style="font-size:9px;color:var(--text-muted)">(Θ ₹${cand.intradayTheta.toLocaleString()}/day)</span>` : ''}</span></div>
+            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${cand.maxProfit.toLocaleString()}${cand.realisticMaxProfit ? ` <span style="font-size:9px;color:var(--text-muted)">(actual ~₹${cand.realisticMaxProfit.toLocaleString()})</span>` : cand.intradayTheta && cand.tDTE > 2 ? ` <span style="font-size:9px;color:var(--text-muted)">(Θ ₹${cand.intradayTheta.toLocaleString()}/day)</span>` : ''}</span></div>
             <div class="v1-metric"><span class="v1-label">Max Loss</span><span class="v1-val red">₹${cand.maxLoss.toLocaleString()}</span></div>
             <div class="v1-metric"><span class="v1-label">R:R</span><span class="v1-val">${cand.riskReward || '--'}</span></div>
+            ${cand.rawProbProfit && cand.rawProbProfit !== cand.probProfit ? `<div class="v1-metric"><span class="v1-label">P(Range)</span><span class="v1-val">${(cand.rawProbProfit * 100).toFixed(1)}%</span></div>` : ''}
             <div class="v1-metric"><span class="v1-label">P(Profit)</span><span class="v1-val${cand.upstoxPop && Math.abs(cand.probProfit * 100 - cand.upstoxPop) > 20 ? '" style="color:var(--danger)' : ''}">${(cand.probProfit * 100).toFixed(1)}%${cand.upstoxPop ? ` <span style="font-size:9px;color:var(--text-muted)">(UPX:${cand.upstoxPop.toFixed(0)}%)</span>` : ''}</span></div>
             ${CALIBRATION.win_rates[cand.type] && CALIBRATION.win_rates[cand.type].total > 0 ? `<div class="v1-metric"><span class="v1-label">Track Record</span><span class="v1-val" style="color:${CALIBRATION.win_rates[cand.type].rate >= 0.7 ? 'var(--green)' : CALIBRATION.win_rates[cand.type].rate >= 0.4 ? 'var(--warn)' : 'var(--danger)'}">${CALIBRATION.win_rates[cand.type].verdict} ${CALIBRATION.win_rates[cand.type].wins}/${CALIBRATION.win_rates[cand.type].total} (${(CALIBRATION.win_rates[cand.type].rate * 100).toFixed(0)}%)</span></div>` : ''}
         </div>
@@ -7559,7 +7605,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b87' }
+            { metric: 'App Version', value: 'v2.1 b88' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
