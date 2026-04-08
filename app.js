@@ -4971,7 +4971,9 @@ async function runBrain() {
             const d = t.exit_date ? t.exit_date.split('T')[0] : '';
             return d === API.todayIST() && t.status === 'CLOSED';
         });
-        const dailyPnl = closedToday.reduce((s, t) => s + (t.actual_pnl ?? 0), 0);
+        const dailyPnl = closedToday.filter(t => !t.paper).reduce((s, t) => s + (t.actual_pnl ?? 0), 0);
+        const dailyRealCount = closedToday.filter(t => !t.paper).length + todayTrades.filter(t => !t.paper).length;
+        const dailyPaperCount = closedToday.filter(t => t.paper).length + todayTrades.filter(t => t.paper).length;
 
         py.globals.set('_context_json', JSON.stringify({
             // Chain profiles (20 numbers each)
@@ -4995,7 +4997,7 @@ async function runBrain() {
             bnfDTE: STATE.baseline?.bnfTDTE ?? 5,
             nfDTE: STATE.baseline?.nfTDTE ?? 5,
             // Daily P&L discipline
-            dailyPnl, dailyTradeCount: closedToday.length + todayTrades.length,
+            dailyPnl, dailyTradeCount: dailyRealCount, dailyPaperCount,
             // OHLC for day range
             bnfOHLC: STATE.baseline?.bnfOHLC ?? null,
             nfOHLC: STATE.baseline?.nfOHLC ?? null,
@@ -5232,7 +5234,7 @@ async function rescanStrategies() {
 // ═══ PAPER TRADE LIMIT — max 2 per index (2 NF + 2 BNF = 4 total) ═══
 function canPaperTrade(indexKey) {
     const paperCount = STATE.openTrades.filter(t => t.paper && t.index_key === indexKey).length;
-    return paperCount < 2;
+    return paperCount < 5; // 5 per index, 10 total — calibration needs data
 }
 function paperTradeCount() {
     return STATE.openTrades.filter(t => t.paper).length;
@@ -5246,7 +5248,7 @@ async function takeTrade(candidateId, isPaper = false) {
 
     // Paper trade limit enforcement
     if (isPaper && !canPaperTrade(cand.index)) {
-        alert(`❌ Paper trade limit reached for ${cand.index} (max 2). Close one first.`);
+        alert(`❌ Paper trade limit reached for ${cand.index} (max 5). Close one first.`);
         return;
     }
     // Real trade: confirm
@@ -6867,9 +6869,20 @@ function renderTradeCard(t, isPaper) {
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
-            <button class="btn-close-profit" onclick="closeTrade('${t.id}', '${isPaper ? 'Paper ' : ''}Profit booked')">💰 Book Profit</button>
-            <button class="btn-close-loss" onclick="closeTrade('${t.id}', '${isPaper ? 'Paper ' : ''}Stop loss')">🛑 Exit</button>
+            <button class="btn-close-profit" onclick="closeTrade('${t.id}', 'Brain said BOOK')">💰 Book Profit</button>
+            <button class="btn-close-loss" onclick="closeTrade('${t.id}', 'Stop loss')">🛑 Exit</button>
         </div>
+        <details class="exit-reasons" style="margin-top:4px">
+            <summary style="cursor:pointer;font-size:10px;color:var(--text-muted);user-select:none">More exit reasons ▸</summary>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Target hit')">🎯 Target</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Thesis broke')">📉 Thesis broke</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Expiry exit')">⏱️ Expiry</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Wall drift')">🛡️ Wall drift</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Panic')">😰 Panic</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Manual')">✋ Manual</button>
+            </div>
+        </details>
         <details style="margin-top:6px">
             <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);user-select:none">Trade details ▸</summary>
             <div class="pos-detail">
@@ -7605,7 +7618,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b88' }
+            { metric: 'App Version', value: 'v2.1 b89' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
