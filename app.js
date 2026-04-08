@@ -87,7 +87,8 @@ const C = {
 
     // Global direction thresholds (CALIBRATION PENDING — refine after 20+ observations)
     DOW_THRESHOLD: 0.5,     // % change to count as signal (derived: Dow -1.5% → NF -500pts, halved)
-    CRUDE_THRESHOLD: 1.5    // % change to count as signal (crude avg daily range ~1-2%)
+    CRUDE_THRESHOLD: 1.5,   // % change to count as signal (crude avg daily range ~1-2%)
+    GIFT_THRESHOLD: 0.3     // % change to count as GIFT signal (direct NF correlation, ~75pts)
 };
 
 // ═══ CALIBRATION DATA — paper trades (25) + backtest (8372 trades, 552 days, Apr 2026) ═══
@@ -1599,7 +1600,7 @@ const STATE = {
     audioCtx: null,
 
     // Global direction (morning reference + 3:15 PM live → auto-computed direction)
-    globalDirection: { dowClose: null, crudeSettle: null, dowNow: null, crudeNow: null },
+    globalDirection: { dowClose: null, crudeSettle: null, dowNow: null, crudeNow: null, giftNow: null },
 
     // Evening close reference (stored at 6 AM, compared with morning inputs for overnight delta)
     eveningClose: null,  // { dow, crude, gift, date }
@@ -2565,8 +2566,16 @@ function computeGlobalBoost(tomorrowSignal, positioningResult) {
         }
     }
 
-    // Signal 3: GIFT direction (auto from gap — already computed)
-    if (STATE.gapInfo && STATE.gapInfo.sigma) {
+    // Signal 3: GIFT direction — b91: live GIFT Now vs evening close (most direct gap signal)
+    const giftRef = STATE.eveningClose?.gift || null;
+    if (giftRef && gd.giftNow) {
+        const giftPct = ((gd.giftNow - giftRef) / giftRef) * 100;
+        if (Math.abs(giftPct) >= C.GIFT_THRESHOLD) {
+            if ((giftPct > 0 && isBull) || (giftPct < 0 && !isBull)) boost++;
+            else boost--;
+        }
+    } else if (STATE.gapInfo && STATE.gapInfo.sigma) {
+        // Fallback: morning gap (stale but better than nothing)
         const giftBull = STATE.gapInfo.sigma > 0.3;
         const giftBear = STATE.gapInfo.sigma < -0.3;
         if ((giftBull && isBull) || (giftBear && !isBull)) boost++;
@@ -3134,6 +3143,13 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             ? BS.delta(spot, price, T_prob, vol, type)
             : chainDeltaAtPrice(strikes, price, type, spot, T, vol);
 
+    // b91: IC/IB ALWAYS use intraday probability — 0% overnight survival (backtest confirmed)
+    // Toggle only governs 2-leg directional strategies. 4-leg credit = intraday, always.
+    const minsLeft4Leg = Math.max(30, 375 - (API.minutesSinceOpen?.() ?? 0));
+    const T_prob_4leg = minsLeft4Leg / (252 * 375);
+    const probDelta4Leg = (strikes, price, type) =>
+        BS.delta(spot, price, T_prob_4leg, vol, type);
+
     const allStrikes = parsed.allStrikes;
     const step = allStrikes.length > 1 ? allStrikes[1] - allStrikes[0] : (isBNF ? 100 : 50);
 
@@ -3254,8 +3270,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             // b71 FIX: Use chain delta (IV smile) instead of flat ATM IV
             const upperBE = sellCall + totalCredit;
             const lowerBE = sellPut - totalCredit;
-            const probAbovePut = 1 - Math.abs(probDelta(parsed.strikes, lowerBE, 'PE'));
-            const probBelowCall = 1 - Math.abs(probDelta(parsed.strikes, upperBE, 'CE'));
+            const probAbovePut = 1 - Math.abs(probDelta4Leg(parsed.strikes, lowerBE, 'PE'));
+            const probBelowCall = 1 - Math.abs(probDelta4Leg(parsed.strikes, upperBE, 'CE'));
             const probProfit = Math.max(0, probAbovePut + probBelowCall - 1);
             if (probProfit < C.MIN_PROB) continue;
             if (totalCredit / width < C.MIN_CREDIT_RATIO) continue;
@@ -3282,9 +3298,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 ev, netTheta, isCredit: true, lotSize,
                 netDelta: +(Math.abs(chainDelta(parsed.strikes, sellCall, 'CE', spot, T, vol)) - Math.abs(chainDelta(parsed.strikes, sellPut, 'PE', spot, T, vol))).toFixed(4),
                 riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-                // Intraday far-DTE: target/SL based on daily theta capture, not full-DTE max
-                targetProfit: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
-                stopLoss: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
+                // b91: IC always intraday — target/SL based on daily theta capture, not full-DTE max
+                targetProfit: tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
+                stopLoss: tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
                 intradayTheta: netTheta > 0 ? netTheta : null,
                 forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
                 index: isBNF ? 'BNF' : 'NF', expiry, tDTE
@@ -3343,8 +3359,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         // b71 FIX: Use chain delta like IC — was using width/sigma heuristic before
         const ibUpperBE = atm + totalCredit;
         const ibLowerBE = atm - totalCredit;
-        const ibProbAbovePut = 1 - Math.abs(probDelta(parsed.strikes, ibLowerBE, 'PE'));
-        const ibProbBelowCall = 1 - Math.abs(probDelta(parsed.strikes, ibUpperBE, 'CE'));
+        const ibProbAbovePut = 1 - Math.abs(probDelta4Leg(parsed.strikes, ibLowerBE, 'PE'));
+        const ibProbBelowCall = 1 - Math.abs(probDelta4Leg(parsed.strikes, ibUpperBE, 'CE'));
         const probProfit = Math.max(0, ibProbAbovePut + ibProbBelowCall - 1);
         if (probProfit < C.MIN_PROB) { ibDebug.push(`W${width}:prob(${probProfit.toFixed(2)}<${C.MIN_PROB})`); continue; }
 
@@ -3368,8 +3384,9 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             ev, netTheta, isCredit: true, lotSize,
             netDelta: 0, // IB is delta-neutral at entry
             riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-            targetProfit: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
-            stopLoss: STATE.tradeMode === 'intraday' && tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
+            // b91: IB always intraday — target/SL based on daily theta capture
+            targetProfit: tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
+            stopLoss: tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
             intradayTheta: netTheta > 0 ? netTheta : null,
             forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE
@@ -3504,8 +3521,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             // DO NOT dampen probability — it's already conservative
             strategyFactor = 1.0;
 
-            // For intraday far-DTE, cap display at observed 40% capture rate
-            if (STATE.tradeMode === 'intraday' && cand.tDTE > 2) {
+            // b91: IC/IB always intraday — show realistic capture regardless of toggle
+            if (cand.tDTE > 2) {
                 cand.realisticMaxProfit = Math.round(cand.maxProfit * 0.40);
             }
         }
@@ -5704,7 +5721,8 @@ async function takeTrade(candidateId, isPaper = false) {
         peak_pnl: 0,
         lots: 1,
         paper: isPaper,
-        trade_mode: STATE.tradeMode || 'swing',
+        // b91: IC/IB always intraday — 0% overnight survival (backtest confirmed)
+        trade_mode: (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? 'intraday' : (STATE.tradeMode || 'swing'),
 
         // ═══ RICH SNAPSHOT — everything for calibration (JSONB) ═══
         entry_snapshot: {
@@ -5909,7 +5927,8 @@ async function logManualTrade() {
         peak_pnl: 0,
         lots: 1,
         paper: isPaper,
-        trade_mode: tradeMode,
+        // b91: IC/IB always intraday — 0% overnight survival
+        trade_mode: (type === 'IRON_CONDOR' || type === 'IRON_BUTTERFLY') ? 'intraday' : tradeMode,
 
         // ═══ MANUAL TRADE SNAPSHOT — market environment (no candidate data) ═══
         entry_snapshot: {
@@ -6980,20 +6999,30 @@ function renderWatchlist() {
         </summary>
         <div class="positioning-body">`;
 
-    // Global Direction inputs — Dow Futures Now + Crude Now (morning ref from Lock & Scan)
+    // Global Direction inputs — Dow Now + Crude Now + GIFT Now (b91: evening ref for GIFT)
     const gd = STATE.globalDirection;
     const hasMorningRef = gd.dowClose || gd.crudeSettle;
     const dowPct = (gd.dowClose && gd.dowNow) ? (((gd.dowNow - gd.dowClose) / gd.dowClose) * 100).toFixed(2) : null;
     const crudePct = (gd.crudeSettle && gd.crudeNow) ? (((gd.crudeNow - gd.crudeSettle) / gd.crudeSettle) * 100).toFixed(2) : null;
-    const giftDir = STATE.gapInfo?.sigma ? (STATE.gapInfo.sigma > 0.3 ? 'BULL' : STATE.gapInfo.sigma < -0.3 ? 'BEAR' : 'NEUTRAL') : null;
+    // b91: GIFT reference from evening close (most direct gap signal for tomorrow)
+    const giftRef = STATE.eveningClose?.gift || null;
+    const giftPct = (giftRef && gd.giftNow) ? (((gd.giftNow - giftRef) / giftRef) * 100).toFixed(2) : null;
+    const giftDir = giftPct !== null ? (giftPct >= C.GIFT_THRESHOLD ? 'BULL' : giftPct <= -C.GIFT_THRESHOLD ? 'BEAR' : 'NEUTRAL')
+        : STATE.gapInfo?.sigma ? (STATE.gapInfo.sigma > 0.3 ? 'BULL' : STATE.gapInfo.sigma < -0.3 ? 'BEAR' : 'NEUTRAL') : null;
     const dowDir = dowPct !== null ? (dowPct >= C.DOW_THRESHOLD ? 'BULL' : dowPct <= -C.DOW_THRESHOLD ? 'BEAR' : 'NEUTRAL') : null;
     const crudeDir = crudePct !== null ? (crudePct >= C.CRUDE_THRESHOLD ? 'BEAR' : crudePct <= -C.CRUDE_THRESHOLD ? 'BULL' : 'NEUTRAL') : null;
     const dirIcon = (d) => d === 'BULL' ? '🟢' : d === 'BEAR' ? '🔴' : d === 'NEUTRAL' ? '⚪' : '—';
 
     html += `<div class="global-context-section">
         <div class="gc-title">🌍 Global Direction <span style="color:var(--danger);font-size:11px">(enter live values)</span></div>
-        ${!hasMorningRef ? '<div style="color:var(--warn);font-size:11px;margin-bottom:6px">⚠️ Enter Dow Close & Crude Settle in morning inputs first</div>' : ''}
+        ${!hasMorningRef && !giftRef ? '<div style="color:var(--warn);font-size:11px;margin-bottom:6px">⚠️ Enter Dow Close & Crude Settle in morning inputs, GIFT Close in evening section</div>' : ''}
         <div class="global-context-grid">
+            <div class="input-group compact">
+                <label>GIFT Now</label>
+                <input type="text" inputmode="text" id="in-gift-now" class="input-field input-sm" placeholder="${giftRef || '24000'}"
+                    value="${gd.giftNow ?? ''}">
+                ${giftPct !== null ? `<div style="font-size:10px;color:${giftPct > 0 ? 'var(--green)' : giftPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">${giftPct > 0 ? '+' : ''}${giftPct}% ${dirIcon(giftDir)}</div>` : giftRef ? '<div style="font-size:9px;color:var(--text-muted)">vs eve ' + giftRef + '</div>' : '<div style="font-size:9px;color:var(--warn)">Set GIFT Close in 🌙 Evening</div>'}
+            </div>
             <div class="input-group compact">
                 <label>Dow Now</label>
                 <input type="text" inputmode="text" id="in-dow-now" class="input-field input-sm" placeholder="46120"
@@ -7045,15 +7074,10 @@ function renderWatchlist() {
                 html += `<div class="positioning-gate" style="color:var(--warn)">⚠️ Free capital ₹${(freeCapital/1000).toFixed(1)}K — may not cover buy leg ₹${(minPeakNeeded/1000).toFixed(1)}K.</div>`;
             }
 
-            const posBnf = STATE.positioningCandidates.filter(c => c.index === 'BNF' && isDirectionSafe(c)).slice(0, 3);
-            const posNf = STATE.positioningCandidates.filter(c => c.index === 'NF' && !c.capitalBlocked && isDirectionSafe(c)).slice(0, 2);
-            if (posBnf.length) {
-                html += '<div class="strat-header">BNF — POSITIONING</div>';
-                posBnf.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
-            }
-            if (posNf.length) {
-                html += '<div class="strat-header">NF — POSITIONING</div>';
-                posNf.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
+            // b91: Positioning candidates merged into regular NF/BNF sections below (Option C)
+            const posMergeCount = STATE.positioningCandidates.filter(c => isDirectionSafe(c) && !c.capitalBlocked).length;
+            if (posMergeCount > 0) {
+                html += `<div style="font-size:11px;color:var(--accent);padding:4px 0">⚡ ${posMergeCount} positioning candidates merged into strategy sections below</div>`;
             }
         }
     } else if (!has315) {
@@ -7094,8 +7118,40 @@ function renderWatchlist() {
         return diverse;
     }
 
-    // ═══ NIFTY 50 — #1 RECOMMENDED + rest collapsed ═══
+    // ═══ b91: MERGE positioning candidates into regular sections (Option C) ═══
+    // Clear stale positioning flags from previous renders
+    for (const c of STATE.candidates) { delete c._posMatch; delete c._posOnly; }
+    if (STATE.positioningCandidates) {
+        for (const c of STATE.positioningCandidates) { delete c._posMatch; delete c._posOnly; }
+    }
+
     const nfCands = diverseTop(STATE.candidates, 'NF');
+    const bnfCands = diverseTop(STATE.candidates, 'BNF');
+
+    // Build set of positioning candidate IDs (only if 315pm captured + global direction filled)
+    const posIds = new Set();
+    const gd315 = STATE.globalDirection;
+    const gcFilled315 = has315 && gd315.dowNow !== null && gd315.crudeNow !== null;
+    if (gcFilled315 && STATE.positioningCandidates?.length > 0) {
+        for (const pc of STATE.positioningCandidates) posIds.add(pc.id);
+    }
+
+    if (posIds.size > 0) {
+        // Tag regular candidates that also appear in positioning
+        for (const c of nfCands) { c._posMatch = posIds.has(c.id); }
+        for (const c of bnfCands) { c._posMatch = posIds.has(c.id); }
+
+        // Append positioning-only candidates (not already in regular list)
+        const regularIds = new Set([...nfCands, ...bnfCands].map(c => c.id));
+        const posOnlyNf = STATE.positioningCandidates.filter(c =>
+            c.index === 'NF' && !regularIds.has(c.id) && isDirectionSafe(c) && !c.capitalBlocked
+        ).slice(0, 2);
+        const posOnlyBnf = STATE.positioningCandidates.filter(c =>
+            c.index === 'BNF' && !regularIds.has(c.id) && isDirectionSafe(c) && !c.capitalBlocked
+        ).slice(0, 2);
+        for (const c of posOnlyNf) { c._posOnly = true; nfCands.push(c); }
+        for (const c of posOnlyBnf) { c._posOnly = true; bnfCands.push(c); }
+    }
     const nfTotal = STATE.candidates.filter(c => c.index === 'NF').length;
     if (nfCands.length) {
         html += renderCandidateCard(nfCands[0], nfAtm, 1);
@@ -7114,7 +7170,6 @@ function renderWatchlist() {
     }
 
     // ═══ BANK NIFTY — collapsed by default ═══
-    const bnfCands = diverseTop(STATE.candidates, 'BNF');
     const bnfTotal = STATE.candidates.filter(c => c.index === 'BNF').length;
     if (bnfCands.length) {
         html += `<details><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);padding:8px 0;user-select:none;">BANK NIFTY — ${bnfCands.length} candidates ▸</summary>`;
@@ -7179,7 +7234,7 @@ function renderCandidateCard(cand, atm, rank) {
                 ${(cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') ? `<span style="background:#D32F2F;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">⏱ EXIT TODAY</span>` : ''}
                 ${vixTrendBadge}
             </div>
-            <span class="v1-rank">${rank === 1 && cand.brainScore > 0 ? '🧠 ' : ''}#${rank || ''}</span>
+            <span class="v1-rank">${cand._posMatch ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">📌+⚡</span>' : cand._posOnly ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">⚡ TMR</span>' : ''}${rank === 1 && cand.brainScore > 0 ? '🧠 ' : ''}#${rank || ''}</span>
         </div>
         <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE || '--'}T${cand.brainScore ? ` · <span style="color:${cand.brainScore > 0 ? 'var(--green)' : cand.brainScore < 0 ? 'var(--danger)' : 'var(--text-muted)'};font-weight:600">🧠${cand.brainScore > 0 ? '+' : ''}${cand.brainScore.toFixed(2)}</span>` : ''}</div>
         <div class="v1-legs">${legsText}</div>
@@ -7511,7 +7566,7 @@ function lockMorningData() {
     STATE._captured315pm = false;
     STATE.afternoonBaseline = null;
     // Clear afternoon "now" values but KEEP morning reference (dowClose, crudeSettle)
-    STATE.globalDirection = { ...STATE.globalDirection, dowNow: null, crudeNow: null };
+    STATE.globalDirection = { ...STATE.globalDirection, dowNow: null, crudeNow: null, giftNow: null };
     localStorage.removeItem('mr2_global_context');
 
     const fiiCash = document.getElementById('in-fii-cash').value;
@@ -7616,6 +7671,7 @@ function restoreGlobalContext(cloudConfig) {
     }
     if (parsed.dowNow) STATE.globalDirection.dowNow = parsed.dowNow;
     if (parsed.crudeNow) STATE.globalDirection.crudeNow = parsed.crudeNow;
+    if (parsed.giftNow) STATE.globalDirection.giftNow = parsed.giftNow;
 }
 
 async function loadOpenTrade() {
@@ -8160,6 +8216,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             STATE.globalDirection.dowNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-crude-now') {
             STATE.globalDirection.crudeNow = e.target.value ? parseFloat(e.target.value) : null;
+        } else if (e.target.id === 'in-gift-now') {
+            STATE.globalDirection.giftNow = e.target.value ? parseFloat(e.target.value) : null;
         } else { return; }
         // Auto-save to localStorage + Supabase with date stamp
         const saveData = { ...STATE.globalDirection, _date: API.todayIST() };
@@ -8176,8 +8234,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (e.target.id !== 'btn-save-global-dir') return;
         const dowEl = document.getElementById('in-dow-now');
         const crudeEl = document.getElementById('in-crude-now');
+        const giftEl = document.getElementById('in-gift-now');
         if (dowEl) STATE.globalDirection.dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
         if (crudeEl) STATE.globalDirection.crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
+        if (giftEl) STATE.globalDirection.giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
         const saveData = { ...STATE.globalDirection, _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
