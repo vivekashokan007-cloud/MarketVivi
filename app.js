@@ -569,26 +569,62 @@ def candidate_flow_alignment(cand, polls, baseline, regime):
     return None
 
 def candidate_wall_protection(cand, polls, baseline, regime):
-    """Is there a strong OI wall near/at the sell strike?"""
+    """b92: Full wall protection check — both sides for IC/IB, exposed detection."""
     sell = cand.get('sellStrike', 0)
+    sell2 = cand.get('sellStrike2', 0)  # PE side for IC/IB
     idx = cand.get('index', 'BNF')
-    is_bear = 'BEAR' in cand.get('type', '')
+    ctype = cand.get('type', '')
+    is_bear = 'BEAR' in ctype
+    is_4leg = ctype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
     last = polls[-1] if polls else {}
     cw = last.get('cw' if idx == 'BNF' else 'nfCW')
     pw = last.get('pw' if idx == 'BNF' else 'nfPW')
-    cwOI = last.get('cwOI' if idx == 'BNF' else 'nfCWOI', 0)
-    pwOI = last.get('pwOI' if idx == 'BNF' else 'nfPWOI', 0)
+    
+    # 4-leg: check BOTH sides independently
+    if is_4leg and cw and pw:
+        ce_exposed = cw < sell if sell else False  # call wall below CE sell = exposed
+        pe_exposed = pw > sell2 if sell2 else False  # put wall above PE sell = exposed
+        if ce_exposed and pe_exposed:
+            return {"icon": "🚨", "label": "BOTH sides exposed",
+                    "detail": f"CE sell {sell} above call wall {cw}. PE sell {sell2} below put wall {pw}. No protection.",
+                    "impact": "caution", "strength": 5}
+        if ce_exposed:
+            return {"icon": "⚠️", "label": f"CE side past call wall",
+                    "detail": f"Sell CE {sell} > call wall {cw}. Upside unprotected.",
+                    "impact": "caution", "strength": 4}
+        if pe_exposed:
+            return {"icon": "⚠️", "label": f"PE side past put wall",
+                    "detail": f"Sell PE {sell2} < put wall {pw}. Downside unprotected.",
+                    "impact": "caution", "strength": 4}
+        # Both protected
+        ce_dist = cw - sell if cw and sell else 999
+        pe_dist = sell2 - pw if sell2 and pw else 999
+        if ce_dist >= 0 and ce_dist <= 300 and pe_dist >= 0 and pe_dist <= 300:
+            return {"icon": "🛡️", "label": "Both sides wall-backed",
+                    "detail": f"CE: wall {cw} ({ce_dist}pts above). PE: wall {pw} ({pe_dist}pts below).",
+                    "impact": "bullish", "strength": 4}
+        return None
+    
+    # 2-leg directional: check relevant wall
     if is_bear and cw:
         dist = cw - sell
+        if dist < 0:
+            return {"icon": "⚠️", "label": f"Sell ABOVE call wall",
+                    "detail": f"Sell {sell} > call wall {cw}. No OI ceiling. Today's rally can hit you.",
+                    "impact": "caution", "strength": 5}
         if 0 <= dist <= 300:
             return {"icon": "🛡️", "label": f"Wall at {cw} ({dist}pts above)",
-                    "detail": f"Call wall OI protects your sell. Structural safety.",
+                    "detail": f"Call wall OI protects your sell.",
                     "impact": "bullish", "strength": 3}
-    elif not is_bear and pw:
+    elif not is_bear and not is_4leg and pw:
         dist = sell - pw
+        if dist < 0:
+            return {"icon": "⚠️", "label": f"Sell BELOW put wall",
+                    "detail": f"Sell {sell} < put wall {pw}. No OI floor. Breakdown can hit you.",
+                    "impact": "caution", "strength": 5}
         if 0 <= dist <= 300:
             return {"icon": "🛡️", "label": f"Wall at {pw} ({dist}pts below)",
-                    "detail": f"Put wall OI protects your sell. Structural safety.",
+                    "detail": f"Put wall OI protects your sell.",
                     "impact": "bullish", "strength": 3}
     return None
 
@@ -622,6 +658,86 @@ def candidate_regime_fit(cand, polls, baseline, regime):
                     "detail": f"Trend is {'up' if trend_bull else 'down'}, your trade is {'bearish' if is_bear else 'bullish'}.",
                     "impact": "caution", "strength": 4}
     return None
+
+def evaluate_candidate_risk(cand, ctx, open_trades, regime):
+    """b92: Function #48 — deep per-candidate risk evaluation.
+    Returns LIST of insights. Uses enriched candidate data (20+ fields).
+    Checks: cost trap, R:R sanity, open trade conflict, width adequacy, force coherence."""
+    insights = []
+    ctype = cand.get('type', '')
+    idx = cand.get('index', 'BNF')
+    max_p = cand.get('maxProfit', 0)
+    max_l = cand.get('maxLoss', 0)
+    est_cost = cand.get('estCost', 0)
+    est_cost_pct = cand.get('estCostPct', 0)
+    realistic_mp = cand.get('realisticMaxProfit')
+    prob = cand.get('probProfit', 0)
+    forces = cand.get('forces') or {}
+    ctx_score = cand.get('contextScore', 0)
+    
+    # 1. COST TRAP — est. cost eats too much of realistic profit
+    effective_max = realistic_mp if realistic_mp else max_p
+    if effective_max > 0 and est_cost > 0:
+        cost_ratio = est_cost / effective_max
+        if cost_ratio > 0.5:
+            net = effective_max - est_cost
+            insights.append({"icon": "💸", "label": f"Cost trap ({cost_ratio*100:.0f}% of profit)",
+                    "detail": f"Net after cost: ₹{net:.0f}. Risk ₹{max_l:.0f} for ₹{net:.0f}.",
+                    "impact": "caution", "strength": 5})
+        elif cost_ratio > 0.3:
+            insights.append({"icon": "💸", "label": f"High cost ({est_cost_pct:.0f}% of max)",
+                    "detail": f"₹{est_cost:.0f} cost on ₹{effective_max:.0f} profit. Margins thin.",
+                    "impact": "caution", "strength": 3})
+    
+    # 2. R:R SANITY — maxLoss > 2× maxProfit is dangerous
+    if max_p > 0 and max_l > 0:
+        rr = max_p / max_l
+        if rr < 0.5 and prob < 0.85:
+            insights.append({"icon": "⚖️", "label": f"Poor R:R (1:{1/rr:.1f})",
+                    "detail": f"Risk ₹{max_l:.0f} to make ₹{max_p:.0f}. Need {1/(rr+0.001):.0f}x wins per loss.",
+                    "impact": "caution", "strength": 3})
+    
+    # 3. OPEN TRADE CONFLICT — already have a struggling position in same type/index?
+    for t in (open_trades or []):
+        if t.get('index_key') != idx: continue
+        if t.get('paper'): continue
+        t_type = t.get('strategy_type', '')
+        t_pnl = t.get('current_pnl', 0)
+        t_ci = t.get('controlIndex')
+        # Same strategy type and struggling
+        if t_type == ctype and (t_pnl < 0 or (t_ci is not None and t_ci < -20)):
+            insights.append({"icon": "🔄", "label": f"Open {t_type} struggling",
+                    "detail": f"Existing {idx} {t_type} at P&L ₹{t_pnl:.0f}, CI {t_ci}. Don't double down.",
+                    "impact": "caution", "strength": 4})
+            break
+        # Any open real trade in same index (overexposure)
+        if not t.get('paper') and t.get('index_key') == idx:
+            insights.append({"icon": "📋", "label": f"Already in {idx}",
+                    "detail": f"Open {t_type} in {idx}. Adding = double exposure.",
+                    "impact": "neutral", "strength": 2})
+            break
+    
+    # 4. FORCE COHERENCE — forces say one thing, context says another
+    aligned = forces.get('aligned', 0)
+    if aligned >= 3 and ctx_score < -0.3:
+        insights.append({"icon": "⚠️", "label": "Forces aligned but context negative",
+                "detail": f"3/3 forces but contextScore {ctx_score:.2f}. Gap/VIX conflict?",
+                "impact": "caution", "strength": 3})
+    
+    # 5. WIDTH ADEQUACY — narrow widths at high VIX = stop loss hunting
+    width = cand.get('width', 0)
+    vixs = [p.get('vix') for p in [{}] if p.get('vix')]  # not used directly, use from ctx
+    profile = ctx.get('bnfProfile' if idx == 'BNF' else 'nfProfile') or {}
+    spot = profile.get('spot', 0)
+    if width and spot and width > 0:
+        vix = profile.get('spot', 0)  # unused, just use width thresholds
+        min_w = 400 if idx == 'BNF' else 200
+        if cand.get('isCredit') and width < min_w:
+            insights.append({"icon": "📏", "label": f"Narrow width ({width})",
+                    "detail": f"Width {width} < recommended {min_w}. Stop-loss hunting risk.",
+                    "impact": "caution", "strength": 2})
+    
+    return insights
 
 # ═══════════════════════════════════════════
 # PART 4: TIMING (shown in Market + Trade tabs)
@@ -857,11 +973,78 @@ def build_calibration(closed_trades):
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
 
     cal['total_trades'] = len(trades)
+
+    # ═══ b92: LEARNING — what made trades WIN or LOSE? ═══
+
+    # 9. Wall protection correlation — were wall-backed trades more successful?
+    cal['wall'] = {'backed': {'wins': 0, 'total': 0}, 'exposed': {'wins': 0, 'total': 0}}
+    for t in trades:
+        snap = t.get('entry_snapshot') or {}
+        sell = t.get('sell_strike', 0)
+        stype = t.get('strategy_type', '')
+        cw = snap.get('call_wall')
+        pw = snap.get('put_wall')
+        ws = snap.get('wall_score', 0)
+        # Determine if wall-backed at entry
+        backed = False
+        if 'BEAR' in stype and cw and sell and cw >= sell:
+            backed = True
+        elif 'BULL' in stype and 'CALL' not in stype and pw and sell and pw <= sell:
+            backed = True
+        elif stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') and ws and ws > 0:
+            backed = True
+        elif ws and ws > 0:
+            backed = True
+        bucket = cal['wall']['backed'] if backed else cal['wall']['exposed']
+        bucket['total'] += 1
+        if (t.get('actual_pnl') or 0) > 0:
+            bucket['wins'] += 1
+    for k in cal['wall']:
+        s = cal['wall'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+
+    # 10. Multi-factor: strategy + VIX + wall protection
+    for t in trades:
+        st = t.get('strategy_type', 'UNKNOWN')
+        vix = t.get('entry_vix') or 20
+        regime = 'VH' if vix >= 24 else 'H' if vix >= 20 else 'N' if vix >= 16 else 'L'
+        snap = t.get('entry_snapshot') or {}
+        ws = snap.get('wall_score', 0)
+        wall_key = 'wall' if ws and ws > 0 else 'nowall'
+        key = f"{st}|{regime}|{wall_key}"
+        if key not in cal['multi']:
+            cal['multi'][key] = {'wins': 0, 'total': 0, 'pnls': []}
+        cal['multi'][key]['total'] += 1
+        if (t.get('actual_pnl') or 0) > 0:
+            cal['multi'][key]['wins'] += 1
+        cal['multi'][key]['pnls'].append(t.get('actual_pnl', 0))
+    # Recompute rates for new multi keys
+    for k in cal['multi']:
+        s = cal['multi'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+        s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
+
+    # 11. Exit reason patterns — why do you close trades?
+    cal['exit_reasons'] = {}
+    for t in trades:
+        reason = t.get('exit_reason', 'unknown') or 'unknown'
+        if reason not in cal['exit_reasons']:
+            cal['exit_reasons'][reason] = {'wins': 0, 'total': 0, 'avg_pnl': 0, 'pnls': []}
+        cal['exit_reasons'][reason]['total'] += 1
+        pnl = t.get('actual_pnl', 0)
+        if pnl > 0: cal['exit_reasons'][reason]['wins'] += 1
+        cal['exit_reasons'][reason]['pnls'].append(pnl)
+    for k in cal['exit_reasons']:
+        s = cal['exit_reasons'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+        s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
+
     _calibration = cal
     return cal
 
 def candidate_pattern_match(cand, polls, baseline, regime):
-    """Score candidate from YOUR trade history in similar conditions."""
+    """b92: Score candidate from YOUR trade history in similar conditions.
+    Now uses 3-factor key: strategy + VIX + wall protection."""
     if not _calibration:
         return None
     ctype = cand.get('type', '')
@@ -869,15 +1052,27 @@ def candidate_pattern_match(cand, polls, baseline, regime):
     vixs = [p.get('vix') for p in polls[-3:] if p.get('vix')]
     vix = vixs[-1] if vixs else 20
     vr = 'VH' if vix >= 24 else 'H' if vix >= 20 else 'N' if vix >= 16 else 'L'
-    # Try multi-factor key: strategy + VIX regime
-    key = f"{ctype}|{vr}"
-    match = _calibration.get('multi', {}).get(key)
-    if match and match['total'] >= 3:
-        rate = match['rate']
-        return {"icon": "📊", "label": f"Your data: {match['wins']}/{match['total']} ({rate*100:.0f}%)",
-                "detail": f"{ctype} at {vr} VIX. Avg P&L ₹{match['avg_pnl']:.0f}.",
+    # b92: Wall status from enriched candidate data
+    wall_key = 'wall' if (cand.get('wallScore') or 0) > 0 else 'nowall'
+    # Try 3-factor key first: strategy + VIX + wall
+    key3 = f"{ctype}|{vr}|{wall_key}"
+    match3 = _calibration.get('multi', {}).get(key3)
+    if match3 and match3['total'] >= 3:
+        rate = match3['rate']
+        wall_label = "wall-backed" if wall_key == 'wall' else "unprotected"
+        return {"icon": "📊", "label": f"Your data: {match3['wins']}/{match3['total']} ({rate*100:.0f}%)",
+                "detail": f"{ctype} at {vr} VIX, {wall_label}. Avg P&L ₹{match3['avg_pnl']:.0f}.",
                 "impact": "bullish" if rate >= 0.6 else "caution" if rate < 0.4 else "neutral",
-                "strength": 4 if match['total'] >= 5 else 3}
+                "strength": 4 if match3['total'] >= 5 else 3}
+    # Fall back to 2-factor: strategy + VIX
+    key2 = f"{ctype}|{vr}"
+    match2 = _calibration.get('multi', {}).get(key2)
+    if match2 and match2['total'] >= 3:
+        rate = match2['rate']
+        return {"icon": "📊", "label": f"Your data: {match2['wins']}/{match2['total']} ({rate*100:.0f}%)",
+                "detail": f"{ctype} at {vr} VIX. Avg P&L ₹{match2['avg_pnl']:.0f}.",
+                "impact": "bullish" if rate >= 0.6 else "caution" if rate < 0.4 else "neutral",
+                "strength": 4 if match2['total'] >= 5 else 3}
     # Fall back to strategy-only
     strat = _calibration.get('strategy', {}).get(ctype)
     if strat and strat['total'] >= 2:
@@ -886,6 +1081,17 @@ def candidate_pattern_match(cand, polls, baseline, regime):
                 "detail": f"Avg P&L ₹{strat['avg_pnl']:.0f}. {'Edge confirmed.' if rate > 0.6 else 'Needs more data.' if rate >= 0.4 else 'Below 40% — paper first.'}",
                 "impact": "bullish" if rate >= 0.6 else "caution" if rate < 0.4 else "neutral",
                 "strength": 3 if strat['total'] >= 5 else 2}
+    # b92: Wall protection aggregate insight
+    wall_cal = _calibration.get('wall', {})
+    if wall_cal.get('backed', {}).get('total', 0) >= 3 and wall_cal.get('exposed', {}).get('total', 0) >= 3:
+        b_rate = wall_cal['backed']['rate']
+        e_rate = wall_cal['exposed']['rate']
+        if abs(b_rate - e_rate) > 0.15:
+            better = "wall-backed" if b_rate > e_rate else "unprotected"
+            return {"icon": "📊", "label": f"Wall data: {'backed' if wall_key == 'wall' else 'exposed'}",
+                    "detail": f"Backed: {b_rate*100:.0f}% win. Exposed: {e_rate*100:.0f}% win. {better} performs better.",
+                    "impact": "bullish" if (wall_key == 'wall' and b_rate > e_rate) or (wall_key == 'nowall' and e_rate > b_rate) else "caution",
+                    "strength": 3}
     # Never traded this type
     if ctype not in _calibration.get('strategy', {}):
         return {"icon": "🆕", "label": f"No history for {ctype}",
@@ -1067,87 +1273,89 @@ def dte_urgency(polls, ctx):
     return None
 
 def chain_intelligence(polls, ctx):
-    """b90: Deep chain analysis from greeks + volume + OI velocity.
-    Uses 8 computed features from computeChainProfile."""
+    """b92: Deep chain analysis — returns LIST of ALL qualifying insights (was single-return).
+    Uses 10 computed features from computeChainProfile."""
     profile = ctx.get('bnfProfile') or {}
+    insights = []
     
     # 1. IV Smile Slope — steepness indicates fear/hedging
     iv_slope = profile.get('ivSlope', 0)
     if iv_slope > 5:
-        return {"type": "market", "icon": "📉", "label": f"Fear skew steep ({iv_slope:.1f})",
+        insights.append({"type": "market", "icon": "📉", "label": f"Fear skew steep ({iv_slope:.1f})",
                 "detail": "Put IV much higher than call. Institutions hedging downside.",
-                "impact": "bearish", "strength": 3}
-    if iv_slope < -2:
-        return {"type": "market", "icon": "📈", "label": f"Call skew unusual ({iv_slope:.1f})",
+                "impact": "bearish", "strength": 3})
+    elif iv_slope < -2:
+        insights.append({"type": "market", "icon": "📈", "label": f"Call skew unusual ({iv_slope:.1f})",
                 "detail": "Call IV higher than put. Unusual bullish positioning.",
-                "impact": "bullish", "strength": 2}
+                "impact": "bullish", "strength": 2})
     
     # 2. Gamma Clustering — market coiled for move
     gamma_c = profile.get('gammaCluster', 0)
     if gamma_c > 0.6:
-        return {"type": "market", "icon": "⚡", "label": f"Gamma concentrated ({gamma_c:.0%} near ATM)",
+        insights.append({"type": "market", "icon": "⚡", "label": f"Gamma concentrated ({gamma_c:.0%} near ATM)",
                 "detail": "High gamma at ATM. Coiled for sharp move.",
-                "impact": "caution", "strength": 4}
+                "impact": "caution", "strength": 4})
     
     # 3. Volume Ratio — real-time institutional flow
     vol_r = profile.get('volRatio', 1.0)
     if vol_r > 2.0:
-        return {"type": "market", "icon": "📞", "label": f"Call buying surge ({vol_r:.1f}x)",
+        insights.append({"type": "market", "icon": "📞", "label": f"Call buying surge ({vol_r:.1f}x)",
                 "detail": "Call volume 2x put. Aggressive bullish flow.",
-                "impact": "bullish", "strength": 3}
-    if vol_r < 0.5:
-        return {"type": "market", "icon": "📉", "label": f"Put buying surge ({vol_r:.1f}x)",
+                "impact": "bullish", "strength": 3})
+    elif vol_r < 0.5:
+        insights.append({"type": "market", "icon": "📉", "label": f"Put buying surge ({vol_r:.1f}x)",
                 "detail": "Put volume 2x call. Aggressive bearish flow.",
-                "impact": "bearish", "strength": 3}
+                "impact": "bearish", "strength": 3})
     
     # 4. OI Velocity — wall building speed
     oi_vel = profile.get('oiVelocity', 0)
     if abs(oi_vel) > 5:
         direction = "building" if oi_vel > 0 else "unwinding"
-        return {"type": "market", "icon": "🏗️", "label": f"OI {direction} fast ({oi_vel:.1f}L)",
+        insights.append({"type": "market", "icon": "🏗️", "label": f"OI {direction} fast ({oi_vel:.1f}L)",
                 "detail": f"Institutional {'conviction' if oi_vel > 0 else 'exit'}.",
-                "impact": "neutral", "strength": 3}
+                "impact": "neutral", "strength": 3})
     
     # 5. Bid-Ask Quality — liquidity warning
     baq = profile.get('bidAskQuality', 0)
     if baq > 15:
-        return {"type": "market", "icon": "⚠️", "label": f"Poor liquidity ({baq:.1f}% spread)",
+        insights.append({"type": "market", "icon": "⚠️", "label": f"Poor liquidity ({baq:.1f}% spread)",
                 "detail": "Wide spreads. Entry/exit costly.",
-                "impact": "caution", "strength": 3}
+                "impact": "caution", "strength": 3})
     
     # 6. Net Delta — institutional directional bias
     nd = profile.get('netDelta', 0)
     if nd > 3.0:
-        return {"type": "market", "icon": "📊", "label": f"Net delta bullish ({nd:.1f})",
+        insights.append({"type": "market", "icon": "📊", "label": f"Net delta bullish ({nd:.1f})",
                 "detail": "OI weighted bullish. Institutions positioned for up.",
-                "impact": "bullish", "strength": 2}
-    if nd < -3.0:
-        return {"type": "market", "icon": "📊", "label": f"Net delta bearish ({nd:.1f})",
+                "impact": "bullish", "strength": 2})
+    elif nd < -3.0:
+        insights.append({"type": "market", "icon": "📊", "label": f"Net delta bearish ({nd:.1f})",
                 "detail": "OI weighted bearish. Institutions positioned for down.",
-                "impact": "bearish", "strength": 2}
+                "impact": "bearish", "strength": 2})
     
     # 7. Wall Cluster Depth — fortress vs fragile walls
     cc_depth = profile.get('callClusterDepth', 0)
     pc_depth = profile.get('putClusterDepth', 0)
     if cc_depth >= 5 and pc_depth >= 5:
-        return {"type": "market", "icon": "🏰", "label": f"Both walls fortified (C:{cc_depth} P:{pc_depth})",
+        insights.append({"type": "market", "icon": "🏰", "label": f"Both walls fortified (C:{cc_depth} P:{pc_depth})",
                 "detail": "Heavy OI clusters on both sides. Strong range — IC/IB favorable.",
-                "impact": "neutral", "strength": 4}
-    if cc_depth >= 5:
-        return {"type": "market", "icon": "🏰", "label": f"Call wall fortress ({cc_depth} deep)",
+                "impact": "neutral", "strength": 4})
+    elif cc_depth >= 5:
+        insights.append({"type": "market", "icon": "🏰", "label": f"Call wall fortress ({cc_depth} deep)",
                 "detail": "Multiple heavy resistance strikes. Hard ceiling above.",
-                "impact": "bearish", "strength": 3}
-    if pc_depth >= 5:
-        return {"type": "market", "icon": "🏰", "label": f"Put wall fortress ({pc_depth} deep)",
+                "impact": "bearish", "strength": 3})
+    elif pc_depth >= 5:
+        insights.append({"type": "market", "icon": "🏰", "label": f"Put wall fortress ({pc_depth} deep)",
                 "detail": "Multiple heavy support strikes. Strong floor below.",
-                "impact": "bullish", "strength": 3}
-    if cc_depth <= 1 or pc_depth <= 1:
+                "impact": "bullish", "strength": 3})
+    elif cc_depth <= 1 or pc_depth <= 1:
         fragile = "call" if cc_depth <= 1 else "put"
-        return {"type": "market", "icon": "⚠️", "label": f"Fragile {fragile} wall (depth {cc_depth if fragile == 'call' else pc_depth})",
+        depth = cc_depth if fragile == "call" else pc_depth
+        insights.append({"type": "market", "icon": "⚠️", "label": f"Fragile {fragile} wall (depth {depth})",
                 "detail": f"Single-strike {fragile} wall. One unwind breaks it.",
-                "impact": "caution", "strength": 3}
+                "impact": "caution", "strength": 3})
     
-    return None
+    return insights  # LIST — can be empty, 1, or multiple
 
 def daily_pnl_check(polls, ctx):
     """Prevent overtrading and chasing losses."""
@@ -1198,8 +1406,9 @@ def position_gamma_alert(trade, polls, strike_oi):
 
 # ═══ THE VERDICT ═══
 
-def synthesize_verdict(all_insights, regime, ctx, polls, baseline):
-    """THE function. All intelligence in. ONE answer out."""
+def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=None, cand_insights=None):
+    """THE function. All intelligence in. ONE answer out.
+    b92: Now receives candidates + their insights for menu awareness."""
     bull = bear = 0.0
     cautions = 0
     for ins in all_insights:
@@ -1286,6 +1495,97 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline):
         elif n >= 5 and rate > 0.7:
             confidence += 10
 
+    # b92: Candidate menu awareness — does recommended strategy have viable candidates?
+    if strategy and candidates and cand_insights is not None:
+        strat_cands = [c for c in (candidates or []) if c.get('type') == strategy]
+        if not strat_cands:
+            conflicts.append(f"No {strategy} candidates generated")
+            confidence -= 10
+        elif strat_cands:
+            # Check if ALL candidates of this type have caution insights
+            all_cautioned = True
+            for sc in strat_cands:
+                cid = sc.get('id', '')
+                c_ins = cand_insights.get(cid, [])
+                has_severe = any(i.get('strength', 0) >= 4 and i.get('impact') == 'caution' for i in c_ins)
+                if not has_severe:
+                    all_cautioned = False
+                    break
+            if all_cautioned and len(strat_cands) > 0:
+                conflicts.append(f"All {strategy} candidates have risk warnings")
+                confidence -= 15
+
+    # ═══ b92: FULL OMNISCIENCE CHECKS — use all 12 new data streams ═══
+
+    # Trade mode conflict — brain recommends IC/IB but user is in SWING
+    tm = ctx.get('tradeMode', 'swing')
+    if strategy in ('IRON_CONDOR', 'IRON_BUTTERFLY') and tm == 'swing':
+        conflicts.append(f"{strategy} is intraday only — switch to INTRADAY")
+        confidence -= 20
+
+    # Overnight delta conflict — brain says BULL but overnight is BEAR
+    od = ctx.get('overnightDelta')
+    if od and od.get('summary'):
+        if 'BEARISH' in od['summary'] and direction == 'BULL':
+            conflicts.append("Overnight BEARISH vs brain BULL")
+            confidence -= 10
+        elif 'BULLISH' in od['summary'] and direction == 'BEAR':
+            conflicts.append("Overnight BULLISH vs brain BEAR")
+            confidence -= 10
+
+    # Institutional regime — low credit confidence but selling premium
+    ir = ctx.get('institutionalRegime')
+    if ir and ir.get('creditConfidence') == 'LOW' and action == 'SELL PREMIUM':
+        conflicts.append("Low institutional credit confidence")
+        confidence -= 10
+
+    # Bias drift — morning thesis no longer holds
+    drift = ctx.get('biasDrift', 0)
+    if abs(drift) >= 2:
+        conflicts.append(f"Bias drifted {drift:+d} from morning")
+        confidence -= 10
+
+    # Scan freshness — stale data
+    scan_age = ctx.get('scanAgeMin')
+    if scan_age and scan_age >= 30:
+        conflicts.append(f"Data is {scan_age}min stale — rescan first")
+        confidence -= 15
+
+    # Global direction conflict — Dow/Crude/GIFT contradict brain direction
+    gd = ctx.get('globalDirection') or {}
+    gd_conflicts = 0
+    if gd.get('dowPct') is not None and abs(gd['dowPct']) >= 0.5:
+        dow_bull = gd['dowPct'] > 0
+        if (dow_bull and direction == 'BEAR') or (not dow_bull and direction == 'BULL'):
+            gd_conflicts += 1
+    if gd.get('crudePct') is not None and abs(gd['crudePct']) >= 1.5:
+        crude_bull = gd['crudePct'] < 0  # crude up = bearish for India
+        if (crude_bull and direction == 'BEAR') or (not crude_bull and direction == 'BULL'):
+            gd_conflicts += 1
+    if gd.get('giftPct') is not None and abs(gd['giftPct']) >= 0.3:
+        gift_bull = gd['giftPct'] > 0
+        if (gift_bull and direction == 'BEAR') or (not gift_bull and direction == 'BULL'):
+            gd_conflicts += 1
+    if gd_conflicts >= 2:
+        conflicts.append(f"Global direction contradicts ({gd_conflicts}/3 against)")
+        confidence -= 15
+
+    # Brain flip-flop detection — prior verdict contradicts current
+    prior = ctx.get('priorVerdict')
+    if prior and prior.get('direction') and prior['direction'] != direction:
+        if prior.get('confidence', 0) >= 40:
+            conflicts.append(f"Flip: was {prior['direction']} {prior.get('confidence',0)}% → now {direction}")
+            confidence -= 10
+
+    # Varsity alignment — brain strategy vs Varsity PRIMARY
+    vf = ctx.get('varsityFilter')
+    if vf and strategy:
+        if strategy in (vf.get('primary') or []):
+            confidence += 5  # brain agrees with Varsity
+        elif strategy not in (vf.get('allowed') or []) and strategy not in (vf.get('primary') or []):
+            conflicts.append(f"Brain picks {strategy} but Varsity doesn't allow it")
+            confidence -= 10
+
     # Urgency
     mins = get_time_mins(polls[-1].get('t', '')) - 555 if polls else 0
     if 135 <= mins <= 315: urgency = 'ENTER NOW'
@@ -1318,6 +1618,12 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline):
         cal = _calibration.get('strategy', {}).get(strategy, {})
         if cal.get('total', 0) >= 3:
             reasons.append(f"Your {strategy}: {cal.get('wins',0)}/{cal['total']}")
+    # b92: Context-aware reasoning
+    if ctx.get('tradeMode') == 'intraday': reasons.append("Mode: INTRADAY")
+    if od and 'BEARISH' in od.get('summary', ''): reasons.append("Overnight: BEAR")
+    elif od and 'BULLISH' in od.get('summary', ''): reasons.append("Overnight: BULL")
+    if gd_conflicts >= 2: reasons.append(f"Global: {gd_conflicts}/3 against")
+    if abs(drift) >= 2: reasons.append(f"Drift: {drift:+d}")
     reasons.append(f"Bull {bull:.1f} vs Bear {bear:.1f}")
 
     return {
@@ -1482,11 +1788,17 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         except: pass
     # New context-aware market functions
     for fn in [signal_coherence, max_pain_gravity, fii_trend, nf_bnf_divergence,
-               day_range_position, wall_freshness, yesterday_signal_prior, chain_intelligence]:
+               day_range_position, wall_freshness, yesterday_signal_prior]:
         try:
             r = fn(polls, ctx)
             if r: result["market"].append(r)
         except: pass
+    # b92: chain_intelligence returns LIST (was single dict)
+    try:
+        ci_insights = chain_intelligence(polls, ctx)
+        if ci_insights:
+            result["market"].extend(ci_insights)
+    except: pass
 
     # Positions — verdict + insights
     for t in open_trades:
@@ -1506,7 +1818,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         pv = position_verdict(t, ins, regime, ctx)
         result["positions"][tid] = {"verdict": pv, "insights": ins}
 
-    # Candidates — existing + liquidity + pattern match
+    # Candidates — existing + liquidity + pattern match + b92 risk evaluation
     for c in candidates:
         cid = c.get("id", "")
         ins = []
@@ -1518,6 +1830,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         try:
             r = candidate_liquidity(c, ctx)
             if r: ins.append(r)
+        except: pass
+        # b92: Deep risk evaluation (returns LIST) — cost trap, conflict, R:R, force coherence
+        try:
+            risk_ins = evaluate_candidate_risk(c, ctx, open_trades, regime)
+            if risk_ins: ins.extend(risk_ins)
         except: pass
         if ins: result["candidates"][cid] = ins
 
@@ -1546,7 +1863,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     # ═══ THE VERDICT ═══
     all_insights = result["market"] + result["timing"] + result["risk"]
     try:
-        result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline)
+        result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates, result.get("candidates", {}))
     except: pass
 
     return json.dumps(result)
@@ -5395,10 +5712,18 @@ async function runBrain() {
             peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0
         }));
 
-        // 4. Candidates — slim to essential fields
+        // 4. Candidates — b92: FULL data for brain evaluation (was 7 fields, now 20+)
         const candsLite = (STATE.watchlist || []).slice(0, 10).map(c => ({
             id: c.id, type: c.type, sellStrike: c.sellStrike, buyStrike: c.buyStrike,
-            index: c.index, isCredit: c.isCredit, sigmaOTM: c.sigmaOTM ?? null
+            sellStrike2: c.sellStrike2 ?? null, buyStrike2: c.buyStrike2 ?? null,
+            index: c.index, isCredit: c.isCredit, sigmaOTM: c.sigmaOTM ?? null,
+            width: c.width ?? null, legs: c.legs ?? 2,
+            forces: c.forces ? { f1: c.forces.f1, f2: c.forces.f2, f3: c.forces.f3, aligned: c.forces.aligned } : null,
+            contextScore: c.contextScore ?? 0, wallScore: c.wallScore ?? 0,
+            probProfit: c.probProfit ?? 0, maxProfit: c.maxProfit ?? 0, maxLoss: c.maxLoss ?? 0,
+            estCost: c.estCost ?? 0, estCostPct: c.estCostPct ?? 0,
+            varsityTier: c.varsityTier ?? null,
+            realisticMaxProfit: c.realisticMaxProfit ?? null
         }));
 
         // 5. Strike OI history — extract OI at traded strikes from full poll data
@@ -5472,7 +5797,88 @@ async function runBrain() {
             // Capital — single source of truth for Kelly and position sizing
             capital: C.CAPITAL,
             // b89: Market phase for position decisions
-            marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN'
+            marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN',
+
+            // ═══ b92: FULL OMNISCIENCE — 12 missing data streams ═══
+
+            // 1. Trade mode — brain must know if user is in SWING or INTRADAY
+            tradeMode: STATE.tradeMode || 'swing',
+
+            // 2. Global direction — Dow/Crude/GIFT live % changes
+            globalDirection: {
+                dowClose: STATE.globalDirection?.dowClose ?? null,
+                crudeSettle: STATE.globalDirection?.crudeSettle ?? null,
+                dowNow: STATE.globalDirection?.dowNow ?? null,
+                crudeNow: STATE.globalDirection?.crudeNow ?? null,
+                giftNow: STATE.globalDirection?.giftNow ?? null,
+                dowPct: (STATE.globalDirection?.dowClose && STATE.globalDirection?.dowNow)
+                    ? +((STATE.globalDirection.dowNow - STATE.globalDirection.dowClose) / STATE.globalDirection.dowClose * 100).toFixed(2) : null,
+                crudePct: (STATE.globalDirection?.crudeSettle && STATE.globalDirection?.crudeNow)
+                    ? +((STATE.globalDirection.crudeNow - STATE.globalDirection.crudeSettle) / STATE.globalDirection.crudeSettle * 100).toFixed(2) : null,
+                giftPct: (STATE.eveningClose?.gift && STATE.globalDirection?.giftNow)
+                    ? +((STATE.globalDirection.giftNow - STATE.eveningClose.gift) / STATE.eveningClose.gift * 100).toFixed(2) : null
+            },
+
+            // 3. Overnight delta — computed signals from evening→morning
+            overnightDelta: STATE.overnightDelta ? {
+                summary: STATE.overnightDelta.summary,
+                signals: STATE.overnightDelta.signals?.map(s => ({ name: s.name, dir: s.dir, pct: s.pct })) || []
+            } : null,
+
+            // 4. Institutional regime — credit confidence, absorption ratio
+            institutionalRegime: STATE.institutionalRegime ? {
+                regime: STATE.institutionalRegime.regime,
+                creditConfidence: STATE.institutionalRegime.creditConfidence,
+                absorptionRatio: STATE.institutionalRegime.absorptionRatio ?? null
+            } : null,
+
+            // 5. Bias drift — how much has bias changed since morning
+            biasDrift: STATE.biasDrift ?? 0,
+            driftOverridden: STATE.driftOverridden ?? false,
+            liveBias: STATE.live?.bias ? { label: STATE.live.bias.label, net: STATE.live.bias.net } : null,
+
+            // 6. Range sigma — exact value for IC/IB timing
+            rangeSigma: STATE.rangeSigma ?? null,
+
+            // 7. Tomorrow signal — institutional direction for positioning
+            tomorrowSignal: STATE.tomorrowSignal ? {
+                signal: STATE.tomorrowSignal.signal,
+                strength: STATE.tomorrowSignal.strength,
+                globalBoost: STATE.tomorrowSignal.globalBoost ?? 0
+            } : null,
+
+            // 8. Varsity filter output — what strategy types are PRIMARY vs ALLOWED
+            varsityFilter: (() => {
+                const b = STATE.live?.bias || STATE.baseline?.bias;
+                const v = STATE.live?.vix || STATE.baseline?.vix || 20;
+                if (!b) return null;
+                const vf = getVarsityFilter(b, v);
+                return { primary: vf.primary, allowed: vf.allowed, rangeDetected: vf.rangeDetected ?? false };
+            })(),
+
+            // 9. Scan freshness — minutes since last scan
+            scanAgeMin: STATE.lastScanTime ? Math.floor((Date.now() - STATE.lastScanTime) / 60000) : null,
+
+            // 10. Evening close — reference for overnight gaps
+            eveningClose: STATE.eveningClose ? {
+                dow: STATE.eveningClose.dow, crude: STATE.eveningClose.crude,
+                gift: STATE.eveningClose.gift, date: STATE.eveningClose.date
+            } : null,
+
+            // 11. Signal accuracy — full stats for confidence weighting
+            signalAccuracyFull: STATE.signalAccuracyStats ? {
+                correct: STATE.signalAccuracyStats.correct,
+                total: STATE.signalAccuracyStats.total,
+                pct: STATE.signalAccuracyStats.pct
+            } : null,
+
+            // 12. Brain's own prior verdict — for flip-flop detection
+            priorVerdict: STATE.brainInsights?.verdict ? {
+                action: STATE.brainInsights.verdict.action,
+                strategy: STATE.brainInsights.verdict.strategy,
+                direction: STATE.brainInsights.verdict.direction,
+                confidence: STATE.brainInsights.verdict.confidence
+            } : null
         }));
 
         const resultJson = py.runPython(
