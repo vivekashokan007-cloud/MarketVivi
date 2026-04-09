@@ -17,6 +17,11 @@ const C = {
     NF_MARGIN_EST: 97000,
     BNF_MARGIN_EST: 28000,
 
+    // b91: Broker margin estimates per lot for short options (SPAN approximate)
+    // Based on Upstox screenshot: BNF IB W:1000 = ₹1,50,738 margin
+    BNF_SHORT_MARGIN: 75000,   // ~₹75K per BNF ATM short option lot
+    NF_SHORT_MARGIN: 50000,    // ~₹50K per NF ATM short option lot
+
     // Width options for candidate generation
     NF_WIDTHS: [100, 150, 200, 250, 300, 400],
     BNF_WIDTHS: [200, 300, 400, 500, 600, 800, 1000],
@@ -1120,6 +1125,27 @@ def chain_intelligence(polls, ctx):
         return {"type": "market", "icon": "📊", "label": f"Net delta bearish ({nd:.1f})",
                 "detail": "OI weighted bearish. Institutions positioned for down.",
                 "impact": "bearish", "strength": 2}
+    
+    # 7. Wall Cluster Depth — fortress vs fragile walls
+    cc_depth = profile.get('callClusterDepth', 0)
+    pc_depth = profile.get('putClusterDepth', 0)
+    if cc_depth >= 5 and pc_depth >= 5:
+        return {"type": "market", "icon": "🏰", "label": f"Both walls fortified (C:{cc_depth} P:{pc_depth})",
+                "detail": "Heavy OI clusters on both sides. Strong range — IC/IB favorable.",
+                "impact": "neutral", "strength": 4}
+    if cc_depth >= 5:
+        return {"type": "market", "icon": "🏰", "label": f"Call wall fortress ({cc_depth} deep)",
+                "detail": "Multiple heavy resistance strikes. Hard ceiling above.",
+                "impact": "bearish", "strength": 3}
+    if pc_depth >= 5:
+        return {"type": "market", "icon": "🏰", "label": f"Put wall fortress ({pc_depth} deep)",
+                "detail": "Multiple heavy support strikes. Strong floor below.",
+                "impact": "bullish", "strength": 3}
+    if cc_depth <= 1 or pc_depth <= 1:
+        fragile = "call" if cc_depth <= 1 else "put"
+        return {"type": "market", "icon": "⚠️", "label": f"Fragile {fragile} wall (depth {cc_depth if fragile == 'call' else pc_depth})",
+                "detail": f"Single-strike {fragile} wall. One unwind breaks it.",
+                "impact": "caution", "strength": 3}
     
     return None
 
@@ -3214,7 +3240,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
     // ═══ 2. IRON CONDOR (Varsity-gated) ═══
     // b84: Wall-anchored — tries sell at OI walls (asymmetric) alongside symmetric
-    if (allowedTypes.includes('IRON_CONDOR')) {
+    // b91: IC is ALWAYS intraday — skip entirely in SWING mode
+    if (allowedTypes.includes('IRON_CONDOR') && STATE.tradeMode !== 'swing') {
     const cw = parsed.callWallStrike;
     const pw = parsed.putWallStrike;
     for (const width of widths) {
@@ -3326,7 +3353,8 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
     } // end IC Varsity gate
 
     // ═══ 3. IRON BUTTERFLY ═══
-    if (allowedTypes.includes('IRON_BUTTERFLY')) {
+    // b91: IB is ALWAYS intraday — skip entirely in SWING mode
+    if (allowedTypes.includes('IRON_BUTTERFLY') && STATE.tradeMode !== 'swing') {
     const ibDebug = [];
     for (const width of widths) {
         const sellCall = atm;
@@ -3754,6 +3782,29 @@ function peakCash(c) {
     return Math.round(buyLeg * (c.lotSize || 30));
 }
 
+// b91: Broker margin estimate — real SPAN margin, not just maxLoss
+// 2-leg spreads: margin ≈ maxLoss (spread benefit applies)
+// 4-leg IC/IB: SPAN on 2 short legs, ~90% after spread benefit from long legs
+function estimateBrokerMargin(c) {
+    if (c.legs === 4) {
+        const perLot = c.index === 'BNF' ? C.BNF_SHORT_MARGIN : C.NF_SHORT_MARGIN;
+        // 2 short legs × per-lot SPAN, 90% after long leg offset
+        return Math.round(perLot * 2 * 0.9);
+    }
+    // 2-leg defined-risk spread: margin ≈ maxLoss
+    return c.maxLoss;
+}
+
+// b92: Same estimate for OPEN TRADES (different field names: strategy_type, index_key, max_loss)
+function estimateTradeMargin(t) {
+    const is4Leg = t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY';
+    if (is4Leg) {
+        const perLot = t.index_key === 'BNF' ? C.BNF_SHORT_MARGIN : C.NF_SHORT_MARGIN;
+        return Math.round(perLot * 2 * 0.9);
+    }
+    return t.max_loss || 0;
+}
+
 // ═══ TRANSACTION COST ESTIMATOR — real-world cost per trade (STT + brokerage + slippage) ═══
 function estimateCost(cand) {
     const legs = cand.legs || 2;
@@ -3927,7 +3978,7 @@ function applyBrainScores() {
 function applyFreeCapitalFilter(candidates) {
     let marginUsed = 0;
     for (const t of STATE.openTrades) {
-        if (!t.paper) marginUsed += t.max_loss || 0; // Paper trades don't block real capital
+        if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin, not just maxLoss
     }
     const freeCapital = C.CAPITAL - marginUsed;
     return candidates.filter(c => {
@@ -5261,6 +5312,26 @@ function computeChainProfile(chain, spot, ohlc) {
     }
     const bidAskQuality = spreadCount > 0 ? +(spreadSum / spreadCount * 100).toFixed(2) : 0; // % of premium
 
+    // 9. Wall Cluster Depth — how many strikes near each wall also have significant OI
+    // Single wall = fragile (one unwind breaks it). Clustered wall = fortress (zone must break)
+    const wallClusterRadius = spot > 30000 ? 5 : 4; // ±5 steps BNF (±500pts), ±4 NF (±200pts)
+    const callWallK = chain.callWallStrike;
+    const putWallK = chain.putWallStrike;
+
+    // Median OI as baseline for "significant"
+    const allCallOI = allK.map(k => strikes[k]?.CE?.oi ?? 0).filter(v => v > 0);
+    const allPutOI = allK.map(k => strikes[k]?.PE?.oi ?? 0).filter(v => v > 0);
+    const medianOI = (arr) => { if (!arr.length) return 0; const s = arr.slice().sort((a,b) => a-b); return s[Math.floor(s.length/2)]; };
+    const callMedian = medianOI(allCallOI);
+    const putMedian = medianOI(allPutOI);
+    const clusterThresholdMult = 2; // OI must be 2× median to count
+
+    let callClusterDepth = 0, putClusterDepth = 0;
+    for (const k of allK) {
+        if (Math.abs(k - callWallK) <= wallClusterRadius * step && (strikes[k]?.CE?.oi ?? 0) > callMedian * clusterThresholdMult) callClusterDepth++;
+        if (Math.abs(k - putWallK) <= wallClusterRadius * step && (strikes[k]?.PE?.oi ?? 0) > putMedian * clusterThresholdMult) putClusterDepth++;
+    }
+
     return {
         ivSkew: +(putIV - callIV).toFixed(1),
         pcrZ1: zonePCR(0.3, 0.5), pcrZ2: zonePCR(0.5, 0.8), pcrZ3: zonePCR(0.8, 1.2),
@@ -5280,7 +5351,10 @@ function computeChainProfile(chain, spot, ohlc) {
         avgTheta,         // Average theta near ATM (daily decay rate)
         avgVega,          // Average vega near ATM (VIX sensitivity)
         oiVelocity: normOiVelocity,  // Wall building speed (lakhs/day)
-        bidAskQuality     // Spread as % of premium (lower = better liquidity)
+        bidAskQuality,    // Spread as % of premium (lower = better liquidity)
+        // b91: Wall cluster depth — fortress vs fragile
+        callClusterDepth, // Strikes near call wall with OI > 2× median (1=fragile, 5+=fortress)
+        putClusterDepth   // Same for put wall
     };
 }
 
@@ -6255,7 +6329,7 @@ function renderTicker() {
 
     let marginUsed = 0;
     for (const t of STATE.openTrades) {
-        if (!t.paper) marginUsed += t.max_loss || 0; // Paper trades don't block real margin
+        if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin
     }
     const available = C.CAPITAL - marginUsed;
 
@@ -7065,7 +7139,7 @@ function renderWatchlist() {
             // Free capital check for positioning
             let marginUsed = 0;
             for (const t of STATE.openTrades) {
-                if (!t.paper) marginUsed += t.max_loss || 0; // Paper trades don't block real capital
+                if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin
             }
             const freeCapital = C.CAPITAL - marginUsed;
             const minPeakNeeded = STATE.positioningCandidates.length > 0 ? peakCash(STATE.positioningCandidates[STATE.positioningCandidates.length - 1]) : 0;
@@ -7258,7 +7332,7 @@ function renderCandidateCard(cand, atm, rank) {
             ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · ${cand.varsityTier === 'PRIMARY' ? '<span style="color:var(--green)">PRIMARY</span>' : '<span style="color:var(--warn)">ALLOWED</span>'}${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
         </div>
         <div class="v1-footer">
-            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${cand.maxLoss.toLocaleString()}
+            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${estimateBrokerMargin(cand).toLocaleString()}${cand.legs === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : ''}
             · EV/₹1K: ₹${(cand.ev / (peakCash(cand) / 1000 || 1)).toFixed(0)}
         </div>
 
