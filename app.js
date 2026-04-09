@@ -163,6 +163,44 @@ def get_time_mins(t_str):
 
 # ─── SHARED REGIME DETECTOR ───
 
+# ═══ b93: DYNAMIC THRESHOLD INFRASTRUCTURE ═══
+# Z-scores replace ALL hardcoded thresholds. (value - mean) / stddev
+# If stddev is 0 (constant data), returns 0. Needs minimum 10 samples.
+
+def arr_mean(arr):
+    return sum(arr) / len(arr) if arr else 0
+
+def arr_std(arr):
+    if len(arr) < 2: return 0
+    m = arr_mean(arr)
+    variance = sum((x - m) ** 2 for x in arr) / len(arr)
+    return math.sqrt(variance) if variance > 0 else 0
+
+def z_score(val, arr):
+    """How many standard deviations is val from the mean of arr?"""
+    if len(arr) < 10 or val is None: return 0
+    m = arr_mean(arr)
+    s = arr_std(arr)
+    return (val - m) / s if s > 0 else 0
+
+def straddle_velocity(polls, n=4):
+    """Is ATM straddle premium expanding or contracting?
+    Returns: (current_straddle, z_score_of_change, is_expanding)"""
+    straddles = [p.get('straddle') for p in last_n(polls, n) if p.get('straddle')]
+    if len(straddles) < 3: return 0, 0, False
+    changes = [straddles[i] - straddles[i-1] for i in range(1, len(straddles))]
+    avg_change = arr_mean(changes)
+    # Expanding = straddle growing while spot may be flat
+    return straddles[-1], avg_change, avg_change > 0
+
+def theta_friction_minutes(est_cost, net_theta):
+    """How many minutes of theta decay to pay for entry/exit friction?
+    Returns minutes. >60 = trade is mathematically dead."""
+    if not net_theta or net_theta <= 0 or not est_cost or est_cost <= 0:
+        return 999
+    theta_per_min = net_theta / 375  # 375 trading minutes per day
+    return est_cost / theta_per_min if theta_per_min > 0 else 999
+
 def detect_regime(polls, baseline):
     """Returns dict: {type: range|trend|choppy, sigma, direction, trend_pct}"""
     recent = last_n(polls, 6)
@@ -679,15 +717,11 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
     effective_max = realistic_mp if realistic_mp else max_p
     if effective_max > 0 and est_cost > 0:
         cost_ratio = est_cost / effective_max
-        if cost_ratio > 0.5:
+        if cost_ratio > 0.30:
             net = effective_max - est_cost
             insights.append({"icon": "💸", "label": f"Cost trap ({cost_ratio*100:.0f}% of profit)",
                     "detail": f"Net after cost: ₹{net:.0f}. Risk ₹{max_l:.0f} for ₹{net:.0f}.",
-                    "impact": "caution", "strength": 5})
-        elif cost_ratio > 0.3:
-            insights.append({"icon": "💸", "label": f"High cost ({est_cost_pct:.0f}% of max)",
-                    "detail": f"₹{est_cost:.0f} cost on ₹{effective_max:.0f} profit. Margins thin.",
-                    "impact": "caution", "strength": 3})
+                    "impact": "caution", "strength": 5 if cost_ratio > 0.5 else 4})
     
     # 2. R:R SANITY — maxLoss > 2× maxProfit is dangerous
     if max_p > 0 and max_l > 0:
@@ -726,16 +760,23 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
     
     # 5. WIDTH ADEQUACY — narrow widths at high VIX = stop loss hunting
     width = cand.get('width', 0)
-    vixs = [p.get('vix') for p in [{}] if p.get('vix')]  # not used directly, use from ctx
     profile = ctx.get('bnfProfile' if idx == 'BNF' else 'nfProfile') or {}
-    spot = profile.get('spot', 0)
-    if width and spot and width > 0:
-        vix = profile.get('spot', 0)  # unused, just use width thresholds
+    if width and width > 0:
         min_w = 400 if idx == 'BNF' else 200
         if cand.get('isCredit') and width < min_w:
             insights.append({"icon": "📏", "label": f"Narrow width ({width})",
                     "detail": f"Width {width} < recommended {min_w}. Stop-loss hunting risk.",
                     "impact": "caution", "strength": 2})
+    
+    # 6. THETA-TO-FRICTION — b93: how long to break even on costs?
+    net_theta = cand.get('netTheta', 0)
+    if not net_theta or net_theta <= 0:
+        net_theta = max_p * 0.01  # fallback rough estimate only if no real theta
+    be_mins = theta_friction_minutes(est_cost, net_theta)
+    if be_mins > 120 and cand.get('isCredit'):
+        insights.append({"icon": "⏳", "label": f"Slow payback ({be_mins:.0f}min to break even)",
+                "detail": f"Cost ₹{est_cost:.0f} takes {be_mins:.0f}min of theta to recover. Trade may be dead.",
+                "impact": "caution", "strength": 4 if be_mins > 180 else 3})
     
     return insights
 
@@ -1039,6 +1080,78 @@ def build_calibration(closed_trades):
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
         s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
 
+    # ═══ b93: 4 NEW CALIBRATION DIMENSIONS ═══
+
+    # 12. Time-of-day win rates — morning vs afternoon entries
+    cal['time_of_day'] = {}
+    for t in trades:
+        entry = t.get('entry_date', '')
+        try:
+            hour = int(entry.split('T')[1].split(':')[0]) if 'T' in entry else 0
+        except: hour = 0
+        bucket = 'morning' if hour < 12 else 'afternoon' if hour < 15 else 'late'
+        if bucket not in cal['time_of_day']:
+            cal['time_of_day'][bucket] = {'wins': 0, 'total': 0, 'pnls': []}
+        cal['time_of_day'][bucket]['total'] += 1
+        if (t.get('actual_pnl') or 0) > 0:
+            cal['time_of_day'][bucket]['wins'] += 1
+        cal['time_of_day'][bucket]['pnls'].append(t.get('actual_pnl', 0))
+    for k in cal['time_of_day']:
+        s = cal['time_of_day'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+        s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
+
+    # 13. Width bucket win rates — which widths actually perform?
+    cal['width'] = {}
+    for t in trades:
+        w = t.get('width', 0)
+        if not w: continue
+        bucket = f"W{w}"
+        if bucket not in cal['width']:
+            cal['width'][bucket] = {'wins': 0, 'total': 0, 'pnls': []}
+        cal['width'][bucket]['total'] += 1
+        if (t.get('actual_pnl') or 0) > 0:
+            cal['width'][bucket]['wins'] += 1
+        cal['width'][bucket]['pnls'].append(t.get('actual_pnl', 0))
+    for k in cal['width']:
+        s = cal['width'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+        s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
+
+    # 14. VIX change during trade — did vol crush or expand while holding?
+    cal['vix_change'] = {'crush': {'wins': 0, 'total': 0}, 'expand': {'wins': 0, 'total': 0}, 'flat': {'wins': 0, 'total': 0}}
+    for t in trades:
+        entry_v = t.get('entry_vix')
+        snap = t.get('exit_snapshot') or {}
+        exit_v = snap.get('vix') or snap.get('exit_vix')
+        if entry_v and exit_v:
+            diff = exit_v - entry_v
+            bucket = 'crush' if diff < -0.5 else 'expand' if diff > 0.5 else 'flat'
+            cal['vix_change'][bucket]['total'] += 1
+            if (t.get('actual_pnl') or 0) > 0:
+                cal['vix_change'][bucket]['wins'] += 1
+    for k in cal['vix_change']:
+        s = cal['vix_change'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+
+    # 15. Sigma OTM at entry — does distance from ATM predict success?
+    cal['sigma_otm'] = {}
+    for t in trades:
+        snap = t.get('entry_snapshot') or {}
+        sigma = snap.get('sigma_otm') or snap.get('sigmaOTM')
+        if sigma is not None:
+            bucket = 'close' if sigma < 0.4 else 'sweet' if sigma <= 0.8 else 'far'
+            if bucket not in cal['sigma_otm']:
+                cal['sigma_otm'][bucket] = {'wins': 0, 'total': 0, 'pnls': []}
+            cal['sigma_otm'][bucket]['total'] += 1
+            if (t.get('actual_pnl') or 0) > 0:
+                cal['sigma_otm'][bucket]['wins'] += 1
+            cal['sigma_otm'][bucket]['pnls'].append(t.get('actual_pnl', 0))
+    for k in cal['sigma_otm']:
+        s = cal['sigma_otm'][k]
+        s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
+        s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
+
     _calibration = cal
     return cal
 
@@ -1280,9 +1393,9 @@ def chain_intelligence(polls, ctx):
     
     # 1. IV Smile Slope — steepness indicates fear/hedging
     iv_slope = profile.get('ivSlope', 0)
-    if iv_slope > 5:
+    if iv_slope > 3:
         insights.append({"type": "market", "icon": "📉", "label": f"Fear skew steep ({iv_slope:.1f})",
-                "detail": "Put IV much higher than call. Institutions hedging downside.",
+                "detail": "Put IV higher than call. Institutions hedging downside.",
                 "impact": "bearish", "strength": 3})
     elif iv_slope < -2:
         insights.append({"type": "market", "icon": "📈", "label": f"Call skew unusual ({iv_slope:.1f})",
@@ -1336,15 +1449,15 @@ def chain_intelligence(polls, ctx):
     # 7. Wall Cluster Depth — fortress vs fragile walls
     cc_depth = profile.get('callClusterDepth', 0)
     pc_depth = profile.get('putClusterDepth', 0)
-    if cc_depth >= 5 and pc_depth >= 5:
+    if cc_depth >= 3 and pc_depth >= 3:
         insights.append({"type": "market", "icon": "🏰", "label": f"Both walls fortified (C:{cc_depth} P:{pc_depth})",
                 "detail": "Heavy OI clusters on both sides. Strong range — IC/IB favorable.",
                 "impact": "neutral", "strength": 4})
-    elif cc_depth >= 5:
+    elif cc_depth >= 3:
         insights.append({"type": "market", "icon": "🏰", "label": f"Call wall fortress ({cc_depth} deep)",
                 "detail": "Multiple heavy resistance strikes. Hard ceiling above.",
                 "impact": "bearish", "strength": 3})
-    elif pc_depth >= 5:
+    elif pc_depth >= 3:
         insights.append({"type": "market", "icon": "🏰", "label": f"Put wall fortress ({pc_depth} deep)",
                 "detail": "Multiple heavy support strikes. Strong floor below.",
                 "impact": "bullish", "strength": 3})
@@ -1460,36 +1573,56 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     vix = vixs[-1] if vixs else 20
     dte = ctx.get('bnfDTE', 5)
 
+    # b93: Z-SCORE VIX REGIME — dynamic, not hardcoded
+    vix_hist = ctx.get('vixHistory', [])
+    vix_z = z_score(vix, vix_hist) if len(vix_hist) >= 10 else (1.5 if vix >= 24 else 0.5 if vix >= 20 else -0.5 if vix >= 16 else -1.5)
+    # vix_z > 1.5 = extreme high (was vix>=24), vix_z > 0.5 = high (was vix>=20)
+    # vix_z < -1.0 = low VIX regime, negative = cheap premiums
+
+    # b93: STRADDLE VETO — Premium is King
+    _, straddle_chg, straddle_expanding = straddle_velocity(polls)
+    
     # Strategy selection
     conflicts = []
     if rtype == 'range':
         action = 'SELL PREMIUM'
-        if vix >= 20 and dte <= 1:
+        # Straddle expanding in range = market makers pricing in breakout — don't sell
+        if straddle_expanding and straddle_chg > 5:
+            conflicts.append(f"Straddle expanding +₹{straddle_chg:.0f} — breakout priced in")
+            action = 'WAIT'
+            strategy = None
+        elif vix_z >= 0.5 and dte <= 1:
             strategy = 'IRON_BUTTERFLY'
         else:
             strategy = 'IRON_CONDOR'
-        if direction != 'NEUTRAL':
+        if direction != 'NEUTRAL' and strategy:
             conflicts.append(f"Range but bias {direction}")
     elif direction == 'BULL':
-        if vix >= 24: action, strategy = 'BUY PREMIUM', 'BULL_CALL'
-        else: action, strategy = 'SELL PREMIUM', 'BULL_PUT'
+        if vix_z >= 1.5: action, strategy = 'BUY PREMIUM', 'BULL_CALL'
+        elif vix_z >= 0.5: action, strategy = 'SELL PREMIUM', 'BULL_PUT'
+        else: action, strategy = 'BUY PREMIUM', 'BULL_CALL'  # low VIX = cheap options, buy
     elif direction == 'BEAR':
-        if vix >= 24: action, strategy = 'BUY PREMIUM', 'BEAR_PUT'
-        else: action, strategy = 'SELL PREMIUM', 'BEAR_CALL'
+        if vix_z >= 1.5: action, strategy = 'BUY PREMIUM', 'BEAR_PUT'
+        elif vix_z >= 0.5: action, strategy = 'SELL PREMIUM', 'BEAR_CALL'
+        else: action, strategy = 'BUY PREMIUM', 'BEAR_PUT'
     else:
         if rtype == 'choppy' or cautions >= 3:
             action, strategy = 'WAIT', None
-        elif vix >= 20:
+        elif vix_z >= 0.5:
             action, strategy = 'SELL PREMIUM', 'IRON_CONDOR'
         else:
             action, strategy = 'WAIT', None
 
-    # Calibration check — do you WIN with this strategy?
+    # b93: HARD VETO — calibration kill switch (0% win rate = never recommend)
     if _calibration and strategy:
         cal = _calibration.get('strategy', {}).get(strategy, {})
         n = cal.get('total', 0)
         rate = cal.get('rate', 0.5)
-        if n >= 5 and rate < 0.3:
+        if n >= 5 and rate < 0.15:
+            conflicts.append(f"VETO: {strategy} wins {cal.get('wins',0)}/{n} ({rate*100:.0f}%). Brain refuses.")
+            strategy = None
+            action = 'WAIT'
+        elif n >= 5 and rate < 0.3:
             confidence -= 20
             conflicts.append(f"Your {strategy}: {cal.get('wins',0)}/{n} ({rate*100:.0f}%)")
         elif n >= 5 and rate > 0.7:
@@ -1608,8 +1741,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     # Build reasoning
     reasons = []
     if rtype != 'unknown': reasons.append(f"{'Range' if rtype=='range' else 'Trend' if rtype=='trend' else rtype.title()} {regime.get('sigma',0):.1f}σ")
-    if vix >= 24: reasons.append(f"VIX {vix:.1f} (VERY HIGH)")
-    elif vix >= 20: reasons.append(f"VIX {vix:.1f} (HIGH)")
+    if vix_z >= 1.5: reasons.append(f"VIX {vix:.1f} (Z:{vix_z:+.1f} EXTREME)")
+    elif vix_z >= 0.5: reasons.append(f"VIX {vix:.1f} (Z:{vix_z:+.1f} HIGH)")
+    elif vix_z <= -1.0: reasons.append(f"VIX {vix:.1f} (Z:{vix_z:+.1f} LOW)")
     if abs(b_pct - 50) > 10: reasons.append(f"Breadth {'strong' if b_pct>60 else 'weak'} ({b_pct:.0f}%)")
     if abs(fii_sum) > 1000: reasons.append(f"FII {'+' if fii_sum>0 else ''}₹{fii_sum:.0f}Cr/5d")
     if abs(skew) > 2: reasons.append(f"Skew {'steep' if skew>0 else 'flat'} ({skew:.0f})")
@@ -1624,12 +1758,13 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     elif od and 'BULLISH' in od.get('summary', ''): reasons.append("Overnight: BULL")
     if gd_conflicts >= 2: reasons.append(f"Global: {gd_conflicts}/3 against")
     if abs(drift) >= 2: reasons.append(f"Drift: {drift:+d}")
+    if straddle_expanding and straddle_chg > 3: reasons.append(f"Straddle expanding +₹{straddle_chg:.0f}")
     reasons.append(f"Bull {bull:.1f} vs Bear {bear:.1f}")
 
     return {
         "action": action, "strategy": strategy, "direction": direction,
         "confidence": confidence, "urgency": urgency,
-        "reasoning": " · ".join(reasons[:6]),
+        "reasoning": " · ".join(reasons[:8]),
         "conflicts": conflicts, "bull": round(bull, 2), "bear": round(bear, 2)
     }
 
@@ -4962,6 +5097,13 @@ async function lightFetch() {
             nfAdv: STATE.nf50Breadth?.scaled ?? null,
             // Bias
             bias: STATE.live.bias?.net ?? 0,
+            // b93: ATM Straddle premium — "Premium is King" tracking
+            straddle: (() => {
+                const atm = bnfChain.atm;
+                const ceLTP = bnfChain.strikes?.[atm]?.CE?.ltp ?? 0;
+                const peLTP = bnfChain.strikes?.[atm]?.PE?.ltp ?? 0;
+                return ceLTP > 0 && peLTP > 0 ? +(ceLTP + peLTP).toFixed(1) : null;
+            })(),
             // Per-strike data: ATM ± 10 strikes (oi, volume, ltp, iv, delta, pop)
             bnfS: extractStrikes(bnfChain),
             nfS: extractStrikes(nfChain)
@@ -5723,7 +5865,8 @@ async function runBrain() {
             probProfit: c.probProfit ?? 0, maxProfit: c.maxProfit ?? 0, maxLoss: c.maxLoss ?? 0,
             estCost: c.estCost ?? 0, estCostPct: c.estCostPct ?? 0,
             varsityTier: c.varsityTier ?? null,
-            realisticMaxProfit: c.realisticMaxProfit ?? null
+            realisticMaxProfit: c.realisticMaxProfit ?? null,
+            netTheta: c.netTheta ?? c.intradayTheta ?? 0
         }));
 
         // 5. Strike OI history — extract OI at traded strikes from full poll data
@@ -5878,7 +6021,17 @@ async function runBrain() {
                 strategy: STATE.brainInsights.verdict.strategy,
                 direction: STATE.brainInsights.verdict.direction,
                 confidence: STATE.brainInsights.verdict.confidence
-            } : null
+            } : null,
+
+            // ═══ b93: HISTORICAL ARRAYS for Z-score computation ═══
+            // 30-60 days of daily data for dynamic thresholds
+            vixHistory: (STATE.premiumHistory || []).map(p => p.vix).filter(Boolean).slice(0, 60),
+            pcrHistory: (STATE.premiumHistory || []).map(p => p.pcr).filter(Boolean).slice(0, 60),
+            spotHistory: (STATE.premiumHistory || []).map(p => p.bnf_spot).filter(Boolean).slice(0, 60),
+            ivPercentile: (() => {
+                const vh = (STATE.premiumHistory || []).map(p => p.vix).filter(Boolean);
+                return vh.length > 10 ? BS.ivPercentile(STATE.live?.vix || STATE.baseline?.vix || 20, vh) : 50;
+            })()
         }));
 
         const resultJson = py.runPython(
