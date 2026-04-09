@@ -621,10 +621,10 @@ def candidate_wall_protection(cand, polls, baseline, regime):
     # 4-leg: check BOTH sides independently
     if is_4leg and cw and pw:
         ce_exposed = cw < sell if sell else False  # call wall below CE sell = exposed
-        pe_exposed = pw > sell2 if sell2 else False  # put wall above PE sell = exposed
+        pe_exposed = sell2 > pw if sell2 else False  # sell PE above put wall = no support = exposed
         if ce_exposed and pe_exposed:
             return {"icon": "🚨", "label": "BOTH sides exposed",
-                    "detail": f"CE sell {sell} above call wall {cw}. PE sell {sell2} below put wall {pw}. No protection.",
+                    "detail": f"CE sell {sell} above call wall {cw}. PE sell {sell2} above put wall {pw}. No protection.",
                     "impact": "caution", "strength": 5}
         if ce_exposed:
             return {"icon": "⚠️", "label": f"CE side past call wall",
@@ -632,14 +632,14 @@ def candidate_wall_protection(cand, polls, baseline, regime):
                     "impact": "caution", "strength": 4}
         if pe_exposed:
             return {"icon": "⚠️", "label": f"PE side past put wall",
-                    "detail": f"Sell PE {sell2} < put wall {pw}. Downside unprotected.",
+                    "detail": f"Sell PE {sell2} > put wall {pw}. No support above sell.",
                     "impact": "caution", "strength": 4}
-        # Both protected
+        # Both protected — wall is between spot and sell on each side
         ce_dist = cw - sell if cw and sell else 999
-        pe_dist = sell2 - pw if sell2 and pw else 999
+        pe_dist = pw - sell2 if sell2 and pw else 999  # positive = wall above sell PE = protected
         if ce_dist >= 0 and ce_dist <= 300 and pe_dist >= 0 and pe_dist <= 300:
             return {"icon": "🛡️", "label": "Both sides wall-backed",
-                    "detail": f"CE: wall {cw} ({ce_dist}pts above). PE: wall {pw} ({pe_dist}pts below).",
+                    "detail": f"CE: wall {cw} ({ce_dist}pts above). PE: wall {pw} ({pe_dist}pts above sell).",
                     "impact": "bullish", "strength": 4}
         return None
     
@@ -655,13 +655,13 @@ def candidate_wall_protection(cand, polls, baseline, regime):
                     "detail": f"Call wall OI protects your sell.",
                     "impact": "bullish", "strength": 3}
     elif not is_bear and not is_4leg and pw:
-        dist = sell - pw
-        if dist < 0:
-            return {"icon": "⚠️", "label": f"Sell BELOW put wall",
-                    "detail": f"Sell {sell} < put wall {pw}. No OI floor. Breakdown can hit you.",
+        dist = sell - pw  # positive = sell ABOVE wall = exposed; negative = sell BELOW wall = protected
+        if dist > 0:
+            return {"icon": "⚠️", "label": f"Sell ABOVE put wall",
+                    "detail": f"Sell {sell} > put wall {pw}. No OI floor. Breakdown can hit you.",
                     "impact": "caution", "strength": 5}
-        if 0 <= dist <= 300:
-            return {"icon": "🛡️", "label": f"Wall at {pw} ({dist}pts below)",
+        if -300 <= dist < 0:
+            return {"icon": "🛡️", "label": f"Wall at {pw} ({abs(dist)}pts above sell)",
                     "detail": f"Put wall OI protects your sell.",
                     "impact": "bullish", "strength": 3}
     return None
@@ -1614,12 +1614,14 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             action, strategy = 'WAIT', None
 
     # b93: HARD VETO — calibration kill switch (0% win rate = never recommend)
+    vetoed_strategy = None
     if _calibration and strategy:
         cal = _calibration.get('strategy', {}).get(strategy, {})
         n = cal.get('total', 0)
         rate = cal.get('rate', 0.5)
         if n >= 5 and rate < 0.15:
             conflicts.append(f"VETO: {strategy} wins {cal.get('wins',0)}/{n} ({rate*100:.0f}%). Brain refuses.")
+            vetoed_strategy = strategy
             strategy = None
             action = 'WAIT'
         elif n >= 5 and rate < 0.3:
@@ -1647,6 +1649,61 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             if all_cautioned and len(strat_cands) > 0:
                 conflicts.append(f"All {strategy} candidates have risk warnings")
                 confidence -= 15
+
+    # b95: SMART FALLBACK — if recommended strategy is dead, find best available alternative
+    # Triggers when: (a) no candidates generated, (b) calibration <30%, OR (c) strategy was VETOED
+    needs_fallback = False
+    original_strategy = strategy or vetoed_strategy  # capture even if vetoed to None
+    if candidates:
+        if vetoed_strategy:
+            needs_fallback = True  # veto killed it — MUST find alternative
+        elif strategy:
+            has_cands = any(c.get('type') == strategy for c in candidates)
+            cal_dead = False
+            if _calibration:
+                cal_check = _calibration.get('strategy', {}).get(strategy, {})
+                cal_dead = cal_check.get('total', 0) >= 5 and cal_check.get('rate', 0.5) < 0.3
+            if not has_cands or cal_dead:
+                needs_fallback = True
+
+    if needs_fallback and candidates:
+        # Score each available strategy type by: calibration win rate × number of candidates
+        available_types = {}
+        for c in candidates:
+            ct = c.get('type', '')
+            if ct not in available_types:
+                available_types[ct] = {'count': 0, 'best_score': 0}
+            available_types[ct]['count'] += 1
+            available_types[ct]['best_score'] = max(available_types[ct]['best_score'], c.get('contextScore', 0))
+
+        best_alt = None
+        best_alt_score = -999
+        for ct, info in available_types.items():
+            if info['count'] == 0: continue
+            # Calibration rate (default 0.5 if unknown)
+            cal_rate = 0.5
+            if _calibration:
+                cal_s = _calibration.get('strategy', {}).get(ct, {})
+                if cal_s.get('total', 0) >= 3:
+                    cal_rate = cal_s.get('rate', 0.5)
+            # Score = calibration × log(count+1) × context quality
+            score = cal_rate * math.log(info['count'] + 1) * (1 + info['best_score'])
+            # Bonus for IC/IB in range regime
+            if ct in ('IRON_CONDOR', 'IRON_BUTTERFLY') and rtype == 'range':
+                score *= 1.5
+            if score > best_alt_score:
+                best_alt_score = score
+                best_alt = ct
+
+        if best_alt and best_alt != original_strategy:
+            # Determine action from strategy type
+            credit_types = ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY']
+            alt_action = 'SELL PREMIUM' if best_alt in credit_types else 'BUY PREMIUM'
+            conflicts.append(f"Fallback: {original_strategy} → {best_alt} (available + proven)")
+            strategy = best_alt
+            action = alt_action
+            # Restore some confidence — we found a viable alternative
+            confidence = max(confidence, 30)
 
     # ═══ b92: FULL OMNISCIENCE CHECKS — use all 12 new data streams ═══
 
