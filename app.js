@@ -1431,6 +1431,164 @@ def dte_urgency(polls, ctx):
                 "detail": "Credit favored. Debit positions lose value rapidly.", "impact": "neutral", "strength": 2}
     return None
 
+def compute_effective_bias(polls, baseline, ctx, regime):
+    """b97: Bayesian effective bias — morning prior decays as intraday evidence accumulates.
+    Morning data = where we came from (context). Intraday polls = what's happening now.
+    By sweet spot (11 AM), intraday dominates 80%. Morning never disappears (20% floor).
+    Returns: {bias, strength, net, morning_weight, signals, drift_reasons}"""
+    
+    morning_bias = ctx.get('morningBias') or {}
+    morning_net = morning_bias.get('net', 0)
+    poll_count = len(polls)
+    TOTAL_SIGNALS = 7
+    
+    # ═══ MORNING WEIGHT DECAY ═══
+    # 100% at poll 0, decays 5%/poll, floor 20%. Sweet spot ~poll 16-20.
+    morning_weight = max(0.20, 1.0 - poll_count * 0.05)
+    intraday_weight = 1.0 - morning_weight
+    
+    # ═══ FIRST 15 MINUTES SUPPRESSION ═══
+    # Opening noise — gap repricing, market maker activity. Signals unreliable.
+    if poll_count < 3:
+        return {
+            'bias': 'BULL' if morning_net >= 1 else 'BEAR' if morning_net <= -1 else 'NEUTRAL',
+            'strength': 'STRONG' if abs(morning_net) >= 2 else 'MILD' if abs(morning_net) >= 1 else '',
+            'net': morning_net,
+            'morning_weight': 1.0,
+            'signals': [0] * TOTAL_SIGNALS,
+            'drift_reasons': ['Too early — morning dominant']
+        }
+    
+    # ═══ 7 INTRADAY SIGNALS (each -2/-1/0/+1/+2) ═══
+    signals = []
+    drift_reasons = []
+    last = polls[-1] if polls else {}
+    first = polls[0] if polls else {}
+    
+    # --- 1. Spot σ from morning (3-poll smoothed) ---
+    base_spot = baseline.get('bnfSpot', 0)
+    base_vix = baseline.get('vix', 18)
+    daily_sigma = base_spot * (base_vix / 100) / math.sqrt(252) if base_spot > 0 else 300
+    recent_spots = [p.get('bnf') for p in polls[-4:] if p.get('bnf')]
+    if len(recent_spots) >= 3 and daily_sigma > 0:
+        spot_avg = sum(recent_spots[-3:]) / 3  # 3-poll smoothed
+        spot_move_sigma = (spot_avg - base_spot) / daily_sigma
+        if spot_move_sigma > 0.8: signals.append(2); drift_reasons.append(f"Spot +{spot_move_sigma:.1f}σ")
+        elif spot_move_sigma > 0.3: signals.append(1); drift_reasons.append(f"Spot +{spot_move_sigma:.1f}σ")
+        elif spot_move_sigma < -0.8: signals.append(-2); drift_reasons.append(f"Spot {spot_move_sigma:.1f}σ")
+        elif spot_move_sigma < -0.3: signals.append(-1); drift_reasons.append(f"Spot {spot_move_sigma:.1f}σ")
+        else: signals.append(0)
+    else:
+        signals.append(0)
+    
+    # --- 2. VIX from morning (3-poll smoothed) ---
+    recent_vix = [p.get('vix') for p in polls[-4:] if p.get('vix')]
+    if len(recent_vix) >= 3:
+        vix_avg = sum(recent_vix[-3:]) / 3
+        vix_change = vix_avg - base_vix
+        if vix_change < -1.5: signals.append(2); drift_reasons.append(f"VIX {vix_change:+.1f}")
+        elif vix_change < -0.5: signals.append(1)
+        elif vix_change > 1.5: signals.append(-2); drift_reasons.append(f"VIX {vix_change:+.1f}")
+        elif vix_change > 0.5: signals.append(-1)
+        else: signals.append(0)
+    else:
+        signals.append(0)
+    
+    # --- 3. PCR from morning (3-poll smoothed) ---
+    recent_pcr = [p.get('pcr') for p in polls[-4:] if p.get('pcr')]
+    pcr_morning = first.get('pcr', 0) if first else 0
+    if len(recent_pcr) >= 3 and pcr_morning > 0:
+        pcr_avg = sum(recent_pcr[-3:]) / 3
+        pcr_change = pcr_avg - pcr_morning
+        if pcr_change > 0.2: signals.append(2); drift_reasons.append(f"PCR +{pcr_change:.2f}")
+        elif pcr_change > 0.1: signals.append(1)
+        elif pcr_change < -0.2: signals.append(-2); drift_reasons.append(f"PCR {pcr_change:.2f}")
+        elif pcr_change < -0.1: signals.append(-1)
+        else: signals.append(0)
+    else:
+        signals.append(0)
+    
+    # --- 4. Straddle direction (last 4 polls) ---
+    straddles = [p.get('straddle') for p in polls[-4:] if p.get('straddle')]
+    if len(straddles) >= 3:
+        straddle_chg = straddles[-1] - straddles[0]
+        if straddle_chg < -50: signals.append(2)  # shrinking fast → range/BULL
+        elif straddle_chg < -20: signals.append(1)
+        elif straddle_chg > 50: signals.append(-2)  # expanding fast → fear/BEAR
+        elif straddle_chg > 20: signals.append(-1)
+        else: signals.append(0)
+    else:
+        signals.append(0)
+    
+    # --- 5. Wall movement from morning ---
+    cw_now = last.get('cw', 0)
+    pw_now = last.get('pw', 0)
+    cw_morning = baseline.get('bnfCallWall', 0)
+    pw_morning = baseline.get('bnfPutWall', 0)
+    wall_signal = 0
+    if cw_now and cw_morning:
+        cw_move = cw_now - cw_morning
+        if cw_move > 200: wall_signal = 2; drift_reasons.append(f"CW +{cw_move}")
+        elif cw_move > 100: wall_signal = 1
+        elif cw_move < -200: wall_signal = -2; drift_reasons.append(f"CW {cw_move}")
+        elif cw_move < -100: wall_signal = -1
+    if pw_now and pw_morning:
+        pw_move = pw_now - pw_morning
+        if pw_move > 200: wall_signal = max(wall_signal, 1)  # put wall rising = BULL
+        elif pw_move < -200: wall_signal = min(wall_signal, -1)
+    signals.append(wall_signal)
+    
+    # --- 6. Breadth ---
+    breadth_pct = (ctx.get('bnfBreadth') or {}).get('pct', 50)
+    if breadth_pct > 65: signals.append(2); drift_reasons.append(f"Breadth {breadth_pct:.0f}%")
+    elif breadth_pct > 55: signals.append(1)
+    elif breadth_pct < 35: signals.append(-2); drift_reasons.append(f"Breadth {breadth_pct:.0f}%")
+    elif breadth_pct < 45: signals.append(-1)
+    else: signals.append(0)
+    
+    # --- 7. Regime (range pushes opposite to morning direction) ---
+    regime_type = regime.get('type', 'unknown') if regime else 'unknown'
+    regime_dir = regime.get('direction', 0) if regime else 0
+    if regime_type == 'range':
+        # Range contradicts directional bias — push toward NEUTRAL
+        morning_sign = 1 if morning_net > 0 else -1 if morning_net < 0 else 0
+        signals.append(-morning_sign)  # push opposite
+        if morning_sign != 0: drift_reasons.append("Range → push NEUTRAL")
+    elif regime_type == 'trend':
+        if abs(regime_dir) >= 3:
+            signals.append(2 if regime_dir > 0 else -2)
+            drift_reasons.append(f"Strong trend {'↑' if regime_dir > 0 else '↓'}")
+        elif abs(regime_dir) >= 1:
+            signals.append(1 if regime_dir > 0 else -1)
+        else:
+            signals.append(0)
+    else:
+        signals.append(0)
+    
+    # ═══ BLEND: morning prior × intraday evidence ═══
+    intraday_net = sum(signals)
+    # Normalize to -3..+3 (same scale as morning). /TOTAL_SIGNALS so 1 signal is weak.
+    intraday_normalized = (intraday_net / TOTAL_SIGNALS) * 3
+    
+    effective_net = morning_net * morning_weight + intraday_normalized * intraday_weight
+    
+    # Classify
+    if effective_net >= 2: bias, strength = 'BULL', 'STRONG'
+    elif effective_net >= 1: bias, strength = 'BULL', 'MILD'
+    elif effective_net <= -2: bias, strength = 'BEAR', 'STRONG'
+    elif effective_net <= -1: bias, strength = 'BEAR', 'MILD'
+    else: bias, strength = 'NEUTRAL', ''
+    
+    return {
+        'bias': bias,
+        'strength': strength,
+        'net': round(effective_net, 2),
+        'morning_weight': round(morning_weight, 2),
+        'signals': signals,
+        'intraday_net': intraday_net,
+        'drift_reasons': drift_reasons[:5]
+    }
+
 def chain_intelligence(polls, ctx):
     """b92: Deep chain analysis — returns LIST of ALL qualifying insights (was single-return).
     Uses 10 computed features from computeChainProfile."""
@@ -2119,6 +2277,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates, result.get("candidates", {}))
     except: pass
 
+    # b97: Effective bias — Bayesian decay of morning prior with intraday evidence
+    try:
+        result["effective_bias"] = compute_effective_bias(polls, baseline, ctx, regime)
+    except: pass
+
     return json.dumps(result)
 `;
 
@@ -2214,6 +2377,7 @@ const STATE = {
     // Phase 12: Pyodide Brain — Python analysis in WebAssembly
     brainReady: false,        // true after Pyodide loaded + Python code initialized
     brainInsights: { verdict: null, market: [], positions: {}, candidates: {}, timing: [], risk: [] },
+    effectiveBias: null,  // b97: Bayesian-decayed bias from brain (replaces morning bias for candidates)
     brainLastRun: 0,          // timestamp of last brain run
     brainError: null,         // last error (for debug)
     _brainLoading: false,     // prevents double-init race condition
@@ -6244,6 +6408,52 @@ async function runBrain() {
 
             // Level 1: Re-rank candidates based on brain intelligence
             applyBrainScores();
+
+            // b97: Effective Bias — regenerate candidates when brain detects bias drift
+            const eb = result.effective_bias;
+            if (eb && eb.bias && STATE.live?.bias) {
+                const currentBias = STATE.effectiveBias?.bias || STATE.live.bias.bias;
+                const changed = eb.bias !== currentBias;
+                STATE.effectiveBias = {
+                    bias: eb.bias,
+                    strength: eb.strength || '',
+                    net: eb.net,
+                    morning_weight: eb.morning_weight,
+                    drift_reasons: eb.drift_reasons || [],
+                    label: `${eb.strength ? eb.strength + ' ' : ''}${eb.bias}`
+                };
+                // Regenerate candidates ONLY when classification changes (not every poll)
+                if (changed && STATE.bnfChain && STATE.nfChain) {
+                    const effectiveBiasResult = {
+                        bias: eb.bias,
+                        strength: eb.strength || '',
+                        net: eb.net,
+                        label: STATE.effectiveBias.label,
+                        votes: STATE.morningBias?.votes || { bull: 0, bear: 0 }
+                    };
+                    const vix = STATE.live.vix;
+                    const ivPctl = STATE.live.ivPercentile;
+                    const bnfCands = generateCandidates(STATE.bnfChain, STATE.live.bnfSpot, 'BNF', STATE.bnfExpiry, vix, effectiveBiasResult, ivPctl);
+                    const nfCands = generateCandidates(STATE.nfChain, STATE.live.nfSpot, 'NF', STATE.nfExpiry, vix, effectiveBiasResult, ivPctl);
+                    STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
+                    STATE.lastScanTime = Date.now();
+                    STATE.watchlist = STATE.candidates.slice(0, 6);
+                    const seenIds = new Set(STATE.watchlist.map(c => c.id));
+                    for (const idx of ['BNF', 'NF']) {
+                        const seen = new Set();
+                        for (const c of STATE.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
+                            if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                            if (seen.size >= 5) break;
+                        }
+                    }
+                    console.log(`[b97] Effective bias ${currentBias} → ${eb.bias}. Candidates regenerated.`);
+                    sendNotification('🧠 Bias Adapted',
+                        `Morning: ${STATE.morningBias?.label || '?'} → Effective: ${STATE.effectiveBias.label} (${eb.drift_reasons?.join(', ') || 'intraday evidence'})`,
+                        'important');
+                    addNotificationLog('🧠 Effective Bias Override',
+                        `${currentBias} → ${eb.bias} (net ${eb.net}). MW: ${(eb.morning_weight*100).toFixed(0)}%. Reasons: ${eb.drift_reasons?.join(', ') || '-'}`, 'important');
+                }
+            }
         }
 
     } catch (err) {
@@ -7737,6 +7947,12 @@ function renderWatchlist() {
                 : `<div class="go-detail" style="font-size:11px; color:var(--green)">✅ Plan holding: ${morningL}</div>`;
         })() : ''}
         ${varsityLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">📖 Varsity: ${varsityLabel} · ${varsityAction}</div>` : ''}
+        ${STATE.effectiveBias && STATE.morningBias && STATE.effectiveBias.bias !== STATE.morningBias.bias ? (() => {
+            const eb = STATE.effectiveBias;
+            const mw = Math.round(eb.morning_weight * 100);
+            const reasons = eb.drift_reasons?.length ? eb.drift_reasons.join(', ') : '';
+            return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${STATE.morningBias.label} → ${eb.label} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
+        })() : ''}
         ${varsityInfo?.rangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — IB/IC prioritized over directional</div>` : (STATE.pollHistory?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Trending (${STATE.rangeSigma}σ) — directional strategies active</div>` : '')}
         ${STATE.marketPhase && STATE.marketPhase.id !== 'PRE_MARKET' && STATE.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${STATE.marketPhase.label}: ${STATE.marketPhase.hint}</div>
         <div class="go-detail" style="font-size:10px; color:var(--text-muted);">${STATE.marketPhase.detail}</div>` : ''}
