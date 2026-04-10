@@ -5941,13 +5941,52 @@ function syncToNative() {
                 id: t.id, strategy_type: t.strategy_type, sell_strike: t.sell_strike,
                 sell_strike2: t.sell_strike2 ?? null, buy_strike: t.buy_strike,
                 index_key: t.index_key, is_credit: t.is_credit, entry_vix: t.entry_vix ?? null,
-                paper: t.paper ?? false, width: t.width ?? null
+                paper: t.paper ?? false, width: t.width ?? null,
+                current_pnl: t.current_pnl ?? 0, peak_pnl: t.peak_pnl ?? 0,
+                max_profit: t.max_profit ?? 0, max_loss: t.max_loss ?? 0,
+                controlIndex: t.controlIndex ?? null, entry_premium: t.entry_premium ?? null,
+                trade_mode: t.trade_mode ?? 'swing',
+                wallDrift: t.wallDrift ? { severity: t.wallDrift.severity, warning: t.wallDrift.warning } : null,
+                vixChange: t.vixSpike ? t.vixSpike.change : 0,
+                peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0
             }));
             window.NativeBridge.setOpenTrades(JSON.stringify(tradesLite));
         }
-        console.log('[b99] syncToNative complete');
+        // 5. Phase 2: Full context — Kotlin runs full brain in background
+        if (window.NativeBridge.setContext && STATE.live) {
+            const ctx = {
+                bnfProfile: STATE._lastChainProfile?.bnf ?? null,
+                nfProfile: STATE._lastChainProfile?.nf ?? null,
+                bnfBreadth: STATE.bnfBreadth ? { pct: STATE.bnfBreadth.weightedPct, adv: STATE.bnfBreadth.advancing, dec: STATE.bnfBreadth.declining } : null,
+                fiiHistory: (STATE.premiumHistory || []).slice(0, 5).map(p => ({
+                    date: p.date, fiiCash: p.fii_cash, fiiShort: p.fii_short_pct, vix: p.vix
+                })),
+                morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null,
+                capital: typeof C !== 'undefined' ? C.CAPITAL : 250000,
+                tradeMode: STATE.tradeMode || 'swing',
+                bnfDTE: STATE.baseline?.bnfTDTE ?? 5,
+                nfDTE: STATE.baseline?.nfTDTE ?? 2,
+                marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN',
+                overnightDelta: STATE.overnightDelta ? { summary: STATE.overnightDelta.summary } : null,
+                biasDrift: STATE.biasDrift ?? 0,
+                rangeSigma: STATE.rangeSigma ?? null,
+                signalAccuracy: STATE.signalAccuracyStats ? { pct: STATE.signalAccuracyStats.pct, total: STATE.signalAccuracyStats.total } : null,
+                priorVerdict: STATE.brainInsights?.verdict ? {
+                    action: STATE.brainInsights.verdict.action,
+                    strategy: STATE.brainInsights.verdict.strategy,
+                    direction: STATE.brainInsights.verdict.direction,
+                    confidence: STATE.brainInsights.verdict.confidence
+                } : null
+            };
+            window.NativeBridge.setContext(JSON.stringify(ctx));
+        }
+        // 6. Phase 2: Closed trades — Kotlin needs for calibration
+        if (window.NativeBridge.setClosedTrades && STATE._brainTradesCache) {
+            window.NativeBridge.setClosedTrades(JSON.stringify(STATE._brainTradesCache));
+        }
+        console.log('[b102] syncToNative complete');
     } catch(e) {
-        console.warn('[b99] syncToNative error:', e.message);
+        console.warn('[b102] syncToNative error:', e.message);
     }
 }
 
@@ -6291,10 +6330,15 @@ async function runBrain() {
         const dailyRealCount = closedToday.filter(t => !t.paper).length + todayTrades.filter(t => !t.paper).length;
         const dailyPaperCount = closedToday.filter(t => t.paper).length + todayTrades.filter(t => t.paper).length;
 
+        // b102: Cache chain profiles for syncToNative Phase 2
+        const _bnfProfile = computeChainProfile(STATE.bnfChain, STATE.live?.bnfSpot ?? STATE.baseline?.bnfSpot, STATE.baseline?.bnfOHLC);
+        const _nfProfile = computeChainProfile(STATE.nfChain, STATE.live?.nfSpot ?? STATE.baseline?.nfSpot, STATE.baseline?.nfOHLC);
+        STATE._lastChainProfile = { bnf: _bnfProfile, nf: _nfProfile };
+
         py.globals.set('_context_json', JSON.stringify({
             // Chain profiles (20 numbers each)
-            bnfProfile: computeChainProfile(STATE.bnfChain, STATE.live?.bnfSpot ?? STATE.baseline?.bnfSpot, STATE.baseline?.bnfOHLC),
-            nfProfile: computeChainProfile(STATE.nfChain, STATE.live?.nfSpot ?? STATE.baseline?.nfSpot, STATE.baseline?.nfOHLC),
+            bnfProfile: _bnfProfile,
+            nfProfile: _nfProfile,
             // Breadth
             bnfBreadth: STATE.bnfBreadth ? { pct: STATE.bnfBreadth.weightedPct, adv: STATE.bnfBreadth.advancing, dec: STATE.bnfBreadth.declining, total: STATE.bnfBreadth.total } : null,
             nf50Breadth: STATE.nf50Breadth ? { adv: STATE.nf50Breadth.advancing, dec: STATE.nf50Breadth.declining, scaled: STATE.nf50Breadth.scaled } : null,
