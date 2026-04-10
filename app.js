@@ -6012,6 +6012,7 @@ async function initBrain() {
         // Run brain immediately if we already have poll data
         if (STATE.pollHistory.length >= 3) {
             await runBrain();
+            renderAll(); // b101: render after brain-triggered candidate regeneration
         }
 
     } catch (err) {
@@ -8009,14 +8010,18 @@ function renderWatchlist() {
     const total = STATE.candidates.length;
 
     // ═══ GO VERDICT BANNER ═══
-    const biasLabel = STATE.live?.bias?.label || STATE.baseline?.bias?.label || 'NEUTRAL';
+    // b101: Use effective bias (brain-computed) when available — matches actual candidates
+    const activeBiasObj = STATE.effectiveBias
+        ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength, net: STATE.effectiveBias.net, label: STATE.effectiveBias.label, votes: STATE.morningBias?.votes || {bull:0, bear:0} }
+        : (STATE.live?.bias || STATE.baseline?.bias);
+    const biasLabel = STATE.effectiveBias?.label || STATE.live?.bias?.label || STATE.baseline?.bias?.label || 'NEUTRAL';
     const vix = STATE.live?.vix || STATE.baseline?.vix || 0;
     const modeLabel = STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING';
     const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
     const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
 
-    // Varsity recommendation
-    const biasObj = STATE.live?.bias || STATE.baseline?.bias;
+    // Varsity recommendation — use effective bias to match actual candidates
+    const biasObj = activeBiasObj;
     const varsityInfo = biasObj ? getVarsityFilter(biasObj, vix) : null;
     // Show first PRIMARY that actually has candidates, not just primary[0]
     const actualPrimary = varsityInfo?.primary?.find(p => STATE.candidates.some(c => c.type === p)) || varsityInfo?.primary?.[0];
