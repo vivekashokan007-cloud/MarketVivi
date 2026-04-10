@@ -420,36 +420,77 @@ def institutional_clock(polls, baseline):
 # ═══════════════════════════════════════════
 
 def position_wall_proximity(trade, polls, baseline, regime, strike_oi):
-    """Is sell strike near a wall? Is that wall building or crumbling?"""
+    """b96: Is sell strike near a wall? Checks correct wall for each strategy type.
+    Bear Call: sell CE vs call wall. Bull Put: sell PE vs put wall.
+    IC: sell CE vs call wall AND sell PE (sell_strike2) vs put wall."""
     sell = trade.get('sell_strike', 0)
+    sell2 = trade.get('sell_strike2', 0)  # PE sell for IC
     idx = trade.get('index_key', 'BNF')
+    stype = trade.get('strategy_type', '')
     last = polls[-1] if polls else {}
     cw = last.get('cw' if idx == 'BNF' else 'nfCW')
     pw = last.get('pw' if idx == 'BNF' else 'nfPW')
-    is_bear = 'BEAR' in trade.get('strategy_type', '')
-    # For bear strategies, call wall is our friend (resistance above sell)
-    # For bull strategies, put wall is our friend (support below sell)
+    is_bear = 'BEAR' in stype
+    is_ic = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
+    is_bull = 'BULL' in stype
+    
+    # IC/IB: check BOTH sides
+    if is_ic:
+        insights = []
+        # CE side: call wall should be ABOVE sell CE
+        if cw and sell:
+            dist = cw - sell
+            if dist < 0:
+                insights.append(f"CE sell {sell} above call wall {cw}")
+            elif 0 <= dist <= 200:
+                insights.append(None)  # protected, mark as OK
+        # PE side: put wall should be ABOVE sell PE (between spot and sell)
+        if pw and sell2:
+            dist2 = pw - sell2  # positive = wall above sell PE = protected
+            if dist2 < 0:
+                insights.append(f"PE sell {sell2} below put wall {pw}")
+            elif 0 <= dist2 <= 200:
+                insights.append(None)  # protected
+        exposed = [i for i in insights if i is not None]
+        if len(exposed) == 2:
+            return {"icon": "🚨", "label": "Past the wall",
+                    "detail": f"{exposed[0]}. {exposed[1]}. Both sides exposed.",
+                    "impact": "caution", "strength": 5}
+        if len(exposed) == 1:
+            return {"icon": "⚠️", "label": "Past the wall",
+                    "detail": f"{exposed[0]}. One side unprotected.",
+                    "impact": "caution", "strength": 4}
+        if len(insights) >= 2 and all(i is None for i in insights):
+            return {"icon": "🛡️", "label": "Wall-protected",
+                    "detail": f"CE: wall {cw} above sell. PE: wall {pw} above sell.",
+                    "impact": "bullish", "strength": 4}
+        return None
+    
+    # Bear Call: call wall should be ABOVE sell CE
     if is_bear and cw:
         dist = cw - sell
+        if dist < 0:
+            return {"icon": "⚠️", "label": "Past the wall",
+                    "detail": f"Sell {sell} is ABOVE call wall {cw}. No OI protection.",
+                    "impact": "caution", "strength": 4}
         if 0 <= dist <= 200:
             return {"icon": "🛡️", "label": "Wall-protected",
                     "detail": f"Call wall {cw} {'AT' if dist == 0 else f'{dist}pts above'} sell {sell}.",
                     "impact": "bullish", "strength": 4 if dist == 0 else 3}
-        elif dist < 0:
+    
+    # Bull Put: put wall should be ABOVE sell PE (between spot and sell)
+    if is_bull and pw:
+        dist = pw - sell  # positive = wall above sell = protected
+        if dist < 0:
             return {"icon": "⚠️", "label": "Past the wall",
-                    "detail": f"Sell {sell} is ABOVE call wall {cw}. No OI protection.",
+                    "detail": f"Sell {sell} is BELOW put wall {pw}. No OI support above sell.",
                     "impact": "caution", "strength": 4}
-    if not is_bear and pw:
-        dist = sell - pw
         if 0 <= dist <= 200:
             return {"icon": "🛡️", "label": "Wall-protected",
-                    "detail": f"Put wall {pw} {'AT' if dist == 0 else f'{dist}pts below'} sell {sell}.",
+                    "detail": f"Put wall {pw} {'AT' if dist == 0 else f'{dist}pts above'} sell {sell}.",
                     "impact": "bullish", "strength": 4 if dist == 0 else 3}
-        elif dist < 0:
-            return {"icon": "⚠️", "label": "Past the wall",
-                    "detail": f"Sell {sell} is BELOW put wall {pw}. No OI protection.",
-                    "impact": "caution", "strength": 4}
-    # Check OI trend at sell strike from strike_oi data
+    
+    # OI trend at sell strike
     if len(strike_oi) >= 3:
         oi_field = 'sellCOI' if is_bear else 'sellPOI'
         ois = [s.get(oi_field) for s in strike_oi if s.get(oi_field) is not None]
@@ -466,7 +507,7 @@ def position_wall_proximity(trade, polls, baseline, regime, strike_oi):
     return None
 
 def position_momentum_threat(trade, polls, baseline, regime, strike_oi):
-    """Is spot accelerating toward the sell strike?"""
+    """Is spot accelerating toward OR already past the sell strike?"""
     sell = trade.get('sell_strike', 0)
     idx = trade.get('index_key', 'BNF')
     spot_key = 'bnf' if idx == 'BNF' else 'nf'
@@ -476,7 +517,12 @@ def position_momentum_threat(trade, polls, baseline, regime, strike_oi):
     if len(spots) < 3: return None
     curr = spots[-1]
     cushion = (sell - curr) if is_bear else (curr - sell)  # positive = safe
-    if cushion <= 0: return None  # already crossed — handled by CI
+    # b96: BREACH — spot already at or past sell strike
+    if cushion <= 0:
+        breach = abs(cushion)
+        return {"icon": "🚨", "label": f"Spot PAST sell strike by {breach:.0f}pts",
+                "detail": f"Spot {curr:.0f} {'above' if is_bear else 'below'} sell {sell}. Position in maximum danger.",
+                "impact": "caution", "strength": 5}
     # Velocity toward sell strike
     if is_bear:
         velocity = spots[-1] - spots[-2] if len(spots) >= 2 else 0
@@ -1271,7 +1317,7 @@ def signal_coherence(polls, ctx):
                 "detail": f"VIX {'rising' if vix_dir>0 else 'falling'} WITH spot {'rising' if spot_dir>0 else 'falling'}. Unusual — proceed with caution.",
                 "impact": "caution", "strength": 4}
     if not breadth_spot_coherent:
-        return {"type": "coherence", "icon": "⚠️", "label": "Narrow {'rally' if spot_dir>0 else 'decline'}",
+        return {"type": "coherence", "icon": "⚠️", "label": f"Narrow {'rally' if spot_dir>0 else 'decline'}",
                 "detail": f"Spot moving {'up' if spot_dir>0 else 'down'} but breadth {'bearish' if b_dir<0 else 'neutral'}. Move may reverse.",
                 "impact": "caution", "strength": 3}
     if vix_spot_coherent and breadth_spot_coherent and spot_dir != 0:
@@ -1875,10 +1921,10 @@ def position_verdict(trade, insights, regime, ctx):
         reasons.append(f"VIX rising +{vix_chg:.1f}")
 
     # Peak erosion
-    if peak_erosion > 50 and peak_pnl > 500:
+    if peak_erosion > 50 and peak_pnl > 0:
         danger += 20
         reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-    elif peak_erosion > 30 and peak_pnl > 300:
+    elif peak_erosion > 30 and peak_pnl > 0:
         danger += 10
         reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
 
@@ -1899,6 +1945,21 @@ def position_verdict(trade, insights, regime, ctx):
     if is_credit and phase == 'TRENDING':
         danger += 10
         reasons.append("Trending market — credit at risk")
+
+    # b96: "Past the wall" insight — position_wall_proximity detected exposure
+    past_wall = any('Past the wall' in i.get('label', '') for i in insights)
+    if past_wall:
+        danger += 35
+        reasons.append("Sell past OI wall — no protection")
+
+    # b96: Loss magnitude — deep loss even with stable danger should escalate
+    if pnl < 0:
+        if loss_pct > 0.5:
+            danger += 30
+            reasons.append(f"Deep loss ({loss_pct*100:.0f}% of max)")
+        elif loss_pct > 0.3:
+            danger += 15
+            reasons.append(f"Significant loss ({loss_pct*100:.0f}% of max)")
 
     # ═══ EXIT — compound danger high ═══
     if danger >= 60:
@@ -2873,9 +2934,9 @@ function computeWallDrift(trade, chain) {
             // Wall retreated DOWN — less protection
             result.callSide = {
                 entry: entryCallWall, current: currentCallWall,
-                drift: wallMove, status: currentGap < 0 ? 'EXPOSED' : 'WEAKENED'
+                drift: wallMove, status: currentGap <= 0 ? 'EXPOSED' : 'WEAKENED'
             };
-            result.severity = Math.max(result.severity, currentGap < 0 ? 2 : 1);
+            result.severity = Math.max(result.severity, currentGap <= 0 ? 2 : 1);
         }
     }
 
@@ -2890,9 +2951,9 @@ function computeWallDrift(trade, chain) {
             // Wall retreated UP — less protection
             result.putSide = {
                 entry: entryPutWall, current: currentPutWall,
-                drift: wallMove, status: currentGap < 0 ? 'EXPOSED' : 'WEAKENED'
+                drift: wallMove, status: currentGap <= 0 ? 'EXPOSED' : 'WEAKENED'
             };
-            result.severity = Math.max(result.severity, currentGap < 0 ? 2 : 1);
+            result.severity = Math.max(result.severity, currentGap <= 0 ? 2 : 1);
         }
     }
 
@@ -4744,6 +4805,19 @@ async function initialFetch() {
         STATE.live = { ...STATE.baseline };
         STATE.lastPollTime = Date.now();
         STATE.pollCount = 0;
+
+        // b97: Save baseline to Supabase — survives background kill
+        // Without this, lightFetch crashes after kill (needs STATE.baseline.bnfSpot)
+        try {
+            DB.setConfig('morning_baseline', {
+                _date: today,
+                baseline: STATE.baseline,
+                bnfExpiry: STATE.bnfExpiry,
+                nfExpiry: STATE.nfExpiry,
+                bnfOHLC: STATE.baseline.bnfOHLC ?? null,
+                nfOHLC: STATE.baseline.nfOHLC ?? null
+            });
+        } catch(e) { console.warn('Baseline save failed:', e); }
         STATE.lastForceState = {};
         STATE.watchlist.forEach(c => {
             STATE.lastForceState[c.id] = c.forces.aligned;
@@ -8871,6 +8945,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         STATE.pollCount = STATE.pollHistory.length;
     }
 
+    // b97: Restore baseline from Supabase — enables polling after background kill
+    const savedBaseline = cloudConfig?.morning_baseline;
+    if (savedBaseline && savedBaseline._date === API.todayIST() && savedBaseline.baseline) {
+        if (!STATE.baseline) {
+            STATE.baseline = savedBaseline.baseline;
+            STATE.live = { ...STATE.baseline };
+            if (savedBaseline.bnfExpiry) STATE.bnfExpiry = savedBaseline.bnfExpiry;
+            if (savedBaseline.nfExpiry) STATE.nfExpiry = savedBaseline.nfExpiry;
+            console.log('[b97] Baseline restored from Supabase');
+        }
+    }
+
     // Cleanup poll_history keys older than 7 days (fire-and-forget)
     DB.cleanOldPolls(7).catch(() => {});
 
@@ -8884,6 +8970,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     renderAll();
+
+    // b97: Auto-restart polling after background kill
+    // If baseline restored + market open → start watching without manual Lock & Scan
+    if (STATE.baseline && API.isMarketHours() && !STATE.isWatching) {
+        console.log(`[b97] Auto-restart: baseline exists, market open, ${STATE.pollHistory.length} polls restored`);
+        // Collapse morning section (already locked)
+        const morningEl = document.getElementById('morning-inputs');
+        if (morningEl) morningEl.style.display = 'none';
+        const lockBtn = document.getElementById('btn-lock');
+        if (lockBtn) {
+            lockBtn.textContent = '🔓 Re-scan';
+            lockBtn.disabled = false;
+        }
+        document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
+        // Start watch loop
+        startWatchLoop();
+        const watchEl = document.getElementById('watch-status');
+        if (watchEl) watchEl.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
+    }
 
     // Phase 12: Load Pyodide brain in background (non-blocking — app works without it)
     // Deferred by 2s so initial render + first poll aren't delayed
