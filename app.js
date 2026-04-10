@@ -8857,11 +8857,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     restoreGlobalContext(cloudConfig);
     restoreEveningClose(cloudConfig);
 
-    // Phase 11: Restore today's poll history (survives refresh)
+    // Phase 11: Restore today's poll history (survives refresh + background kill)
     // Fetched separately because getAllConfig now excludes poll_history_* for performance
     const todayKey = 'poll_history_' + API.todayIST();
     const todayPolls = await DB.getConfig(todayKey);
-    if (todayPolls) STATE.pollHistory = todayPolls;
+    if (todayPolls && Array.isArray(todayPolls)) {
+        // b95: MERGE — keep whichever is longer (Supabase vs in-memory)
+        // Prevents background kill from overwriting morning data
+        if (todayPolls.length > STATE.pollHistory.length) {
+            STATE.pollHistory = todayPolls;
+        }
+        // Sync pollCount so UI shows correct number
+        STATE.pollCount = STATE.pollHistory.length;
+    }
 
     // Cleanup poll_history keys older than 7 days (fire-and-forget)
     DB.cleanOldPolls(7).catch(() => {});
