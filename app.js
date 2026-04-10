@@ -4877,6 +4877,7 @@ async function initialFetch() {
         const allCandidates = [...bnfCandidates, ...nfCandidates];
         STATE.candidates = rankCandidates(allCandidates);
         STATE.lastScanTime = Date.now(); // Track when candidates were generated
+        STATE._lastCandidateBias = biasResult.bias; // b98: track what bias generated candidates
         STATE.watchlist = STATE.candidates.slice(0, 6); // top 6 overall
 
         // Add diverse picks to watchlist so they get live updates during polls
@@ -5190,6 +5191,31 @@ async function lightFetch() {
                     }
                 }
             }
+        }
+
+        // b98: Effective Bias — if brain computed a different bias, regenerate candidates
+        // This runs EVERY poll, not just on brain run. Ensures candidates stay in sync.
+        if (STATE.effectiveBias && STATE.effectiveBias.bias !== (STATE._lastCandidateBias || STATE.morningBias?.bias)) {
+            const eb = STATE.effectiveBias;
+            const effectiveBiasResult = {
+                bias: eb.bias, strength: eb.strength || '', net: eb.net,
+                label: eb.label, votes: STATE.morningBias?.votes || { bull: 0, bear: 0 }
+            };
+            const bnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, effectiveBiasResult, ivPctl);
+            const nfCands = STATE.nfChain ? generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, effectiveBiasResult, ivPctl) : [];
+            STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
+            STATE.lastScanTime = Date.now();
+            STATE.watchlist = STATE.candidates.slice(0, 6);
+            const seenIds = new Set(STATE.watchlist.map(c => c.id));
+            for (const idx of ['BNF', 'NF']) {
+                const seen = new Set();
+                for (const c of STATE.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
+                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                    if (seen.size >= 5) break;
+                }
+            }
+            STATE._lastCandidateBias = eb.bias;
+            console.log(`[b98] lightFetch: candidates regenerated with effective bias ${eb.bias}`);
         }
 
         // Update contrarian PCR with live near-ATM PCR
@@ -6472,8 +6498,12 @@ function toggleTradeMode() {
     if (STATE.bnfChain && STATE.nfChain && STATE.live?.bias) {
         const vix = STATE.live.vix;
         const ivPctl = STATE.live.ivPercentile;
-        const bnfCands = generateCandidates(STATE.bnfChain, STATE.live.bnfSpot, 'BNF', STATE.bnfExpiry, vix, STATE.live.bias, ivPctl);
-        const nfCands = STATE.nfChain ? generateCandidates(STATE.nfChain, STATE.live.nfSpot, 'NF', STATE.nfExpiry, vix, STATE.live.bias, ivPctl) : [];
+        // b99: Use effective bias if brain has computed one
+        const biasForCands = STATE.effectiveBias
+            ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength, net: STATE.effectiveBias.net, label: STATE.effectiveBias.label, votes: STATE.morningBias?.votes || {bull:0, bear:0} }
+            : STATE.live.bias;
+        const bnfCands = generateCandidates(STATE.bnfChain, STATE.live.bnfSpot, 'BNF', STATE.bnfExpiry, vix, biasForCands, ivPctl);
+        const nfCands = STATE.nfChain ? generateCandidates(STATE.nfChain, STATE.live.nfSpot, 'NF', STATE.nfExpiry, vix, biasForCands, ivPctl) : [];
         STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
         STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
         STATE.watchlist = STATE.candidates.filter(c => c.forces.aligned >= 2 && !c.capitalBlocked);
@@ -6540,14 +6570,20 @@ async function rescanStrategies() {
         return;
     }
 
-    // ═══ BIAS PRIORITY: institutional (3:15PM) > drift-overridden (live) > morning (plan) ═══
+    // ═══ BIAS PRIORITY: institutional > effective (brain) > drift-overridden > morning ═══
     const useInstitutional = STATE._captured315pm && STATE.positioningBias;
+    const effectiveBiasObj = STATE.effectiveBias
+        ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength, net: STATE.effectiveBias.net, label: STATE.effectiveBias.label, votes: STATE.morningBias?.votes || {bull:0, bear:0} }
+        : null;
     const activeBias = useInstitutional ? STATE.positioningBias
+        : (effectiveBiasObj ? effectiveBiasObj
         : (STATE.driftOverridden ? liveBias
-        : (STATE.morningBias || liveBias));
+        : (STATE.morningBias || liveBias)));
 
     if (useInstitutional) {
         addNotificationLog('🔄 Rescan', `Using institutional bias: ${STATE.positioningBias.label}`, 'important');
+    } else if (effectiveBiasObj) {
+        addNotificationLog('🔄 Rescan', `Using brain effective bias: ${effectiveBiasObj.label}`, 'important');
     } else if (STATE.driftOverridden) {
         addNotificationLog('🔄 Rescan', `Using live bias (drift override): ${liveBias.label}`, 'important');
     } else if (STATE.morningBias) {
