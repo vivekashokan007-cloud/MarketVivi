@@ -5936,7 +5936,7 @@ function syncToNative() {
             window.NativeBridge.setExpiries(STATE.bnfExpiry, STATE.nfExpiry);
         }
         // 4. Open trades — Kotlin monitors for danger alerts
-        if (STATE.openTrades && STATE.openTrades.length > 0) {
+        if (STATE.openTrades) {
             const tradesLite = STATE.openTrades.map(t => ({
                 id: t.id, strategy_type: t.strategy_type, sell_strike: t.sell_strike,
                 sell_strike2: t.sell_strike2 ?? null, buy_strike: t.buy_strike,
@@ -9381,16 +9381,42 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
         if (!STATE.baseline || !STATE.isWatching) return;
+
+        // b100: Pull data from Kotlin first (instant, from memory)
+        if (window.NativeBridge && window.NativeBridge.isNative()) {
+            try {
+                if (window.NativeBridge.getPollHistory) {
+                    const nativePolls = JSON.parse(window.NativeBridge.getPollHistory());
+                    if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
+                        STATE.pollHistory = nativePolls;
+                        STATE.pollCount = nativePolls.length;
+                        console.log(`[b100] Pulled ${nativePolls.length} polls from Kotlin`);
+                    }
+                }
+                if (window.NativeBridge.getBrainResult) {
+                    const brainJson = window.NativeBridge.getBrainResult();
+                    if (brainJson && brainJson !== '{}') {
+                        const br = JSON.parse(brainJson);
+                        STATE._nativeBrainAlerts = br.alerts || [];
+                    }
+                }
+            } catch(e) {
+                console.warn('[b100] Kotlin pull failed:', e.message);
+            }
+            // Re-sync latest state back to Kotlin
+            syncToNative();
+        }
+
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b99] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b100] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b99] Recovery poll failed:', e.message);
+                console.warn('[b100] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
