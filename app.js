@@ -5442,6 +5442,9 @@ async function lightFetch() {
         }
         await runBrain();
 
+        // b99: Sync latest state to Kotlin after every poll
+        syncToNative();
+
         renderAll();
 
     } catch (err) {
@@ -5860,6 +5863,8 @@ function startWatchLoop() {
     // Start native foreground service (keeps app alive in APK)
     if (window.NativeBridge && window.NativeBridge.isNative()) {
         try { window.NativeBridge.startMarketService(); } catch(e) {}
+        // b99: Sync all data to Kotlin service for background polling
+        syncToNative();
     }
 
     // Request notification permission
@@ -5912,6 +5917,61 @@ function stopWatchLoop() {
     document.getElementById('watch-status').textContent = '⏹ Stopped';
     document.getElementById('btn-stop').style.display = 'none';
 }
+
+// ═══ b99: NATIVE BRIDGE SYNC — push app state to Kotlin for background polling ═══
+// Without these calls, Kotlin service has no token, no baseline, no trades.
+function syncToNative() {
+    if (!window.NativeBridge || !window.NativeBridge.isNative()) return;
+    try {
+        // 1. API token — Kotlin needs this to call Upstox API
+        if (typeof API !== 'undefined' && API.TOKEN) {
+            window.NativeBridge.setApiToken(API.TOKEN);
+        }
+        // 2. Baseline — Kotlin needs spots, VIX, walls for brain analysis
+        if (STATE.baseline) {
+            window.NativeBridge.setBaseline(JSON.stringify(STATE.baseline));
+        }
+        // 3. Expiry dates — Kotlin needs these to fetch option chains
+        if (STATE.bnfExpiry && STATE.nfExpiry) {
+            window.NativeBridge.setExpiries(STATE.bnfExpiry, STATE.nfExpiry);
+        }
+        // 4. Open trades — Kotlin monitors for danger alerts
+        if (STATE.openTrades && STATE.openTrades.length > 0) {
+            const tradesLite = STATE.openTrades.map(t => ({
+                id: t.id, strategy_type: t.strategy_type, sell_strike: t.sell_strike,
+                sell_strike2: t.sell_strike2 ?? null, buy_strike: t.buy_strike,
+                index_key: t.index_key, is_credit: t.is_credit, entry_vix: t.entry_vix ?? null,
+                paper: t.paper ?? false, width: t.width ?? null
+            }));
+            window.NativeBridge.setOpenTrades(JSON.stringify(tradesLite));
+        }
+        console.log('[b99] syncToNative complete');
+    } catch(e) {
+        console.warn('[b99] syncToNative error:', e.message);
+    }
+}
+
+// Also sync from Kotlin when app resumes from background
+// Kotlin pushes latest polls via evaluateJavascript → window.syncFromNative(data)
+window.syncFromNative = function(dataJson) {
+    try {
+        const data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
+        if (data.pollHistory && Array.isArray(data.pollHistory)) {
+            if (data.pollHistory.length > STATE.pollHistory.length) {
+                STATE.pollHistory = data.pollHistory;
+                STATE.pollCount = STATE.pollHistory.length;
+                console.log(`[b99] syncFromNative: ${data.pollHistory.length} polls received from Kotlin`);
+            }
+        }
+        if (data.brainResult) {
+            // Store native brain alerts for display
+            STATE._nativeBrainAlerts = data.brainResult.alerts || [];
+        }
+        renderAll();
+    } catch(e) {
+        console.warn('[b99] syncFromNative error:', e.message);
+    }
+};
 
 // ═══════════════════════════════════════════════════════════════
 // PYODIDE BRAIN — Python analysis engine in WebAssembly
@@ -6808,6 +6868,7 @@ async function takeTrade(candidateId, isPaper = false) {
         trade.id = saved.id;
         STATE.openTrades.push(trade);
         playSound('entry');
+        syncToNative(); // b99: sync new trade to Kotlin
         switchTab('positions');
         renderAll();
     } else {
@@ -7109,6 +7170,7 @@ async function closeTrade(tradeId, exitReason) {
 
         addNotificationLog(`${prefix} Trade Closed`, `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike} ${trade.trade_mode ? `[${trade.trade_mode}]` : ''} P&L: ₹${trade.current_pnl}.${holdDuration ? ` Held: ${holdDuration}.` : ''} Reason: ${exitReason || 'Manual'}`, trade.current_pnl >= 0 ? 'entry' : 'urgent');
         STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
+        syncToNative(); // b99: sync trade removal to Kotlin
         renderAll();
     } catch (err) {
         console.error('closeTrade error:', err);
@@ -9311,6 +9373,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         DB.setConfig('settings', { theme: isDark ? 'dark' : 'light', tradeMode: STATE.tradeMode });
         document.querySelector('.toggle-icon').textContent = isDark ? '🌙' : '☀️';
         document.querySelector('meta[name="theme-color"]').content = isDark ? '#121218' : '#FFFFFF';
+    });
+
+    // b99: VISIBILITY CHANGE — instant recovery when app returns from background
+    // Android suspends WebView JS in background. When user returns, timers may be stale.
+    // This ensures immediate poll + brain run instead of waiting for next 5-min interval.
+    document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState !== 'visible') return;
+        if (!STATE.baseline || !STATE.isWatching) return;
+        const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
+        if (sinceLastPoll >= 4) {
+            console.log(`[b99] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            const el = document.getElementById('watch-status');
+            if (el) el.textContent = '🔄 Recovering from background...';
+            try {
+                await lightFetch();
+                if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
+            } catch(e) {
+                console.warn('[b99] Recovery poll failed:', e.message);
+                if (el) el.textContent = '🟢 Watching';
+            }
+        }
     });
 });
 
