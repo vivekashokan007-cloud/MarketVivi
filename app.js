@@ -5999,16 +5999,19 @@ window.syncFromNative = function(dataJson) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b99] syncFromNative: ${data.pollHistory.length} polls received from Kotlin`);
+                console.log(`[b103] syncFromNative: ${data.pollHistory.length} polls received from Kotlin`);
             }
         }
+        // b103: Sync poll count even without full history
+        if (data.pollCount && data.pollCount > STATE.pollCount) {
+            STATE.pollCount = data.pollCount;
+        }
         if (data.brainResult) {
-            // Store native brain alerts for display
             STATE._nativeBrainAlerts = data.brainResult.alerts || [];
         }
         renderAll();
     } catch(e) {
-        console.warn('[b99] syncFromNative error:', e.message);
+        console.warn('[b103] syncFromNative error:', e.message);
     }
 };
 
@@ -9224,7 +9227,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b90' }
+            { metric: 'App Version', value: 'v2.1 b103' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
