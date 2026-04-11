@@ -5167,7 +5167,8 @@ async function lightFetch() {
         STATE.live.bias = biasResult;
 
         // ═══ DRIFT DETECTION — morning plan vs live reality ═══
-        if (STATE.morningBias) {
+        // Phase 4: In native mode, Kotlin brain handles bias + candidate regen
+        if (!STATE._nativeMode && STATE.morningBias) {
             STATE.biasDrift = biasResult.net - STATE.morningBias.net;
             // Auto-switch at ±2 drift — regenerate candidates with live bias
             if (Math.abs(STATE.biasDrift) >= 2 && !STATE.driftOverridden) {
@@ -5195,7 +5196,8 @@ async function lightFetch() {
 
         // b98: Effective Bias — if brain computed a different bias, regenerate candidates
         // This runs EVERY poll, not just on brain run. Ensures candidates stay in sync.
-        if (STATE.effectiveBias && STATE.effectiveBias.bias !== (STATE._lastCandidateBias || STATE.morningBias?.bias)) {
+        // Phase 4: In native mode, Kotlin brain handles this
+        if (!STATE._nativeMode && STATE.effectiveBias && STATE.effectiveBias.bias !== (STATE._lastCandidateBias || STATE.morningBias?.bias)) {
             const eb = STATE.effectiveBias;
             const effectiveBiasResult = {
                 bias: eb.bias, strength: eb.strength || '', net: eb.net,
@@ -5873,6 +5875,16 @@ function startWatchLoop() {
     }
 
     // Run first poll immediately (don't wait 5 min)
+    // Phase 4: In native mode, skip JS polling — Kotlin is the sole poller
+    if (STATE._nativeMode) {
+        console.log('[Phase 4] Native mode — JS polling DISABLED. Kotlin polls independently.');
+        const el = document.getElementById('watch-status');
+        if (el) el.textContent = '🟢 Native engine watching';
+        const stopBtn = document.getElementById('btn-stop');
+        if (stopBtn) stopBtn.style.display = 'inline-block';
+        return; // No JS timer, no lightFetch. Kotlin handles everything.
+    }
+
     setTimeout(async () => {
         if (API.isMarketHours()) {
             await lightFetch();
@@ -5995,23 +6007,81 @@ function syncToNative() {
 window.syncFromNative = function(dataJson) {
     try {
         const data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
+        
+        // Poll history
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b103] syncFromNative: ${data.pollHistory.length} polls received from Kotlin`);
+                console.log(`[b104] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
-        // b103: Sync poll count even without full history
         if (data.pollCount && data.pollCount > STATE.pollCount) {
             STATE.pollCount = data.pollCount;
         }
+        
+        // Phase 4: Full brain result from Kotlin
         if (data.brainResult) {
+            STATE.brainInsights = data.brainResult;
+            STATE.brainLastRun = Date.now();
+            STATE.brainError = null;
             STATE._nativeBrainAlerts = data.brainResult.alerts || [];
+            
+            // Effective bias from Kotlin brain
+            const eb = data.brainResult.effective_bias;
+            if (eb && eb.bias) {
+                STATE.effectiveBias = {
+                    bias: eb.bias, strength: eb.strength || '',
+                    net: eb.net, morning_weight: eb.morning_weight,
+                    drift_reasons: eb.drift_reasons || [],
+                    label: `${eb.strength ? eb.strength + ' ' : ''}${eb.bias}`
+                };
+            }
         }
+        
+        // Phase 4: Candidates from Kotlin
+        if (data.candidates && Array.isArray(data.candidates) && data.candidates.length > 0) {
+            STATE.candidates = data.candidates;
+            STATE.watchlist = data.candidates.slice(0, 6);
+            const seenIds = new Set(STATE.watchlist.map(c => c.id));
+            for (const idx of ['BNF', 'NF']) {
+                const seen = new Set();
+                for (const c of data.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
+                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                    if (seen.size >= 5) break;
+                }
+            }
+            STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
+        }
+        
+        // Phase 4: Live spots from Kotlin
+        if (data.spots) {
+            if (STATE.live) {
+                if (data.spots.bnfSpot) STATE.live.bnfSpot = data.spots.bnfSpot;
+                if (data.spots.nfSpot) STATE.live.nfSpot = data.spots.nfSpot;
+                if (data.spots.vix) STATE.live.vix = data.spots.vix;
+            }
+            // Update header display
+            const bnfEl = document.querySelector('.spot-bnf, [data-spot="bnf"]');
+            const nfEl = document.querySelector('.spot-nf, [data-spot="nf"]');
+            const vixEl = document.querySelector('.spot-vix, [data-spot="vix"]');
+        }
+        
+        // Phase 4: Updated trade P&L from Kotlin
+        if (data.openTrades && Array.isArray(data.openTrades)) {
+            for (const nt of data.openTrades) {
+                const existing = STATE.openTrades.find(t => String(t.id) === String(nt.id));
+                if (existing) {
+                    if (nt.current_pnl !== undefined) existing.current_pnl = nt.current_pnl;
+                    if (nt.current_spot !== undefined) existing.current_spot = nt.current_spot;
+                    if (nt.peak_pnl !== undefined) existing.peak_pnl = Math.max(existing.peak_pnl || 0, nt.peak_pnl);
+                }
+            }
+        }
+        
         renderAll();
     } catch(e) {
-        console.warn('[b103] syncFromNative error:', e.message);
+        console.warn('[b104] syncFromNative error:', e.message);
     }
 };
 
@@ -6023,6 +6093,52 @@ window.syncFromNative = function(dataJson) {
 async function initBrain() {
     // Race condition guard — prevent double loadPyodide which crashes WASM
     if (STATE.brainReady || STATE._brainLoading) return;
+
+    // ═══ Phase 4: NATIVE MODE — Kotlin brain is the single source of truth ═══
+    // Skip Pyodide entirely. No 11MB WASM download. No 5-second init.
+    // All brain data comes from NativeBridge. WebView = pure renderer.
+    if (window.NativeBridge && window.NativeBridge.isNative()) {
+        console.log('[Brain] Native engine detected. Pyodide SKIPPED. WebView = display only.');
+        STATE.brainReady = true;
+        STATE._nativeMode = true;
+        // Pull initial brain data from Kotlin
+        try {
+            if (window.NativeBridge.getBrainResult) {
+                const brJson = window.NativeBridge.getBrainResult();
+                if (brJson && brJson !== '{}' && brJson !== 'null') {
+                    const br = JSON.parse(brJson);
+                    STATE.brainInsights = br;
+                    if (br.effective_bias) {
+                        STATE.effectiveBias = {
+                            bias: br.effective_bias.bias, strength: br.effective_bias.strength || '',
+                            net: br.effective_bias.net, morning_weight: br.effective_bias.morning_weight,
+                            drift_reasons: br.effective_bias.drift_reasons || [],
+                            label: `${br.effective_bias.strength ? br.effective_bias.strength + ' ' : ''}${br.effective_bias.bias}`
+                        };
+                    }
+                }
+            }
+            if (window.NativeBridge.getCandidates) {
+                const candJson = window.NativeBridge.getCandidates();
+                if (candJson && candJson !== '[]' && candJson !== 'null') {
+                    const cands = JSON.parse(candJson);
+                    if (Array.isArray(cands) && cands.length > 0) {
+                        STATE.candidates = cands;
+                        STATE.watchlist = cands.slice(0, 6);
+                        STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
+                        console.log(`[Brain] Native: ${cands.length} candidates pulled from Kotlin`);
+                    }
+                }
+            }
+        } catch(e) {
+            console.warn('[Brain] Native pull failed:', e.message);
+        }
+        renderFooter();
+        renderAll();
+        return;
+    }
+
+    // ═══ BROWSER MODE — Load Pyodide as before ═══
     if (typeof loadPyodide !== 'function') {
         STATE.brainError = 'loadPyodide not available — CDN script may have failed';
         console.error('[Brain] loadPyodide not found');
@@ -6242,6 +6358,66 @@ function computeChainProfile(chain, spot, ohlc) {
 }
 
 async function runBrain() {
+    // ═══ Phase 4: NATIVE MODE — pull from Kotlin instead of running Pyodide ═══
+    if (STATE._nativeMode) {
+        try {
+            if (!window.NativeBridge?.getBrainResult) return;
+            const brJson = window.NativeBridge.getBrainResult();
+            if (!brJson || brJson === '{}' || brJson === 'null') return;
+            const result = JSON.parse(brJson);
+            
+            // Store brain insights
+            STATE.brainInsights = result;
+            STATE.brainLastRun = Date.now();
+            STATE.brainError = null;
+            
+            // Effective bias from Kotlin brain
+            const eb = result.effective_bias;
+            if (eb && eb.bias) {
+                const currentBias = STATE.effectiveBias?.bias;
+                STATE.effectiveBias = {
+                    bias: eb.bias, strength: eb.strength || '',
+                    net: eb.net, morning_weight: eb.morning_weight,
+                    drift_reasons: eb.drift_reasons || [],
+                    label: `${eb.strength ? eb.strength + ' ' : ''}${eb.bias}`
+                };
+                // If bias changed, candidates already regenerated by Kotlin
+                if (currentBias && eb.bias !== currentBias) {
+                    console.log(`[Brain Native] Effective bias ${currentBias} → ${eb.bias}`);
+                }
+            }
+            
+            // Candidates from Kotlin
+            if (window.NativeBridge.getCandidates) {
+                const candJson = window.NativeBridge.getCandidates();
+                if (candJson && candJson !== '[]') {
+                    const cands = JSON.parse(candJson);
+                    if (Array.isArray(cands) && cands.length > 0) {
+                        STATE.candidates = cands;
+                        STATE.watchlist = cands.slice(0, 6);
+                        // Add diverse picks per index
+                        const seenIds = new Set(STATE.watchlist.map(c => c.id));
+                        for (const idx of ['BNF', 'NF']) {
+                            const seen = new Set();
+                            for (const c of cands.filter(c => c.index === idx && !c.capitalBlocked)) {
+                                if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                                if (seen.size >= 5) break;
+                            }
+                        }
+                        STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
+                    }
+                }
+            }
+            
+            applyBrainScores();
+        } catch(e) {
+            console.warn('[Brain Native] Pull failed:', e.message);
+            STATE.brainError = e.message;
+        }
+        return;
+    }
+
+    // ═══ BROWSER MODE — run Pyodide as before ═══
     if (!STATE.brainReady || !STATE._pyodide) return;
     if (STATE.pollHistory.length < 3) return;
 
@@ -9227,7 +9403,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b103' }
+            { metric: 'App Version', value: 'v2.1 b104' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9434,41 +9610,76 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (document.visibilityState !== 'visible') return;
         if (!STATE.baseline || !STATE.isWatching) return;
 
-        // b100: Pull data from Kotlin first (instant, from memory)
-        if (window.NativeBridge && window.NativeBridge.isNative()) {
+        // Phase 4: NATIVE MODE — full pull from Kotlin, no lightFetch
+        if (STATE._nativeMode && window.NativeBridge) {
+            console.log('[Phase 4] App resumed — pulling all data from Kotlin');
             try {
+                // Pull polls
                 if (window.NativeBridge.getPollHistory) {
                     const nativePolls = JSON.parse(window.NativeBridge.getPollHistory());
                     if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
                         STATE.pollHistory = nativePolls;
                         STATE.pollCount = nativePolls.length;
-                        console.log(`[b100] Pulled ${nativePolls.length} polls from Kotlin`);
                     }
                 }
+                // Pull brain result (verdict, market, positions, effective bias)
                 if (window.NativeBridge.getBrainResult) {
-                    const brainJson = window.NativeBridge.getBrainResult();
-                    if (brainJson && brainJson !== '{}') {
-                        const br = JSON.parse(brainJson);
-                        STATE._nativeBrainAlerts = br.alerts || [];
+                    const brJson = window.NativeBridge.getBrainResult();
+                    if (brJson && brJson !== '{}' && brJson !== 'null') {
+                        const br = JSON.parse(brJson);
+                        STATE.brainInsights = br;
+                        STATE.brainLastRun = Date.now();
+                        if (br.effective_bias && br.effective_bias.bias) {
+                            STATE.effectiveBias = {
+                                bias: br.effective_bias.bias, strength: br.effective_bias.strength || '',
+                                net: br.effective_bias.net, morning_weight: br.effective_bias.morning_weight,
+                                drift_reasons: br.effective_bias.drift_reasons || [],
+                                label: `${br.effective_bias.strength ? br.effective_bias.strength + ' ' : ''}${br.effective_bias.bias}`
+                            };
+                        }
                     }
                 }
+                // Pull candidates
+                if (window.NativeBridge.getCandidates) {
+                    const candJson = window.NativeBridge.getCandidates();
+                    if (candJson && candJson !== '[]' && candJson !== 'null') {
+                        const cands = JSON.parse(candJson);
+                        if (Array.isArray(cands) && cands.length > 0) {
+                            STATE.candidates = cands;
+                            STATE.watchlist = cands.slice(0, 6);
+                            const seenIds = new Set(STATE.watchlist.map(c => c.id));
+                            for (const idx of ['BNF', 'NF']) {
+                                const seen = new Set();
+                                for (const c of cands.filter(c => c.index === idx && !c.capitalBlocked)) {
+                                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                                    if (seen.size >= 5) break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Re-sync context back to Kotlin
+                syncToNative();
             } catch(e) {
-                console.warn('[b100] Kotlin pull failed:', e.message);
+                console.warn('[Phase 4] Kotlin pull failed:', e.message);
             }
-            // Re-sync latest state back to Kotlin
-            syncToNative();
+            const el = document.getElementById('watch-status');
+            if (el) el.textContent = `🟢 Native engine · Poll #${STATE.pollCount}`;
+            renderAll();
+            return; // No lightFetch in native mode
         }
 
+        // BROWSER MODE — existing recovery logic
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b100] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b104] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b100] Recovery poll failed:', e.message);
+                console.warn('[b104] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
