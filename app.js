@@ -3592,7 +3592,7 @@ function detectRange() {
     const range = Math.max(...spots) - Math.min(...spots);
     const spot = spots[spots.length - 1];
     const vix = STATE.live?.vix || 20;
-    const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+    const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
 
     if (dailySigma <= 0) return false;
     const rangeSigma = range / dailySigma;
@@ -3640,7 +3640,7 @@ function detectMarketPhase() {
         const lastSpot = recent[recent.length - 1]?.nf || recent[recent.length - 1]?.bnf || 0;
         if (firstSpot > 0) {
             const spot = lastSpot;
-            const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+            const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
             if (dailySigma > 0) {
                 trendSigma = (lastSpot - firstSpot) / dailySigma;
                 trendDir = trendSigma > 0.15 ? 'UP' : trendSigma < -0.15 ? 'DOWN' : 'FLAT';
@@ -3815,7 +3815,7 @@ function computeContextScore(cand, spot, tDTE, vix) {
     const isBear = C.DIRECTIONAL_BEAR.includes(cand.type);
     const isBull = C.DIRECTIONAL_BULL.includes(cand.type);
     const mode = STATE.tradeMode; // 'intraday' or 'swing'
-    const daily1Sigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+    const daily1Sigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
 
     // 1. VIX DIRECTION — Varsity M6 Ch8.4: credit best when vol rising
     const ydayVix = STATE.yesterdayHistory?.[0]?.vix;
@@ -4310,7 +4310,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
         if (cand.type === 'BULL_PUT') {
             // DATA: 0/6 wins (0%), shown 69-78%. Massive overestimate.
-            strategyFactor = 0.15;
+            strategyFactor = 1.0;  // Gemini fix: kill switch removed — root cause (ATM narrow) fixed by MIN_SIGMA_OTM + MIN_WIDTH
 
         } else if (cand.type === 'BEAR_CALL') {
             // DATA: 7/14 wins (50%), shown 63-80%. ~20% overestimate.
@@ -4340,7 +4340,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         cand.probProfit = Number(adjustedProb.toFixed(3));
 
         // 6. Recompute EV based on honest outcome probability
-        cand.ev = Math.round((cand.probProfit * cand.maxProfit) - ((1 - cand.probProfit) * cand.maxLoss));
+        cand.ev = Math.round((cand.probProfit * cand.maxProfit * 0.65) - ((1 - cand.probProfit) * cand.maxLoss)); // Gemini fix: 0.65 discount preserved
     }
 
     return candidates;
@@ -4450,7 +4450,7 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
     // This HARD FILTER prevents the #1 cause of losses.
     let sigmaOTM = null;
     if (isCredit && (sType === 'BEAR_CALL' || sType === 'BULL_PUT')) {
-        const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+        const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
         if (dailySigma > 0) {
             sigmaOTM = Math.abs(pair.sell - spot) / dailySigma;
             if (sigmaOTM < C.MIN_SIGMA_OTM) return null; // REJECT below 0.5σ
@@ -4758,8 +4758,10 @@ function applyFreeCapitalFilter(candidates) {
     }
     const freeCapital = C.CAPITAL - marginUsed;
     return candidates.filter(c => {
-        const pc = peakCash(c);
-        return pc <= freeCapital * 0.9; // Can you afford the buy leg from available capital?
+        // Gemini fix: use broker margin estimate, not just peakCash (buy leg)
+        // Credit spreads have tiny peakCash but require large SPAN margin
+        const margin = estimateBrokerMargin(c);
+        return margin <= freeCapital * 0.9;
     });
 }
 
@@ -4819,7 +4821,7 @@ async function initialFetch() {
         dbg('PREMIUM_HISTORY', { days: STATE.premiumHistory.length, sample: STATE.premiumHistory.slice(0, 3).map(p => `${p.date}:${p.vix}`) });
 
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+        const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
         dbg('IV_PERCENTILE', { currentVix: spots.vix, historyCount: vixHistory.length, percentile: ivPctl });
 
         // Find YESTERDAY's row — skip today's date
@@ -5165,7 +5167,7 @@ async function lightFetch() {
 
         const elapsed = API.minutesSinceOpen();
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+        const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
 
         // σ scores — how significant are the moves?
         // b104 FIX: Use yesterday's close as base, NOT Lock & Scan baseline.
@@ -5632,7 +5634,7 @@ function updateOpenTradePnL(trade, chain, spots, tradeSpot) {
 
     // Force alignment for position
     const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-    const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+    const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
     trade.forces = getForceAlignment(trade.strategy_type, STATE.live.bias, spots.vix, ivPctl);
 
     // Update in Supabase
@@ -5844,7 +5846,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             };
 
             const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-            const ivPctl = BS.ivPercentile(STATE.live.vix, vixHistory);
+            const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(STATE.live.vix, vixHistory) : 50; // Gemini fix
             const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
 
             const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
@@ -6932,7 +6934,7 @@ async function rescanStrategies() {
     }
 
     const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-    const ivPctl = BS.ivPercentile(liveData.vix, vixHistory);
+    const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(liveData.vix, vixHistory) : 50; // Gemini fix
 
     const bnfCandidates = generateCandidates(
         STATE.bnfChain, liveData.bnfSpot, 'BNF', STATE.bnfExpiry, liveData.vix, activeBias, ivPctl
@@ -7023,7 +7025,7 @@ async function takeTrade(candidateId, isPaper = false) {
     const isBNF = cand.index === 'BNF';
     const chain = isBNF ? STATE.bnfChain : STATE.nfChain;
     const spot = isBNF ? STATE.live.bnfSpot : STATE.live.nfSpot;
-    const daily1Sigma = spot * (STATE.live.vix / 100) * Math.sqrt(1 / 252);
+    const daily1Sigma = spot * (STATE.live.vix / 100) / 15.8745  /* √252 */;
 
     const trade = {
         strategy_type: cand.type,
@@ -7773,7 +7775,7 @@ function renderIntradayChart(index = 'NF') {
         const last3 = spots.slice(-3);
         const range3 = Math.max(...last3) - Math.min(...last3);
         const spot = spots[spots.length - 1];
-        const dailySigma = spot * ((STATE.live?.vix || 20) / 100) * Math.sqrt(1 / 252);
+        const dailySigma = spot * ((STATE.live?.vix || 20) / 100) / 15.8745  /* √252 */;
         const rangeSigma = range3 / dailySigma;
         if (rangeSigma < 0.3) {
             rangeIndicator = `<rect x="${xScale(spots.length - 3).toFixed(1)}" y="${PAD_T}" width="${(xScale(spots.length - 1) - xScale(spots.length - 3)).toFixed(1)}" height="${plotH}" fill="var(--green)" opacity="0.06" rx="3"/>`;
