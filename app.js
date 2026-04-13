@@ -4805,8 +4805,10 @@ async function initialFetch() {
 
         // Gap classification (uses yesterday's actual close, not today's seeded data)
         const ydayClose = ydayBnfOHLC?.close || ydayRow?.bnf_spot || null;
+        STATE.prevCloseBnf = ydayClose; // b104: stored for sigma calculation in lightFetch
         STATE.gapInfo = API.classifyGap(spots.bnfSpot, ydayClose, spots.vix);
         const ydayNfClose = ydayNfOHLC?.close || ydayRow?.nf_spot || null;
+        STATE.prevCloseNf = ydayNfClose; // b104: stored for sigma calculation
         STATE.nfGapInfo = ydayNfClose ? API.classifyGap(spots.nfSpot, ydayNfClose, spots.vix) : null;
         dbg('GAP', { bnf: STATE.gapInfo, nf: STATE.nfGapInfo });
 
@@ -5099,6 +5101,9 @@ async function initialFetch() {
 }
 
 async function lightFetch() {
+    // Concurrency guard — prevent double API calls if two triggers fire simultaneously
+    if (STATE._lightFetchRunning) { console.log('[lightFetch] Skipped — already running'); return; }
+    STATE._lightFetchRunning = true;
     try {
         const spots = await API.fetchSpots();
         if (!spots.bnfSpot || !spots.vix) return;
@@ -5121,8 +5126,12 @@ async function lightFetch() {
         const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
 
         // σ scores — how significant are the moves?
-        const spotSigma = BS.sigmaScore(spots.bnfSpot, STATE.baseline.bnfSpot, STATE.baseline.vix, elapsed);
-        const vixSigma = BS.vixSigmaScore(spots.vix, STATE.baseline.vix, elapsed);
+        // b104 FIX: Use yesterday's close as base, NOT Lock & Scan baseline.
+        // Even if user scans at 10:30 AM, sigma reflects FULL day's move from previous close.
+        const prevCloseBnf = STATE.prevCloseBnf || STATE.premiumHistory?.[0]?.bnf_spot || STATE.baseline.bnfSpot;
+        const prevCloseVix = STATE.premiumHistory?.[0]?.vix || STATE.baseline.vix;
+        const spotSigma = BS.sigmaScore(spots.bnfSpot, prevCloseBnf, prevCloseVix, elapsed);
+        const vixSigma = BS.vixSigmaScore(spots.vix, prevCloseVix, elapsed);
 
         // Update chain references for positioning/snapshot functions
         STATE.bnfChain = bnfChain;
@@ -5452,6 +5461,8 @@ async function lightFetch() {
     } catch (err) {
         console.warn('lightFetch error:', err.message);
         document.getElementById('status').textContent = `Poll error: ${err.message}`;
+    } finally {
+        STATE._lightFetchRunning = false;
     }
 }
 
@@ -6803,6 +6814,10 @@ async function rescanStrategies() {
         alert('No live data yet. Run Lock & Scan first.');
         return;
     }
+    // Prevent overlap with lightFetch
+    if (STATE._lightFetchRunning) { console.log('[Rescan] Skipped — lightFetch running'); return; }
+    STATE._lightFetchRunning = true;
+    try {
 
     // ═══ FRESH FETCH — actual live data from Upstox ═══
     const statusEl = document.getElementById('status');
@@ -6914,6 +6929,9 @@ async function rescanStrategies() {
     addNotificationLog('🔄 Rescan Complete', `${allCandidates.length} candidates. BNF ${liveData.bnfSpot?.toFixed(0)} NF ${liveData.nfSpot?.toFixed(0)} VIX ${liveData.vix?.toFixed(1)} ${biasSource}`, 'important');
     console.log(`[RESCAN] ${allCandidates.length} candidates, ${STATE.candidates.length} ranked, spot BNF=${liveData.bnfSpot} NF=${liveData.nfSpot} ${biasSource}`);
     renderAll();
+    } finally {
+        STATE._lightFetchRunning = false;
+    }
 }
 
 
