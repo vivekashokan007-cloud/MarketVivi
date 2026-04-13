@@ -198,7 +198,7 @@ def theta_friction_minutes(est_cost, net_theta):
     Returns minutes. >60 = trade is mathematically dead."""
     if not net_theta or net_theta <= 0 or not est_cost or est_cost <= 0:
         return 999
-    theta_per_min = net_theta / 375  # 375 trading minutes per day
+    theta_per_min = (net_theta * 0.65) / 375  # Gemini fix: only ~65% of daily theta decays during market hours
     return est_cost / theta_per_min if theta_per_min > 0 else 999
 
 def detect_regime(polls, baseline):
@@ -2078,21 +2078,63 @@ def position_verdict(trade, insights, regime, ctx):
         danger += 15
         reasons.append(f"VIX rising +{vix_chg:.1f}")
 
-    # Peak erosion
-    if peak_erosion > 50 and peak_pnl > 0:
-        danger += 20
-        reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-    elif peak_erosion > 30 and peak_pnl > 0:
-        danger += 10
-        reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
+    # Peak erosion — SCALED (b104 fix: 864% got same score as 51%)
+    # Debit trades: premium decay from theta is EXPECTED, halve the impact
+    erosion_mult = 0.5 if not is_credit else 1.0
+    if peak_pnl >= 500 and peak_erosion > 0:  # Gemini fix: ignore tiny peaks (<₹500)
+        if peak_erosion > 500:
+            danger += int(40 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 200:
+            danger += int(30 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 50:
+            danger += int(20 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 30:
+            danger += int(10 * erosion_mult)
+            reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
 
-    # CI
-    if ci is not None and ci < -40:
-        danger += 25
-        if not is_ib:  # IB CI -50 is normal (b89 tolerance fix mitigates but brain should know)
-            reasons.append(f"Opponent in control (CI {ci})")
-    elif ci is not None and ci < -20:
-        danger += 10
+    # Profit-to-loss flip — was making money, now losing (b104 fix: NOT CHECKED before)
+    if peak_pnl > 0 and pnl < 0:
+        danger += 15
+        reasons.append(f"Flipped from +₹{peak_pnl:.0f} to -₹{abs(pnl):.0f}")
+
+    # CI — RELAXED thresholds (b104 fix: CI -5 got ZERO before)
+    # Gemini fix: IB not totally exempt — check for extreme degradation beyond baseline
+    # IB baseline CI is ~-50 (ATM sell). Only danger if it drops much further.
+    if ci is not None:
+        if is_ib:
+            # IB: normal CI is -40 to -60. Only panic below -75
+            if ci < -75:
+                danger += 20
+                reasons.append(f"IB CI collapsed to {ci} (beyond normal ATM range)")
+        else:
+            if ci < -40:
+                danger += 25
+                reasons.append(f"Opponent in control (CI {ci})")
+            elif ci < -20:
+                danger += 15
+                reasons.append(f"Opponent gaining (CI {ci})")
+            elif ci < 0:
+                danger += 5
+
+    # Spot cushion from sell strike — direct check (b104 fix: only via insights before)
+    # IB exempt: sells ATM by design, cushion is always ~0
+    sell_strike = trade.get('sell_strike', 0)
+    spot = trade.get('current_spot', 0)
+    if sell_strike and spot and is_credit and not is_ib:
+        cushion = abs(sell_strike - spot)
+        vix = ctx.get('vix', 20)
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300  # √252=15.87, consistent with _daily_sigma
+        if daily_sigma > 0:
+            cushion_sigma = cushion / daily_sigma
+            if cushion_sigma < 0.25:
+                danger += 25
+                reasons.append(f"Only {cushion:.0f}pts ({cushion_sigma:.2f}σ) from sell strike")
+            elif cushion_sigma < 0.5:
+                danger += 15
+                reasons.append(f"Thin cushion ({cushion_sigma:.2f}σ from sell)")
 
     # Momentum threat
     if momentum_threat:
@@ -4453,7 +4495,7 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
     if (isCredit && (netPremium / width) < C.MIN_CREDIT_RATIO) return null;
 
     // EV
-    const ev = (probProfit * maxProfit) - ((1 - probProfit) * maxLoss);
+    const ev = (probProfit * maxProfit * 0.65) - ((1 - probProfit) * maxLoss); // Gemini fix: discount — max profit rarely achieved
 
     // Theta estimate — read from chain, BS fallback
     const sellTheta = chainTheta(strikes, pair.sell, pair.sellType, spot, T, vol) * lotSize;
