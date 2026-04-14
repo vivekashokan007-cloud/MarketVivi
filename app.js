@@ -4563,9 +4563,9 @@ function peakCash(c) {
 // 4-leg IC/IB: SPAN on 2 short legs, ~90% after spread benefit from long legs
 function estimateBrokerMargin(c) {
     if (c.legs === 4) {
-        const perLot = c.index === 'BNF' ? C.BNF_SHORT_MARGIN : C.NF_SHORT_MARGIN;
-        // 2 short legs × per-lot SPAN, 90% after long leg offset
-        return Math.round(perLot * 2 * 0.9);
+        // IC/IB = defined risk spread. Broker charges ~maxLoss, not naked short.
+        // Buffer 1.3x for slippage + exchange margin rounding
+        return Math.round((c.maxLoss || 0) * 1.3);
     }
     // 2-leg defined-risk spread: margin ≈ maxLoss
     return c.maxLoss;
@@ -4575,8 +4575,7 @@ function estimateBrokerMargin(c) {
 function estimateTradeMargin(t) {
     const is4Leg = t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY';
     if (is4Leg) {
-        const perLot = t.index_key === 'BNF' ? C.BNF_SHORT_MARGIN : C.NF_SHORT_MARGIN;
-        return Math.round(perLot * 2 * 0.9);
+        return Math.round((t.max_loss || 0) * 1.3);
     }
     return t.max_loss || 0;
 }
@@ -6068,7 +6067,7 @@ window.syncFromNative = function(dataJson) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b104] syncFromNative: ${data.pollHistory.length} polls received`);
+                console.log(`[b105] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
         if (data.pollCount && data.pollCount > STATE.pollCount) {
@@ -6136,7 +6135,7 @@ window.syncFromNative = function(dataJson) {
         
         renderAll();
     } catch(e) {
-        console.warn('[b104] syncFromNative error:', e.message);
+        console.warn('[b105] syncFromNative error:', e.message);
     }
 };
 
@@ -6998,6 +6997,18 @@ async function takeTrade(candidateId, isPaper = false) {
         || STATE.positioningCandidates.find(c => c.id === candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
 
+    // b105: Pull fresh poll history from Kotlin before snapshotting.
+    // Covers the case where user returns from background and takes a trade
+    // before the next poll fires — STATE.pollHistory could otherwise be stale.
+    if (window.NativeBridge?.getPollHistory) {
+        try {
+            const fresh = JSON.parse(window.NativeBridge.getPollHistory());
+            if (Array.isArray(fresh) && fresh.length > STATE.pollHistory.length) {
+                STATE.pollHistory = fresh;
+            }
+        } catch(e) {}
+    }
+
     // Stale scan warning — candidates may be outdated
     if (STATE.lastScanTime) {
         const scanAgeMin = Math.floor((Date.now() - STATE.lastScanTime) / 60000);
@@ -7072,6 +7083,12 @@ async function takeTrade(candidateId, isPaper = false) {
         entry_gap_sigma: STATE.gapInfo?.sigma ?? null,
         entry_gap_type: STATE.gapInfo?.type || null,
         prob_profit: cand.probProfit,
+        // b105: ML fields on trades_v2 (lightweight — 5 columns for quick querying)
+        p_ml:      cand.p_ml ?? null,
+        ml_action: cand.mlAction ?? null,
+        ml_regime: cand.mlRegime ?? null,
+        ml_edge:   cand.mlEdge ?? null,
+        ml_ood:    cand.mlOod ?? false,
         status: 'OPEN',
         current_pnl: 0,
         peak_pnl: 0,
@@ -7157,6 +7174,82 @@ async function takeTrade(candidateId, isPaper = false) {
         syncToNative(); // b99: sync new trade to Kotlin
         switchTab('positions');
         renderAll();
+
+        // b105: Write full ML decision record for calibration tracking
+        if (cand.p_ml != null) {
+            const pollSeq = STATE.pollHistory.slice(-6).map(p => ({
+                vix:           p.vix ?? null,
+                pcr:           p.pcr ?? p.nearAtmPcr ?? null,
+                bias_net:      p.biasNet ?? p.bias_net ?? null,
+                breadth:       p.breadth ?? null,
+                spot_move_pct: p.spotMovePct ?? null,
+                futures_prem:  p.futuresPremBnf ?? p.futuresPrem ?? null,
+            }));
+            const last = STATE.pollHistory[STATE.pollHistory.length - 1] || {};
+            const mlDoc = {
+                trade_id:   saved.id,
+                date:       API.todayIST(),
+                entry_time: new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', hour12: false}),
+                strategy:   cand.type,
+                index_name: cand.index,
+                mode:       trade.trade_mode,
+                paper:      isPaper,
+                vix:        STATE.live?.vix ?? null,
+                sigma_away: cand.sigmaOTM ?? null,
+                gap_sigma:  STATE.gapInfo?.sigma ?? null,
+                entry_credit: cand.netPremium ?? null,
+                width:      cand.width ?? null,
+                dte:        cand.tDTE ?? null,
+                max_profit: cand.maxProfit ?? null,
+                max_loss:   cand.maxLoss ?? null,
+                vix_regime: (STATE.live?.vix >= 20 ? 'HIGH (20-25)' : STATE.live?.vix < 15 ? 'LOW (<15)' : 'NORMAL (15-20)'),
+                day_direction: last.dayDirection ?? null,
+                day_range:  last.dayRange ?? null,
+                market_snapshot: {
+                    vix:          STATE.live?.vix,
+                    pcr:          STATE.live?.pcr,
+                    near_atm_pcr: STATE.live?.nearAtmPCR,
+                    breadth:      STATE.live?.breadth,
+                    futures_prem: STATE.live?.futuresPremBnf,
+                    spot:         isBNF ? STATE.live?.bnfSpot : STATE.live?.nfSpot,
+                    iv_percentile:STATE.live?.ivPercentile,
+                    bias_net:     STATE.live?.bias?.net,
+                    gap_sigma:    STATE.gapInfo?.sigma,
+                    weekday:      new Date().getDay(),
+                },
+                candidate_snap: {
+                    sigma_away:    cand.sigmaOTM,
+                    width:         cand.width,
+                    entry_credit:  cand.netPremium,
+                    ev:            cand.ev,
+                    force_alignment: cand.forces?.aligned,
+                    varsity_tier:  cand.varsityTier,
+                    wall_score:    cand.wallScore,
+                    gamma_risk:    cand.gammaRisk,
+                    context_score: cand.contextScore,
+                    prob_profit:   cand.probProfit,
+                    rr:            cand.riskReward,
+                    net_theta:     cand.netTheta,
+                    est_cost:      cand.estCost,
+                    est_cost_pct:  cand.estCostPct,
+                    net_delta:     cand.netDelta,
+                    upstox_pop:    cand.upstoxPop,
+                },
+                poll_sequence: pollSeq,
+                seq_length:    pollSeq.length,
+                p_final:       cand.p_ml,
+                ml_action:     cand.mlAction,
+                ml_regime:     cand.mlRegime,
+                ml_edge:       cand.mlEdge,
+                ood:           cand.mlOod ?? false,
+                ood_conf:      cand.mlOodConf ?? 1.0,
+                ood_warn:      (cand.mlOodWarn || []).join('; ') || null,
+                ood_blocked:   cand.mlOodBlocked ?? false,
+                model_version: '2.1.1',
+            };
+            DB.supabase.from('ml_decisions').insert(mlDoc)
+              .then(({error}) => { if (error) console.warn('[ML] ml_decisions insert failed:', error.message); });
+        }
     } else {
         // Retry with essential fields only (some columns may not exist in Supabase)
         console.warn('[TAKE_TRADE] Full insert failed. Retrying with essential fields...');
@@ -7455,6 +7548,25 @@ async function closeTrade(tradeId, exitReason) {
         });
 
         addNotificationLog(`${prefix} Trade Closed`, `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike} ${trade.trade_mode ? `[${trade.trade_mode}]` : ''} P&L: ₹${trade.current_pnl}.${holdDuration ? ` Held: ${holdDuration}.` : ''} Reason: ${exitReason || 'Manual'}`, trade.current_pnl >= 0 ? 'entry' : 'urgent');
+
+        // b105: Fill ML outcome for calibration tracking
+        if (trade.id) {
+            DB.supabase.from('ml_decisions').update({
+                won:          (trade.current_pnl ?? 0) > 0,
+                actual_pnl:   trade.current_pnl ?? 0,
+                peak_pnl:     trade.peak_pnl ?? null,
+                trough_pnl:   trade.trough_pnl ?? null,
+                hold_minutes: trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
+                exit_reason:  exitReason || 'Manual',
+                exit_vix:     STATE.live?.vix ?? null,
+                exit_pcr:     STATE.live?.pcr ?? null,
+                ci_min:       trade._journey?.min_ci ?? null,
+                ci_max:       trade._journey?.max_ci ?? null,
+                closed_at:    new Date().toISOString(),
+            }).eq('trade_id', trade.id)
+              .then(({error}) => { if (error) console.warn('[ML] ml_decisions outcome fill failed:', error.message); });
+        }
+
         STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
         syncToNative(); // b99: sync trade removal to Kotlin
         renderAll();
@@ -8570,15 +8682,22 @@ function renderCandidateCard(cand, atm, rank) {
     const otmLabel = otmDist < 50 ? 'ATM' : 'OTM';
     const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
 
-    // Legs — v1 style: "SELL 54600 CE (OTM) @₹667 | BUY 54800 CE (OTM) @₹578"
+    // Legs — execution order: BUY protection first, then SELL credit (Indian margin rule)
     let legsText = '';
     if (is4Leg) {
-        legsText = `SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} | BUY ${cand.buyStrike} ${cand.buyType} @₹${cand.buyLTP?.toFixed(1)}<br>` +
-            `SELL ${cand.sellStrike2} ${cand.sellType2} @₹${cand.sellLTP2?.toFixed(1)} | BUY ${cand.buyStrike2} ${cand.buyType2} @₹${cand.buyLTP2?.toFixed(1)}`;
+        // IC/IB: numbered execution order — BUY before SELL on each side
+        legsText = `<span style="opacity:0.5">①</span> BUY ${cand.buyStrike} ${cand.buyType} @₹${cand.buyLTP?.toFixed(1)} <span style="opacity:0.5">(protection)</span><br>` +
+            `<span style="opacity:0.5">②</span> SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} <span style="opacity:0.5">(credit)</span><br>` +
+            `<span style="opacity:0.5">③</span> BUY ${cand.buyStrike2} ${cand.buyType2} @₹${cand.buyLTP2?.toFixed(1)} <span style="opacity:0.5">(protection)</span><br>` +
+            `<span style="opacity:0.5">④</span> SELL ${cand.sellStrike2} ${cand.sellType2} @₹${cand.sellLTP2?.toFixed(1)} <span style="opacity:0.5">(credit)</span>`;
     } else if (cand.isCredit) {
-        legsText = `SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} | BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)}`;
+        // Credit 2-leg: BUY protection first, then SELL credit
+        legsText = `<span style="opacity:0.5">①</span> BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)} <span style="opacity:0.5">(protection)</span><br>` +
+            `<span style="opacity:0.5">②</span> SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} <span style="opacity:0.5">(credit)</span>`;
     } else {
-        legsText = `BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)} | SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)}`;
+        // Debit 2-leg: BUY main leg first, SELL hedge
+        legsText = `<span style="opacity:0.5">①</span> BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)}<br>` +
+            `<span style="opacity:0.5">②</span> SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)}`;
     }
 
     // VIX trend badge for IC/IB candidates
@@ -8633,7 +8752,25 @@ function renderCandidateCard(cand, atm, rank) {
         <div class="v1-align ${alignClass}">${alignLabel}</div>
         ${forces.aligned >= 2 ? `
         <div class="v1-trade-btns">
-            <button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 5% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>
+            ${(() => {
+                // b105: ML badge
+                const mlBadge = cand.p_ml != null
+                    ? `<div style="font-size:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
+                           <span style="background:${cand.mlAction==='TAKE'?'#388E3C':cand.mlAction==='WATCH'?'#F57C00':cand.mlAction==='BLOCKED'?'#7B2FC4':'#D32F2F'};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">
+                               ML ${Math.round((cand.p_ml||0)*100)}% ${cand.mlAction||''}${cand.mlOod?' ⚠️':''}
+                           </span>
+                           ${cand.mlRegime ? `<span style="font-size:9px;color:var(--text-muted)">${cand.mlRegime}</span>` : ''}
+                           ${cand.mlEdge != null ? `<span style="font-size:9px;color:${cand.mlEdge>=0?'var(--green)':'var(--danger)'}">${cand.mlEdge>=0?'+':''}${(cand.mlEdge*100).toFixed(0)}% edge</span>` : ''}
+                       </div>
+                       ${cand.mlOodWarn?.length ? `<div style="font-size:9px;color:var(--danger);margin-bottom:4px">⚠️ ${cand.mlOodWarn[0]}</div>` : ''}`
+                    : '';
+                // BLOCKED = model has zero training data — disable Take button
+                const isBlocked = cand.mlOodBlocked === true;
+                const realBtn = isBlocked
+                    ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
+                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 5% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>`;
+                return mlBadge + realBtn;
+            })()}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
         </div>` : ''}
     </div>`;
@@ -9465,7 +9602,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b104' }
+            { metric: 'App Version', value: 'v2.1 b105' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9734,14 +9871,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         // BROWSER MODE — existing recovery logic
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b104] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b105] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b104] Recovery poll failed:', e.message);
+                console.warn('[b105] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
