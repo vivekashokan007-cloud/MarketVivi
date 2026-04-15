@@ -4294,7 +4294,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         // Flag candidates where cost eats too much of max profit
         if (cost.costExceedsThreshold) {
             cand.costWarning = true;
-            cand.costBlocked = true; // Always block REAL trades where cost > 5% of max profit
+            // Warning only — never block the button. Trader sees ⚠️ and decides.
         }
 
         // ====== P(PROFIT) REALISM ADJUSTMENT — DATA-DRIVEN (43 trades) ======
@@ -6070,7 +6070,7 @@ window.syncFromNative = function(dataJson) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b107] syncFromNative: ${data.pollHistory.length} polls received`);
+                console.log(`[b108] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
         if (data.pollCount && data.pollCount > STATE.pollCount) {
@@ -6138,7 +6138,7 @@ window.syncFromNative = function(dataJson) {
         
         renderAll();
     } catch(e) {
-        console.warn('[b107] syncFromNative error:', e.message);
+        console.warn('[b108] syncFromNative error:', e.message);
     }
 };
 
@@ -7491,7 +7491,14 @@ async function closeTrade(tradeId, exitReason) {
         const chain = isBNF ? STATE.bnfChain : STATE.nfChain;
         const minsOpen = typeof API?.minutesSinceOpen === 'function' ? API.minutesSinceOpen() : null;
 
-        await DB.updateTrade(trade.id, {
+        // b108: Remove from STATE and re-render IMMEDIATELY — don't wait for Supabase
+        // Trade disappears from Position tab right away regardless of network
+        STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
+        syncToNative(); // push removal to Kotlin now
+        renderAll();    // re-render immediately — card gone from UI
+
+        // Now update Supabase in background (non-blocking)
+        DB.updateTrade(trade.id, {
             status: 'CLOSED',
             exit_date: new Date().toISOString(),
             actual_pnl: trade.current_pnl ?? 0,
@@ -7569,13 +7576,13 @@ async function closeTrade(tradeId, exitReason) {
             }).eq('trade_id', trade.id)
               .then(({error}) => { if (error) console.warn('[ML] ml_decisions outcome fill failed:', error.message); });
         }
-
-        STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
-        syncToNative(); // b99: sync trade removal to Kotlin
-        renderAll();
     } catch (err) {
         console.error('closeTrade error:', err);
-        alert(`Exit failed: ${err.message}. Try closing via Supabase SQL.`);
+        // Even if something fails, ensure trade is removed from UI
+        STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
+        syncToNative();
+        renderAll();
+        alert(`Exit logged locally. Supabase sync may have failed: ${err.message}`);
     }
 }
 
@@ -8842,7 +8849,7 @@ function renderCandidateCard(cand, atm, rank) {
                 const isBlocked = cand.mlOodBlocked === true;
                 const realBtn = isBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
-                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 8% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>`;
+                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)">📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })()}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
@@ -9676,7 +9683,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b107' }
+            { metric: 'App Version', value: 'v2.1 b108' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9948,14 +9955,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         // BROWSER MODE — existing recovery logic
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b107] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b108] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b107] Recovery poll failed:', e.message);
+                console.warn('[b108] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
