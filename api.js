@@ -537,6 +537,7 @@ const API = (() => {
         tradingDTE, calendarDTE, nearestExpiry,
         isMarketHours, minutesSinceOpen, istNow, todayIST, dateToIST,
         getToken,
+        TOKEN: ANALYTICS_TOKEN,
         NF_KEY, BNF_KEY, NSE_HOLIDAYS
     };
 })();

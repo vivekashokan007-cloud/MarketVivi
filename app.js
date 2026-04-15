@@ -81,7 +81,7 @@ const C = {
     EXCHANGE_PER_LEG: 15,    // ~₹15 exchange charges per leg
     GST_RATE: 0.18,          // 18% GST on brokerage + exchange
     SLIPPAGE_PER_UNIT: 1.5,  // ₹1.5 per unit per leg (conservative bid-ask spread estimate)
-    MIN_PROFIT_COST_PCT: 5,  // block trades where cost > 5% of max profit
+    MIN_PROFIT_COST_PCT: 8,  // block trades where cost > 8% of max profit (raised from 5% — 5% was blocking valid trades)
 
     // Strategy categories
     CREDIT_TYPES: ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
@@ -198,7 +198,7 @@ def theta_friction_minutes(est_cost, net_theta):
     Returns minutes. >60 = trade is mathematically dead."""
     if not net_theta or net_theta <= 0 or not est_cost or est_cost <= 0:
         return 999
-    theta_per_min = net_theta / 375  # 375 trading minutes per day
+    theta_per_min = (net_theta * 0.65) / 375  # Gemini fix: only ~65% of daily theta decays during market hours
     return est_cost / theta_per_min if theta_per_min > 0 else 999
 
 def detect_regime(polls, baseline):
@@ -2078,21 +2078,63 @@ def position_verdict(trade, insights, regime, ctx):
         danger += 15
         reasons.append(f"VIX rising +{vix_chg:.1f}")
 
-    # Peak erosion
-    if peak_erosion > 50 and peak_pnl > 0:
-        danger += 20
-        reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-    elif peak_erosion > 30 and peak_pnl > 0:
-        danger += 10
-        reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
+    # Peak erosion — SCALED (b104 fix: 864% got same score as 51%)
+    # Debit trades: premium decay from theta is EXPECTED, halve the impact
+    erosion_mult = 0.5 if not is_credit else 1.0
+    if peak_pnl >= 500 and peak_erosion > 0:  # Gemini fix: ignore tiny peaks (<₹500)
+        if peak_erosion > 500:
+            danger += int(40 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 200:
+            danger += int(30 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 50:
+            danger += int(20 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 30:
+            danger += int(10 * erosion_mult)
+            reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
 
-    # CI
-    if ci is not None and ci < -40:
-        danger += 25
-        if not is_ib:  # IB CI -50 is normal (b89 tolerance fix mitigates but brain should know)
-            reasons.append(f"Opponent in control (CI {ci})")
-    elif ci is not None and ci < -20:
-        danger += 10
+    # Profit-to-loss flip — was making money, now losing (b104 fix: NOT CHECKED before)
+    if peak_pnl > 0 and pnl < 0:
+        danger += 15
+        reasons.append(f"Flipped from +₹{peak_pnl:.0f} to -₹{abs(pnl):.0f}")
+
+    # CI — RELAXED thresholds (b104 fix: CI -5 got ZERO before)
+    # Gemini fix: IB not totally exempt — check for extreme degradation beyond baseline
+    # IB baseline CI is ~-50 (ATM sell). Only danger if it drops much further.
+    if ci is not None:
+        if is_ib:
+            # IB: normal CI is -40 to -60. Only panic below -75
+            if ci < -75:
+                danger += 20
+                reasons.append(f"IB CI collapsed to {ci} (beyond normal ATM range)")
+        else:
+            if ci < -40:
+                danger += 25
+                reasons.append(f"Opponent in control (CI {ci})")
+            elif ci < -20:
+                danger += 15
+                reasons.append(f"Opponent gaining (CI {ci})")
+            elif ci < 0:
+                danger += 5
+
+    # Spot cushion from sell strike — direct check (b104 fix: only via insights before)
+    # IB exempt: sells ATM by design, cushion is always ~0
+    sell_strike = trade.get('sell_strike', 0)
+    spot = trade.get('current_spot', 0)
+    if sell_strike and spot and is_credit and not is_ib:
+        cushion = abs(sell_strike - spot)
+        vix = ctx.get('vix', 20)
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300  # √252=15.87, consistent with _daily_sigma
+        if daily_sigma > 0:
+            cushion_sigma = cushion / daily_sigma
+            if cushion_sigma < 0.25:
+                danger += 25
+                reasons.append(f"Only {cushion:.0f}pts ({cushion_sigma:.2f}σ) from sell strike")
+            elif cushion_sigma < 0.5:
+                danger += 15
+                reasons.append(f"Thin cushion ({cushion_sigma:.2f}σ from sell)")
 
     # Momentum threat
     if momentum_threat:
@@ -3550,7 +3592,7 @@ function detectRange() {
     const range = Math.max(...spots) - Math.min(...spots);
     const spot = spots[spots.length - 1];
     const vix = STATE.live?.vix || 20;
-    const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+    const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
 
     if (dailySigma <= 0) return false;
     const rangeSigma = range / dailySigma;
@@ -3598,7 +3640,7 @@ function detectMarketPhase() {
         const lastSpot = recent[recent.length - 1]?.nf || recent[recent.length - 1]?.bnf || 0;
         if (firstSpot > 0) {
             const spot = lastSpot;
-            const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+            const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
             if (dailySigma > 0) {
                 trendSigma = (lastSpot - firstSpot) / dailySigma;
                 trendDir = trendSigma > 0.15 ? 'UP' : trendSigma < -0.15 ? 'DOWN' : 'FLAT';
@@ -3773,7 +3815,7 @@ function computeContextScore(cand, spot, tDTE, vix) {
     const isBear = C.DIRECTIONAL_BEAR.includes(cand.type);
     const isBull = C.DIRECTIONAL_BULL.includes(cand.type);
     const mode = STATE.tradeMode; // 'intraday' or 'swing'
-    const daily1Sigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+    const daily1Sigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
 
     // 1. VIX DIRECTION — Varsity M6 Ch8.4: credit best when vol rising
     const ydayVix = STATE.yesterdayHistory?.[0]?.vix;
@@ -4268,7 +4310,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
 
         if (cand.type === 'BULL_PUT') {
             // DATA: 0/6 wins (0%), shown 69-78%. Massive overestimate.
-            strategyFactor = 0.15;
+            strategyFactor = 1.0;  // Gemini fix: kill switch removed — root cause (ATM narrow) fixed by MIN_SIGMA_OTM + MIN_WIDTH
 
         } else if (cand.type === 'BEAR_CALL') {
             // DATA: 7/14 wins (50%), shown 63-80%. ~20% overestimate.
@@ -4298,7 +4340,7 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
         cand.probProfit = Number(adjustedProb.toFixed(3));
 
         // 6. Recompute EV based on honest outcome probability
-        cand.ev = Math.round((cand.probProfit * cand.maxProfit) - ((1 - cand.probProfit) * cand.maxLoss));
+        cand.ev = Math.round((cand.probProfit * cand.maxProfit * 0.65) - ((1 - cand.probProfit) * cand.maxLoss)); // Gemini fix: 0.65 discount preserved
     }
 
     return candidates;
@@ -4408,7 +4450,7 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
     // This HARD FILTER prevents the #1 cause of losses.
     let sigmaOTM = null;
     if (isCredit && (sType === 'BEAR_CALL' || sType === 'BULL_PUT')) {
-        const dailySigma = spot * (vix / 100) * Math.sqrt(1 / 252);
+        const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
         if (dailySigma > 0) {
             sigmaOTM = Math.abs(pair.sell - spot) / dailySigma;
             if (sigmaOTM < C.MIN_SIGMA_OTM) return null; // REJECT below 0.5σ
@@ -4453,7 +4495,7 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
     if (isCredit && (netPremium / width) < C.MIN_CREDIT_RATIO) return null;
 
     // EV
-    const ev = (probProfit * maxProfit) - ((1 - probProfit) * maxLoss);
+    const ev = (probProfit * maxProfit * 0.65) - ((1 - probProfit) * maxLoss); // Gemini fix: discount — max profit rarely achieved
 
     // Theta estimate — read from chain, BS fallback
     const sellTheta = chainTheta(strikes, pair.sell, pair.sellType, spot, T, vol) * lotSize;
@@ -4521,9 +4563,9 @@ function peakCash(c) {
 // 4-leg IC/IB: SPAN on 2 short legs, ~90% after spread benefit from long legs
 function estimateBrokerMargin(c) {
     if (c.legs === 4) {
-        const perLot = c.index === 'BNF' ? C.BNF_SHORT_MARGIN : C.NF_SHORT_MARGIN;
-        // 2 short legs × per-lot SPAN, 90% after long leg offset
-        return Math.round(perLot * 2 * 0.9);
+        // IC/IB = defined risk spread. Broker charges ~maxLoss, not naked short.
+        // Buffer 1.3x for slippage + exchange margin rounding
+        return Math.round((c.maxLoss || 0) * 1.3);
     }
     // 2-leg defined-risk spread: margin ≈ maxLoss
     return c.maxLoss;
@@ -4533,8 +4575,7 @@ function estimateBrokerMargin(c) {
 function estimateTradeMargin(t) {
     const is4Leg = t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY';
     if (is4Leg) {
-        const perLot = t.index_key === 'BNF' ? C.BNF_SHORT_MARGIN : C.NF_SHORT_MARGIN;
-        return Math.round(perLot * 2 * 0.9);
+        return Math.round((t.max_loss || 0) * 1.3);
     }
     return t.max_loss || 0;
 }
@@ -4716,8 +4757,10 @@ function applyFreeCapitalFilter(candidates) {
     }
     const freeCapital = C.CAPITAL - marginUsed;
     return candidates.filter(c => {
-        const pc = peakCash(c);
-        return pc <= freeCapital * 0.9; // Can you afford the buy leg from available capital?
+        // Gemini fix: use broker margin estimate, not just peakCash (buy leg)
+        // Credit spreads have tiny peakCash but require large SPAN margin
+        const margin = estimateBrokerMargin(c);
+        return margin <= freeCapital * 0.9;
     });
 }
 
@@ -4777,7 +4820,7 @@ async function initialFetch() {
         dbg('PREMIUM_HISTORY', { days: STATE.premiumHistory.length, sample: STATE.premiumHistory.slice(0, 3).map(p => `${p.date}:${p.vix}`) });
 
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+        const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
         dbg('IV_PERCENTILE', { currentVix: spots.vix, historyCount: vixHistory.length, percentile: ivPctl });
 
         // Find YESTERDAY's row — skip today's date
@@ -4805,8 +4848,10 @@ async function initialFetch() {
 
         // Gap classification (uses yesterday's actual close, not today's seeded data)
         const ydayClose = ydayBnfOHLC?.close || ydayRow?.bnf_spot || null;
+        STATE.prevCloseBnf = ydayClose; // b104: stored for sigma calculation in lightFetch
         STATE.gapInfo = API.classifyGap(spots.bnfSpot, ydayClose, spots.vix);
         const ydayNfClose = ydayNfOHLC?.close || ydayRow?.nf_spot || null;
+        STATE.prevCloseNf = ydayNfClose; // b104: stored for sigma calculation
         STATE.nfGapInfo = ydayNfClose ? API.classifyGap(spots.nfSpot, ydayNfClose, spots.vix) : null;
         dbg('GAP', { bnf: STATE.gapInfo, nf: STATE.nfGapInfo });
 
@@ -5099,6 +5144,9 @@ async function initialFetch() {
 }
 
 async function lightFetch() {
+    // Concurrency guard — prevent double API calls if two triggers fire simultaneously
+    if (STATE._lightFetchRunning) { console.log('[lightFetch] Skipped — already running'); return; }
+    STATE._lightFetchRunning = true;
     try {
         const spots = await API.fetchSpots();
         if (!spots.bnfSpot || !spots.vix) return;
@@ -5118,11 +5166,15 @@ async function lightFetch() {
 
         const elapsed = API.minutesSinceOpen();
         const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+        const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
 
         // σ scores — how significant are the moves?
-        const spotSigma = BS.sigmaScore(spots.bnfSpot, STATE.baseline.bnfSpot, STATE.baseline.vix, elapsed);
-        const vixSigma = BS.vixSigmaScore(spots.vix, STATE.baseline.vix, elapsed);
+        // b104 FIX: Use yesterday's close as base, NOT Lock & Scan baseline.
+        // Even if user scans at 10:30 AM, sigma reflects FULL day's move from previous close.
+        const prevCloseBnf = STATE.prevCloseBnf || STATE.premiumHistory?.[0]?.bnf_spot || STATE.baseline.bnfSpot;
+        const prevCloseVix = STATE.premiumHistory?.[0]?.vix || STATE.baseline.vix;
+        const spotSigma = BS.sigmaScore(spots.bnfSpot, prevCloseBnf, prevCloseVix, elapsed);
+        const vixSigma = BS.vixSigmaScore(spots.vix, prevCloseVix, elapsed);
 
         // Update chain references for positioning/snapshot functions
         STATE.bnfChain = bnfChain;
@@ -5452,6 +5504,8 @@ async function lightFetch() {
     } catch (err) {
         console.warn('lightFetch error:', err.message);
         document.getElementById('status').textContent = `Poll error: ${err.message}`;
+    } finally {
+        STATE._lightFetchRunning = false;
     }
 }
 
@@ -5579,7 +5633,7 @@ function updateOpenTradePnL(trade, chain, spots, tradeSpot) {
 
     // Force alignment for position
     const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-    const ivPctl = BS.ivPercentile(spots.vix, vixHistory);
+    const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
     trade.forces = getForceAlignment(trade.strategy_type, STATE.live.bias, spots.vix, ivPctl);
 
     // Update in Supabase
@@ -5791,7 +5845,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             };
 
             const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-            const ivPctl = BS.ivPercentile(STATE.live.vix, vixHistory);
+            const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(STATE.live.vix, vixHistory) : 50; // Gemini fix
             const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
 
             const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
@@ -6007,13 +6061,16 @@ function syncToNative() {
 window.syncFromNative = function(dataJson) {
     try {
         const data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
-        
+
+        // b106 null-guard: Kotlin may push empty/null before first poll runs
+        if (!data || typeof data !== 'object') return;
+
         // Poll history
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b104] syncFromNative: ${data.pollHistory.length} polls received`);
+                console.log(`[b107] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
         if (data.pollCount && data.pollCount > STATE.pollCount) {
@@ -6081,7 +6138,7 @@ window.syncFromNative = function(dataJson) {
         
         renderAll();
     } catch(e) {
-        console.warn('[b104] syncFromNative error:', e.message);
+        console.warn('[b107] syncFromNative error:', e.message);
     }
 };
 
@@ -6803,6 +6860,10 @@ async function rescanStrategies() {
         alert('No live data yet. Run Lock & Scan first.');
         return;
     }
+    // Prevent overlap with lightFetch
+    if (STATE._lightFetchRunning) { console.log('[Rescan] Skipped — lightFetch running'); return; }
+    STATE._lightFetchRunning = true;
+    try {
 
     // ═══ FRESH FETCH — actual live data from Upstox ═══
     const statusEl = document.getElementById('status');
@@ -6875,7 +6936,7 @@ async function rescanStrategies() {
     }
 
     const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-    const ivPctl = BS.ivPercentile(liveData.vix, vixHistory);
+    const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(liveData.vix, vixHistory) : 50; // Gemini fix
 
     const bnfCandidates = generateCandidates(
         STATE.bnfChain, liveData.bnfSpot, 'BNF', STATE.bnfExpiry, liveData.vix, activeBias, ivPctl
@@ -6914,6 +6975,9 @@ async function rescanStrategies() {
     addNotificationLog('🔄 Rescan Complete', `${allCandidates.length} candidates. BNF ${liveData.bnfSpot?.toFixed(0)} NF ${liveData.nfSpot?.toFixed(0)} VIX ${liveData.vix?.toFixed(1)} ${biasSource}`, 'important');
     console.log(`[RESCAN] ${allCandidates.length} candidates, ${STATE.candidates.length} ranked, spot BNF=${liveData.bnfSpot} NF=${liveData.nfSpot} ${biasSource}`);
     renderAll();
+    } finally {
+        STATE._lightFetchRunning = false;
+    }
 }
 
 
@@ -6935,6 +6999,18 @@ async function takeTrade(candidateId, isPaper = false) {
         || STATE.candidates.find(c => c.id === candidateId)
         || STATE.positioningCandidates.find(c => c.id === candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+
+    // b105: Pull fresh poll history from Kotlin before snapshotting.
+    // Covers the case where user returns from background and takes a trade
+    // before the next poll fires — STATE.pollHistory could otherwise be stale.
+    if (window.NativeBridge?.getPollHistory) {
+        try {
+            const fresh = JSON.parse(window.NativeBridge.getPollHistory());
+            if (Array.isArray(fresh) && fresh.length > STATE.pollHistory.length) {
+                STATE.pollHistory = fresh;
+            }
+        } catch(e) {}
+    }
 
     // Stale scan warning — candidates may be outdated
     if (STATE.lastScanTime) {
@@ -6963,7 +7039,7 @@ async function takeTrade(candidateId, isPaper = false) {
     const isBNF = cand.index === 'BNF';
     const chain = isBNF ? STATE.bnfChain : STATE.nfChain;
     const spot = isBNF ? STATE.live.bnfSpot : STATE.live.nfSpot;
-    const daily1Sigma = spot * (STATE.live.vix / 100) * Math.sqrt(1 / 252);
+    const daily1Sigma = spot * (STATE.live.vix / 100) / 15.8745  /* √252 */;
 
     const trade = {
         strategy_type: cand.type,
@@ -7010,6 +7086,12 @@ async function takeTrade(candidateId, isPaper = false) {
         entry_gap_sigma: STATE.gapInfo?.sigma ?? null,
         entry_gap_type: STATE.gapInfo?.type || null,
         prob_profit: cand.probProfit,
+        // b105: ML fields on trades_v2 (lightweight — 5 columns for quick querying)
+        p_ml:      cand.p_ml ?? null,
+        ml_action: cand.mlAction ?? null,
+        ml_regime: cand.mlRegime ?? null,
+        ml_edge:   cand.mlEdge ?? null,
+        ml_ood:    cand.mlOod ?? false,
         status: 'OPEN',
         current_pnl: 0,
         peak_pnl: 0,
@@ -7095,6 +7177,82 @@ async function takeTrade(candidateId, isPaper = false) {
         syncToNative(); // b99: sync new trade to Kotlin
         switchTab('positions');
         renderAll();
+
+        // b105: Write full ML decision record for calibration tracking
+        if (cand.p_ml != null) {
+            const pollSeq = STATE.pollHistory.slice(-6).map(p => ({
+                vix:           p.vix ?? null,
+                pcr:           p.pcr ?? p.nearAtmPcr ?? null,
+                bias_net:      p.biasNet ?? p.bias_net ?? null,
+                breadth:       p.breadth ?? null,
+                spot_move_pct: p.spotMovePct ?? null,
+                futures_prem:  p.futuresPremBnf ?? p.futuresPrem ?? null,
+            }));
+            const last = STATE.pollHistory[STATE.pollHistory.length - 1] || {};
+            const mlDoc = {
+                trade_id:   saved.id,
+                date:       API.todayIST(),
+                entry_time: new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', hour12: false}),
+                strategy:   cand.type,
+                index_name: cand.index,
+                mode:       trade.trade_mode,
+                paper:      isPaper,
+                vix:        STATE.live?.vix ?? null,
+                sigma_away: cand.sigmaOTM ?? null,
+                gap_sigma:  STATE.gapInfo?.sigma ?? null,
+                entry_credit: cand.netPremium ?? null,
+                width:      cand.width ?? null,
+                dte:        cand.tDTE ?? null,
+                max_profit: cand.maxProfit ?? null,
+                max_loss:   cand.maxLoss ?? null,
+                vix_regime: (STATE.live?.vix >= 20 ? 'HIGH (20-25)' : STATE.live?.vix < 15 ? 'LOW (<15)' : 'NORMAL (15-20)'),
+                day_direction: last.dayDirection ?? null,
+                day_range:  last.dayRange ?? null,
+                market_snapshot: {
+                    vix:          STATE.live?.vix,
+                    pcr:          STATE.live?.pcr,
+                    near_atm_pcr: STATE.live?.nearAtmPCR,
+                    breadth:      STATE.live?.breadth,
+                    futures_prem: STATE.live?.futuresPremBnf,
+                    spot:         isBNF ? STATE.live?.bnfSpot : STATE.live?.nfSpot,
+                    iv_percentile:STATE.live?.ivPercentile,
+                    bias_net:     STATE.live?.bias?.net,
+                    gap_sigma:    STATE.gapInfo?.sigma,
+                    weekday:      new Date().getDay(),
+                },
+                candidate_snap: {
+                    sigma_away:    cand.sigmaOTM,
+                    width:         cand.width,
+                    entry_credit:  cand.netPremium,
+                    ev:            cand.ev,
+                    force_alignment: cand.forces?.aligned,
+                    varsity_tier:  cand.varsityTier,
+                    wall_score:    cand.wallScore,
+                    gamma_risk:    cand.gammaRisk,
+                    context_score: cand.contextScore,
+                    prob_profit:   cand.probProfit,
+                    rr:            cand.riskReward,
+                    net_theta:     cand.netTheta,
+                    est_cost:      cand.estCost,
+                    est_cost_pct:  cand.estCostPct,
+                    net_delta:     cand.netDelta,
+                    upstox_pop:    cand.upstoxPop,
+                },
+                poll_sequence: pollSeq,
+                seq_length:    pollSeq.length,
+                p_final:       cand.p_ml,
+                ml_action:     cand.mlAction,
+                ml_regime:     cand.mlRegime,
+                ml_edge:       cand.mlEdge,
+                ood:           cand.mlOod ?? false,
+                ood_conf:      cand.mlOodConf ?? 1.0,
+                ood_warn:      (cand.mlOodWarn || []).join('; ') || null,
+                ood_blocked:   cand.mlOodBlocked ?? false,
+                model_version: '2.1.1',
+            };
+            DB.supabase.from('ml_decisions').insert(mlDoc)
+              .then(({error}) => { if (error) console.warn('[ML] ml_decisions insert failed:', error.message); });
+        }
     } else {
         // Retry with essential fields only (some columns may not exist in Supabase)
         console.warn('[TAKE_TRADE] Full insert failed. Retrying with essential fields...');
@@ -7393,6 +7551,25 @@ async function closeTrade(tradeId, exitReason) {
         });
 
         addNotificationLog(`${prefix} Trade Closed`, `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike} ${trade.trade_mode ? `[${trade.trade_mode}]` : ''} P&L: ₹${trade.current_pnl}.${holdDuration ? ` Held: ${holdDuration}.` : ''} Reason: ${exitReason || 'Manual'}`, trade.current_pnl >= 0 ? 'entry' : 'urgent');
+
+        // b105: Fill ML outcome for calibration tracking
+        if (trade.id) {
+            DB.supabase.from('ml_decisions').update({
+                won:          (trade.current_pnl ?? 0) > 0,
+                actual_pnl:   trade.current_pnl ?? 0,
+                peak_pnl:     trade.peak_pnl ?? null,
+                trough_pnl:   trade.trough_pnl ?? null,
+                hold_minutes: trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
+                exit_reason:  exitReason || 'Manual',
+                exit_vix:     STATE.live?.vix ?? null,
+                exit_pcr:     STATE.live?.pcr ?? null,
+                ci_min:       trade._journey?.min_ci ?? null,
+                ci_max:       trade._journey?.max_ci ?? null,
+                closed_at:    new Date().toISOString(),
+            }).eq('trade_id', trade.id)
+              .then(({error}) => { if (error) console.warn('[ML] ml_decisions outcome fill failed:', error.message); });
+        }
+
         STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
         syncToNative(); // b99: sync trade removal to Kotlin
         renderAll();
@@ -7578,13 +7755,84 @@ function renderTicker() {
     }
 }
 
+// ── b105: ML manual retrain + calibration helpers ────────────────────────
+
+async function triggerMLRetrain() {
+    if (!window.NativeBridge?.triggerMLRetrain) {
+        alert('Native bridge not available. Use APK version.');
+        return;
+    }
+    // Check trade count first
+    try {
+        const { data, error } = await DB.supabase
+            .from('ml_decisions')
+            .select('id', { count: 'exact', head: true })
+            .not('won', 'is', null);
+        const n = data?.length ?? 0;
+        const msg = n < 20
+            ? `Only ${n} closed trades recorded.\nML retraining needs 20+ for meaningful improvement.\n\nTrain anyway? (will use backtest data only)`
+            : `${n} closed trades ready.\nRetraining will mix backtest + live data.\n\nProceed?`;
+        if (!confirm(msg)) return;
+    } catch(e) {}
+    window.NativeBridge.triggerMLRetrain();
+    alert('ML retraining started. Check Logcat for progress. Takes 4-6 minutes.');
+}
+
+async function checkMLDecisions() {
+    try {
+        const { data, error } = await DB.supabase
+            .from('ml_decisions')
+            .select('ml_action, won, p_final')
+            .not('won', 'is', null);
+        if (error || !data?.length) {
+            alert('No closed ML decisions yet. Take and close some trades first.');
+            return;
+        }
+        const byAction = {};
+        for (const r of data) {
+            const a = r.ml_action || 'UNKNOWN';
+            if (!byAction[a]) byAction[a] = { n: 0, wins: 0 };
+            byAction[a].n++;
+            if (r.won) byAction[a].wins++;
+        }
+        let msg = `ML Calibration Report (${data.length} closed trades)\n\n`;
+        for (const [action, s] of Object.entries(byAction)) {
+            msg += `${action}: ${s.wins}/${s.n} won (${(s.wins/s.n*100).toFixed(0)}%)\n`;
+        }
+        msg += `\nTarget: TAKE ≥ 70%, SKIP ≤ 40%`;
+        alert(msg);
+    } catch(e) {
+        alert('Could not fetch calibration data: ' + e.message);
+    }
+}
+
 function renderDebug() {
     const el = document.getElementById('debug-log');
     if (!el) return;
 
+    // ── b105: ML status + manual retrain button ─────────────────────────
+    const mlReady = window.NativeBridge?.isMLModelReady?.() === true;
+    const mlSection = `
+        <div style="background:var(--surface);border-radius:8px;padding:8px 10px;margin-bottom:8px;border-left:3px solid ${mlReady ? 'var(--green)' : 'var(--text-muted)'}">
+            <div style="font-size:11px;font-weight:600;color:var(--text-primary);margin-bottom:6px">
+                🧠 ML Engine — ${mlReady ? '<span style="color:var(--green)">Model loaded</span>' : '<span style="color:var(--text-muted)">Model not loaded</span>'}
+            </div>
+            ${mlReady ? (() => {
+                try {
+                    const s = JSON.parse(window.NativeBridge.getMLModelStatus());
+                    return `<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">
+                        v${s.version} · n=${s.n_train} · TAKE≥${s.thr_take} · base WR=${(s.base_wr*100).toFixed(1)}%
+                    </div>`;
+                } catch(e) { return ''; }
+            })() : '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Install APK and open fresh to load model</div>'}
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${mlReady ? `<button onclick="triggerMLRetrain()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">🔄 Retrain ML</button>` : ''}
+                ${mlReady ? `<button onclick="checkMLDecisions()" style="background:transparent;color:var(--accent);border:1.5px solid var(--accent);border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">📊 Calibration</button>` : ''}
+            </div>
+        </div>`;
     const debugEntries = window._API_DEBUG || [];
     if (debugEntries.length === 0) {
-        el.innerHTML = '<div class="empty-state">Debug data appears after scan</div>';
+        el.innerHTML = mlSection + '<div class="empty-state">Debug data appears after scan</div>';
         return;
     }
 
@@ -7621,7 +7869,7 @@ function renderDebug() {
 
     const allEntries = [...stateInfo, ...debugEntries].reverse(); // newest first
 
-    el.innerHTML = allEntries.map(entry => {
+    el.innerHTML = mlSection + allEntries.map(entry => {
         const isError = entry.label === 'ERROR';
         const label = entry.label || '';
         const time = entry.time || '';
@@ -7713,7 +7961,7 @@ function renderIntradayChart(index = 'NF') {
         const last3 = spots.slice(-3);
         const range3 = Math.max(...last3) - Math.min(...last3);
         const spot = spots[spots.length - 1];
-        const dailySigma = spot * ((STATE.live?.vix || 20) / 100) * Math.sqrt(1 / 252);
+        const dailySigma = spot * ((STATE.live?.vix || 20) / 100) / 15.8745  /* √252 */;
         const rangeSigma = range3 / dailySigma;
         if (rangeSigma < 0.3) {
             rangeIndicator = `<rect x="${xScale(spots.length - 3).toFixed(1)}" y="${PAD_T}" width="${(xScale(spots.length - 1) - xScale(spots.length - 3)).toFixed(1)}" height="${plotH}" fill="var(--green)" opacity="0.06" rx="3"/>`;
@@ -8508,15 +8756,22 @@ function renderCandidateCard(cand, atm, rank) {
     const otmLabel = otmDist < 50 ? 'ATM' : 'OTM';
     const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
 
-    // Legs — v1 style: "SELL 54600 CE (OTM) @₹667 | BUY 54800 CE (OTM) @₹578"
+    // Legs — execution order: BUY protection first, then SELL credit (Indian margin rule)
     let legsText = '';
     if (is4Leg) {
-        legsText = `SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} | BUY ${cand.buyStrike} ${cand.buyType} @₹${cand.buyLTP?.toFixed(1)}<br>` +
-            `SELL ${cand.sellStrike2} ${cand.sellType2} @₹${cand.sellLTP2?.toFixed(1)} | BUY ${cand.buyStrike2} ${cand.buyType2} @₹${cand.buyLTP2?.toFixed(1)}`;
+        // IC/IB: numbered execution order — BUY before SELL on each side
+        legsText = `<span style="opacity:0.5">①</span> BUY ${cand.buyStrike} ${cand.buyType} @₹${cand.buyLTP?.toFixed(1)} <span style="opacity:0.5">(protection)</span><br>` +
+            `<span style="opacity:0.5">②</span> SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} <span style="opacity:0.5">(credit)</span><br>` +
+            `<span style="opacity:0.5">③</span> BUY ${cand.buyStrike2} ${cand.buyType2} @₹${cand.buyLTP2?.toFixed(1)} <span style="opacity:0.5">(protection)</span><br>` +
+            `<span style="opacity:0.5">④</span> SELL ${cand.sellStrike2} ${cand.sellType2} @₹${cand.sellLTP2?.toFixed(1)} <span style="opacity:0.5">(credit)</span>`;
     } else if (cand.isCredit) {
-        legsText = `SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} | BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)}`;
+        // Credit 2-leg: BUY protection first, then SELL credit
+        legsText = `<span style="opacity:0.5">①</span> BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)} <span style="opacity:0.5">(protection)</span><br>` +
+            `<span style="opacity:0.5">②</span> SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)} <span style="opacity:0.5">(credit)</span>`;
     } else {
-        legsText = `BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)} | SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)}`;
+        // Debit 2-leg: BUY main leg first, SELL hedge
+        legsText = `<span style="opacity:0.5">①</span> BUY ${cand.buyStrike} ${cand.buyType} (${otmLabel}) @₹${cand.buyLTP?.toFixed(1)}<br>` +
+            `<span style="opacity:0.5">②</span> SELL ${cand.sellStrike} ${cand.sellType} (${otmLabel}) @₹${cand.sellLTP?.toFixed(1)}`;
     }
 
     // VIX trend badge for IC/IB candidates
@@ -8571,7 +8826,25 @@ function renderCandidateCard(cand, atm, rank) {
         <div class="v1-align ${alignClass}">${alignLabel}</div>
         ${forces.aligned >= 2 ? `
         <div class="v1-trade-btns">
-            <button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 5% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>
+            ${(() => {
+                // b105: ML badge
+                const mlBadge = cand.p_ml != null
+                    ? `<div style="font-size:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
+                           <span style="background:${cand.mlAction==='TAKE'?'#388E3C':cand.mlAction==='WATCH'?'#F57C00':cand.mlAction==='BLOCKED'?'#7B2FC4':'#D32F2F'};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">
+                               ML ${Math.round((cand.p_ml||0)*100)}% ${cand.mlAction||''}${cand.mlOod?' ⚠️':''}
+                           </span>
+                           ${cand.mlRegime ? `<span style="font-size:9px;color:var(--text-muted)">${cand.mlRegime}</span>` : ''}
+                           ${cand.mlEdge != null ? `<span style="font-size:9px;color:${cand.mlEdge>=0?'var(--green)':'var(--danger)'}">${cand.mlEdge>=0?'+':''}${(cand.mlEdge*100).toFixed(0)}% edge</span>` : ''}
+                       </div>
+                       ${cand.mlOodWarn?.length ? `<div style="font-size:9px;color:var(--danger);margin-bottom:4px">⚠️ ${cand.mlOodWarn[0]}</div>` : ''}`
+                    : '';
+                // BLOCKED = model has zero training data — disable Take button
+                const isBlocked = cand.mlOodBlocked === true;
+                const realBtn = isBlocked
+                    ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
+                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 8% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>`;
+                return mlBadge + realBtn;
+            })()}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
         </div>` : ''}
     </div>`;
@@ -9403,7 +9676,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b104' }
+            { metric: 'App Version', value: 'v2.1 b107' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9616,16 +9889,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 // Pull polls
                 if (window.NativeBridge.getPollHistory) {
-                    const nativePolls = JSON.parse(window.NativeBridge.getPollHistory());
-                    if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
-                        STATE.pollHistory = nativePolls;
-                        STATE.pollCount = nativePolls.length;
+                    const rawPolls = window.NativeBridge.getPollHistory();
+                    if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
+                        const nativePolls = JSON.parse(rawPolls);
+                        if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
+                            STATE.pollHistory = nativePolls;
+                            STATE.pollCount = nativePolls.length;
+                        }
                     }
                 }
                 // Pull brain result (verdict, market, positions, effective bias)
                 if (window.NativeBridge.getBrainResult) {
                     const brJson = window.NativeBridge.getBrainResult();
-                    if (brJson && brJson !== '{}' && brJson !== 'null') {
+                    if (brJson && brJson !== '{}' && brJson !== 'null' && brJson !== '') {
                         const br = JSON.parse(brJson);
                         STATE.brainInsights = br;
                         STATE.brainLastRun = Date.now();
@@ -9672,14 +9948,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         // BROWSER MODE — existing recovery logic
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b104] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b107] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b104] Recovery poll failed:', e.message);
+                console.warn('[b107] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
