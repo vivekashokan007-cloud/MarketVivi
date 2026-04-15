@@ -877,14 +877,15 @@ body.dark .oi-table thead { border-bottom-color: var(--accent); }
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 2px 0;
+    padding: 3px 0;
+    font-size: 13px;
     border-bottom: 1px solid #F0F0F0;
 }
 
 .traj-label {
     font-size: 12px;
     color: var(--text-muted);
-    min-width: 70px;
+    min-width: 80px;
 }
 
 .traj-arrow {
@@ -1018,7 +1019,7 @@ body.dark .oi-table thead { border-bottom-color: var(--accent); }
 .global-context-grid {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
-    gap: 6px;
+    gap: 8px;
     margin: 6px 0 8px;
 }
 .input-group.compact label {
@@ -1201,6 +1202,9 @@ body.dark {
     --warn-dim: #FFB74D20;
     --danger: #EF5350;
     --danger-dim: #EF535020;
+    --sell: #4CAF50;
+    --buy: #FFB74D;
+    --neutral: #6B6B82;
 }
 
 body.dark .env-verdict.sell { background: #1B3A20; border-color: var(--green); }
@@ -1310,11 +1314,6 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
     font-weight: 600;
     color: var(--text-secondary);
     margin-bottom: 8px;
-}
-.global-context-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 8px;
 }
 
 /* V1 CARD */
@@ -1459,21 +1458,7 @@ body.dark .traj-row { border-bottom-color: #2D2D40; }
 .traj-grid {
     padding: 8px 0;
 }
-.traj-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 3px 0;
-    font-size: 13px;
-}
-.traj-label {
-    min-width: 80px;
-    color: var(--text-muted);
-    font-size: 12px;
-}
-.traj-arrow { font-size: 15px; }
-.traj-arrow.up { color: var(--green); }
-.traj-arrow.down { color: var(--danger); }
+/* traj-row, traj-label, traj-arrow defined above in TRAJECTORY section */
 
 /* Small ± button for compact inputs */
 .sign-toggle.sign-sm {

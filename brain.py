@@ -782,8 +782,8 @@ def risk_kelly_headroom(polls, baseline, open_trades, closed_trades):
     wins = [t for t in closed_trades if (t.get('actual_pnl') or 0) > 0]
     losses = [t for t in closed_trades if (t.get('actual_pnl') or 0) <= 0]
     w = len(wins) / len(closed_trades)
-    avg_w = sum(t['actual_pnl'] for t in wins) / len(wins) if wins else 0
-    avg_l = abs(sum(t['actual_pnl'] for t in losses) / len(losses)) if losses else 1
+    avg_w = sum(t.get('actual_pnl', 0) for t in wins) / len(wins) if wins else 0
+    avg_l = abs(sum(t.get('actual_pnl', 0) for t in losses) / len(losses)) if losses else 1
     r = avg_w / avg_l if avg_l > 0 else 1
     kelly = max(0, w - ((1 - w) / r)) if r > 0 else 0
     kelly_pct = kelly * 100
@@ -2702,6 +2702,17 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 ) * lot_size)
 
                 idx = 'BNF' if is_bnf else 'NF'
+                # ── IC display fields (match 2-leg candidates) ──
+                ic_est_cost = round(max_loss * 1.3)
+                ic_est_cost_pct = round(ic_est_cost / max(1, _capital) * 100, 1)
+                ic_sell_ce_delta = ce_s.get('delta', 0) or 0
+                ic_sell_pe_delta = pe_s.get('delta', 0) or 0
+                ic_buy_ce_delta = ce_b.get('delta', 0) or 0
+                ic_buy_pe_delta = pe_b.get('delta', 0) or 0
+                ic_net_delta = round((ic_sell_ce_delta + ic_sell_pe_delta) - (ic_buy_ce_delta + ic_buy_pe_delta), 4)
+                # sigmaOTM: distance of nearest sell leg from ATM in σ
+                ic_daily_sigma = spot * (vix / 100) * (1 / 252 ** 0.5) if vix > 0 else 1
+                ic_sigma_otm = round(min(abs(sell_call - spot), abs(sell_put - spot)) / ic_daily_sigma, 2) if ic_daily_sigma > 0 else 0
                 ic = {
                     'id': f"IC_{idx}_{sell_call}_{sell_put}_W{width}",
                     'type': 'IRON_CONDOR', 'width': width, 'legs': 4,
@@ -2715,9 +2726,13 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                     'probProfit': round(prob, 3), 'ev': ev, 'netTheta': net_theta,
                     'isCredit': True, 'lotSize': lot_size, 'index': idx,
                     'expiry': expiry, 'tDTE': tdte,
+                    'sigmaOTM': ic_sigma_otm,
                     'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
                     'targetProfit': round(net_theta * 0.5) if tdte > 2 and net_theta > 0 else round(max_profit * 0.5),
                     'stopLoss': net_theta if tdte > 2 and net_theta > 0 else round(max_profit),
+                    'estCost': ic_est_cost, 'estCostPct': ic_est_cost_pct,
+                    'netDelta': ic_net_delta, 'netMaxProfit': round(max_profit),
+                    'upstoxPop': ce_s.get('pop'),
                     'forces': _get_forces('IRON_CONDOR', bias, vix, iv_pctl),
                     'varsityTier': 'PRIMARY' if 'IRON_CONDOR' in varsity['primary'] else 'ALLOWED',
                     'wallScore': 0, 'gammaRisk': 0, 'contextScore': 0,
@@ -2765,6 +2780,20 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
 
             ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
             idx = 'BNF' if is_bnf else 'NF'
+            # ── IB netTheta + display fields (match 2-leg candidates) ──
+            ib_net_theta = round(abs(
+                _chain_theta(strikes, atm, 'CE', spot, T, vol) +
+                _chain_theta(strikes, atm, 'PE', spot, T, vol) -
+                _chain_theta(strikes, buy_call, 'CE', spot, T, vol) -
+                _chain_theta(strikes, buy_put, 'PE', spot, T, vol)
+            ) * lot_size)
+            ib_est_cost = round(max_loss * 1.3)
+            ib_est_cost_pct = round(ib_est_cost / max(1, _capital) * 100, 1)
+            ib_sell_ce_delta = ce_s.get('delta', 0) or 0
+            ib_sell_pe_delta = pe_s.get('delta', 0) or 0
+            ib_buy_ce_delta = ce_b.get('delta', 0) or 0
+            ib_buy_pe_delta = pe_b.get('delta', 0) or 0
+            ib_net_delta = round((ib_sell_ce_delta + ib_sell_pe_delta) - (ib_buy_ce_delta + ib_buy_pe_delta), 4)
             ib = {
                 'id': f"IB_{idx}_{atm}_W{width}",
                 'type': 'IRON_BUTTERFLY', 'width': width, 'legs': 4,
@@ -2775,14 +2804,20 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 'sellLTP2': pe_s.get('bid', 0), 'buyLTP2': pe_b.get('ask', 0),
                 'netPremium': round(total_credit, 2),
                 'maxProfit': max_profit, 'maxLoss': max_loss,
-                'probProfit': round(prob, 3), 'ev': ev, 'isCredit': True,
-                'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
+                'probProfit': round(prob, 3), 'ev': ev, 'netTheta': ib_net_theta,
+                'isCredit': True, 'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
+                'sigmaOTM': 0,
+                'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
+                'targetProfit': round(ib_net_theta * 0.5) if tdte > 2 and ib_net_theta > 0 else round(max_profit * 0.5),
+                'stopLoss': ib_net_theta if tdte > 2 and ib_net_theta > 0 else round(max_profit),
+                'estCost': ib_est_cost, 'estCostPct': ib_est_cost_pct,
+                'netDelta': ib_net_delta, 'netMaxProfit': round(max_profit),
+                'upstoxPop': ce_s.get('pop'),
                 'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl),
                 'varsityTier': 'PRIMARY' if 'IRON_BUTTERFLY' in varsity['primary'] else 'ALLOWED',
                 'wallScore': _compute_wall_score({'type': 'IRON_BUTTERFLY', 'sellStrike': atm}, chain, is_bnf),
                 'gammaRisk': _compute_gamma_risk({'sellStrike': atm, 'isCredit': True}, spot, tdte),
                 'contextScore': 0, 'directionSafe': True, 'capitalBlocked': False,
-                'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
             }
             candidates.append(ib)
 
