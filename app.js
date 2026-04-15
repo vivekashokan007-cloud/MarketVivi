@@ -81,7 +81,7 @@ const C = {
     EXCHANGE_PER_LEG: 15,    // ~₹15 exchange charges per leg
     GST_RATE: 0.18,          // 18% GST on brokerage + exchange
     SLIPPAGE_PER_UNIT: 1.5,  // ₹1.5 per unit per leg (conservative bid-ask spread estimate)
-    MIN_PROFIT_COST_PCT: 5,  // block trades where cost > 5% of max profit
+    MIN_PROFIT_COST_PCT: 8,  // block trades where cost > 8% of max profit (raised from 5% — 5% was blocking valid trades)
 
     // Strategy categories
     CREDIT_TYPES: ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
@@ -6067,7 +6067,7 @@ window.syncFromNative = function(dataJson) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b105] syncFromNative: ${data.pollHistory.length} polls received`);
+                console.log(`[b106] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
         if (data.pollCount && data.pollCount > STATE.pollCount) {
@@ -6135,7 +6135,7 @@ window.syncFromNative = function(dataJson) {
         
         renderAll();
     } catch(e) {
-        console.warn('[b105] syncFromNative error:', e.message);
+        console.warn('[b106] syncFromNative error:', e.message);
     }
 };
 
@@ -7752,13 +7752,84 @@ function renderTicker() {
     }
 }
 
+// ── b105: ML manual retrain + calibration helpers ────────────────────────
+
+async function triggerMLRetrain() {
+    if (!window.NativeBridge?.triggerMLRetrain) {
+        alert('Native bridge not available. Use APK version.');
+        return;
+    }
+    // Check trade count first
+    try {
+        const { data, error } = await DB.supabase
+            .from('ml_decisions')
+            .select('id', { count: 'exact', head: true })
+            .not('won', 'is', null);
+        const n = data?.length ?? 0;
+        const msg = n < 20
+            ? `Only ${n} closed trades recorded.\nML retraining needs 20+ for meaningful improvement.\n\nTrain anyway? (will use backtest data only)`
+            : `${n} closed trades ready.\nRetraining will mix backtest + live data.\n\nProceed?`;
+        if (!confirm(msg)) return;
+    } catch(e) {}
+    window.NativeBridge.triggerMLRetrain();
+    alert('ML retraining started. Check Logcat for progress. Takes 4-6 minutes.');
+}
+
+async function checkMLDecisions() {
+    try {
+        const { data, error } = await DB.supabase
+            .from('ml_decisions')
+            .select('ml_action, won, p_final')
+            .not('won', 'is', null);
+        if (error || !data?.length) {
+            alert('No closed ML decisions yet. Take and close some trades first.');
+            return;
+        }
+        const byAction = {};
+        for (const r of data) {
+            const a = r.ml_action || 'UNKNOWN';
+            if (!byAction[a]) byAction[a] = { n: 0, wins: 0 };
+            byAction[a].n++;
+            if (r.won) byAction[a].wins++;
+        }
+        let msg = `ML Calibration Report (${data.length} closed trades)\n\n`;
+        for (const [action, s] of Object.entries(byAction)) {
+            msg += `${action}: ${s.wins}/${s.n} won (${(s.wins/s.n*100).toFixed(0)}%)\n`;
+        }
+        msg += `\nTarget: TAKE ≥ 70%, SKIP ≤ 40%`;
+        alert(msg);
+    } catch(e) {
+        alert('Could not fetch calibration data: ' + e.message);
+    }
+}
+
 function renderDebug() {
     const el = document.getElementById('debug-log');
     if (!el) return;
 
+    // ── b105: ML status + manual retrain button ─────────────────────────
+    const mlReady = window.NativeBridge?.isMLModelReady?.() === true;
+    const mlSection = `
+        <div style="background:var(--surface);border-radius:8px;padding:8px 10px;margin-bottom:8px;border-left:3px solid ${mlReady ? 'var(--green)' : 'var(--text-muted)'}">
+            <div style="font-size:11px;font-weight:600;color:var(--text-primary);margin-bottom:6px">
+                🧠 ML Engine — ${mlReady ? '<span style="color:var(--green)">Model loaded</span>' : '<span style="color:var(--text-muted)">Model not loaded</span>'}
+            </div>
+            ${mlReady ? (() => {
+                try {
+                    const s = JSON.parse(window.NativeBridge.getMLModelStatus());
+                    return `<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">
+                        v${s.version} · n=${s.n_train} · TAKE≥${s.thr_take} · base WR=${(s.base_wr*100).toFixed(1)}%
+                    </div>`;
+                } catch(e) { return ''; }
+            })() : '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Install APK and open fresh to load model</div>'}
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${mlReady ? `<button onclick="triggerMLRetrain()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">🔄 Retrain ML</button>` : ''}
+                ${mlReady ? `<button onclick="checkMLDecisions()" style="background:transparent;color:var(--accent);border:1.5px solid var(--accent);border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">📊 Calibration</button>` : ''}
+            </div>
+        </div>`;
     const debugEntries = window._API_DEBUG || [];
     if (debugEntries.length === 0) {
-        el.innerHTML = '<div class="empty-state">Debug data appears after scan</div>';
+        el.innerHTML = mlSection + '<div class="empty-state">Debug data appears after scan</div>';
         return;
     }
 
@@ -7795,7 +7866,7 @@ function renderDebug() {
 
     const allEntries = [...stateInfo, ...debugEntries].reverse(); // newest first
 
-    el.innerHTML = allEntries.map(entry => {
+    el.innerHTML = mlSection + allEntries.map(entry => {
         const isError = entry.label === 'ERROR';
         const label = entry.label || '';
         const time = entry.time || '';
@@ -8768,7 +8839,7 @@ function renderCandidateCard(cand, atm, rank) {
                 const isBlocked = cand.mlOodBlocked === true;
                 const realBtn = isBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
-                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 5% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>`;
+                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)" ${cand.costBlocked ? 'disabled style="opacity:0.4;cursor:not-allowed" title="Cost exceeds 8% of max profit"' : ''}>📌 REAL TRADE${cand.costBlocked ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })()}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
@@ -9602,7 +9673,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b105' }
+            { metric: 'App Version', value: 'v2.1 b106' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9871,14 +9942,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         // BROWSER MODE — existing recovery logic
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b105] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b106] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b105] Recovery poll failed:', e.message);
+                console.warn('[b106] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
