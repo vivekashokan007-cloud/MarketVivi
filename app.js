@@ -6061,13 +6061,16 @@ function syncToNative() {
 window.syncFromNative = function(dataJson) {
     try {
         const data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
-        
+
+        // b106 null-guard: Kotlin may push empty/null before first poll runs
+        if (!data || typeof data !== 'object') return;
+
         // Poll history
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
             if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b106] syncFromNative: ${data.pollHistory.length} polls received`);
+                console.log(`[b107] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
         if (data.pollCount && data.pollCount > STATE.pollCount) {
@@ -6135,7 +6138,7 @@ window.syncFromNative = function(dataJson) {
         
         renderAll();
     } catch(e) {
-        console.warn('[b106] syncFromNative error:', e.message);
+        console.warn('[b107] syncFromNative error:', e.message);
     }
 };
 
@@ -9673,7 +9676,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b106' }
+            { metric: 'App Version', value: 'v2.1 b107' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9886,16 +9889,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 // Pull polls
                 if (window.NativeBridge.getPollHistory) {
-                    const nativePolls = JSON.parse(window.NativeBridge.getPollHistory());
-                    if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
-                        STATE.pollHistory = nativePolls;
-                        STATE.pollCount = nativePolls.length;
+                    const rawPolls = window.NativeBridge.getPollHistory();
+                    if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
+                        const nativePolls = JSON.parse(rawPolls);
+                        if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
+                            STATE.pollHistory = nativePolls;
+                            STATE.pollCount = nativePolls.length;
+                        }
                     }
                 }
                 // Pull brain result (verdict, market, positions, effective bias)
                 if (window.NativeBridge.getBrainResult) {
                     const brJson = window.NativeBridge.getBrainResult();
-                    if (brJson && brJson !== '{}' && brJson !== 'null') {
+                    if (brJson && brJson !== '{}' && brJson !== 'null' && brJson !== '') {
                         const br = JSON.parse(brJson);
                         STATE.brainInsights = br;
                         STATE.brainLastRun = Date.now();
@@ -9942,14 +9948,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         // BROWSER MODE — existing recovery logic
         const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
         if (sinceLastPoll >= 4) {
-            console.log(`[b106] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
+            console.log(`[b107] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
                 if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
             } catch(e) {
-                console.warn('[b106] Recovery poll failed:', e.message);
+                console.warn('[b107] Recovery poll failed:', e.message);
                 if (el) el.textContent = '🟢 Watching';
             }
         }
