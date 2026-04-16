@@ -5844,12 +5844,12 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
                 label: `${STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
             };
 
-            const posVixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-            const posIvPctl = (posVixHistory && posVixHistory.length >= 5) ? BS.ivPercentile(STATE.live.vix, posVixHistory) : 50; // Gemini fix
-            const posSpots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
+            const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
+            const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(STATE.live.vix, vixHistory) : 50; // Gemini fix
+            const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
 
-            const posBnfCands = generateCandidates(STATE.bnfChain, posSpots.bnfSpot, 'BNF', STATE.bnfExpiry, posSpots.vix, positioningBias, posIvPctl);
-            const posNfCands = generateCandidates(STATE.nfChain, posSpots.nfSpot, 'NF', STATE.nfExpiry, posSpots.vix, positioningBias, posIvPctl);
+            const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
+            const posNfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
             const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
 
             STATE.positioningCandidates = applyFreeCapitalFilter(allPosCands).slice(0, 10);
@@ -7142,14 +7142,14 @@ async function takeTrade(candidateId, isPaper = false) {
             regime_detail: STATE.institutionalRegime?.regimeDetail || null,
             fii_deriv_net: STATE.institutionalRegime ? (parseFloat(STATE.morningInput?.fiiIdxFut || 0) + parseFloat(STATE.morningInput?.fiiStkFut || 0)) : null,
             absorption_ratio: STATE.institutionalRegime?.absorptionRatio ?? null,
-            contrarian_pcr: Array.isArray(STATE.contrarianPCR) && STATE.contrarianPCR.length > 0 ? STATE.contrarianPCR[0]?.type || null : null,
+            contrarian_pcr: STATE.contrarianPCR?.signal || null,
             // Bias detail — all 7 signal votes
             bias_signals: STATE.live.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
             morning_bias: STATE.morningBias?.label || null,
             bias_drift: STATE.biasDrift ?? 0,
             upstox_agrees: STATE.live.bias?.upstoxAgrees ?? null,
             // Breadth
-            bnf_breadth_pct: STATE.bnfBreadth?.weightedPct ?? null,
+            bnf_breadth_pct: STATE.bnfBreadth?.pct ?? null,
             nf50_advancing: STATE.nf50Breadth?.advancing ?? null,
             // Global
             dow_close: STATE.globalDirection?.dowClose ?? null,
@@ -7357,7 +7357,10 @@ async function logManualTrade() {
         max_profit: maxProfit,
         max_loss: maxLoss,
         is_credit: isCredit,
-        ...(() => { const fa = STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile) : null; return { force_alignment: fa?.aligned ?? 0, force_f1: fa?.f1 ?? 0, force_f2: fa?.f2 ?? 0, force_f3: fa?.f3 ?? 0 }; })(),
+        force_alignment: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).aligned : 0,
+        force_f1: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f1 : 0,
+        force_f2: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f2 : 0,
+        force_f3: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f3 : 0,
         entry_pcr: indexKey === 'BNF' ? (STATE.live?.pcr || STATE.baseline?.pcr) : (STATE.nfChain?.pcr || null),
         entry_futures_premium: indexKey === 'BNF' ? (STATE.live?.futuresPremBnf || STATE.baseline?.futuresPremBnf) : (STATE.nfChain?.futuresPremium || null),
         entry_max_pain: indexKey === 'BNF' ? (STATE.live?.maxPainBnf ?? STATE.bnfChain?.maxPain) : (STATE.nfChain?.maxPain ?? null),
@@ -7397,7 +7400,7 @@ async function logManualTrade() {
             morning_bias: STATE.morningBias?.label || null,
             bias_drift: STATE.biasDrift ?? 0,
             regime: STATE.institutionalRegime?.regime || null,
-            bnf_breadth_pct: STATE.bnfBreadth?.weightedPct ?? null,
+            bnf_breadth_pct: STATE.bnfBreadth?.pct ?? null,
             dow_close: STATE.globalDirection?.dowClose ?? null,
             crude_settle: STATE.globalDirection?.crudeSettle ?? null,
             gap_sigma: STATE.gapInfo?.sigma ?? null,
@@ -7678,7 +7681,7 @@ function renderBrainInsights() {
 }
 
 function renderBrainForTrade(tradeId) {
-    const data = STATE.brainInsights?.positions?.[tradeId] || STATE.brainInsights?.positions?.[String(tradeId)];
+    const data = STATE.brainInsights?.positions?.[tradeId];
     if (!data) return '';
     const v = data.verdict;
     const insights = data.insights || [];
@@ -9220,10 +9223,12 @@ function restoreMorningData(cloudConfig) {
     // Restore morning bias (the plan — survives device change via Supabase)
     const biasCloud = cloudConfig?.morning_bias;
     const biasData = (biasCloud?.date === today) ? biasCloud : data;
-    if (biasData?.biasLabel && biasData?.biasNet !== undefined) {
-        // Use biasLabel/biasNet from morning_bias config if available, else from morning_inputs
-        const bl = biasData.biasLabel || biasData.label;
-        const bn = biasData.biasNet ?? biasData.net;
+    const biasLabel = biasData?.biasLabel || biasData?.label;
+    const biasNet = biasData?.biasNet ?? biasData?.net;
+    if (biasLabel && biasNet !== undefined && biasNet !== null) {
+        // Restore morningBias — field names vary (biasLabel vs label) depending on save path
+        const bl = biasLabel;
+        const bn = biasNet;
         STATE.morningBias = {
             label: bl,
             net: bn,
@@ -9680,7 +9685,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b108' }
+            { metric: 'App Version', value: 'v2.1 b109' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -9795,7 +9800,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (STATE.baseline && API.isMarketHours() && !STATE.isWatching) {
         console.log(`[b97] Auto-restart: baseline exists, market open, ${STATE.pollHistory.length} polls restored`);
         // Collapse morning section (already locked)
-        const morningEl = document.getElementById('morning-full');
+        const morningEl = document.getElementById('morning-inputs');
         if (morningEl) morningEl.style.display = 'none';
         const lockBtn = document.getElementById('btn-lock');
         if (lockBtn) {
