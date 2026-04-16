@@ -2119,22 +2119,54 @@ def position_verdict(trade, insights, regime, ctx):
             elif ci < 0:
                 danger += 5
 
-    # Spot cushion from sell strike — direct check (b104 fix: only via insights before)
-    # IB exempt: sells ATM by design, cushion is always ~0
+    # b115: Breakeven cushion — the REAL danger line, not sell strike
+    # be_upper = upper breakeven (IC/IB/Bear Call), be_lower = lower breakeven (IC/IB/Bull Put)
+    be_upper = trade.get('be_upper') or trade.get('beUpper')
+    be_lower = trade.get('be_lower') or trade.get('beLower')
     sell_strike = trade.get('sell_strike', 0)
     spot = trade.get('current_spot', 0)
-    if sell_strike and spot and is_credit and not is_ib:
+    if spot and (be_upper or be_lower):
+        vix = ctx.get('vix', 20)
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300
+        if is_4leg and be_upper and be_lower:
+            upper_cushion = be_upper - spot
+            lower_cushion = spot - be_lower
+            near_cushion = min(upper_cushion, lower_cushion)
+            near_label = f"upper BE {be_upper}" if upper_cushion < lower_cushion else f"lower BE {be_lower}"
+        elif be_upper:
+            near_cushion = be_upper - spot
+            near_label = f"BE {be_upper}"
+        else:
+            near_cushion = spot - be_lower
+            near_label = f"BE {be_lower}"
+        if daily_sigma > 0:
+            cushion_sigma = near_cushion / daily_sigma
+            if near_cushion <= 0:
+                danger += 40
+                reasons.append(f"BREACHED — spot past {near_label}")
+            elif cushion_sigma < 0.15:
+                danger += 30
+                reasons.append(f"Only {near_cushion:.0f}pts to {near_label} ({cushion_sigma:.2f}σ)")
+            elif cushion_sigma < 0.30:
+                danger += 20
+                reasons.append(f"Thin BE cushion {near_cushion:.0f}pts to {near_label}")
+            elif cushion_sigma < 0.50:
+                danger += 10
+                reasons.append(f"Approaching {near_label} ({near_cushion:.0f}pts)")
+        # b115: Early BOOK — profitable + near breakeven = take money now
+        if pnl > 0 and near_cushion > 0 and daily_sigma > 0 and near_cushion / daily_sigma < 0.20:
+            return {"action": "BOOK", "urgency": "NOW",
+                    "reason": f"₹{pnl:.0f} profit but only {near_cushion:.0f}pts to {near_label}. Premium at risk — lock in now."}
+    elif sell_strike and spot and is_credit and not is_ib:
+        # Fallback: use sell_strike if no breakeven stored (old trades)
         cushion = abs(sell_strike - spot)
         vix = ctx.get('vix', 20)
-        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300  # √252=15.87, consistent with _daily_sigma
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300
         if daily_sigma > 0:
             cushion_sigma = cushion / daily_sigma
             if cushion_sigma < 0.25:
                 danger += 25
                 reasons.append(f"Only {cushion:.0f}pts ({cushion_sigma:.2f}σ) from sell strike")
-            elif cushion_sigma < 0.5:
-                danger += 15
-                reasons.append(f"Thin cushion ({cushion_sigma:.2f}σ from sell)")
 
     # Momentum threat
     if momentum_threat:
@@ -2342,6 +2374,16 @@ def _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot, daily_sig, idx
         if sell_k2 is not None:
             cand.update({'sellStrike2': sell_k2, 'sellType2': sell_t2, 'sellLTP2': round(sl2, 2),
                          'buyStrike2': buy_k2, 'buyType2': buy_t2, 'buyLTP2': round(bl2, 2)})
+        # b115: Breakeven — real danger lines
+        if stype in ('IRON_BUTTERFLY', 'IRON_CONDOR'):
+            cand['beUpper'] = round(sell_k + net)
+            cand['beLower'] = round((sell_k2 if sell_k2 else sell_k) - net)
+        elif credit:
+            if sell_t == 'CE': cand['beUpper'] = round(sell_k + net)
+            else: cand['beLower'] = round(sell_k - net)
+        else:
+            if buy_t == 'CE': cand['beUpper'] = round(buy_k + net)
+            else: cand['beLower'] = round(buy_k - net)
         return cand
     except: return None
 
@@ -4294,7 +4336,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 stopLoss: tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
                 intradayTheta: netTheta > 0 ? netTheta : null,
                 forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
-                index: isBNF ? 'BNF' : 'NF', expiry, tDTE
+                index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
+                // b115: Real breakeven lines
+                beUpper: Math.round(upperBE),
+                beLower: Math.round(lowerBE)
             });
             // Wall + Gamma on last pushed candidate
             const icCand = candidates[candidates.length - 1];
@@ -4381,7 +4426,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             stopLoss: tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
             intradayTheta: netTheta > 0 ? netTheta : null,
             forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
-            index: isBNF ? 'BNF' : 'NF', expiry, tDTE
+            index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
+            // b115: Real breakeven lines
+            beUpper: Math.round(ibUpperBE),
+            beLower: Math.round(ibLowerBE)
         });
         // Wall + Gamma on last pushed candidate
         const ibCand = candidates[candidates.length - 1];
@@ -4460,7 +4508,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             targetProfit: Math.round(maxProfit * 0.5),
             stopLoss: Math.round(maxLoss * 0.5),
             forces: getForceAlignment('DOUBLE_DEBIT', biasResult, vix, ivPercentile),
-            index: isBNF ? 'BNF' : 'NF', expiry, tDTE
+            index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
+            // b115: DDS breakevens — profit if spot moves > totalDebit from ATM
+            beUpper: Math.round(atm + totalDebit),
+            beLower: Math.round(atm - totalDebit)
         });
         // Wall + Gamma on last pushed candidate
         const ddsCand = candidates[candidates.length - 1];
@@ -4731,7 +4782,14 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
         lotSize,
         upstoxPop: sellData.pop ?? null,
         sigmaOTM,  // b70: strike distance from ATM in σ (null for IB/IC/debit)
-        intradayTheta: isCredit && Math.abs(netTheta) > 0 ? Math.round(Math.abs(netTheta)) : null
+        intradayTheta: isCredit && Math.abs(netTheta) > 0 ? Math.round(Math.abs(netTheta)) : null,
+        // b115: Breakeven — the REAL danger line (not sell strike)
+        beUpper: isCredit
+            ? (pair.sellType === 'CE' ? Math.round(pair.sell + netPremium) : null)
+            : (pair.buyType === 'CE' ? Math.round(pair.buy + netPremium) : null),
+        beLower: isCredit
+            ? (pair.sellType === 'PE' ? Math.round(pair.sell - netPremium) : null)
+            : (pair.buyType === 'PE' ? Math.round(pair.buy - netPremium) : null)
     };
 }
 
@@ -6211,9 +6269,13 @@ function syncToNative() {
                 max_profit: t.max_profit ?? 0, max_loss: t.max_loss ?? 0,
                 controlIndex: t.controlIndex ?? null, entry_premium: t.entry_premium ?? null,
                 trade_mode: t.trade_mode ?? 'swing',
+                entry_bias: t.entry_bias ?? null,
                 wallDrift: t.wallDrift ? { severity: t.wallDrift.severity, warning: t.wallDrift.warning } : null,
                 vixChange: t.vixSpike ? t.vixSpike.change : 0,
-                peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0
+                peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0,
+                // b115: Real breakeven — critical for brain position_verdict
+                be_upper: t.be_upper ?? t.beUpper ?? null,
+                be_lower: t.be_lower ?? t.beLower ?? null
             }));
             window.NativeBridge.setOpenTrades(JSON.stringify(tradesLite));
         }
@@ -6797,11 +6859,15 @@ async function runBrain() {
             max_profit: t.max_profit ?? 0, max_loss: t.max_loss ?? 0,
             controlIndex: t.controlIndex ?? null, width: t.width ?? null,
             entry_vix: t.entry_vix ?? null, entry_premium: t.entry_premium ?? null,
+            entry_bias: t.entry_bias ?? null,
             trade_mode: t.trade_mode ?? 'swing', paper: t.paper ?? false,
             // b89: Feed wall drift + VIX spike + peak erosion to brain
             wallDrift: t.wallDrift ? { severity: t.wallDrift.severity, warning: t.wallDrift.warning } : null,
             vixChange: t.vixSpike ? t.vixSpike.change : 0,
-            peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0
+            peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0,
+            // b115: Real breakeven — critical for brain position_verdict
+            be_upper: t.be_upper ?? t.beUpper ?? null,
+            be_lower: t.be_lower ?? t.beLower ?? null
         }));
 
         // 4. Candidates — b92: FULL data for brain evaluation (was 7 fields, now 20+)
@@ -7025,18 +7091,28 @@ async function runBrain() {
                     if (!trade) continue;
                     const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
                     const pnl = trade.current_pnl != null ? `₹${trade.current_pnl.toLocaleString()}` : '';
-                    // [b113] Rich position context for BOOK notifications
+                    // [b115] Use real stored breakeven, fall back to approximation
                     const _spot = trade.index_key === 'BNF' ? STATE.live.bnf : STATE.live.nf;
                     const _lot = trade.index_key === 'BNF' ? 30 : 65;
-                    const _netCr = trade.max_profit != null ? Math.round(trade.max_profit / _lot) : null;
-                    const _beU = _netCr ? trade.sell_strike + _netCr : null;
-                    const _beL = _netCr ? trade.sell_strike - _netCr : null;
+                    const _beU = trade.be_upper ?? trade.beUpper ?? null;
+                    const _beL = trade.be_lower ?? trade.beLower ?? null;
+                    const _netCr = (!_beU && !_beL && trade.max_profit != null) ? Math.round(trade.max_profit / _lot) : null;
+                    const _beUfinal = _beU ?? (_netCr ? trade.sell_strike + _netCr : null);
+                    const _beLfinal = _beL ?? (_netCr ? trade.sell_strike - _netCr : null);
                     const _cush = _spot && trade.sell_strike ? Math.round(Math.abs(_spot - trade.sell_strike)) : null;
                     const _pct = trade.max_profit ? Math.round((trade.current_pnl / trade.max_profit) * 100) : null;
+                    // b115: Compute cushion to nearest breakeven
+                    const _nearBE = _spot ? (
+                        _beUfinal && _beLfinal ? Math.min(_beUfinal - _spot, _spot - _beLfinal) :
+                        _beUfinal ? (_beUfinal - _spot) :
+                        _beLfinal ? (_spot - _beLfinal) : null
+                    ) : null;
                     const _richBody = [
                         `${pnl}${_pct != null ? ` (${_pct}% of max)` : ''}`,
-                        _spot && trade.sell_strike ? `Spot ${Math.round(_spot)} | Sold ${trade.sell_strike} | ${_cush}pts cushion` : null,
-                        _beU && _beL ? `BE: ${_beL}/${_beU}` : null
+                        _spot && trade.sell_strike ? `Spot ${Math.round(_spot)} | Sold ${trade.sell_strike} | ${_cush}pts to strike` : null,
+                        _beUfinal && _beLfinal ? `BE: ${_beLfinal}/${_beUfinal}${_nearBE != null ? ` | ${Math.round(_nearBE)}pts buffer` : ''}` :
+                        _beUfinal ? `BE: ${_beUfinal}${_nearBE != null ? ` | ${Math.round(_nearBE)}pts buffer` : ''}` :
+                        _beLfinal ? `BE: ${_beLfinal}${_nearBE != null ? ` | ${Math.round(_nearBE)}pts buffer` : ''}` : null
                     ].filter(Boolean).join(' · ');
                     if (pv.action === 'BOOK' && pv.urgency === 'NOW') {
                         sendNotification(`💰 BOOK ${pnl} ${label}`, _richBody, 'urgent');
@@ -7389,6 +7465,9 @@ async function takeTrade(candidateId, isPaper = false) {
         entry_gamma_risk: cand.gammaRisk ?? null,
         entry_dii_cash: parseFloat(STATE.morningInput?.diiCash) || null,
         entry_absorption_ratio: STATE.institutionalRegime?.absorptionRatio ?? null,
+        // b115: Real breakeven lines — used by brain for position monitoring
+        be_upper: cand.beUpper ?? null,
+        be_lower: cand.beLower ?? null,
         entry_gap_sigma: STATE.gapInfo?.sigma ?? null,
         entry_gap_type: STATE.gapInfo?.type || null,
         prob_profit: cand.probProfit,
@@ -7587,7 +7666,9 @@ async function takeTrade(candidateId, isPaper = false) {
             peak_pnl: 0,
             lots: 1,
             paper: isPaper,
-            trade_mode: trade.trade_mode
+            trade_mode: trade.trade_mode,
+            be_upper: trade.be_upper ?? null,
+            be_lower: trade.be_lower ?? null
         };
         const retry = await DB.insertTrade(essentialTrade);
         if (retry) {
@@ -9113,6 +9194,25 @@ function renderCandidateCard(cand, atm, rank) {
         <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE || '--'}T${cand.brainScore ? ` · <span style="color:${cand.brainScore > 0 ? 'var(--green)' : cand.brainScore < 0 ? 'var(--danger)' : 'var(--text-muted)'};font-weight:600">🧠${cand.brainScore > 0 ? '+' : ''}${cand.brainScore.toFixed(2)}</span>` : ''}</div>
         <div class="v1-legs">${legsText}</div>
         <div class="v1-prem">${premLabel} ₹${cand.netPremium}/share · W:${cand.width}</div>
+        ${(() => {
+            if (cand.beUpper && cand.beLower) {
+                const spot = cand.index === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const upperCush = spot ? Math.round(cand.beUpper - spot) : null;
+                const lowerCush = spot ? Math.round(spot - cand.beLower) : null;
+                const cushStr = (upperCush != null && lowerCush != null)
+                    ? ` <span style="color:var(--text-muted);font-size:9px">(↑${upperCush}pts / ↓${lowerCush}pts)</span>` : '';
+                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()} ↔ ${cand.beUpper.toLocaleString()}</span>${cushStr}</div>`;
+            } else if (cand.beUpper) {
+                const spot = cand.index === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const cush = spot ? Math.round(cand.beUpper - spot) : null;
+                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beUpper.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
+            } else if (cand.beLower) {
+                const spot = cand.index === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const cush = spot ? Math.round(spot - cand.beLower) : null;
+                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
+            }
+            return '';
+        })()}
         ${cand.sigmaOTM ? `<div style="font-size:10px;padding:2px 8px;color:${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? 'var(--green)' : cand.sigmaOTM < 0.5 ? 'var(--danger)' : 'var(--warn)'}">Strike: ${cand.sigmaOTM}σ OTM ${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? '● SWEET SPOT' : cand.sigmaOTM > 0.8 ? '● thin credit zone' : '● too close'}</div>` : ''}
         ${renderBrainForCandidate(cand.id)}
 
@@ -9236,6 +9336,30 @@ function renderTradeCard(t, isPaper) {
             ${t.vixSpike && t.vixSpike.change >= 0.5 ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.vixSpike.change >= 2.0 ? 'var(--danger)' : t.vixSpike.change >= 1.0 ? 'var(--warn)' : 'var(--text-muted)'}">
                 🌡️ VIX ${t.vixSpike.entryVix.toFixed(1)}→${t.vixSpike.currentVix.toFixed(1)} (${t.vixSpike.change > 0 ? '+' : ''}${t.vixSpike.change}${t.vixSpike.change >= 2.0 ? ' ⚠️ SPIKE — EXIT' : t.vixSpike.change >= 1.0 ? ' — rising' : ''})
             </div>` : ''}
+            ${(() => {
+                const beU = t.be_upper ?? t.beUpper ?? null;
+                const beL = t.be_lower ?? t.beLower ?? null;
+                const curSpot = t.index_key === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                if (!curSpot || (!beU && !beL)) return '';
+                let beText = '', cushionPts = null, danger = false;
+                if (beU && beL) {
+                    const uCush = Math.round(beU - curSpot);
+                    const lCush = Math.round(curSpot - beL);
+                    cushionPts = Math.min(uCush, lCush);
+                    danger = cushionPts < 0;
+                    beText = `BE: ${beL.toLocaleString()} ↔ ${beU.toLocaleString()} | ↑${uCush}pts / ↓${lCush}pts`;
+                } else if (beU) {
+                    cushionPts = Math.round(beU - curSpot);
+                    danger = cushionPts < 0;
+                    beText = `BE: ${beU.toLocaleString()} | ${Math.abs(cushionPts)}pts ${cushionPts < 0 ? '⚠️ BREACHED' : 'buffer'}`;
+                } else {
+                    cushionPts = Math.round(curSpot - beL);
+                    danger = cushionPts < 0;
+                    beText = `BE: ${beL.toLocaleString()} | ${Math.abs(cushionPts)}pts ${cushionPts < 0 ? '⚠️ BREACHED' : 'buffer'}`;
+                }
+                const color = danger ? 'var(--danger)' : cushionPts < 50 ? 'var(--warn)' : 'var(--text-muted)';
+                return `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${color};border-top:1px solid var(--border)">📍 ${beText}</div>`;
+            })()}
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
@@ -9991,7 +10115,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b114' }
+            { metric: 'App Version', value: 'v2.1 b115' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
