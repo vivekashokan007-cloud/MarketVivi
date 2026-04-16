@@ -9244,10 +9244,9 @@ function renderCandidateCard(cand, atm, rank) {
         </div>
 
         <div class="v1-align ${alignClass}">${alignLabel}</div>
-        ${forces.aligned >= 2 ? `
         <div class="v1-trade-btns">
-            ${(() => {
-                // b105: ML badge
+            ${forces.aligned >= 2 ? (() => {
+                // b116: ML badge + REAL TRADE button (only when forces aligned >= 2)
                 const mlBadge = cand.p_ml != null
                     ? `<div style="font-size:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
                            <span style="background:${cand.mlAction==='TAKE'?'#388E3C':cand.mlAction==='WATCH'?'#F57C00':cand.mlAction==='BLOCKED'?'#7B2FC4':'#D32F2F'};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">
@@ -9258,15 +9257,14 @@ function renderCandidateCard(cand, atm, rank) {
                        </div>
                        ${cand.mlOodWarn?.length ? `<div style="font-size:9px;color:var(--danger);margin-bottom:4px">⚠️ ${cand.mlOodWarn[0]}</div>` : ''}`
                     : '';
-                // BLOCKED = model has zero training data — disable Take button
                 const isBlocked = cand.mlOodBlocked === true;
                 const realBtn = isBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
                     : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)">📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
-            })()}
+            })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
-        </div>` : ''}
+        </div>
     </div>`;
 }
 
@@ -10122,7 +10120,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b116' }
+            { metric: 'App Version', value: 'v2.1 b117' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
