@@ -5117,16 +5117,17 @@ async function initialFetch() {
         document.getElementById('btn-lock').textContent = '✅ Scanned';
         document.getElementById('btn-stop').style.display = 'inline-block';
 
-        // b110: Compute chain profiles NOW for native mode.
-        // runBrain() (Pyodide path) is skipped on APK — STATE._lastChainProfile never gets set.
-        // syncToNative sends bnfProfile: STATE._lastChainProfile?.bnf — always null without this.
-        // Must run BEFORE startWatchLoop → syncToNative fires.
+        // b111: Compute chain profiles for native mode and push to Kotlin immediately.
+        // runBrain() Pyodide path never runs on APK -> STATE._lastChainProfile always null.
+        // startWatchLoop() returns early if STATE.isWatching=true (auto-restart case).
+        // lightFetch disabled in native mode. syncToNative must fire EXPLICITLY here.
         try {
             STATE._lastChainProfile = {
                 bnf: computeChainProfile(STATE.bnfChain, spots.bnfSpot, STATE.baseline?.bnfOHLC),
                 nf: computeChainProfile(STATE.nfChain, spots.nfSpot, STATE.baseline?.nfOHLC)
             };
-        } catch(e) { console.warn('[b110] chainProfile compute failed:', e.message); }
+            syncToNative(); // Push rich bnfProfile to Kotlin immediately after Lock & Scan
+        } catch(e) { console.warn('[b111] chainProfile+sync failed:', e.message); }
 
         // Auto-collapse morning section
         collapseMorning();
@@ -9771,7 +9772,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b111' }
+            { metric: 'App Version', value: 'v2.1 b112' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
