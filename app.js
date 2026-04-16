@@ -6819,14 +6819,27 @@ async function runBrain() {
                     if (!trade) continue;
                     const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
                     const pnl = trade.current_pnl != null ? `₹${trade.current_pnl.toLocaleString()}` : '';
+                    // [b113] Rich position context for BOOK notifications
+                    const _spot = trade.index_key === 'BNF' ? STATE.live.bnf : STATE.live.nf;
+                    const _lot = trade.index_key === 'BNF' ? 30 : 65;
+                    const _netCr = trade.max_profit != null ? Math.round(trade.max_profit / _lot) : null;
+                    const _beU = _netCr ? trade.sell_strike + _netCr : null;
+                    const _beL = _netCr ? trade.sell_strike - _netCr : null;
+                    const _cush = _spot && trade.sell_strike ? Math.round(Math.abs(_spot - trade.sell_strike)) : null;
+                    const _pct = trade.max_profit ? Math.round((trade.current_pnl / trade.max_profit) * 100) : null;
+                    const _richBody = [
+                        `${pnl}${_pct != null ? ` (${_pct}% of max)` : ''}`,
+                        _spot && trade.sell_strike ? `Spot ${Math.round(_spot)} | Sold ${trade.sell_strike} | ${_cush}pts cushion` : null,
+                        _beU && _beL ? `BE: ${_beL}/${_beU}` : null
+                    ].filter(Boolean).join(' · ');
                     if (pv.action === 'BOOK' && pv.urgency === 'NOW') {
-                        sendNotification(`💰 BOOK ${pnl} ${label}`, `${pv.reason}`, 'urgent');
+                        sendNotification(`💰 BOOK ${pnl} ${label}`, _richBody, 'urgent');
                     } else if (pv.action === 'EXIT' && pv.urgency === 'NOW') {
                         sendNotification(`🚨 EXIT ${pnl} ${label}`, `${pv.reason}`, 'urgent');
                     } else if (pv.action === 'EXIT' && pv.urgency === 'SOON') {
                         sendNotification(`⚠️ EXIT SOON ${label}`, `${pnl}. ${pv.reason}`, 'important');
                     } else if (pv.action === 'BOOK') {
-                        addNotificationLog(`💰 BOOK ${label}`, `${pnl}. ${pv.reason}`, 'important');
+                        addNotificationLog(`💰 BOOK ${label}`, _richBody, 'important');
                     } else {
                         addNotificationLog(`🧠 ${pv.action} ${label}`, pv.reason, 'routine');
                     }
@@ -8886,7 +8899,7 @@ function renderCandidateCard(cand, atm, rank) {
                 <span class="v1-tier">${dots}</span>
                 ${cand.wallTag ? `<span class="v1-wall-tag">${cand.wallTag}</span>` : ''}
                 ${cand.gammaTag ? `<span class="v1-gamma-tag">${cand.gammaTag}</span>` : ''}
-                ${(cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') ? `<span style="background:#D32F2F;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">⏱ EXIT TODAY</span>` : ''}
+                ${(cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') && cand.tDTE <= 1 ? `<span style="background:#D32F2F;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">⏱ EXIT TODAY</span>` : ''}
                 ${vixTrendBadge}
             </div>
             <span class="v1-rank">${cand._posMatch ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">📌+⚡</span>' : cand._posOnly ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">⚡ TMR</span>' : ''}${rank === 1 && cand.brainScore > 0 ? '🧠 ' : ''}#${rank || ''}</span>
@@ -9021,7 +9034,7 @@ function renderTradeCard(t, isPaper) {
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
             <button class="btn-close-profit" onclick="closeTrade('${t.id}', 'Brain said BOOK')">💰 Book Profit</button>
-            <button class="btn-close-loss" onclick="closeTrade('${t.id}', 'Stop loss')">🛑 Exit</button>
+            <button class="btn-close-loss" onclick="closeTrade('${t.id}', ${(t.current_pnl ?? 0) > 0 ? "'Manual exit'" : "'Stop loss'"})">🛑 Exit</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
             <summary style="cursor:pointer;font-size:10px;color:var(--text-muted);user-select:none">More exit reasons ▸</summary>
@@ -9772,7 +9785,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b112' }
+            { metric: 'App Version', value: 'v2.1 b113' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
