@@ -8993,6 +8993,11 @@ function renderWatchlist() {
         </div>
         <button id="btn-save-global-dir" class="btn btn-sm" style="margin-top:6px;padding:4px 16px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer">💾 Save</button>
         <span id="global-dir-saved" style="font-size:10px;color:var(--green);margin-left:8px;display:none">✓ Saved</span>
+        <div id="global-dir-status" style="font-size:10px;color:var(--text-muted);margin-top:4px">${
+            (gd.dowNow || gd.crudeNow || gd.giftNow)
+            ? `Loaded: ${STATE.globalDirection._date || API.todayIST()} · GIFT ${gd.giftNow || '--'}, Dow ${gd.dowNow || '--'}, Crude ${gd.crudeNow || '--'}`
+            : ''
+        }</div>
         ${(dowDir || crudeDir || giftDir) ? `<div style="font-size:11px;margin-top:4px">
             ${giftDir ? `GIFT: ${dirIcon(giftDir)}` : ''} ${dowDir ? `Dow: ${dirIcon(dowDir)}` : ''} ${crudeDir ? `Crude: ${dirIcon(crudeDir)}` : ''}
         </div>` : ''}
@@ -9695,6 +9700,7 @@ function restoreGlobalContext(cloudConfig) {
     if (parsed.dowNow) STATE.globalDirection.dowNow = parsed.dowNow;
     if (parsed.crudeNow) STATE.globalDirection.crudeNow = parsed.crudeNow;
     if (parsed.giftNow) STATE.globalDirection.giftNow = parsed.giftNow;
+    if (parsed._date) STATE.globalDirection._date = parsed._date;
 }
 
 async function loadOpenTrade() {
@@ -10120,7 +10126,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b118' }
+            { metric: 'App Version', value: 'v2.1 b119' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
