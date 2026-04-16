@@ -4331,9 +4331,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
                 ev, netTheta, isCredit: true, lotSize,
                 netDelta: +(Math.abs(chainDelta(parsed.strikes, sellCall, 'CE', spot, T, vol)) - Math.abs(chainDelta(parsed.strikes, sellPut, 'PE', spot, T, vol))).toFixed(4),
                 riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-                // b91: IC always intraday — target/SL based on daily theta capture, not full-DTE max
-                targetProfit: tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
-                stopLoss: tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
+                // b116: IC always intraday — target 50% of max profit, SL 35% of max loss
+                // Previous theta formula (tDTE>2 → netTheta) was wrong: gave ₹357 target on ₹17K max profit
+                targetProfit: Math.round(maxProfit * 0.5),
+                stopLoss: Math.round(maxLoss * 0.35),
                 intradayTheta: netTheta > 0 ? netTheta : null,
                 forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
                 index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
@@ -4421,9 +4422,10 @@ function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPe
             ev, netTheta, isCredit: true, lotSize,
             netDelta: 0, // IB is delta-neutral at entry
             riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-            // b91: IB always intraday — target/SL based on daily theta capture
-            targetProfit: tDTE > 2 && netTheta > 0 ? Math.round(netTheta * 0.5) : Math.round(maxProfit * 0.5),
-            stopLoss: tDTE > 2 && netTheta > 0 ? netTheta : Math.round(maxProfit),
+            // b116: IB always intraday — target 50% of max profit, SL 35% of max loss
+            // Previous theta formula (tDTE>2 → netTheta) was wrong: gave ₹357 target on ₹17K max profit
+            targetProfit: Math.round(maxProfit * 0.5),
+            stopLoss: Math.round(maxLoss * 0.35),
             intradayTheta: netTheta > 0 ? netTheta : null,
             forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
             index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
@@ -4750,11 +4752,16 @@ function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, t
 
     // R:R and targets
     const riskReward = maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--';
-    // Intraday far-DTE: target/SL based on daily theta capture, not full-DTE max
-    const useIntradayTheta = STATE.tradeMode === 'intraday' && tDTE > 2 && isCredit && Math.abs(netTheta) > 0;
+    // b116: Theta formula ONLY for long-dated swing (DTE > 10) — not intraday, not short swing
+    // For intraday any DTE: target = 50% max profit (you exit same day)
+    // For swing DTE ≤ 10: target = 50% max profit
+    // For swing DTE > 10 credit: target = daily theta capture (hold for decay)
+    const useIntradayTheta = STATE.tradeMode !== 'intraday' && tDTE > 10 && isCredit && Math.abs(netTheta) > 0;
     const targetProfit = useIntradayTheta ? Math.round(Math.abs(netTheta) * 0.5) : Math.round(maxProfit * 0.5);
     const stopLoss = isCredit
-        ? (useIntradayTheta ? Math.round(Math.abs(netTheta)) : Math.round(maxProfit))
+        ? (useIntradayTheta
+            ? Math.round(Math.abs(netTheta))
+            : Math.min(Math.round(maxProfit), Math.round(maxLoss * 0.6)))  // can't lose more than you target to make, capped at 60% maxLoss
         : Math.round(maxLoss * 0.5);
 
     const id = `${sType}_${isBNF ? 'BNF' : 'NF'}_${pair.sell}_${pair.buy}_W${width}`;
@@ -9225,7 +9232,7 @@ function renderCandidateCard(cand, atm, rank) {
             ${CALIBRATION.win_rates[cand.type] && CALIBRATION.win_rates[cand.type].total > 0 ? `<div class="v1-metric"><span class="v1-label">Track Record</span><span class="v1-val" style="color:${CALIBRATION.win_rates[cand.type].rate >= 0.7 ? 'var(--green)' : CALIBRATION.win_rates[cand.type].rate >= 0.4 ? 'var(--warn)' : 'var(--danger)'}">${CALIBRATION.win_rates[cand.type].verdict} ${CALIBRATION.win_rates[cand.type].wins}/${CALIBRATION.win_rates[cand.type].total} (${(CALIBRATION.win_rates[cand.type].rate * 100).toFixed(0)}%)</span></div>` : ''}
         </div>
 
-        <div class="v1-target">🎯 Target: ₹${cand.targetProfit?.toLocaleString() || '--'} | 🔴 SL: ₹${cand.stopLoss?.toLocaleString() || '--'}${cand.intradayTheta && cand.tDTE > 2 ? ' <span style="font-size:9px;color:var(--text-muted)">(intraday Θ)</span>' : ''}</div>
+        <div class="v1-target">🎯 Target: ₹${cand.targetProfit?.toLocaleString() || '--'} | 🔴 SL: ₹${cand.stopLoss?.toLocaleString() || '--'}${cand.intradayTheta && (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? ' <span style="font-size:9px;color:var(--text-muted)">(intraday Θ)</span>' : ''}</div>
         ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${cand.estCost.toLocaleString()} (${cand.estCostPct}% of max) · Net profit: ₹${(cand.netMaxProfit ?? 0).toLocaleString()}</div>` : ''}
 
         <div class="v1-forces">
@@ -10115,7 +10122,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b115' }
+            { metric: 'App Version', value: 'v2.1 b116' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
