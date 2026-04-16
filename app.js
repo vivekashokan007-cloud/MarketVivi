@@ -8980,13 +8980,13 @@ function renderWatchlist() {
             </div>
             <div class="input-group compact">
                 <label>Dow Now</label>
-                <input type="text" inputmode="text" id="in-dow-now" class="input-field input-sm" placeholder="46120"
+                <input type="text" inputmode="text" id="in-dow-now" class="input-field input-sm" placeholder="e.g. 46120"
                     value="${gd.dowNow ?? ''}">
                 ${dowPct !== null ? `<div style="font-size:10px;color:${dowPct < 0 ? 'var(--danger)' : dowPct > 0 ? 'var(--green)' : 'var(--text-muted)'}">${dowPct > 0 ? '+' : ''}${dowPct}% ${dirIcon(dowDir)}</div>` : ''}
             </div>
             <div class="input-group compact">
                 <label>Crude Now</label>
-                <input type="text" inputmode="text" id="in-crude-now" class="input-field input-sm" placeholder="98.1"
+                <input type="text" inputmode="text" id="in-crude-now" class="input-field input-sm" placeholder="e.g. 85.0"
                     value="${gd.crudeNow ?? ''}">
                 ${crudePct !== null ? `<div style="font-size:10px;color:${crudePct > 0 ? 'var(--danger)' : crudePct < 0 ? 'var(--green)' : 'var(--text-muted)'}">${crudePct > 0 ? '+' : ''}${crudePct}% ${dirIcon(crudeDir)} India</div>` : ''}
             </div>
@@ -10120,7 +10120,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b117' }
+            { metric: 'App Version', value: 'v2.1 b118' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -10380,6 +10380,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // Re-sync context back to Kotlin
                 syncToNative();
+                // b118: Re-restore global direction on resume — STATE resets on background kill
+                try {
+                    const freshConfig = await DB.getConfig('global_direction');
+                    if (freshConfig) restoreGlobalContext({ global_direction: freshConfig });
+                } catch { /* non-critical */ }
             } catch(e) {
                 console.warn('[Phase 4] Kotlin pull failed:', e.message);
             }
