@@ -6020,9 +6020,55 @@ function syncToNative() {
         }
         // 5. Phase 2: Full context — Kotlin runs full brain in background
         if (window.NativeBridge.setContext && STATE.live) {
+            // Compute daily P&L and trade counts (same logic as WebView context_json)
+            const _today = API.todayIST();
+            const _todayTrades = (STATE.openTrades || []).filter(t => {
+                const d = t.entry_date ? t.entry_date.split('T')[0] : '';
+                return d === _today;
+            });
+            const _closedToday = (STATE._brainTradesCache || []).filter(t => {
+                const d = t.exit_date ? t.exit_date.split('T')[0] : '';
+                return d === _today && t.status === 'CLOSED';
+            });
+            const _dailyPnl = _closedToday.filter(t => !t.paper).reduce((s, t) => s + (t.actual_pnl ?? 0), 0);
+            const _dailyRealCount = _closedToday.filter(t => !t.paper).length + _todayTrades.filter(t => !t.paper).length;
+
+            // Compute globalDirection pct changes
+            const _gd = STATE.globalDirection || {};
+            const _ec = STATE.eveningClose || {};
+            const _dowPct = (_gd.dowClose && _gd.dowNow) ? +((_gd.dowNow - _gd.dowClose) / _gd.dowClose * 100).toFixed(2) : null;
+            const _crudePct = (_gd.crudeSettle && _gd.crudeNow) ? +((_gd.crudeNow - _gd.crudeSettle) / _gd.crudeSettle * 100).toFixed(2) : null;
+            const _giftPct = (_ec.gift && _gd.giftNow) ? +((_gd.giftNow - _ec.gift) / _ec.gift * 100).toFixed(2) : null;
+
             const ctx = {
+                // ── Chain profiles (22-field computed summaries) ──
                 bnfProfile: STATE._lastChainProfile?.bnf ?? null,
                 nfProfile: STATE._lastChainProfile?.nf ?? null,
+                // ── Raw chains WITH computed headers (required by generate_candidates) ──
+                // brain.py Phase 3 gate: chain_data.get('strikes') AND chain_data.get('atm')
+                bnfChain: STATE.bnfChain ? {
+                    strikes: STATE.bnfChain.strikes,
+                    atm: STATE.bnfChain.atm,
+                    allStrikes: STATE.bnfChain.allStrikes,
+                    callWallStrike: STATE.bnfChain.callWallStrike,
+                    putWallStrike: STATE.bnfChain.putWallStrike,
+                    atmIv: STATE.bnfChain.atmIv,
+                    maxPain: STATE.bnfChain.maxPain,
+                    callWallOI: STATE.bnfChain.callWallOI,
+                    putWallOI: STATE.bnfChain.putWallOI
+                } : null,
+                nfChain: STATE.nfChain ? {
+                    strikes: STATE.nfChain.strikes,
+                    atm: STATE.nfChain.atm,
+                    allStrikes: STATE.nfChain.allStrikes,
+                    callWallStrike: STATE.nfChain.callWallStrike,
+                    putWallStrike: STATE.nfChain.putWallStrike,
+                    atmIv: STATE.nfChain.atmIv,
+                    maxPain: STATE.nfChain.maxPain,
+                    callWallOI: STATE.nfChain.callWallOI,
+                    putWallOI: STATE.nfChain.putWallOI
+                } : null,
+                // ── Standard context ──
                 bnfBreadth: STATE.bnfBreadth ? { pct: STATE.bnfBreadth.weightedPct, adv: STATE.bnfBreadth.advancing, dec: STATE.bnfBreadth.declining } : null,
                 fiiHistory: (STATE.premiumHistory || []).slice(0, 5).map(p => ({
                     date: p.date, fiiCash: p.fii_cash, fiiShort: p.fii_short_pct, vix: p.vix
@@ -6032,10 +6078,39 @@ function syncToNative() {
                 tradeMode: STATE.tradeMode || 'swing',
                 bnfDTE: STATE.baseline?.bnfTDTE ?? 5,
                 nfDTE: STATE.baseline?.nfTDTE ?? 2,
+                // ── Expiry dates (required by generate_candidates) ──
+                bnfExpiry: STATE.bnfExpiry ?? null,
+                nfExpiry: STATE.nfExpiry ?? null,
+                // ── Market context ──
+                vix: STATE.live?.vix ?? STATE.baseline?.vix ?? null,
                 marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN',
-                overnightDelta: STATE.overnightDelta ? { summary: STATE.overnightDelta.summary } : null,
+                gap: STATE.gapInfo ? { sigma: STATE.gapInfo.sigma ?? 0, pts: STATE.gapInfo.gap ?? 0, type: STATE.gapInfo.type ?? 'FLAT' } : null,
+                overnightDelta: STATE.overnightDelta ? {
+                    summary: STATE.overnightDelta.summary,
+                    signals: (STATE.overnightDelta.signals || []).map(s => ({ name: s.name, dir: s.dir, pct: s.pct }))
+                } : null,
                 biasDrift: STATE.biasDrift ?? 0,
                 rangeSigma: STATE.rangeSigma ?? null,
+                // ── External signals (Dow, Crude, GIFT) ──
+                globalDirection: (_gd.dowClose || _gd.crudeSettle || _ec.gift) ? {
+                    dowClose: _gd.dowClose ?? null,
+                    crudeSettle: _gd.crudeSettle ?? null,
+                    giftPrev: _ec.gift ?? null,
+                    dowPct: _dowPct,
+                    crudePct: _crudePct,
+                    giftPct: _giftPct
+                } : null,
+                // ── Institutional regime ──
+                institutionalRegime: STATE.institutionalRegime ? {
+                    regime: STATE.institutionalRegime.regime ?? null,
+                    creditConfidence: STATE.institutionalRegime.creditConfidence ?? null,
+                    absorptionRatio: STATE.institutionalRegime.absorptionRatio ?? null
+                } : null,
+                // ── Daily discipline ──
+                dailyPnl: _dailyPnl,
+                dailyTradeCount: _dailyRealCount,
+                scanAgeMin: STATE.lastScanTime ? Math.floor((Date.now() - STATE.lastScanTime) / 60000) : null,
+                // ── Signal accuracy + verdicts ──
                 signalAccuracy: STATE.signalAccuracyStats ? { pct: STATE.signalAccuracyStats.pct, total: STATE.signalAccuracyStats.total } : null,
                 priorVerdict: STATE.brainInsights?.verdict ? {
                     action: STATE.brainInsights.verdict.action,
@@ -9685,7 +9760,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b109' }
+            { metric: 'App Version', value: 'v2.1 b110' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
