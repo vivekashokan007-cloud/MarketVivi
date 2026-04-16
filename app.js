@@ -5117,6 +5117,17 @@ async function initialFetch() {
         document.getElementById('btn-lock').textContent = '✅ Scanned';
         document.getElementById('btn-stop').style.display = 'inline-block';
 
+        // b110: Compute chain profiles NOW for native mode.
+        // runBrain() (Pyodide path) is skipped on APK — STATE._lastChainProfile never gets set.
+        // syncToNative sends bnfProfile: STATE._lastChainProfile?.bnf — always null without this.
+        // Must run BEFORE startWatchLoop → syncToNative fires.
+        try {
+            STATE._lastChainProfile = {
+                bnf: computeChainProfile(STATE.bnfChain, spots.bnfSpot, STATE.baseline?.bnfOHLC),
+                nf: computeChainProfile(STATE.nfChain, spots.nfSpot, STATE.baseline?.nfOHLC)
+            };
+        } catch(e) { console.warn('[b110] chainProfile compute failed:', e.message); }
+
         // Auto-collapse morning section
         collapseMorning();
 
@@ -9760,7 +9771,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b110' }
+            { metric: 'App Version', value: 'v2.1 b111' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
