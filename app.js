@@ -6411,16 +6411,17 @@ window.syncFromNative = function(dataJson) {
         // b106 null-guard: Kotlin may push empty/null before first poll runs
         if (!data || typeof data !== 'object') return;
 
-        // Poll history
+        // Poll history — only update if Kotlin has more polls than we do
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
-            if (data.pollHistory.length > 0) {
+            if (data.pollHistory.length > STATE.pollHistory.length) {
                 STATE.pollHistory = data.pollHistory;
-                STATE.pollCount = STATE.pollHistory.length;
+                // b121: Use pollHistory length directly — it's the true running total
+                STATE.pollCount = data.pollHistory.length;
             }
         }
-        // b121: Kotlin poll counter starts fresh each service start (1,2,3...)
-        // STATE._restoredPollBase set at init — total = base + kotlin's fresh count
-        if (data.pollCount && data.pollCount > 0) {
+        // b121: Kotlin may send a separate pollCount (its service counter, starts fresh each restart)
+        // Only use it if pollHistory wasn't already set above
+        if (data.pollCount && data.pollCount > 0 && !data.pollHistory) {
             const base = STATE._restoredPollBase || 0;
             const totalCount = base + data.pollCount;
             if (totalCount > STATE.pollCount) STATE.pollCount = totalCount;
@@ -10129,7 +10130,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b121' }
+            { metric: 'App Version', value: 'v2.1 b122' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -10348,9 +10349,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const rawPolls = window.NativeBridge.getPollHistory();
                     if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
                         const nativePolls = JSON.parse(rawPolls);
-                        if (Array.isArray(nativePolls) && nativePolls.length > 0) {
-                            // b120: Always update — Kotlin may have today's polls (fresh array)
-                            // even if shorter than yesterday's restored history
+                        if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
+                            // b121: Only update if Kotlin has MORE polls — its history IS the running total
                             STATE.pollHistory = nativePolls;
                             STATE.pollCount = nativePolls.length;
                         }
