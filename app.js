@@ -10126,7 +10126,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b119' }
+            { metric: 'App Version', value: 'v2.1 b120' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -10342,7 +10342,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const rawPolls = window.NativeBridge.getPollHistory();
                     if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
                         const nativePolls = JSON.parse(rawPolls);
-                        if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
+                        if (Array.isArray(nativePolls) && nativePolls.length > 0) {
+                            // b120: Always update — Kotlin may have today's polls (fresh array)
+                            // even if shorter than yesterday's restored history
                             STATE.pollHistory = nativePolls;
                             STATE.pollCount = nativePolls.length;
                         }
