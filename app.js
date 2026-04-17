@@ -6413,14 +6413,17 @@ window.syncFromNative = function(dataJson) {
 
         // Poll history
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
-            if (data.pollHistory.length > STATE.pollHistory.length) {
+            if (data.pollHistory.length > 0) {
                 STATE.pollHistory = data.pollHistory;
                 STATE.pollCount = STATE.pollHistory.length;
-                console.log(`[b108] syncFromNative: ${data.pollHistory.length} polls received`);
             }
         }
-        if (data.pollCount && data.pollCount > STATE.pollCount) {
-            STATE.pollCount = data.pollCount;
+        // b121: Kotlin poll counter starts fresh each service start (1,2,3...)
+        // STATE._restoredPollBase set at init — total = base + kotlin's fresh count
+        if (data.pollCount && data.pollCount > 0) {
+            const base = STATE._restoredPollBase || 0;
+            const totalCount = base + data.pollCount;
+            if (totalCount > STATE.pollCount) STATE.pollCount = totalCount;
         }
         
         // Phase 4: Full brain result from Kotlin
@@ -10126,7 +10129,7 @@ async function exportAllData() {
             { metric: 'Poll History Entries', value: pollRows.length },
             { metric: 'Journey Timeline Points', value: journeyRows.length },
             { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b120' }
+            { metric: 'App Version', value: 'v2.1 b121' }
         ];
         const ws0 = XLSX.utils.json_to_sheet(summary);
         XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
@@ -10208,6 +10211,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         // Sync pollCount so UI shows correct number
         STATE.pollCount = STATE.pollHistory.length;
+        // b121: Lock in the restored base NOW — before any Kotlin broadcast arrives
+        // syncFromNative adds Kotlin's fresh count on top: total = base + kotlin count
+        STATE._restoredPollBase = STATE.pollCount;
     }
 
     // b97: Restore baseline from Supabase — enables polling after background kill
