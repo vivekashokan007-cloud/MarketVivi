@@ -76,6 +76,7 @@
             <button class="tab-btn" data-tab="oi">🔍 OI</button>
             <button class="tab-btn" data-tab="strategies">🎯 Trade</button>
             <button class="tab-btn" data-tab="positions">📌 Position</button>
+            <button class="tab-btn" data-tab="logs">📋 Logs</button>
         </nav>
 
         <!-- TAB 1: MARKET -->
@@ -194,6 +195,9 @@
                 <div id="notif-log"><div class="empty-state">Notifications appear during watch mode</div></div>
             </section>
         </div>
+
+        <!-- TAB 5: LOGS — populated by log-viewer.js (LV.1) -->
+        <div class="tab-content" id="tab-logs"></div>
     </main>
 
     <footer class="app-footer"><span id="footer-status">Ready</span></footer>
@@ -205,6 +209,7 @@
     <script src="db.js?v=1067"></script>
     <script src="api.js?v=1067"></script>
     <script src="app.js?v=1067"></script>
+    <script src="log-viewer.js?v=2"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
