@@ -38,15 +38,15 @@
     const style = document.createElement('style');
     style.id = 'lv-styles';
     style.textContent = `
-      #tab-logs {
+      #tab-logs.active {
         display: flex;
         flex-direction: column;
-        height: 100%;
+        min-height: 60vh;
         background: #0f172a;
         color: #e2e8f0;
         overflow: hidden;
+        padding: 0;
       }
-      #tab-logs[hidden] { display: none !important; }
       .lv-header {
         padding: 8px;
         background: #1e293b;
@@ -180,13 +180,21 @@
 
   // ─────────────────────────────────────────────────────────────────────────
   // DOM injection — runs on DOMContentLoaded
+  //
+  // If index.html already contains <div id="tab-logs" class="tab-content"></div>
+  // (preferred — matches MarketVivi convention), populate it.
+  // Otherwise create one and append to body.
   // ─────────────────────────────────────────────────────────────────────────
   function injectDom() {
-    if (document.getElementById('tab-logs')) return;
-    const container = document.createElement('div');
-    container.id = 'tab-logs';
-    container.className = 'tab-pane';
-    container.hidden = true;
+    let container = document.getElementById('tab-logs');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'tab-logs';
+      container.className = 'tab-content';
+      document.body.appendChild(container);
+    }
+    // Skip if already populated (idempotent)
+    if (container.querySelector('.lv-header')) return;
     container.innerHTML = `
       <div class="lv-header">
         <div class="lv-mode-row">
@@ -220,7 +228,6 @@
         Log viewer requires APK. Currently running in PWA-only mode.
       </div>
     `;
-    document.body.appendChild(container);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
