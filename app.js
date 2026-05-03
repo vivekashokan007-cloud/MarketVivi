@@ -2665,6 +2665,57 @@ const STATE = {
 // SOUND ENGINE — Corporate-subtle Web Audio notifications
 // ═══════════════════════════════════════════════════════════════
 
+/* F.2 helpers — bridge to Kotlin/brain.py single source of truth */
+
+// `bd` is the latest brain_result snapshot. Refreshed inside renderAll() and
+// any other function that needs fresh data. Defined at module-top so all
+// downstream code can read bd.effective_bias, bd.candidates, etc. without
+// having to call getBrainData() repeatedly per render.
+let bd = {};
+
+function getBrainData() {
+    try {
+        return JSON.parse(NativeBridge.getBrainResult() || '{}');
+    } catch (e) {
+        console.error('getBrainData failed:', e);
+        return {};
+    }
+}
+
+function refreshBrainData() {
+    bd = getBrainData();
+    return bd;
+}
+
+// collectBaselineFromForm — lifted from former initialFetch.
+// Reads morning input fields and assembles the baseline JSON for Kotlin.
+function collectBaselineFromForm() {
+    const get = (id) => {
+        const el = document.getElementById(id);
+        return el ? el.value : '';
+    };
+    const num = (id, dflt = 0) => {
+        const v = parseFloat(get(id));
+        return isNaN(v) ? dflt : v;
+    };
+    return {
+        date: API.todayIST(),
+        bnfSpot: num('bnfSpot'),
+        nfSpot: num('nfSpot'),
+        vix: num('vix'),
+        fiiCash: num('fiiCash'),
+        fiiShortPct: num('fiiShortPct'),
+        fiiIdxFut: num('fiiIdxFut'),
+        fiiStkFut: num('fiiStkFut'),
+        diiCash: num('diiCash'),
+        upstoxBias: get('upstoxBias'),
+        giftSpot: num('giftSpot'),
+        bnfCallWall: num('bnfCallWall'),
+        bnfPutWall: num('bnfPutWall'),
+    };
+}
+
+
 function initAudio() {
     if (!STATE.audioCtx) {
         STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -2723,206 +2774,6 @@ function playSound(type) {
 // BIAS ENGINE — Direction from morning inputs + live chain data
 // ═══════════════════════════════════════════════════════════════
 
-function computeBias(morning, chainData) {
-    const votes = { bull: 0, bear: 0 };
-    const signals = [];
-
-    console.log('[BIAS] morning input:', JSON.stringify(morning));
-
-    if (!morning) {
-        console.warn('[BIAS] morning is null/undefined!');
-        return { bias: 'NEUTRAL', strength: '', net: 0, votes, signals, label: 'NEUTRAL', upstoxAgrees: null };
-    }
-
-    // 1. FII Cash (manual)
-    const fiiCashVal = morning.fiiCash;
-    if (fiiCashVal != null && fiiCashVal !== '' && !isNaN(fiiCashVal)) {
-        const fc = parseFloat(fiiCashVal);
-        if (fc > 500) { votes.bull++; signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'BULL' }); }
-        else if (fc < -500) { votes.bear++; signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'BEAR' }); }
-        else signals.push({ name: 'FII Cash', value: `₹${fc}Cr`, dir: 'NEUTRAL' });
-    }
-
-    // 2. FII Short% (manual) — compare with yesterday from premium_history ONLY
-    const fiiShortVal = morning.fiiShortPct;
-    if (fiiShortVal != null && fiiShortVal !== '' && !isNaN(fiiShortVal)) {
-        const sp = parseFloat(fiiShortVal);
-        const ydayHist = STATE.yesterdayHistory || [];
-        const prev = ydayHist.length > 0 && ydayHist[0]?.fii_short_pct ? ydayHist[0].fii_short_pct : null;
-        if (prev === null) {
-            // No yesterday data — can't compare direction, just use level
-            if (sp > 85) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}% (prev: N/A)`, dir: 'BEAR' }); }
-            else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
-            else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
-        } else if (sp > 85 && sp > prev) { votes.bear++; signals.push({ name: 'FII Short%', value: `${sp}%↑ (was ${prev})`, dir: 'BEAR' }); }
-        else if (sp > 85 && sp < prev) { signals.push({ name: 'FII Short%', value: `${sp}%↓ covering (was ${prev})`, dir: 'NEUTRAL' }); }
-        else if (sp > 85 && sp === prev) { signals.push({ name: 'FII Short%', value: `${sp}% → flat (was ${prev})`, dir: 'NEUTRAL' }); }
-        else if (sp < 70) { votes.bull++; signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'BULL' }); }
-        else signals.push({ name: 'FII Short%', value: `${sp}%`, dir: 'NEUTRAL' });
-    }
-
-    // 3. Close Character (AUTO-CALCULATED from yesterday OHLC)
-    const cc = chainData?.closeChar;
-    if (cc != null) {
-        if (cc >= 1) { votes.bull++; signals.push({ name: 'Close Char', value: `${cc > 0 ? '+' : ''}${cc} (auto)`, dir: 'BULL' }); }
-        else if (cc <= -1) { votes.bear++; signals.push({ name: 'Close Char', value: `${cc} (auto)`, dir: 'BEAR' }); }
-        else signals.push({ name: 'Close Char', value: `${cc} (auto)`, dir: 'NEUTRAL' });
-    }
-
-    // 4. PCR — use near-ATM PCR, not full chain (far OTM inflates call OI)
-    if (chainData?.nearAtmPCR) {
-        const pcr = chainData.nearAtmPCR;
-        if (pcr > 1.2) { votes.bull++; signals.push({ name: 'PCR', value: `${pcr.toFixed(2)} (near-ATM)`, dir: 'BULL' }); }
-        else if (pcr < 0.9) { votes.bear++; signals.push({ name: 'PCR', value: `${pcr.toFixed(2)} (near-ATM)`, dir: 'BEAR' }); }
-        else signals.push({ name: 'PCR', value: `${pcr.toFixed(2)} (near-ATM)`, dir: 'NEUTRAL' });
-    }
-
-    // 5. VIX Direction (vs yesterday — uses yesterdayHistory which skips today)
-    const ydayHistory = STATE.yesterdayHistory || STATE.premiumHistory || [];
-    if (ydayHistory.length > 0 && chainData?.vix) {
-        const yesterdayVix = ydayHistory[0]?.vix;
-        if (yesterdayVix) {
-            const diff = chainData.vix - yesterdayVix;
-            if (diff > 0.3) { votes.bear++; signals.push({ name: 'VIX Dir', value: `${chainData.vix.toFixed(1)} ↑${diff.toFixed(1)}`, dir: 'BEAR' }); }
-            else if (diff < -0.3) { votes.bull++; signals.push({ name: 'VIX Dir', value: `${chainData.vix.toFixed(1)} ↓${Math.abs(diff).toFixed(1)}`, dir: 'BULL' }); }
-            else signals.push({ name: 'VIX Dir', value: `${chainData.vix.toFixed(1)} →`, dir: 'NEUTRAL' });
-        }
-    }
-
-    // 6. Futures Premium (from chain)
-    if (chainData?.futuresPremium !== undefined) {
-        const fp = chainData.futuresPremium;
-        if (fp > 0.05) { votes.bull++; signals.push({ name: 'Futures Prem', value: `${fp.toFixed(3)}%`, dir: 'BULL' }); }
-        else if (fp < -0.05) { votes.bear++; signals.push({ name: 'Futures Prem', value: `${fp.toFixed(3)}%`, dir: 'BEAR' }); }
-        else signals.push({ name: 'Futures Prem', value: `${fp.toFixed(3)}%`, dir: 'NEUTRAL' });
-    }
-
-    // 7. DII Absorption Direction (today vs yesterday — is the floor strengthening or cracking?)
-    const diiVal = morning.diiCash != null && morning.diiCash !== '' ? parseFloat(morning.diiCash) : null;
-    const fiiVal = morning.fiiCash != null && morning.fiiCash !== '' ? parseFloat(morning.fiiCash) : null;
-    if (diiVal !== null && fiiVal !== null && Math.abs(fiiVal) > 100) {
-        const todayAbsorption = +(diiVal / Math.abs(fiiVal)).toFixed(2);
-        const yday = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0] : null;
-        const ydayDii = yday?.dii_cash;
-        const ydayFii = yday?.fii_cash;
-        const hasYday = ydayDii != null && ydayFii != null && Math.abs(ydayFii) > 100;
-        const ydayAbsorption = hasYday ? +(ydayDii / Math.abs(ydayFii)).toFixed(2) : null;
-        const change = ydayAbsorption !== null ? +(todayAbsorption - ydayAbsorption).toFixed(2) : null;
-        const changeStr = change !== null ? ` (was ${ydayAbsorption}×, Δ${change > 0 ? '+' : ''}${change})` : '';
-
-        if (change !== null) {
-            // Direction + level combined
-            if (change < -0.2 && todayAbsorption <= 1.0) {
-                votes.bear++; signals.push({ name: 'DII Floor', value: `${todayAbsorption}×${changeStr}`, dir: 'BEAR' });
-            } else if (change > 0.2 && todayAbsorption >= 0.7) {
-                votes.bull++; signals.push({ name: 'DII Floor', value: `${todayAbsorption}×${changeStr}`, dir: 'BULL' });
-            } else if (todayAbsorption > 1.2) {
-                votes.bull++; signals.push({ name: 'DII Floor', value: `${todayAbsorption}× strong${changeStr}`, dir: 'BULL' });
-            } else if (todayAbsorption < 0.3) {
-                votes.bear++; signals.push({ name: 'DII Floor', value: `${todayAbsorption}× panic${changeStr}`, dir: 'BEAR' });
-            } else {
-                signals.push({ name: 'DII Floor', value: `${todayAbsorption}×${changeStr}`, dir: 'NEUTRAL' });
-            }
-        } else {
-            // No yesterday — level only
-            if (todayAbsorption > 1.0) {
-                votes.bull++; signals.push({ name: 'DII Floor', value: `${todayAbsorption}× (no prev)`, dir: 'BULL' });
-            } else if (todayAbsorption < 0.5) {
-                votes.bear++; signals.push({ name: 'DII Floor', value: `${todayAbsorption}× (no prev)`, dir: 'BEAR' });
-            } else {
-                signals.push({ name: 'DII Floor', value: `${todayAbsorption}× (no prev)`, dir: 'NEUTRAL' });
-            }
-        }
-    }
-
-    // 8. Overnight Chain Validation — Phase 10
-    // Chain: Evening close → Morning delta → Gap confirms
-    // When chain validates, stale signals (Close Char, FII Short%, DII) lose weight
-    // This is NOT vote counting — it's sequential confirmation
-    const overnight = STATE.overnightDelta;
-    const gap = STATE.gapInfo;
-    let chainValidation = 'NONE'; // NONE | UNCERTAIN | LIKELY | CONFIRMED
-
-    if (overnight && overnight.signals.length > 0) {
-        // Step 1: What direction does overnight say?
-        const overnightBulls = overnight.signals.filter(s => s.dir === 'BULL').length;
-        const overnightBears = overnight.signals.filter(s => s.dir === 'BEAR').length;
-        const overnightDir = overnightBears >= 2 ? 'BEAR' : overnightBulls >= 2 ? 'BULL' : 'MIXED';
-
-        // Step 2: Does the gap confirm overnight direction?
-        const gapDir = gap && Math.abs(gap.sigma) > 0.5 ? (gap.sigma < 0 ? 'BEAR' : 'BULL') : 'NEUTRAL';
-        const gapConfirms = (overnightDir === gapDir);
-        const gapConflicts = (overnightDir === 'BULL' && gapDir === 'BEAR') || (overnightDir === 'BEAR' && gapDir === 'BULL');
-
-        // Step 3: Determine chain strength
-        if (overnightDir !== 'MIXED' && gapConfirms) {
-            chainValidation = 'CONFIRMED';  // Evening→Morning→Gap all agree
-        } else if (overnightDir !== 'MIXED' && gapDir === 'NEUTRAL') {
-            chainValidation = 'LIKELY';      // Evening→Morning agree, gap is flat
-        } else if (overnightDir !== 'MIXED' && gapConflicts) {
-            chainValidation = 'UNCERTAIN';   // Evening→Morning say one thing, gap says opposite
-        }
-
-        // Log overnight signals (always show, regardless of chain strength)
-        for (const s of overnight.signals) {
-            const valStr = s.isSigma ? s.pct.toFixed(2) + 'σ' : (s.pct > 0 ? '+' : '') + s.pct + '%';
-            signals.push({ name: `🌙 ${s.name}`, value: `${s.from}→${s.to ?? '?'} (${valStr})`, dir: s.dir });
-        }
-
-        // Apply chain validation effect
-        if (chainValidation === 'CONFIRMED') {
-            // Chain confirmed — overnight direction is today's reality
-            // Neutralize stale signals that conflict with confirmed direction
-            const confirmedDir = overnightDir; // BULL or BEAR
-            let staleNeutralized = 0;
-            for (let i = 0; i < signals.length; i++) {
-                const s = signals[i];
-                const isStale = ['Close Char', 'FII Short%', 'DII Floor'].some(name => s.name.includes(name));
-                if (isStale && s.dir !== 'NEUTRAL' && s.dir !== confirmedDir) {
-                    // This stale signal conflicts with confirmed overnight chain — remove its vote
-                    if (s.dir === 'BULL') votes.bull--;
-                    if (s.dir === 'BEAR') votes.bear--;
-                    signals[i] = { ...s, value: s.value + ' [stale⚠️]', dir: 'NEUTRAL' };
-                    staleNeutralized++;
-                }
-            }
-            // Add chain direction votes (2 votes for confirmed chain)
-            if (confirmedDir === 'BEAR') { votes.bear += 2; }
-            else if (confirmedDir === 'BULL') { votes.bull += 2; }
-            signals.push({ name: '🔗 Chain', value: `CONFIRMED ${confirmedDir} (${staleNeutralized} stale neutralized)`, dir: confirmedDir });
-
-        } else if (chainValidation === 'LIKELY') {
-            // Chain likely — add 1 vote for overnight direction
-            const likelyDir = overnightDir;
-            if (likelyDir === 'BEAR') votes.bear++;
-            else if (likelyDir === 'BULL') votes.bull++;
-            signals.push({ name: '🔗 Chain', value: `LIKELY ${likelyDir} (gap flat, not confirmed)`, dir: likelyDir });
-
-        } else if (chainValidation === 'UNCERTAIN') {
-            // Chain broken — gap contradicts overnight. Don't add any votes.
-            signals.push({ name: '🔗 Chain', value: `UNCERTAIN (overnight ${overnightDir} but gap ${gapDir})`, dir: 'NEUTRAL' });
-        }
-    }
-
-    const net = votes.bull - votes.bear;
-    let bias, strength;
-    if (net >= 3) { bias = 'BULL'; strength = 'STRONG'; }
-    else if (net >= 1) { bias = 'BULL'; strength = 'MILD'; }
-    else if (net <= -3) { bias = 'BEAR'; strength = 'STRONG'; }
-    else if (net <= -1) { bias = 'BEAR'; strength = 'MILD'; }
-    else { bias = 'NEUTRAL'; strength = ''; }
-
-    // Upstox comparison (NOT a vote — just agree/disagree)
-    const upstoxBias = morning.upstoxBias;
-    let upstoxAgrees = null;
-    if (upstoxBias && upstoxBias !== '') {
-        const upstoxDir = upstoxBias === 'Bullish' ? 'BULL' : upstoxBias === 'Bearish' ? 'BEAR' : 'NEUTRAL';
-        upstoxAgrees = (bias === upstoxDir) || (bias === 'NEUTRAL' && upstoxDir === 'NEUTRAL');
-        signals.push({ name: 'Upstox', value: `${upstoxBias} ${upstoxAgrees ? '✅ agrees' : '⚠️ DISAGREES'}`, dir: upstoxDir, isComparison: true });
-    }
-
-    return { bias, strength, net, votes, signals, label: `${strength} ${bias}`.trim(), upstoxAgrees };
-}
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -2932,130 +2783,15 @@ function computeBias(morning, chainData) {
 // to existing forces. Premium is king; this tells us how safely.
 // ═══════════════════════════════════════════════════════════════
 
-function computeInstitutionalRegime(morning) {
-    const fiiCash = parseFloat(morning.fiiCash) || 0;
-    const diiCash = parseFloat(morning.diiCash) || 0;
-    const fiiIdxFut = parseFloat(morning.fiiIdxFut) || 0;
-    const fiiStkFut = parseFloat(morning.fiiStkFut) || 0;
-
-    // Skip if no institutional data entered
-    if (!morning.diiCash && !morning.fiiIdxFut && !morning.fiiStkFut) {
-        return null;
-    }
-
-    // Derived metrics
-    const absFiiCash = Math.abs(fiiCash);
-    const absorptionRatio = absFiiCash > 0 ? +(diiCash / absFiiCash).toFixed(2) : null;
-    const fiiDerivNet = +(fiiIdxFut + fiiStkFut).toFixed(0); // simplified: idx fut + stk fut
-    const isRotation = fiiCash < -500 && fiiStkFut > 200; // selling cash, buying stock futures
-    const isPanic = fiiCash < -500 && absorptionRatio !== null && absorptionRatio < 0.5 && fiiStkFut < 0;
-    const isAccumulation = fiiCash > 500 && diiCash > 0;
-    const isRepositioning = fiiCash < -500 && fiiIdxFut > 0; // selling cash but buying idx futures = setting up bounce
-
-    // Classify regime
-    let regime, regimeColor, regimeDetail, creditConfidence;
-
-    if (isPanic) {
-        regime = 'PANIC';
-        regimeColor = 'var(--danger)';
-        regimeDetail = 'No floor — DII not absorbing, FII selling everything. Avoid credit near ATM.';
-        creditConfidence = 'LOW';
-    } else if (isRepositioning) {
-        regime = 'REPOSITIONING';
-        regimeColor = 'var(--warn)';
-        regimeDetail = 'FII selling cash but buying futures — setting up for bounce. Direction may flip.';
-        creditConfidence = 'MEDIUM';
-    } else if (isRotation) {
-        regime = 'ROTATION';
-        regimeColor = 'var(--green)';
-        regimeDetail = 'Orderly rotation — selling index, buying stocks. Floor exists. Credit spreads safe.';
-        creditConfidence = 'HIGH';
-    } else if (isAccumulation) {
-        regime = 'ACCUMULATION';
-        regimeColor = 'var(--green)';
-        regimeDetail = 'FII + DII both buying. Rally likely. Credit bull spreads ride it.';
-        creditConfidence = 'HIGH';
-    } else if (absorptionRatio !== null && absorptionRatio >= 0.8 && fiiCash < -500) {
-        regime = 'DEFENDED';
-        regimeColor = '#2196F3';
-        regimeDetail = `DII absorbing ${(absorptionRatio * 100).toFixed(0)}% of FII selling. Support holding.`;
-        creditConfidence = 'HIGH';
-    } else {
-        regime = 'NORMAL';
-        regimeColor = 'var(--text-muted)';
-        regimeDetail = 'No extreme institutional pattern detected.';
-        creditConfidence = 'MEDIUM';
-    }
-
-    return {
-        regime, regimeColor, regimeDetail, creditConfidence,
-        fiiCash, diiCash, fiiIdxFut, fiiStkFut,
-        absorptionRatio, fiiDerivNet, isRotation
-    };
-}
 
 
 // ═══════════════════════════════════════════════════════════════
 // FORCE ALIGNMENT ENGINE — The heart of v2
 // ═══════════════════════════════════════════════════════════════
 
-function assessForce1_Intrinsic(strategyType, biasResult) {
-    const isNeutral = C.NEUTRAL_TYPES.includes(strategyType);
-    const isBull = C.DIRECTIONAL_BULL.includes(strategyType);
-    const isBear = C.DIRECTIONAL_BEAR.includes(strategyType);
 
-    // Neutral strategies: LOVE neutral bias, HATE strong directional
-    if (isNeutral) {
-        if (biasResult.bias === 'NEUTRAL') return 1;
-        if (biasResult.strength === 'MILD') return 0;
-        return -1; // STRONG directional = bad for neutral strategies
-    }
 
-    // Directional strategies: same as before
-    if (biasResult.bias === 'BULL' && isBull) return 1;
-    if (biasResult.bias === 'BEAR' && isBear) return 1;
-    if (biasResult.bias === 'NEUTRAL') return 0;
-    if (biasResult.bias === 'BULL' && isBear) return -1;
-    if (biasResult.bias === 'BEAR' && isBull) return -1;
-    return 0;
-}
 
-function assessForce2_Theta(strategyType) {
-    return C.CREDIT_TYPES.includes(strategyType) ? 1 : -1;
-}
-
-function assessForce3_IV(strategyType, vix, ivPercentile) {
-    const isCredit = C.CREDIT_TYPES.includes(strategyType);
-    const isDebit = C.DEBIT_TYPES.includes(strategyType);
-
-    let regime = 'NORMAL';
-    if (vix >= C.IV_HIGH || (ivPercentile !== null && ivPercentile > 65)) regime = 'HIGH';
-    if (vix >= C.IV_VERY_HIGH || (ivPercentile !== null && ivPercentile > 85)) regime = 'VERY_HIGH';
-    if (vix <= C.IV_LOW || (ivPercentile !== null && ivPercentile < 25)) regime = 'LOW';
-
-    if (regime === 'VERY_HIGH') {
-        // Backtest Table 3: VIX ≥24 debit 91.7% > credit 86.4%. Both viable, debit edge.
-        // Non-directional credit (IC/IB): high VIX = rich premiums to sell → +1
-        if (isDebit) return 1;
-        const isNeutralStrat = C.NEUTRAL_TYPES.includes(strategyType);
-        return isNeutralStrat ? 1 : 0; // IC/IB benefit, directional credit neutral
-    }
-    if (regime === 'HIGH') {
-        return isCredit ? 1 : -1;
-    } else if (regime === 'LOW') {
-        return isDebit ? 1 : -1;
-    }
-    return 0;
-}
-
-function getForceAlignment(strategyType, biasResult, vix, ivPercentile) {
-    const f1 = assessForce1_Intrinsic(strategyType, biasResult);
-    const f2 = assessForce2_Theta(strategyType);
-    const f3 = assessForce3_IV(strategyType, vix, ivPercentile);
-    const aligned = [f1, f2, f3].filter(f => f === 1).length;
-    const against = [f1, f2, f3].filter(f => f === -1).length;
-    return { f1, f2, f3, aligned, against, score: f1 + f2 + f3 };
-}
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -3063,391 +2799,19 @@ function getForceAlignment(strategyType, biasResult, vix, ivPercentile) {
 // ═══════════════════════════════════════════════════════════════
 
 // 3. Contrarian PCR Flag — extreme readings = reversal warning
-function getContrarianPCR(currentPCR, history) {
-    const flags = [];
-    if (currentPCR < 0.6) flags.push({ type: 'extreme', text: `⚡ PCR ${currentPCR.toFixed(2)} — extreme low. Institutions buying cheap calls. Contrarian bounce likely 1-3 sessions.`, severity: 'high' });
-    else if (currentPCR > 1.5) flags.push({ type: 'extreme', text: `⚡ PCR ${currentPCR.toFixed(2)} — heavy put writing near ATM. Institutions defending support. Bullish positioning.`, severity: 'high' });
-
-    // Multi-session detection from history
-    if (history.length >= 2) {
-        const recentPCRs = history.slice(0, 2).map(h => h.pcr).filter(Boolean);
-        if (recentPCRs.length >= 2) {
-            if (recentPCRs.every(p => p < 0.8) && currentPCR < 0.8) {
-                flags.push({ type: 'sustained', text: '📉 PCR < 0.8 for 3+ sessions — sustained bearish, watch for snap reversal.', severity: 'medium' });
-            }
-            if (recentPCRs.every(p => p > 1.3) && currentPCR > 1.3) {
-                flags.push({ type: 'sustained', text: '📈 PCR > 1.3 for 3+ sessions — sustained bullish, institutions heavily defending.', severity: 'medium' });
-            }
-        }
-    }
-    return flags;
-}
 
 // 3b. Dynamic Institutional PCR — context-aware, 3 phases
 // Phase A (9:15→2PM): PCR level + VIX + gap → context
 // Phase B (2PM→3:15PM): + live OI delta vs 2PM baseline → transitional
 // Phase C (3:15PM+): merged into positioning signal
-function getInstitutionalPCR(currentPCR, vix, gapInfo, history, afternoonBaseline, liveChain) {
-    if (!currentPCR) return null;
-
-    const pcr = currentPCR;
-    const isHighPCR = pcr > 1.3;
-    const isLowPCR = pcr < 0.7;
-    const isExtremePCR = pcr > 1.5 || pcr < 0.6;
-    const highVix = vix >= 20;
-    const veryHighVix = vix >= 24;
-    const bigGapDown = gapInfo && (gapInfo.type === 'GAP_DOWN' || (gapInfo.sigma && gapInfo.sigma <= -1));
-    const bigGapUp = gapInfo && (gapInfo.type === 'GAP_UP' || (gapInfo.sigma && gapInfo.sigma >= 1));
-
-    // Yesterday's PCR for direction
-    const ydayPCR = history?.length > 0 ? history[0]?.pcr : null;
-    const pcrVsYday = ydayPCR ? pcr - ydayPCR : null;
-    const pcrRising = pcrVsYday !== null && pcrVsYday > 0.05;
-    const pcrFalling = pcrVsYday !== null && pcrVsYday < -0.05;
-
-    // Multi-session trend (preserved from contrarian)
-    let sessionTrend = null;
-    if (history?.length >= 2) {
-        const recentPCRs = history.slice(0, 2).map(h => h.pcr).filter(Boolean);
-        if (recentPCRs.length >= 2 && recentPCRs.every(p => p < 0.8) && pcr < 0.8) {
-            sessionTrend = { text: 'PCR < 0.8 for 3+ sessions — sustained bearish, watch for snap reversal.', dir: 'BEAR_SUSTAINED' };
-        }
-        if (recentPCRs.length >= 2 && recentPCRs.every(p => p > 1.3) && pcr > 1.3) {
-            sessionTrend = { text: 'PCR > 1.3 for 3+ sessions — institutions heavily defending.', dir: 'BULL_SUSTAINED' };
-        }
-    }
-
-    // ═══ PHASE A: Level + VIX + Gap context ═══
-    let reading = '', bias = 'NEUTRAL', confidence = 'LOW', severity = 'medium';
-
-    if (isHighPCR && veryHighVix && bigGapDown) {
-        // Today's exact case: high PCR during crash = fear hedging
-        reading = `PCR ${pcr.toFixed(2)} — Fear hedging (VIX ${vix.toFixed(1)}, ${gapInfo.sigma}σ gap-down). Panic puts, not institutional conviction.`;
-        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 'medium';
-    } else if (isHighPCR && highVix && bigGapDown) {
-        reading = `PCR ${pcr.toFixed(2)} — Defensive hedging (VIX ${vix.toFixed(1)}, gap-down). Floor may hold but driven by fear.`;
-        bias = 'MILD_BULL'; confidence = 'LOW'; severity = 'medium';
-    } else if (isHighPCR && highVix && !bigGapDown) {
-        reading = `PCR ${pcr.toFixed(2)} — Institutional floor + elevated IV (VIX ${vix.toFixed(1)}). Support exists, credit sellers favored.`;
-        bias = 'BULL'; confidence = 'MEDIUM'; severity = 'high';
-    } else if (isHighPCR && !highVix && !bigGapDown) {
-        reading = `PCR ${pcr.toFixed(2)} — Institutional floor (VIX ${vix.toFixed(1)}, normal day). Deliberate put writing = support.`;
-        bias = 'BULL'; confidence = 'HIGH'; severity = 'high';
-    } else if (isHighPCR && pcrRising && !bigGapDown) {
-        reading = `PCR ${pcr.toFixed(2)} — Active floor building (rising from ${ydayPCR?.toFixed(2)}). Institutions adding support.`;
-        bias = 'BULL'; confidence = 'MEDIUM'; severity = 'high';
-    } else if (isHighPCR && pcrFalling) {
-        reading = `PCR ${pcr.toFixed(2)} — Floor unwinding (was ${ydayPCR?.toFixed(2)}). Support weakening.`;
-        bias = 'BEAR'; confidence = 'MEDIUM'; severity = 'high';
-    } else if (isLowPCR && highVix && bigGapUp) {
-        reading = `PCR ${pcr.toFixed(2)} — Euphoria calls (VIX ${vix.toFixed(1)}, gap-up). Caution — VIX still elevated.`;
-        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 'medium';
-    } else if (isLowPCR && !highVix) {
-        reading = `PCR ${pcr.toFixed(2)} — Institutions buying calls. Directional bullish bet.`;
-        bias = 'BEAR'; confidence = 'HIGH'; severity = 'high';
-    } else if (isLowPCR && highVix) {
-        reading = `PCR ${pcr.toFixed(2)} — Low PCR despite high VIX. Aggressive call buying or put unwinding.`;
-        bias = 'BEAR'; confidence = 'MEDIUM'; severity = 'high';
-    } else if (isExtremePCR) {
-        reading = `PCR ${pcr.toFixed(2)} — Extreme level. Watch for reversal.`;
-        bias = pcr > 1.5 ? 'BULL' : 'BEAR'; confidence = 'MEDIUM'; severity = 'high';
-    } else {
-        reading = `PCR ${pcr.toFixed(2)} — Normal range. No extreme institutional signal.`;
-        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 'low';
-    }
-
-    // ═══ PHASE B: After 2PM — add live OI delta vs baseline ═══
-    let oiDelta = null;
-    if (afternoonBaseline && liveChain) {
-        const baseCallOI = afternoonBaseline.bnfTotalCallOi || afternoonBaseline.bnf_total_call_oi || 0;
-        const basePutOI = afternoonBaseline.bnfTotalPutOi || afternoonBaseline.bnf_total_put_oi || 0;
-        const liveCallOI = liveChain.totalCallOI || 0;
-        const livePutOI = liveChain.totalPutOI || 0;
-
-        if (baseCallOI > 0 && basePutOI > 0) {
-            const callDelta = liveCallOI - baseCallOI;
-            const putDelta = livePutOI - basePutOI;
-            const fmtOI = (v) => { const l = Math.abs(v) / 100000; return `${v > 0 ? '+' : '-'}${l.toFixed(1)}L`; };
-
-            oiDelta = { callDelta, putDelta };
-
-            // Enrich the reading with OI direction (DISPLAY ONLY — do NOT override bias)
-            // Bias stays from Phase A (level context). OI delta is already signal #1 in computePositioning.
-            let oiReading = '';
-            if (callDelta > putDelta * 1.5 && callDelta > 50000) {
-                oiReading = `Since 2PM: Calls ${fmtOI(callDelta)} vs Puts ${fmtOI(putDelta)} — ceiling building.`;
-                if (isHighPCR) reading += ` Ceiling over floor — range/down likely.`;
-            } else if (putDelta > callDelta * 1.5 && putDelta > 50000) {
-                oiReading = `Since 2PM: Puts ${fmtOI(putDelta)} vs Calls ${fmtOI(callDelta)} — active floor building.`;
-                if (isHighPCR) reading += ` Floor strengthening.`;
-            } else if (Math.abs(callDelta) < 30000 && Math.abs(putDelta) < 30000) {
-                oiReading = `Since 2PM: Minimal OI change — no new conviction.`;
-            } else {
-                oiReading = `Since 2PM: Calls ${fmtOI(callDelta)}, Puts ${fmtOI(putDelta)} — balanced activity.`;
-            }
-
-            if (oiReading) reading += ' ' + oiReading;
-        }
-    }
-
-    return {
-        pcr, reading, bias, confidence, severity,
-        sessionTrend, oiDelta,
-        phase: afternoonBaseline ? 'B' : 'A',
-        vix, gapSigma: gapInfo?.sigma || 0
-    };
-}
 
 // 4. FII Short% 3-Session Trend Tracker
-function getFiiShortTrend(currentShort, history) {
-    const vals = [];
-    if (currentShort) vals.push(parseFloat(currentShort));
-    for (const h of history.slice(0, 2)) {
-        if (h.fii_short_pct) vals.push(h.fii_short_pct);
-    }
-    if (vals.length < 2) return null;
-
-    const changes = [];
-    for (let i = 0; i < vals.length - 1; i++) changes.push(vals[i] - vals[i + 1]);
-
-    let trend = 'FLAT';
-    let label = '';
-    const allDown = changes.every(c => c < 0);
-    const allUp = changes.every(c => c > 0);
-
-    if (allDown) { trend = 'COVERING'; label = `↓↓ Covering (${vals.map(v => v.toFixed(1)).join('→')}) — bullish`; }
-    else if (allUp) { trend = 'BUILDING'; label = `↑↑ Building (${vals.map(v => v.toFixed(1)).join('→')}) — bearish`; }
-    else if (changes.length >= 2 && Math.sign(changes[0]) !== Math.sign(changes[1])) {
-        trend = 'INFLECTION'; label = `⟳ Inflection (${vals.map(v => v.toFixed(1)).join('→')}) — direction changed`;
-    } else {
-        label = vals.map(v => v.toFixed(1)).join('→');
-    }
-
-    // Acceleration
-    let accel = false;
-    if (changes.length >= 2 && Math.abs(changes[0]) > Math.abs(changes[1]) * 1.3) accel = true;
-
-    // Aggressive move
-    const aggressive = changes.length > 0 && Math.abs(changes[0]) >= 3;
-
-    return { trend, label, accel, aggressive, values: vals, changes };
-}
 
 // 7. Adversarial Control Index — who controls your open position?
-function computeControlIndex(trade, chain, spot, bnfBreadth) {
-    if (!trade || !chain) return null;
-
-    const isBear = trade.strategy_type?.includes('BEAR');
-    const isBull = trade.strategy_type?.includes('BULL');
-    const isIC = trade.strategy_type === 'IRON_CONDOR' || trade.strategy_type === 'IRON_BUTTERFLY';
-    let score = 0;
-
-    // Signal 1: Max Pain Migration (35%)
-    const entryMaxPain = trade.entry_max_pain || chain.maxPain;
-    const currentMaxPain = chain.maxPain;
-    if (entryMaxPain && currentMaxPain) {
-        const mpMove = currentMaxPain - entryMaxPain;
-        let mpScore = 0;
-        if (isBear && mpMove < 0) mpScore = 1;      // MP moving down, good for bears
-        else if (isBear && mpMove > 0) mpScore = -1;
-        else if (isBull && mpMove > 0) mpScore = 1;
-        else if (isBull && mpMove < 0) mpScore = -1;
-        else if (isIC) mpScore = Math.abs(mpMove) < 200 ? 1 : -1; // IC wants MP stable
-        score += mpScore * 35;
-    }
-
-    // Signal 2: Sell Strike OI change (30%)
-    const sellStrikeData = chain.strikes[trade.sell_strike]?.[trade.sell_type];
-    if (sellStrikeData && trade.entry_sell_oi) {
-        const oiChange = sellStrikeData.oi - trade.entry_sell_oi;
-        if (isIC) {
-            // IC: OI increase at sell strikes = more writers defending = good
-            score += (oiChange > 0 ? 1 : oiChange < 0 ? -1 : 0) * 15; // half weight per side
-            // Check put side too if available
-            if (trade.sell_strike2 && trade.sell_type2) {
-                const sellData2 = chain.strikes[trade.sell_strike2]?.[trade.sell_type2];
-                const entryOi2 = trade.entry_snapshot?.sell_oi2 ?? null;
-                if (sellData2 && entryOi2) {
-                    const oiChange2 = sellData2.oi - entryOi2;
-                    score += (oiChange2 > 0 ? 1 : oiChange2 < 0 ? -1 : 0) * 15;
-                }
-            }
-        } else {
-            score += (oiChange > 0 ? 1 : oiChange < 0 ? -1 : 0) * 30;
-        }
-    }
-
-    // Signal 3: PCR Shift (25%)
-    if (trade.entry_pcr && chain.pcr) {
-        const pcrChange = chain.pcr - trade.entry_pcr;
-        let pcrScore = 0;
-        if (isIC) {
-            // IC wants stable PCR — big shift either way is bad
-            if (Math.abs(pcrChange) < 0.05) pcrScore = 1;      // stable = good
-            else if (Math.abs(pcrChange) > 0.15) pcrScore = -1; // big shift = bad
-        } else if (isBear && pcrChange < -0.05) pcrScore = 1;
-        else if (isBear && pcrChange > 0.05) pcrScore = -1;
-        else if (isBull && pcrChange > 0.05) pcrScore = 1;
-        else if (isBull && pcrChange < -0.05) pcrScore = -1;
-        score += pcrScore * 25;
-    }
-
-    // Signal 4: Heavyweight Divergence — BNF only (10%)
-    if (bnfBreadth && trade.index_key === 'BNF') {
-        const wp = bnfBreadth.weightedPct || 0;
-        let hwScore = 0;
-        if (isBear && wp < -0.5) hwScore = 1;   // heavyweights falling = good for bears
-        else if (isBear && wp > 0.5) hwScore = -1;
-        else if (isBull && wp > 0.5) hwScore = 1;
-        else if (isBull && wp < -0.5) hwScore = -1;
-        score += hwScore * 10;
-    }
-
-    // ═══ b69 Signal 5: STRIKE PROXIMITY OVERRIDE ═══
-    // When spot crosses sell strike, you're ITM — CI must reflect this danger.
-    // Apr 2 lesson: CI showed "You in control: 40" while spot was 55 pts ABOVE sell strike.
-    // Premium can still look OK (time value), but position is structurally threatened.
-    if (spot && trade.sell_strike) {
-        const sellStrike = trade.sell_strike;
-        let strikeBreach = false;
-        if (isBear && spot > sellStrike) strikeBreach = true;  // Bear Call: spot above sell = danger
-        if (isBull && spot < sellStrike) strikeBreach = true;  // Bull Put: spot below sell = danger
-        if (isIC) {
-            // IC: check both sides — only if both sell strikes are known
-            const sellStrike2 = trade.sell_strike2;
-            if (sellStrike2) {
-                const isIB = trade.strategy_type === 'IRON_BUTTERFLY';
-                if (isIB) {
-                    // IB sells CE+PE at SAME strike (ATM) — spot touching sell is NORMAL.
-                    // Only breach when spot moves beyond width/4 from sell (meaningful move).
-                    const tolerance = (trade.width || 300) / 4;
-                    if (spot > sellStrike + tolerance || spot < sellStrike2 - tolerance) strikeBreach = true;
-                } else {
-                    // IC: sell strikes are OTM — exact breach means spot reached them
-                    if (spot > sellStrike || spot < sellStrike2) strikeBreach = true;
-                }
-            }
-            // If sell_strike2 missing (old trades), skip breach check — better than false alarm
-        }
-        if (strikeBreach) {
-            // Force CI strongly negative — override all other signals
-            score = Math.min(score, -50);
-        }
-    }
-
-    return Math.round(Math.max(-100, Math.min(100, score)));
-}
 
 // ═══ WALL DRIFT MONITOR — detects when OI wall moves away from your sell strike ═══
 // Walls are institutional defense lines. If the wall retreats, your sell strike is exposed.
 // Entry wall saved in trade.entry_snapshot. Current wall from live chain.
-function computeWallDrift(trade, chain) {
-    if (!trade || !chain || !trade.entry_snapshot) return null;
-    if (!trade.is_credit) return null; // debit strategies don't rely on walls
-
-    const isBear = trade.strategy_type?.includes('BEAR');
-    const isBull = trade.strategy_type?.includes('BULL');
-    const isIC = trade.strategy_type === 'IRON_CONDOR';
-    const isIB = trade.strategy_type === 'IRON_BUTTERFLY';
-    if (isIB) return null; // IB is ATM — walls provide pinning, not directional defense
-
-    const step = trade.index_key === 'BNF' ? 100 : 50;
-    const entryCallWall = trade.entry_snapshot.call_wall;
-    const entryPutWall = trade.entry_snapshot.put_wall;
-    const currentCallWall = chain.callWallStrike;
-    const currentPutWall = chain.putWallStrike;
-
-    const result = { callSide: null, putSide: null, warning: null, severity: 0 };
-
-    // Bear Call / IC call side: call wall should be AT or ABOVE sell strike
-    if ((isBear || isIC) && entryCallWall && currentCallWall) {
-        const sellCE = trade.sell_strike; // CE sell for BC/IC
-        const entryGap = entryCallWall - sellCE;   // positive = wall above sell (good)
-        const currentGap = currentCallWall - sellCE; // positive = wall still above
-        const wallMove = currentCallWall - entryCallWall; // negative = wall retreated down
-
-        if (wallMove < -step) {
-            // Wall retreated DOWN — less protection
-            result.callSide = {
-                entry: entryCallWall, current: currentCallWall,
-                drift: wallMove, status: currentGap <= 0 ? 'EXPOSED' : 'WEAKENED'
-            };
-            result.severity = Math.max(result.severity, currentGap <= 0 ? 2 : 1);
-        }
-    }
-
-    // Bull Put / IC put side: put wall should be AT or BELOW sell strike
-    if ((isBull || isIC) && entryPutWall && currentPutWall) {
-        const sellPE = isIC ? (trade.sell_strike2 || trade.sell_strike) : trade.sell_strike;
-        const entryGap = sellPE - entryPutWall;    // positive = wall below sell (good)
-        const currentGap = sellPE - currentPutWall; // positive = wall still below
-        const wallMove = currentPutWall - entryPutWall; // positive = wall retreated up
-
-        if (wallMove > step) {
-            // Wall retreated UP — less protection
-            result.putSide = {
-                entry: entryPutWall, current: currentPutWall,
-                drift: wallMove, status: currentGap <= 0 ? 'EXPOSED' : 'WEAKENED'
-            };
-            result.severity = Math.max(result.severity, currentGap <= 0 ? 2 : 1);
-        }
-    }
-
-    // Build warning message
-    if (result.callSide) {
-        const s = result.callSide;
-        result.warning = `🛡️↓ Call wall ${s.entry}→${s.current} (${s.drift > 0 ? '+' : ''}${s.drift}). ${s.status === 'EXPOSED' ? 'SELL EXPOSED — wall below you!' : 'Protection weakened.'}`;
-    }
-    if (result.putSide) {
-        const s = result.putSide;
-        const putMsg = `🛡️↑ Put wall ${s.entry}→${s.current} (+${s.drift}). ${s.status === 'EXPOSED' ? 'SELL EXPOSED — wall above you!' : 'Protection weakened.'}`;
-        result.warning = result.warning ? result.warning + ' | ' + putMsg : putMsg;
-    }
-
-    return result.severity > 0 ? result : null;
-}
-function getSessionTrajectory(history) {
-    if (!history || history.length < 2) return null;
-    const sessions = history.slice(0, 5).reverse(); // oldest first
-    const fields = ['vix', 'pcr', 'fii_cash', 'fii_short_pct', 'bnf_spot', 'nf_spot'];
-    const labels = ['VIX', 'PCR', 'FII Cash', 'FII Short%', 'BNF', 'NF'];
-    const trajectory = [];
-
-    for (let f = 0; f < fields.length; f++) {
-        const row = { label: labels[f], arrows: [] };
-        for (let i = 1; i < sessions.length; i++) {
-            const prev = sessions[i - 1][fields[f]];
-            const curr = sessions[i][fields[f]];
-            if (prev == null || curr == null) { row.arrows.push('—'); continue; }
-            const diff = curr - prev;
-            const threshold = fields[f] === 'vix' ? 0.3 : fields[f] === 'pcr' ? 0.03 : fields[f] === 'fii_short_pct' ? 0.5 : fields[f] === 'bnf_spot' || fields[f] === 'nf_spot' ? 50 : 100;
-            row.arrows.push(diff > threshold ? '↑' : diff < -threshold ? '↓' : '→');
-        }
-        trajectory.push(row);
-    }
-
-    // Detect multi-signal reversal (3+ arrows changed direction from prev session)
-    let reversalCount = 0;
-    if (sessions.length >= 3) {
-        for (const row of trajectory) {
-            const last = row.arrows[row.arrows.length - 1];
-            const prev = row.arrows.length >= 2 ? row.arrows[row.arrows.length - 2] : null;
-            if (prev && last !== prev && last !== '→' && prev !== '→') reversalCount++;
-        }
-    }
-
-    // Detect alignment (4+ moving same direction)
-    const lastArrows = trajectory.map(r => r.arrows[r.arrows.length - 1]).filter(a => a !== '—');
-    const upCount = lastArrows.filter(a => a === '↑').length;
-    const downCount = lastArrows.filter(a => a === '↓').length;
-
-    return {
-        trajectory, dates: sessions.map(s => s.date),
-        reversal: reversalCount >= 3 ? 'Possible institutional shift — 3+ signals reversed' : null,
-        alignment: upCount >= 4 ? 'Institutional accumulation pressure — 4+ signals rising' :
-            downCount >= 4 ? 'Institutional selling pressure — 4+ signals falling' : null
-    };
-}
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -3455,203 +2819,18 @@ function getSessionTrajectory(history) {
 // ═══════════════════════════════════════════════════════════════
 
 // Build snapshot data from current state (used for morning, 2pm, 3:15pm)
-function buildChainSnapshotData() {
-    return {
-        date: API.todayIST(),
-        bnfSpot: STATE.live?.bnfSpot || STATE.baseline?.bnfSpot,
-        nfSpot: STATE.live?.nfSpot || STATE.baseline?.nfSpot,
-        vix: STATE.live?.vix || STATE.baseline?.vix,
-        bnfPcr: STATE.bnfChain?.pcr,
-        bnfNearAtmPcr: STATE.bnfChain?.nearAtmPCR,
-        nfPcr: STATE.nfChain?.pcr,
-        bnfMaxPain: STATE.bnfChain?.maxPain,
-        nfMaxPain: STATE.nfChain?.maxPain,
-        bnfCallWall: STATE.bnfChain?.callWallStrike,
-        bnfCallWallOi: STATE.bnfChain?.callWallOI,
-        bnfPutWall: STATE.bnfChain?.putWallStrike,
-        bnfPutWallOi: STATE.bnfChain?.putWallOI,
-        bnfTotalCallOi: STATE.bnfChain?.totalCallOI,
-        bnfTotalPutOi: STATE.bnfChain?.totalPutOI,
-        nfTotalCallOi: STATE.nfChain?.totalCallOI,
-        nfTotalPutOi: STATE.nfChain?.totalPutOI,
-        bnfAtmIv: STATE.bnfChain?.atmIv,
-        bnfFuturesPrem: STATE.bnfChain?.futuresPremium,
-        bnfBreadthPct: STATE.bnfBreadth?.weightedPct,
-        nf50Advancing: STATE.nf50Breadth?.scaled
-    };
-}
 
 // Heavy afternoon fetch — full chains + breadth (same as morning)
-async function heavyAfternoonFetch() {
-    const spots = await API.fetchSpots();
-    if (!spots.bnfSpot || !spots.vix) throw new Error('Spots missing — check Upstox token');
-    const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
-    STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
-    const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
-    STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
-    STATE.bnfBreadth = await API.fetchBnfBreadth();
-    STATE.nf50Breadth = await API.fetchNf50Breadth();
-
-    // Update live state
-    STATE.live = { ...STATE.live,
-        nfSpot: spots.nfSpot, bnfSpot: spots.bnfSpot, vix: spots.vix,
-        pcr: STATE.bnfChain.pcr, nearAtmPCR: STATE.bnfChain.nearAtmPCR,
-        maxPainBnf: STATE.bnfChain.maxPain, futuresPremBnf: STATE.bnfChain.futuresPremium,
-        bnfAtmIv: STATE.bnfChain.atmIv,
-        nfAtmIv: STATE.nfChain.atmIv, nfPcr: STATE.nfChain.pcr,
-        futuresPremNf: STATE.nfChain.futuresPremium
-    };
-    return spots;
-}
 
 // Compare 2PM vs 3:15PM snapshots → detect positioning
-function computePositioning(snap2pm, snap315pm) {
-    if (!snap2pm || !snap315pm) return null;
-
-    const delta = {
-        callOiDelta: (snap315pm.bnf_total_call_oi || 0) - (snap2pm.bnf_total_call_oi || 0),
-        putOiDelta: (snap315pm.bnf_total_put_oi || 0) - (snap2pm.bnf_total_put_oi || 0),
-        nfCallOiDelta: (snap315pm.nf_total_call_oi || 0) - (snap2pm.nf_total_call_oi || 0),
-        nfPutOiDelta: (snap315pm.nf_total_put_oi || 0) - (snap2pm.nf_total_put_oi || 0),
-        pcrChange: (snap315pm.bnf_pcr || 0) - (snap2pm.bnf_pcr || 0),
-        nearPcrChange: (snap315pm.bnf_near_atm_pcr || 0) - (snap2pm.bnf_near_atm_pcr || 0),
-        vixChange: (snap315pm.vix || 0) - (snap2pm.vix || 0),
-        maxPainShift: (snap315pm.bnf_max_pain || 0) - (snap2pm.bnf_max_pain || 0),
-        breadthChange: (snap315pm.bnf_breadth_pct || 0) - (snap2pm.bnf_breadth_pct || 0),
-        spotChange: (snap315pm.bnf_spot || 0) - (snap2pm.bnf_spot || 0),
-        // Raw values for display
-        snap2pm, snap315pm
-    };
-
-    // Score each signal for tomorrow direction
-    let bearScore = 0, bullScore = 0;
-
-    // 1. OI imbalance — which side is building faster?
-    const netOiDelta = delta.putOiDelta - delta.callOiDelta;
-    if (delta.callOiDelta > delta.putOiDelta * 1.5) { bearScore += 2; } // heavy call writing = bearish
-    else if (delta.putOiDelta > delta.callOiDelta * 1.5) { bullScore += 2; } // heavy put writing = bullish (defense)
-
-    // 2. PCR direction in last hour
-    if (delta.pcrChange < -0.05) bearScore += 1.5;   // PCR dropping = more calls = bearish
-    else if (delta.pcrChange > 0.05) bullScore += 1.5;
-
-    // 3. VIX direction — rising into close = protection buying
-    if (delta.vixChange > 0.3) bearScore += 1.5;
-    else if (delta.vixChange < -0.3) bullScore += 1.5;
-
-    // 4. Max Pain shift
-    if (delta.maxPainShift < -100) bearScore += 1;
-    else if (delta.maxPainShift > 100) bullScore += 1;
-
-    // 5. BNF Breadth direction
-    if (delta.breadthChange < -0.5) bearScore += 1;
-    else if (delta.breadthChange > 0.5) bullScore += 1;
-
-    // 6. PCR context — dynamic institutional read (Phase 8.1)
-    // Uses the pcrContext that's been building all afternoon
-    if (STATE.pcrContext && STATE.pcrContext.confidence !== 'LOW') {
-        if (STATE.pcrContext.bias === 'BULL') bullScore += 1;
-        else if (STATE.pcrContext.bias === 'BEAR') bearScore += 1;
-        else if (STATE.pcrContext.bias === 'MILD_BULL') bullScore += 0.5;
-    }
-
-    // Generate signal
-    const netScore = bullScore - bearScore;
-    let signal = 'NEUTRAL';
-    let strength = 0;
-    if (netScore >= 3) { signal = 'BULLISH'; strength = Math.min(5, Math.round(netScore)); }
-    else if (netScore >= 1) { signal = 'BULLISH'; strength = Math.min(3, Math.round(netScore)); }
-    else if (netScore <= -3) { signal = 'BEARISH'; strength = Math.min(5, Math.round(Math.abs(netScore))); }
-    else if (netScore <= -1) { signal = 'BEARISH'; strength = Math.min(3, Math.round(Math.abs(netScore))); }
-    else { signal = 'NEUTRAL'; strength = 1; }
-
-    return { delta, signal, strength, bullScore, bearScore, netScore };
-}
 
 // ═══ GLOBAL DIRECTION BOOST — Dow, Crude, GIFT direction agreement ═══
-function computeGlobalBoost(tomorrowSignal, positioningResult) {
-    if (!tomorrowSignal || tomorrowSignal.signal === 'NEUTRAL' || !positioningResult) return;
-
-    // Reset to base strength
-    tomorrowSignal.strength = positioningResult.strength;
-    tomorrowSignal.globalBoost = 0;
-
-    const gd = STATE.globalDirection;
-    const isBull = tomorrowSignal.signal === 'BULLISH';
-    let boost = 0;
-
-    // Signal 1: Dow direction (prev close → now)
-    if (gd.dowClose && gd.dowNow) {
-        const dowPct = ((gd.dowNow - gd.dowClose) / gd.dowClose) * 100;
-        if (Math.abs(dowPct) >= C.DOW_THRESHOLD) {
-            if ((dowPct > 0 && isBull) || (dowPct < 0 && !isBull)) boost++;
-            else boost--;
-        }
-    }
-
-    // Signal 2: Crude direction (settlement → now) — INVERTED for India (rising crude = bearish)
-    if (gd.crudeSettle && gd.crudeNow) {
-        const crudePct = ((gd.crudeNow - gd.crudeSettle) / gd.crudeSettle) * 100;
-        if (Math.abs(crudePct) >= C.CRUDE_THRESHOLD) {
-            if ((crudePct < 0 && isBull) || (crudePct > 0 && !isBull)) boost++;
-            else boost--;
-        }
-    }
-
-    // Signal 3: GIFT direction — b91: live GIFT Now vs evening close (most direct gap signal)
-    const giftRef = STATE.eveningClose?.gift || null;
-    if (giftRef && gd.giftNow) {
-        const giftPct = ((gd.giftNow - giftRef) / giftRef) * 100;
-        if (Math.abs(giftPct) >= C.GIFT_THRESHOLD) {
-            if ((giftPct > 0 && isBull) || (giftPct < 0 && !isBull)) boost++;
-            else boost--;
-        }
-    } else if (STATE.gapInfo && STATE.gapInfo.sigma) {
-        // Fallback: morning gap (stale but better than nothing)
-        const giftBull = STATE.gapInfo.sigma > 0.3;
-        const giftBear = STATE.gapInfo.sigma < -0.3;
-        if ((giftBull && isBull) || (giftBear && !isBull)) boost++;
-        else if ((giftBull && !isBull) || (giftBear && isBull)) boost--;
-    }
-
-    if (boost !== 0) {
-        tomorrowSignal.strength = Math.max(1, Math.min(5, positioningResult.strength + boost));
-        tomorrowSignal.globalBoost = boost;
-    }
-}
 
 // Validate yesterday's signal against today's gap
-async function validateYesterdaySignal(todayGap) {
-    if (!todayGap || todayGap.type === 'UNKNOWN') return null;
-    try {
-        // Get yesterday's date
-        const ydayDate = STATE.yesterdayHistory?.[0]?.date;
-        if (!ydayDate) return null;
-        const ydaySignal = await DB.getChainSnapshot(ydayDate, '315pm');
-        if (!ydaySignal || !ydaySignal.tomorrow_signal) return null;
-
-        const predicted = ydaySignal.tomorrow_signal;
-        const actualDir = todayGap.gap > 50 ? 'BULLISH' : todayGap.gap < -50 ? 'BEARISH' : 'NEUTRAL';
-        const correct = (predicted === actualDir) || (predicted === 'NEUTRAL' && Math.abs(todayGap.gap) < 100);
-
-        // Get historical accuracy
-        const signals = await DB.getRecentSignals(20);
-        // We need morning snapshots to get gaps... for now just track this one
-        return {
-            date: ydayDate,
-            predicted,
-            strength: ydaySignal.signal_strength,
-            actualGap: todayGap.gap,
-            actualDir,
-            correct,
-            totalSignals: signals.length
-        };
-    } catch (e) { return null; }
-}
 
 // Render positioning section on DATA tab
 function renderPositioning() {
-    if (!STATE.positioningResult && !STATE._captured2pm) return '';
+    if (!bd.positioning && !STATE._captured2pm) return '';
 
     let html = '<div class="env-section-title">🔍 Afternoon Positioning</div>';
 
@@ -3662,8 +2841,8 @@ function renderPositioning() {
     }
 
     // Full comparison after 3:15PM
-    if (STATE.positioningResult) {
-        const r = STATE.positioningResult;
+    if (bd.positioning) {
+        const r = bd.positioning;
         const d = r.delta;
         const fmtOI = (v) => { const l = Math.abs(v) / 100000; return `${v > 0 ? '+' : ''}${l.toFixed(1)}L`; };
 
@@ -3688,7 +2867,7 @@ function renderPositioning() {
             <div class="signal-label">⚡ TOMORROW SIGNAL</div>
             <div class="signal-value" style="color:${sigColor}">${r.signal} (${r.strength}/5)</div>
             <div class="signal-detail">${r.signal === 'BEARISH' ? 'Institutions positioned for gap-down. Sell call premium above resistance.' : r.signal === 'BULLISH' ? 'Institutions positioned for gap-up. Sell put premium below support.' : 'No clear positioning. Range likely. Iron Condor favorable.'}</div>
-            ${STATE.tomorrowSignal?.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global direction: ${STATE.tomorrowSignal.globalBoost > 0 ? '+' : ''}${STATE.tomorrowSignal.globalBoost} strength</div>` : ''}
+            ${bd.tomorrow_signal?.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global direction: ${bd.tomorrow_signal.globalBoost > 0 ? '+' : ''}${bd.tomorrow_signal.globalBoost} strength</div>` : ''}
         </div>`;
     }
 
@@ -3707,238 +2886,14 @@ function renderPositioning() {
 // Iron Butterfly ALWAYS blocked for ₹1.1L account.
 // ═══════════════════════════════════════════════════════════════
 
-function getVarsityFilter(biasResult, vix) {
-    const bias = biasResult?.bias || 'NEUTRAL';
-    const strength = biasResult?.strength || '';
-    const isStrong = strength === 'STRONG';
-    const ivHigh = vix >= C.IV_HIGH; // VIX ≥ 20
-
-    let primary = [], allowed = [], blocked = [];
-
-    // ═══ BASE VARSITY FILTER (from Zerodha Varsity Modules 5, 6) ═══
-    if (bias === 'BEAR' && ivHigh) {
-        primary = ['BEAR_CALL'];
-        allowed = isStrong ? [] : ['BULL_PUT', 'IRON_CONDOR'];
-        blocked.push('BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT');
-    } else if (bias === 'BULL' && ivHigh) {
-        primary = ['BULL_PUT'];
-        allowed = isStrong ? [] : ['BEAR_CALL', 'IRON_CONDOR'];
-        blocked.push('BULL_CALL', 'BEAR_PUT', 'DOUBLE_DEBIT');
-    } else if (bias === 'NEUTRAL' && ivHigh) {
-        primary = ['IRON_CONDOR'];
-        allowed = ['BEAR_CALL', 'BULL_PUT'];
-        blocked.push('BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT');
-    } else if (bias === 'BEAR' && !ivHigh) {
-        primary = ['BEAR_PUT'];
-        allowed = isStrong ? [] : ['BEAR_CALL'];
-        blocked.push('BULL_PUT', 'BULL_CALL', 'IRON_CONDOR', 'DOUBLE_DEBIT');
-    } else if (bias === 'BULL' && !ivHigh) {
-        primary = ['BULL_CALL'];
-        allowed = isStrong ? [] : ['BULL_PUT'];
-        blocked.push('BEAR_CALL', 'BEAR_PUT', 'IRON_CONDOR', 'DOUBLE_DEBIT');
-    } else { // NEUTRAL + low IV
-        primary = ['DOUBLE_DEBIT'];
-        allowed = ['IRON_CONDOR'];
-        blocked.push('BEAR_PUT', 'BULL_CALL', 'BEAR_CALL', 'BULL_PUT');
-    }
-
-    // ═══ b68 OVERRIDE 1: BULL PUT — KILL SWITCH REMOVED (b70) ═══
-    // b68: 0/6 paper losses → Bull Put killed. 
-    // b70 BACKTEST (8372 trades): Bull Put 54.7-65.5% across all dampening presets.
-    // Root cause of 0/6 was ATM narrow strikes — now prevented by:
-    //   MIN_SIGMA_OTM (0.5σ) + MIN_WIDTH (NF:150, BNF:400)
-    // Bull Put stays in its natural Varsity position (PRIMARY for BULL+HIGH IV).
-    // No override needed — the filters do the job.
-
-    // ═══ b70 OVERRIDE: VERY_HIGH VIX → DEBIT CO-PRIMARY ═══
-    // Backtest Table 3 (8372 trades): VIX ≥24 → debit 91.7% vs credit 86.4%.
-    // Premiums so inflated that explosive moves create huge debit profits.
-    // Varsity M5 Ch19: "Buy options when you expect volatility to decrease" — at VERY_HIGH,
-    // VIX will likely DECREASE (mean-revert), making bought options profitable.
-    const isVeryHighVix = vix >= C.IV_VERY_HIGH; // VIX ≥ 24
-    if (isVeryHighVix) {
-        // Add directional debit as co-PRIMARY alongside credit
-        if (bias === 'BEAR') {
-            if (!primary.includes('BEAR_PUT')) primary.push('BEAR_PUT');
-            blocked = blocked.filter(s => s !== 'BEAR_PUT');
-        } else if (bias === 'BULL') {
-            if (!primary.includes('BULL_CALL')) primary.push('BULL_CALL');
-            blocked = blocked.filter(s => s !== 'BULL_CALL');
-        } else {
-            // NEUTRAL + VERY_HIGH: both debit directions as ALLOWED
-            if (!allowed.includes('BEAR_PUT')) allowed.push('BEAR_PUT');
-            if (!allowed.includes('BULL_CALL')) allowed.push('BULL_CALL');
-            blocked = blocked.filter(s => s !== 'BEAR_PUT' && s !== 'BULL_CALL');
-        }
-    }
-
-    // ═══ b68 OVERRIDE 2: RANGE DETECTION → IB/IC DEFAULT ═══
-    // Data: Non-directional 10/10 (100%) vs Directional 7/15 (47%).
-    // "The gap IS the move" — after gap absorbed, sell volatility not direction.
-    // Range = last 3 polls within ±0.3σ AND minutes since open > 75 (after 10:30 AM)
-    const rangeDetected = detectRange();
-    detectMarketPhase(); // b89: market phase for Trade tab banner
-    const minutesSinceOpen = API.minutesSinceOpen?.() ?? 0;
-    const afterSweetSpot = minutesSinceOpen > 75; // past 10:30 AM
-
-    if (rangeDetected && afterSweetSpot && ivHigh) {
-        // Range-bound + high VIX = vol crush territory → IB/IC dominate
-        primary = ['IRON_BUTTERFLY', 'IRON_CONDOR'];
-        if (bias === 'BEAR') allowed = ['BEAR_CALL'];
-        else if (bias === 'BULL') allowed = ['BULL_PUT'];
-        else allowed = [];
-        blocked = blocked.filter(s => s !== 'IRON_BUTTERFLY' && s !== 'IRON_CONDOR');
-    }
-
-    // IB blocked by default for real trades (margin concern at ₹1.1L)
-    // Only add to blocked if not already in primary/allowed from range override
-    if (!primary.includes('IRON_BUTTERFLY') && !allowed.includes('IRON_BUTTERFLY')) {
-        blocked.push('IRON_BUTTERFLY');
-    }
-
-    // Paper mode: unlock ALL strategies when no real trades are open
-    const hasRealTrades = STATE.openTrades.some(t => !t.paper);
-    if (!hasRealTrades) {
-        const allTypes = ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY', 'DOUBLE_DEBIT'];
-        allowed = allTypes.filter(t => !primary.includes(t));
-        blocked = [];
-    }
-
-    blocked = [...new Set(blocked)];
-    return { primary, allowed, blocked, rangeDetected };
-}
 
 // ═══ RANGE DETECTION — "Is the gap move done?" (b68) ═══
 // If last 3 polls (15 min) show spot within ±0.3σ, market is range-bound.
 // This is the signal to switch from directional to non-directional strategies.
-function detectRange() {
-    const polls = STATE.pollHistory;
-    if (!polls || polls.length < 3) return false;
-
-    const last3 = polls.slice(-3);
-    const spots = last3.map(p => p.nf).filter(v => v > 0);
-    if (spots.length < 3) return false;
-
-    const range = Math.max(...spots) - Math.min(...spots);
-    const spot = spots[spots.length - 1];
-    const vix = STATE.live?.vix || 20;
-    const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
-
-    if (dailySigma <= 0) return false;
-    const rangeSigma = range / dailySigma;
-
-    STATE.rangeDetected = rangeSigma < 0.3;
-    STATE.rangeSigma = +rangeSigma.toFixed(3);
-    return STATE.rangeDetected;
-}
 
 // ═══ MARKET PHASE DETECTION — "What is the market doing RIGHT NOW?" (b89) ═══
 // Combines gap info, range detection, time of day, and spot momentum
 // Returns phase label + strategy hint for Trade tab GO banner
-function detectMarketPhase() {
-    const minsOpen = API.minutesSinceOpen?.() ?? 0;
-    const gap = STATE.gapInfo;
-    const gapSigma = gap?.sigma ?? 0;
-    const rangeSigma = STATE.rangeSigma ?? 0;
-    const polls = STATE.pollHistory || [];
-    const bias = STATE.live?.bias?.label || STATE.baseline?.bias?.label || 'NEUTRAL';
-    const vix = STATE.live?.vix || STATE.baseline?.vix || 20;
-
-    // Default
-    let phase = { id: 'UNKNOWN', label: '—', detail: '', hint: '' };
-
-    // ── BEFORE MARKET or NO DATA ──
-    if (minsOpen <= 0 || polls.length < 2) {
-        phase = { id: 'PRE_MARKET', label: '⏳ Pre-market', detail: 'Waiting for market data', hint: 'Run Lock & Scan after 9:20 AM' };
-        STATE.marketPhase = phase;
-        return phase;
-    }
-
-    // ── AFTERNOON POSITIONING (after 2 PM) ──
-    if (minsOpen >= 285) { // 2:00 PM = 285 min from 9:15
-        phase = { id: 'POSITIONING', label: '🏦 Institutional positioning', detail: 'OI changes reveal tomorrow\'s direction', hint: 'Watch 2PM→3:15PM OI delta' };
-        STATE.marketPhase = phase;
-        return phase;
-    }
-
-    // Compute spot trend from polls
-    let trendSigma = 0;
-    let trendDir = 'FLAT';
-    if (polls.length >= 3) {
-        const recent = polls.slice(-6); // last 30 min
-        const firstSpot = recent[0]?.nf || recent[0]?.bnf || 0;
-        const lastSpot = recent[recent.length - 1]?.nf || recent[recent.length - 1]?.bnf || 0;
-        if (firstSpot > 0) {
-            const spot = lastSpot;
-            const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
-            if (dailySigma > 0) {
-                trendSigma = (lastSpot - firstSpot) / dailySigma;
-                trendDir = trendSigma > 0.15 ? 'UP' : trendSigma < -0.15 ? 'DOWN' : 'FLAT';
-            }
-        }
-    }
-
-    // Compute gap fill percentage
-    const openPrice = polls[0]?.nf || polls[0]?.bnf || 0;
-    const currentSpot = polls[polls.length - 1]?.nf || polls[polls.length - 1]?.bnf || 0;
-    const gapFillPct = gap?.gap && Math.abs(gap.gap) > 10 && openPrice > 0
-        ? Math.min(1, Math.abs(currentSpot - openPrice) / Math.abs(gap.gap))
-        : 0;
-    const fillingGap = gapFillPct > 0.3 && ((gapSigma > 0 && trendDir === 'DOWN') || (gapSigma < 0 && trendDir === 'UP'));
-
-    // ── GAP MOMENTUM (first 45 min, big gap, spot not reversing) ──
-    if (minsOpen <= 45 && Math.abs(gapSigma) >= 0.5 && !fillingGap) {
-        const dir = gapSigma > 0 ? 'up' : 'down';
-        phase = {
-            id: 'GAP_MOMENTUM',
-            label: `🚀 Gap-${dir} momentum`,
-            detail: `${Math.abs(gapSigma).toFixed(1)}σ gap, ${minsOpen}m since open — directional move`,
-            hint: gapSigma > 0 ? 'Bull Call / Bull Put favored' : 'Bear Call / Bear Put favored'
-        };
-    }
-    // ── GAP FILL / REVERSAL ──
-    else if (Math.abs(gapSigma) >= 0.5 && fillingGap) {
-        phase = {
-            id: 'REVERSAL',
-            label: '🔄 Gap filling',
-            detail: `${(gapFillPct * 100).toFixed(0)}% of gap filled — reversal in progress`,
-            hint: 'Caution — wait for direction to settle'
-        };
-    }
-    // ── CONSOLIDATION (range < 0.3σ, at least 30 min in) ──
-    else if (rangeSigma < 0.3 && minsOpen >= 30) {
-        const rangeHigh = polls.slice(-3).reduce((m, p) => Math.max(m, p.nf || 0), 0);
-        const rangeLow = polls.slice(-3).reduce((m, p) => Math.min(m, p.nf || Infinity), Infinity);
-        phase = {
-            id: 'CONSOLIDATION',
-            label: '📊 Consolidation',
-            detail: `Range ${rangeSigma}σ (${rangeLow.toFixed(0)}–${rangeHigh.toFixed(0)}) — premium decaying`,
-            hint: 'IC/IB favored — sell premium on range'
-        };
-    }
-    // ── TRENDING (range > 0.5σ, clear direction) ──
-    else if (rangeSigma >= 0.5 || Math.abs(trendSigma) >= 0.3) {
-        const dir = trendDir === 'UP' ? 'bullish' : trendDir === 'DOWN' ? 'bearish' : 'choppy';
-        phase = {
-            id: 'TRENDING',
-            label: `📈 Trending ${dir}`,
-            detail: `${Math.abs(trendSigma).toFixed(2)}σ move in last 30m — directional`,
-            hint: dir === 'bullish' ? 'Bull Call favored' : dir === 'bearish' ? 'Bear Put favored' : 'Wait for clarity'
-        };
-    }
-    // ── QUIET / LOW VOLATILITY ──
-    else {
-        phase = {
-            id: 'QUIET',
-            label: '😴 Low activity',
-            detail: `Range ${rangeSigma}σ, trend ${Math.abs(trendSigma).toFixed(2)}σ — waiting`,
-            hint: 'IC/IB possible, or wait for breakout'
-        };
-    }
-
-    STATE.marketPhase = phase;
-    return phase;
-}
 
 // ═══════════════════════════════════════════════════════════════
 // WALL PROXIMITY + GAMMA RISK — Premium safety scores
@@ -3946,859 +2901,19 @@ function detectMarketPhase() {
 // Gamma = how fast your premium can turn against you
 // ═══════════════════════════════════════════════════════════════
 
-function computeWallScore(cand, chain, isBNF) {
-    const step = isBNF ? 200 : 100; // strike step size
-    const callWall = chain.callWallStrike;
-    const putWall = chain.putWallStrike;
-    if (!callWall || !putWall) return { wallScore: 0, wallTag: '' };
 
-    const isCredit = cand.isCredit;
-    const type = cand.type;
-    let score = 0, tag = '';
-
-    if (type === 'BEAR_CALL' || type === 'IRON_CONDOR') {
-        // Credit call side: sell strike near call wall = institutions defending above
-        const distToCallWall = Math.abs(cand.sellStrike - callWall);
-        if (distToCallWall === 0) { score = 1.0; tag = '🛡️ Wall'; }
-        else if (distToCallWall <= step) { score = 0.7; tag = '🛡️'; }
-        else if (distToCallWall <= step * 2) { score = 0.4; }
-    }
-
-    if (type === 'BULL_PUT' || type === 'IRON_CONDOR') {
-        // Credit put side: sell strike near put wall = institutions defending below
-        const sellPut = cand.sellStrike2 || cand.sellStrike; // IC has sellStrike2 for put side
-        const distToPutWall = Math.abs(sellPut - putWall);
-        const putScore = distToPutWall === 0 ? 1.0 : distToPutWall <= step ? 0.7 : distToPutWall <= step * 2 ? 0.4 : 0;
-
-        if (type === 'IRON_CONDOR') {
-            score = (score + putScore) / 2; // average both sides
-            if (score >= 0.5) tag = '🛡️🛡️'; // both sides backed
-            else if (score >= 0.3) tag = '🛡️';
-        } else {
-            score = putScore;
-            if (score >= 0.7) tag = '🛡️ Wall';
-            else if (score >= 0.4) tag = '🛡️';
-        }
-    }
-
-    if (type === 'IRON_BUTTERFLY') {
-        // ATM sell — check distance from both walls
-        const distCall = Math.abs(cand.sellStrike - callWall);
-        const distPut = Math.abs(cand.sellStrike - putWall);
-        // IB is best when ATM is between walls (pinning zone)
-        if (distCall > step * 3 && distPut > step * 3) { score = 0.6; tag = '📌 Pinned'; }
-    }
-
-    // DEBIT spreads: wall BLOCKS your target — penalty
-    if (type === 'BULL_CALL') {
-        const distToCallWall = Math.abs(cand.buyStrike - callWall);
-        if (distToCallWall <= step) { score = -0.5; tag = '⚠️ Wall blocks'; }
-    }
-    if (type === 'BEAR_PUT') {
-        const distToPutWall = Math.abs(cand.buyStrike - putWall);
-        if (distToPutWall <= step) { score = -0.5; tag = '⚠️ Wall blocks'; }
-    }
-
-    return { wallScore: +score.toFixed(2), wallTag: tag };
-}
-
-function computeGammaRisk(cand, spot, tDTE) {
-    // Gamma risk = how fast delta changes. Dangerous when:
-    // 1. Sell strike is near ATM (high gamma zone)
-    // 2. DTE is low (gamma increases as expiry approaches)
-    // Credit sellers lose when gamma spikes against them
-
-    if (!cand.isCredit) return { gammaRisk: 0, gammaTag: '' }; // debit buyers want gamma
-
-    const distFromATM = Math.abs(cand.sellStrike - spot);
-    const step = spot > 30000 ? 200 : 100; // BNF vs NF step
-    const stepsAway = distFromATM / step;
-
-    // Gamma risk score: 0 (safe) to 1 (dangerous)
-    let risk = 0;
-
-    // Near ATM = high gamma
-    if (stepsAway <= 2) risk += 0.5;
-    else if (stepsAway <= 4) risk += 0.3;
-    else if (stepsAway <= 6) risk += 0.1;
-
-    // Low DTE amplifies gamma
-    if (tDTE <= 2) risk += 0.5;
-    else if (tDTE <= 3) risk += 0.3;
-    else if (tDTE <= 5) risk += 0.1;
-
-    risk = Math.min(1.0, risk);
-
-    let tag = '';
-    if (risk >= 0.7) tag = '⚠️ High γ';
-    else if (risk >= 0.4) tag = '⚠️ γ';
-
-    return { gammaRisk: +risk.toFixed(2), gammaTag: tag };
-}
 
 // ═══ CONTEXT SCORE — Varsity rules as invisible ranking penalties ═══
 // Negative = penalty (candidate drops). Positive = bonus (candidate rises). Zero = neutral.
 // All dynamic from live data. tradeMode switches behavior.
-function computeContextScore(cand, spot, tDTE, vix) {
-    let penalty = 0;
-    const isCredit = cand.isCredit;
-    const isBear = C.DIRECTIONAL_BEAR.includes(cand.type);
-    const isBull = C.DIRECTIONAL_BULL.includes(cand.type);
-    const mode = STATE.tradeMode; // 'intraday' or 'swing'
-    const daily1Sigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
-
-    // 1. VIX DIRECTION — Varsity M6 Ch8.4: credit best when vol rising
-    const ydayVix = STATE.yesterdayHistory?.[0]?.vix;
-    if (ydayVix && isCredit) {
-        const vixChange = vix - ydayVix;
-        if (mode === 'swing') {
-            if (vixChange < -0.5) penalty -= 0.3;
-            else if (vixChange < -0.2) penalty -= 0.15;
-        } else {
-            // Intraday: VIX direction less critical (same-day exit)
-            if (vixChange < -0.5) penalty -= 0.1;
-        }
-    }
-
-    // 2. GAP CONFLICT — always applies regardless of mode
-    const gap = STATE.gapInfo;
-    if (gap && Math.abs(gap.sigma) > 0.8) {
-        if ((gap.sigma > 0.8 && isBear) || (gap.sigma < -0.8 && isBull)) {
-            penalty -= 0.4;
-            if (Math.abs(gap.sigma) > 1.5) penalty -= 0.3;
-        }
-    }
-
-    // 3. STRIKE DISTANCE — b69→b70: UNIFIED for both modes
-    // Calibration (25 trades): ATM sells (<0.2σ) lose on reversals.
-    // Backtest (8372 trades): 0.5-0.8σ = SWEET SPOT (66-84%). CLIFF at 0.8σ → 52%.
-    // IB is exempt from this (contextScore hardcoded to 0 for IB).
-    if (isCredit && daily1Sigma > 0) {
-        const distFromATM = Math.abs(cand.sellStrike - spot);
-        const sigmaAway = distFromATM / daily1Sigma;
-
-        // Both modes: penalize ATM sells — cat-and-mouse kills them
-        if (sigmaAway < 0.3) penalty -= 0.5;
-        else if (sigmaAway < 0.5) penalty -= 0.25;
-        // SWEET SPOT: 0.5-0.8σ — Varsity's OTM zone, backtest confirmed
-        if (sigmaAway >= 0.5 && sigmaAway <= 0.8) penalty += 0.2;
-        // b70: CLIFF PENALTY beyond 0.8σ — backtest shows 32pt drop
-        else if (sigmaAway > 0.8 && sigmaAway <= 1.0) penalty -= 0.15;
-        else if (sigmaAway > 1.0) penalty -= 0.3;
-    }
-
-    // 4. WIDTH — b69: wider is ALWAYS better (both modes)
-    // Data: width has +0.727 correlation with P&L. Narrow = stop loss hunting.
-    if (isCredit) {
-        const minW = spot > 30000 ? C.MIN_WIDTH_BNF : C.MIN_WIDTH_NF;
-        if (cand.width < minW) penalty -= 0.3;   // below minimum = strong penalty
-        if (cand.width >= minW * 2) penalty += 0.1; // wide width = slight bonus
-        if (mode === 'swing' && cand.width < 200) penalty -= 0.1; // swing still prefers wider
-    }
-
-    // 5. FAR OTM DEBIT + HIGH DTE — swing only
-    if (mode === 'swing' && !isCredit && tDTE > 5 && daily1Sigma > 0) {
-        const buyDist = Math.abs(cand.buyStrike - spot);
-        const sigmaAway = buyDist / daily1Sigma;
-        if (sigmaAway > 3) penalty -= 0.3;
-    }
-
-    return +penalty.toFixed(2);
-}
 
 // ═══ CHAIN DELTA — use Upstox per-strike delta (includes IV smile) instead of flat ATM IV ═══
 // Falls back to BS.delta if chain delta unavailable (Upstox didn't provide greeks)
-function chainDeltaAtPrice(chainStrikes, price, optionType, spot, T, vol) {
-    if (!chainStrikes) return BS.delta(spot, price, T, vol, optionType);
-    const allK = Object.keys(chainStrikes).map(Number).sort((a, b) => a - b);
-    if (allK.length < 2) return BS.delta(spot, price, T, vol, optionType);
-
-    // Find bracketing strikes
-    let lo = null, hi = null;
-    for (let i = 0; i < allK.length - 1; i++) {
-        if (allK[i] <= price && allK[i + 1] >= price) { lo = allK[i]; hi = allK[i + 1]; break; }
-    }
-    if (!lo || !hi) {
-        // Price outside chain — nearest strike
-        const nearest = allK.reduce((a, b) => Math.abs(a - price) < Math.abs(b - price) ? a : b);
-        const d = chainStrikes[nearest]?.[optionType]?.delta;
-        return d != null ? d : BS.delta(spot, price, T, vol, optionType);
-    }
-
-    const dLo = chainStrikes[lo]?.[optionType]?.delta;
-    const dHi = chainStrikes[hi]?.[optionType]?.delta;
-
-    if (dLo != null && dHi != null) {
-        // Interpolate
-        const frac = (price - lo) / (hi - lo);
-        return dLo + frac * (dHi - dLo);
-    }
-    // One available → use it; neither → BS fallback
-    if (dLo != null) return dLo;
-    if (dHi != null) return dHi;
-    return BS.delta(spot, price, T, vol, optionType);
-}
 
 // Read ANY greek at an exact chain strike. Falls back to BS computation if chain value is null.
-function chainTheta(strikes, strike, type, spot, T, vol) {
-    const v = strikes?.[strike]?.[type]?.theta;
-    return v != null ? v : BS.theta(spot, strike, T, vol, type);
-}
-function chainDelta(strikes, strike, type, spot, T, vol) {
-    const v = strikes?.[strike]?.[type]?.delta;
-    return v != null ? v : BS.delta(spot, strike, T, vol, type);
-}
 
-function generateCandidates(chain, spot, indexKey, expiry, vix, biasResult, ivPercentile) {
-    const isBNF = indexKey === 'BNF';
-    const lotSize = isBNF ? C.BNF_LOT : C.NF_LOT;
-    const widths = isBNF ? C.BNF_WIDTHS : C.NF_WIDTHS;
-    const parsed = chain;
-    const atm = parsed.atm;
-    const tDTE = API.tradingDTE(expiry);
-    const T = tDTE / BS.DAYS_PER_YEAR;
 
-    // INTRADAY mode: probability should reflect TODAY's remaining time, not full DTE
-    // Chain deltas reflect full-DTE probability (wrong for intraday exit)
-    // BS.delta with T_prob gives correct intraday probability
-    const minsLeft = STATE.tradeMode === 'intraday' ? Math.max(30, 375 - (API.minutesSinceOpen?.() ?? 0)) : null;
-    const T_prob = minsLeft != null ? minsLeft / (252 * 375) : T;
 
-    const candidates = [];
-
-    const atmIv = parsed.atmIv || (vix / 100);
-    const vol = atmIv > 1 ? atmIv / 100 : atmIv;
-
-    // Probability delta — uses intraday time horizon for intraday mode, chain delta for swing
-    const probDelta = (strikes, price, type) =>
-        STATE.tradeMode === 'intraday'
-            ? BS.delta(spot, price, T_prob, vol, type)
-            : chainDeltaAtPrice(strikes, price, type, spot, T, vol);
-
-    // b91: IC/IB ALWAYS use intraday probability — 0% overnight survival (backtest confirmed)
-    // Toggle only governs 2-leg directional strategies. 4-leg credit = intraday, always.
-    const minsLeft4Leg = Math.max(30, 375 - (API.minutesSinceOpen?.() ?? 0));
-    const T_prob_4leg = minsLeft4Leg / (252 * 375);
-    const probDelta4Leg = (strikes, price, type) =>
-        BS.delta(spot, price, T_prob_4leg, vol, type);
-
-    const allStrikes = parsed.allStrikes;
-    const step = allStrikes.length > 1 ? allStrikes[1] - allStrikes[0] : (isBNF ? 100 : 50);
-
-    // ═══ VARSITY FILTER — only generate allowed strategy types ═══
-    const varsity = getVarsityFilter(biasResult, vix);
-    const allowedTypes = [...varsity.primary, ...varsity.allowed];
-
-    // ═══ 1. DIRECTIONAL SPREADS (only Varsity-approved types) ═══
-    const stratTypes = ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL']
-        .filter(t => allowedTypes.includes(t));
-
-    // ═══ RANGE BUDGET for debit spreads ═══
-    // Reject if width > remaining 1σ in trade direction (uses multi-day sigma)
-    const prevClose = isBNF
-        ? (STATE.premiumHistory?.[0]?.bnf_spot || spot)
-        : (STATE.premiumHistory?.[0]?.nf_spot || spot);
-    const tradeSigma = BS.sigmaDays(spot, vix, tDTE);
-    const moveFromClose = spot - prevClose;
-    const remainingUp = Math.max(0, tradeSigma - Math.max(0, moveFromClose));
-    const remainingDown = Math.max(0, tradeSigma - Math.max(0, -moveFromClose));
-
-    for (const sType of stratTypes) {
-        for (const width of widths) {
-            const strikePairs = getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF, parsed.callWallStrike, parsed.putWallStrike);
-            for (const pair of strikePairs) {
-                const cand = buildCandidate(sType, pair, parsed.strikes, spot, lotSize, width, T, T_prob, tDTE, vol, expiry, isBNF, vix);
-                if (!cand) continue;
-
-                // ═══ RANGE BUDGET FILTER (debit spreads only) ═══
-                if (C.DEBIT_TYPES.includes(sType)) {
-                    if (sType === 'BULL_CALL' && width > remainingUp * 1.2) continue;
-                    if (sType === 'BEAR_PUT' && width > remainingDown * 1.2) continue;
-                }
-
-                cand.forces = getForceAlignment(sType, biasResult, vix, ivPercentile);
-                cand.index = isBNF ? 'BNF' : 'NF';
-                cand.expiry = expiry;
-                cand.tDTE = tDTE;
-                cand.varsityTier = varsity.primary.includes(sType) ? 'PRIMARY' : 'ALLOWED';
-                // Wall proximity + Gamma risk
-                const wall = computeWallScore(cand, parsed, isBNF);
-                cand.wallScore = wall.wallScore;
-                cand.wallTag = wall.wallTag;
-                const gamma = computeGammaRisk(cand, spot, tDTE);
-                cand.gammaRisk = gamma.gammaRisk;
-                cand.gammaTag = gamma.gammaTag;
-                cand.contextScore = computeContextScore(cand, spot, tDTE, vix);
-                // Swing mode: BLOCK high gamma ATM sells — skip in paper mode (test everything)
-                const hasRealTradesCandidate = STATE.openTrades.some(t => !t.paper);
-                if (hasRealTradesCandidate && STATE.tradeMode === 'swing' && cand.isCredit && gamma.gammaRisk >= 0.7) {
-                    cand.capitalBlocked = true;
-                }
-                if (hasRealTradesCandidate && !isBNF && C.DIRECTIONAL_BEAR.concat(C.DIRECTIONAL_BULL).includes(sType)) {
-                    if (C.CREDIT_TYPES.includes(sType) && (peakCash(cand) + cand.maxLoss > C.CAPITAL * 0.9)) {
-                        cand.capitalBlocked = true;
-                    }
-                }
-                candidates.push(cand);
-            }
-        }
-    }
-
-    // ═══ 2. IRON CONDOR (Varsity-gated) ═══
-    // b84: Wall-anchored — tries sell at OI walls (asymmetric) alongside symmetric
-    // b91: IC is ALWAYS intraday — skip entirely in SWING mode
-    if (allowedTypes.includes('IRON_CONDOR') && STATE.tradeMode !== 'swing') {
-    const cw = parsed.callWallStrike;
-    const pw = parsed.putWallStrike;
-    for (const width of widths) {
-        const range = isBNF ? 2000 : 800;
-        // Build distance pairs: symmetric + wall-anchored asymmetric
-        const distPairs = [];
-        for (let dist = width; dist <= range; dist += step) {
-            distPairs.push([dist, dist]); // symmetric from ATM
-        }
-        // Wall-anchored: sell CE at/near call wall, sell PE at/near put wall
-        if (cw && pw && cw > atm && pw < atm) {
-            const cwDist = cw - atm;
-            const pwDist = atm - pw;
-            if (cwDist >= step && pwDist >= step) {
-                distPairs.push([cwDist, pwDist]);  // exact wall
-                // Also try 1 step inside wall (tighter, more credit)
-                if (cwDist - step >= step && pwDist - step >= step) distPairs.push([cwDist - step, pwDist - step]);
-            }
-        }
-        const seen = new Set();
-        for (const [callDist, putDist] of distPairs) {
-            const sellCall = atm + callDist;
-            const buyCall = sellCall + width;
-            const sellPut = atm - putDist;
-            const buyPut = sellPut - width;
-
-            if (!allStrikes.includes(sellCall) || !allStrikes.includes(buyCall)) continue;
-            if (!allStrikes.includes(sellPut) || !allStrikes.includes(buyPut)) continue;
-            const pairKey = `${sellCall}_${sellPut}_${width}`;
-            if (seen.has(pairKey)) continue;
-            seen.add(pairKey);
-
-            const ceS = parsed.strikes[sellCall]?.CE;
-            const ceB = parsed.strikes[buyCall]?.CE;
-            const peS = parsed.strikes[sellPut]?.PE;
-            const peB = parsed.strikes[buyPut]?.PE;
-            if (!ceS || !ceB || !peS || !peB) continue;
-
-            const callCredit = (ceS.bid || 0) - (ceB.ask || 0);
-            const putCredit = (peS.bid || 0) - (peB.ask || 0);
-            if (callCredit <= 0 || putCredit <= 0) continue;
-
-            const totalCredit = callCredit + putCredit;
-            const maxLossPerShare = width - totalCredit;
-            if (maxLossPerShare <= 0) continue;
-
-            const maxProfit = Math.round(totalCredit * lotSize);
-            const maxLoss = Math.round(maxLossPerShare * lotSize);
-            if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) continue;
-            if (maxLoss <= 0 || maxProfit <= 0) continue;
-
-            // Probability: spot stays between both sold strikes
-            // b71 FIX: Use chain delta (IV smile) instead of flat ATM IV
-            const upperBE = sellCall + totalCredit;
-            const lowerBE = sellPut - totalCredit;
-            const probAbovePut = 1 - Math.abs(probDelta4Leg(parsed.strikes, lowerBE, 'PE'));
-            const probBelowCall = 1 - Math.abs(probDelta4Leg(parsed.strikes, upperBE, 'CE'));
-            const probProfit = Math.max(0, probAbovePut + probBelowCall - 1);
-            if (probProfit < C.MIN_PROB) continue;
-            if (totalCredit / width < C.MIN_CREDIT_RATIO) continue;
-
-            const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
-
-            // Theta: sum of all 4 legs — read from chain, BS fallback
-            const netTheta = Math.round(Math.abs(
-                (chainTheta(parsed.strikes, sellCall, 'CE', spot, T, vol) + chainTheta(parsed.strikes, sellPut, 'PE', spot, T, vol)
-                - chainTheta(parsed.strikes, buyCall, 'CE', spot, T, vol) - chainTheta(parsed.strikes, buyPut, 'PE', spot, T, vol))
-            ) * lotSize);
-
-            const id = `IC_${isBNF ? 'BNF' : 'NF'}_${sellCall}_${sellPut}_W${width}`;
-
-            candidates.push({
-                id, type: 'IRON_CONDOR', width, legs: 4,
-                sellStrike: sellCall, buyStrike: buyCall,
-                sellStrike2: sellPut, buyStrike2: buyPut,
-                sellType: 'CE', buyType: 'CE', sellType2: 'PE', buyType2: 'PE',
-                sellLTP: ceS.bid, buyLTP: ceB.ask,
-                sellLTP2: peS.bid, buyLTP2: peB.ask,
-                netPremium: +totalCredit.toFixed(2),
-                maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
-                ev, netTheta, isCredit: true, lotSize,
-                netDelta: +(Math.abs(chainDelta(parsed.strikes, sellCall, 'CE', spot, T, vol)) - Math.abs(chainDelta(parsed.strikes, sellPut, 'PE', spot, T, vol))).toFixed(4),
-                riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-                // b116: IC always intraday — target 50% of max profit, SL 35% of max loss
-                // Previous theta formula (tDTE>2 → netTheta) was wrong: gave ₹357 target on ₹17K max profit
-                targetProfit: Math.round(maxProfit * 0.5),
-                stopLoss: Math.round(maxLoss * 0.35),
-                intradayTheta: netTheta > 0 ? netTheta : null,
-                forces: getForceAlignment('IRON_CONDOR', biasResult, vix, ivPercentile),
-                index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
-                // b115: Real breakeven lines
-                beUpper: Math.round(upperBE),
-                beLower: Math.round(lowerBE)
-            });
-            // Wall + Gamma on last pushed candidate
-            const icCand = candidates[candidates.length - 1];
-            const icWall = computeWallScore(icCand, parsed, isBNF);
-            icCand.wallScore = icWall.wallScore; icCand.wallTag = icWall.wallTag;
-            const icGamma = computeGammaRisk(icCand, spot, tDTE);
-            icCand.gammaRisk = icGamma.gammaRisk; icCand.gammaTag = icGamma.gammaTag;
-            // IC is neutral — only VIX direction penalty applies
-            const ydayVixIC = STATE.yesterdayHistory?.[0]?.vix;
-            icCand.contextScore = (ydayVixIC && vix - ydayVixIC < -0.5) ? -0.15 : 0;
-            icCand.varsityTier = varsity.primary.includes('IRON_CONDOR') ? 'PRIMARY' : 'ALLOWED';
-            // Block if peak cash (buy legs) + margin exceeds capital
-            const icPeak = ((ceB.ask || 0) + (peB.ask || 0)) * lotSize;
-            if (icPeak + maxLoss > C.CAPITAL * 0.9) {
-                const hasRealTradesIC = STATE.openTrades.some(t => !t.paper);
-                if (hasRealTradesIC) icCand.capitalBlocked = true;
-            }
-        }
-    }
-    } // end IC Varsity gate
-
-    // ═══ 3. IRON BUTTERFLY ═══
-    // b91: IB is ALWAYS intraday — skip entirely in SWING mode
-    if (allowedTypes.includes('IRON_BUTTERFLY') && STATE.tradeMode !== 'swing') {
-    const ibDebug = [];
-    for (const width of widths) {
-        const sellCall = atm;
-        const buyCall = atm + width;
-        const sellPut = atm;
-        const buyPut = atm - width;
-
-        if (!allStrikes.includes(buyCall) || !allStrikes.includes(buyPut)) { ibDebug.push(`W${width}:no_strikes`); continue; }
-
-        const ceS = parsed.strikes[atm]?.CE;
-        const ceB = parsed.strikes[buyCall]?.CE;
-        const peS = parsed.strikes[atm]?.PE;
-        const peB = parsed.strikes[buyPut]?.PE;
-        if (!ceS || !ceB || !peS || !peB) { ibDebug.push(`W${width}:no_data`); continue; }
-
-        const callCredit = (ceS.bid || 0) - (ceB.ask || 0);
-        const putCredit = (peS.bid || 0) - (peB.ask || 0);
-        if (callCredit <= 0 || putCredit <= 0) { ibDebug.push(`W${width}:neg_credit(c${callCredit.toFixed(0)}/p${putCredit.toFixed(0)},bids:${ceS.bid}/${peS.bid})`); continue; }
-
-        const totalCredit = callCredit + putCredit;
-        const maxLossPerShare = width - totalCredit;
-        if (maxLossPerShare <= 0) continue;
-
-        const maxProfit = Math.round(totalCredit * lotSize);
-        const maxLoss = Math.round(maxLossPerShare * lotSize);
-        if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) { ibDebug.push(`W${width}:risk(${maxLoss}>${Math.round(C.CAPITAL*C.MAX_RISK_PCT/100)})`); continue; }
-        if (maxLoss <= 0 || maxProfit <= 0) { ibDebug.push(`W${width}:zero(mL${maxLoss}/mP${maxProfit})`); continue; }
-
-        // IB breakevens: upper = ATM + totalCredit, lower = ATM - totalCredit
-        // b71 FIX: Use chain delta like IC — was using width/sigma heuristic before
-        const ibUpperBE = atm + totalCredit;
-        const ibLowerBE = atm - totalCredit;
-        const ibProbAbovePut = 1 - Math.abs(probDelta4Leg(parsed.strikes, ibLowerBE, 'PE'));
-        const ibProbBelowCall = 1 - Math.abs(probDelta4Leg(parsed.strikes, ibUpperBE, 'CE'));
-        const probProfit = Math.max(0, ibProbAbovePut + ibProbBelowCall - 1);
-        if (probProfit < C.MIN_PROB) { ibDebug.push(`W${width}:prob(${probProfit.toFixed(2)}<${C.MIN_PROB})`); continue; }
-
-        const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
-        const netTheta = Math.round(Math.abs(
-            (chainTheta(parsed.strikes, atm, 'CE', spot, T, vol) + chainTheta(parsed.strikes, atm, 'PE', spot, T, vol)
-            - chainTheta(parsed.strikes, buyCall, 'CE', spot, T, vol) - chainTheta(parsed.strikes, buyPut, 'PE', spot, T, vol))
-        ) * lotSize);
-
-        const id = `IB_${isBNF ? 'BNF' : 'NF'}_${atm}_W${width}`;
-
-        candidates.push({
-            id, type: 'IRON_BUTTERFLY', width, legs: 4,
-            sellStrike: atm, buyStrike: buyCall,
-            sellStrike2: atm, buyStrike2: buyPut,
-            sellType: 'CE', buyType: 'CE', sellType2: 'PE', buyType2: 'PE',
-            sellLTP: ceS.bid, buyLTP: ceB.ask,
-            sellLTP2: peS.bid, buyLTP2: peB.ask,
-            netPremium: +totalCredit.toFixed(2),
-            maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
-            ev, netTheta, isCredit: true, lotSize,
-            netDelta: 0, // IB is delta-neutral at entry
-            riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-            // b116: IB always intraday — target 50% of max profit, SL 35% of max loss
-            // Previous theta formula (tDTE>2 → netTheta) was wrong: gave ₹357 target on ₹17K max profit
-            targetProfit: Math.round(maxProfit * 0.5),
-            stopLoss: Math.round(maxLoss * 0.35),
-            intradayTheta: netTheta > 0 ? netTheta : null,
-            forces: getForceAlignment('IRON_BUTTERFLY', biasResult, vix, ivPercentile),
-            index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
-            // b115: Real breakeven lines
-            beUpper: Math.round(ibUpperBE),
-            beLower: Math.round(ibLowerBE)
-        });
-        // Wall + Gamma on last pushed candidate
-        const ibCand = candidates[candidates.length - 1];
-        const ibWall = computeWallScore(ibCand, parsed, isBNF);
-        ibCand.wallScore = ibWall.wallScore; ibCand.wallTag = ibWall.wallTag;
-        const ibGamma = computeGammaRisk(ibCand, spot, tDTE);
-        ibCand.gammaRisk = ibGamma.gammaRisk; ibCand.gammaTag = ibGamma.gammaTag;
-        ibCand.contextScore = 0;
-        ibCand.varsityTier = varsity.primary.includes('IRON_BUTTERFLY') ? 'PRIMARY' : 'ALLOWED';
-        // IB capital block — skip in paper mode (no real money at risk)
-        const hasRealTradesIB = STATE.openTrades.some(t => !t.paper);
-        if (hasRealTradesIB) ibCand.capitalBlocked = true;
-        ibDebug.push(`W${width}:✅OK(cr${totalCredit.toFixed(0)},mL${maxLoss},p${probProfit.toFixed(2)},ev${ev})`);
-    }
-    if (ibDebug.length) console.log(`[IB_DEBUG] ${isBNF?'BNF':'NF'} ATM=${atm}:`, ibDebug.join(' | '));
-    } // end IB Varsity gate
-
-    // ═══ 4. DOUBLE DEBIT SPREAD (Varsity-gated) ═══
-    if (allowedTypes.includes('DOUBLE_DEBIT')) {
-    for (const width of widths) {
-        // Buy ATM-ish CE spread + Buy ATM-ish PE spread
-        const buyCall = atm;
-        const sellCall = atm + width;
-        const buyPut = atm;
-        const sellPut = atm - width;
-
-        if (!allStrikes.includes(sellCall) || !allStrikes.includes(sellPut)) continue;
-
-        const ceB = parsed.strikes[atm]?.CE;
-        const ceS = parsed.strikes[sellCall]?.CE;
-        const peB = parsed.strikes[atm]?.PE;
-        const peS = parsed.strikes[sellPut]?.PE;
-        if (!ceB || !ceS || !peB || !peS) continue;
-
-        const callDebit = (ceB.ask || 0) - (ceS.bid || 0);
-        const putDebit = (peB.ask || 0) - (peS.bid || 0);
-        if (callDebit <= 0 || putDebit <= 0) continue;
-
-        const totalDebit = callDebit + putDebit;
-        // Max profit = width - losing side's debit (one side profits, other expires worthless)
-        // If BNF moves up: call spread profits (width - callDebit), put spread = -putDebit
-        // Net best case = width - callDebit - putDebit = width - totalDebit
-        const maxProfit = Math.round((width - totalDebit) * lotSize);
-        const maxLoss = Math.round(totalDebit * lotSize); // both expire worthless if pinned at ATM
-        if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) continue;
-        if (maxLoss <= 0 || maxProfit <= 0) continue;
-
-        // Probability: need move > totalDebit in either direction
-        // Roughly: 1 - prob(stays within totalDebit range)
-        const breakeven = totalDebit;
-        const moveNeeded = breakeven / spot;
-        const dailySigma = BS.dailySigma(spot, vix) * Math.sqrt(tDTE);
-        const probProfit = Math.max(0.1, 2 * (1 - BS.normCDF(breakeven / dailySigma)));
-        if (probProfit < 0.30) continue; // lower threshold for event plays
-
-        const ev = Math.round((probProfit * maxProfit) - ((1 - probProfit) * maxLoss));
-        const netTheta = -Math.round(Math.abs(
-            (chainTheta(parsed.strikes, atm, 'CE', spot, T, vol) + chainTheta(parsed.strikes, atm, 'PE', spot, T, vol)
-            - chainTheta(parsed.strikes, sellCall, 'CE', spot, T, vol) - chainTheta(parsed.strikes, sellPut, 'PE', spot, T, vol))
-        ) * lotSize); // negative = theta against you
-
-        const id = `DDS_${isBNF ? 'BNF' : 'NF'}_${atm}_W${width}`;
-
-        candidates.push({
-            id, type: 'DOUBLE_DEBIT', width, legs: 4,
-            sellStrike: sellCall, buyStrike: atm,
-            sellStrike2: sellPut, buyStrike2: atm,
-            sellType: 'CE', buyType: 'CE', sellType2: 'PE', buyType2: 'PE',
-            sellLTP: ceS.bid, buyLTP: ceB.ask,
-            sellLTP2: peS.bid, buyLTP2: peB.ask,
-            netPremium: +totalDebit.toFixed(2),
-            maxProfit, maxLoss, probProfit: +probProfit.toFixed(3),
-            ev, netTheta, isCredit: false, lotSize,
-            netDelta: 0, // DDS is delta-neutral (long both sides)
-            riskReward: maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--',
-            targetProfit: Math.round(maxProfit * 0.5),
-            stopLoss: Math.round(maxLoss * 0.5),
-            forces: getForceAlignment('DOUBLE_DEBIT', biasResult, vix, ivPercentile),
-            index: isBNF ? 'BNF' : 'NF', expiry, tDTE,
-            // b115: DDS breakevens — profit if spot moves > totalDebit from ATM
-            beUpper: Math.round(atm + totalDebit),
-            beLower: Math.round(atm - totalDebit)
-        });
-        // Wall + Gamma on last pushed candidate
-        const ddsCand = candidates[candidates.length - 1];
-        const ddsWall = computeWallScore(ddsCand, parsed, isBNF);
-        ddsCand.wallScore = ddsWall.wallScore; ddsCand.wallTag = ddsWall.wallTag;
-        const ddsGamma = computeGammaRisk(ddsCand, spot, tDTE);
-        ddsCand.gammaRisk = ddsGamma.gammaRisk; ddsCand.gammaTag = ddsGamma.gammaTag;
-        ddsCand.contextScore = computeContextScore(ddsCand, spot, tDTE, vix);
-        ddsCand.varsityTier = varsity.primary.includes('DOUBLE_DEBIT') ? 'PRIMARY' : 'ALLOWED';
-    }
-    } // end DDS Varsity gate
-
-    // ═══ TRANSACTION COST — estimate real-world cost for each candidate ═══
-    for (const cand of candidates) {
-        const cost = estimateCost(cand);
-        cand.estCost = cost.total;
-        cand.estCostPct = cost.pctOfMax;
-        cand.netMaxProfit = cand.maxProfit - cost.total;
-        // Flag candidates where cost eats too much of max profit
-        if (cost.costExceedsThreshold) {
-            cand.costWarning = true;
-            // Warning only — never block the button. Trader sees ⚠️ and decides.
-        }
-
-        // ====== P(PROFIT) REALISM ADJUSTMENT — DATA-DRIVEN (43 trades) ======
-        // 1. Store original probability as P(Range)
-        cand.rawProbProfit = cand.probProfit;
-
-        // 2. Cost Ratio (how much of the profit do we lose to spread costs?)
-        let costRatio = cand.maxProfit > 0 ? (cand.estCost / cand.maxProfit) : 0;
-        costRatio = Math.min(1.0, costRatio);
-
-        // 3. Strategy-specific dampening from 43-trade Supabase dataset
-        let strategyFactor = 1.0;
-
-        if (cand.type === 'BULL_PUT') {
-            // DATA: 0/6 wins (0%), shown 69-78%. Massive overestimate.
-            strategyFactor = 1.0;  // Gemini fix: kill switch removed — root cause (ATM narrow) fixed by MIN_SIGMA_OTM + MIN_WIDTH
-
-        } else if (cand.type === 'BEAR_CALL') {
-            // DATA: 7/14 wins (50%), shown 63-80%. ~20% overestimate.
-            if (STATE.tradeMode === 'swing') {
-                strategyFactor = 0.50;  // Swing BC worst: 25% actual vs 63% shown
-            } else {
-                strategyFactor = 0.75;  // Intraday BC: 50-67% actual vs 77-80% shown
-            }
-
-        } else if (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') {
-            // DATA: 22/24 wins (91.7%), shown 55-98%. Under-estimated!
-            // DO NOT dampen probability — it's already conservative
-            strategyFactor = 1.0;
-
-            // b91: IC/IB always intraday — show realistic capture regardless of toggle
-            if (cand.tDTE > 2) {
-                cand.realisticMaxProfit = Math.round(cand.maxProfit * 0.40);
-            }
-        }
-
-        // 4. Compute Realistic Probability
-        let adjustedProb = cand.rawProbProfit * (1 - costRatio) * strategyFactor;
-
-        // 5. Hard Floor at 5% (preserve candidates for UI / paper trading)
-        adjustedProb = Math.max(0.05, adjustedProb);
-
-        cand.probProfit = Number(adjustedProb.toFixed(3));
-
-        // 6. Recompute EV based on honest outcome probability
-        cand.ev = Math.round((cand.probProfit * cand.maxProfit * 0.65) - ((1 - cand.probProfit) * cand.maxLoss)); // Gemini fix: 0.65 discount preserved
-    }
-
-    return candidates;
-}
-
-function getStrikePairs(sType, atm, width, step, allStrikes, spot, isBNF, callWall, putWall) {
-    const pairs = [];
-    const seen = new Set();
-    const range = isBNF ? 2000 : 800;
-
-    switch (sType) {
-        case 'BEAR_CALL': // Sell CE near, Buy CE far (credit)
-            for (let sell = atm; sell <= atm + range; sell += step) {
-                const buy = sell + width;
-                if (allStrikes.includes(sell) && allStrikes.includes(buy)) {
-                    pairs.push({ sell, buy, sellType: 'CE', buyType: 'CE' });
-                    seen.add(sell);
-                }
-            }
-            // Wall-anchored: sell AT call wall (institutional resistance protects us)
-            if (callWall && callWall > atm && !seen.has(callWall)) {
-                const buy = callWall + width;
-                if (allStrikes.includes(callWall) && allStrikes.includes(buy))
-                    pairs.push({ sell: callWall, buy, sellType: 'CE', buyType: 'CE' });
-            }
-            // 1 step inside wall — more credit, wall 1 step above
-            if (callWall && callWall - step > atm && !seen.has(callWall - step)) {
-                const sell = callWall - step, buy = sell + width;
-                if (allStrikes.includes(sell) && allStrikes.includes(buy))
-                    pairs.push({ sell, buy, sellType: 'CE', buyType: 'CE' });
-            }
-            break;
-        case 'BULL_PUT': // Sell PE near, Buy PE far (credit)
-            for (let sell = atm; sell >= atm - range; sell -= step) {
-                const buy = sell - width;
-                if (allStrikes.includes(sell) && allStrikes.includes(buy)) {
-                    pairs.push({ sell, buy, sellType: 'PE', buyType: 'PE' });
-                    seen.add(sell);
-                }
-            }
-            // Wall-anchored: sell AT put wall (institutional support protects us)
-            if (putWall && putWall < atm && !seen.has(putWall)) {
-                const buy = putWall - width;
-                if (allStrikes.includes(putWall) && allStrikes.includes(buy))
-                    pairs.push({ sell: putWall, buy, sellType: 'PE', buyType: 'PE' });
-            }
-            // 1 step inside wall — more credit, wall 1 step below
-            if (putWall && putWall + step < atm && !seen.has(putWall + step)) {
-                const sell = putWall + step, buy = sell - width;
-                if (allStrikes.includes(sell) && allStrikes.includes(buy))
-                    pairs.push({ sell, buy, sellType: 'PE', buyType: 'PE' });
-            }
-            break;
-        case 'BEAR_PUT': // Buy PE near, Sell PE far (debit) — no wall anchoring
-            for (let buyStrike = atm; buyStrike >= atm - range; buyStrike -= step) {
-                const sellStrike = buyStrike - width;
-                if (allStrikes.includes(buyStrike) && allStrikes.includes(sellStrike)) {
-                    pairs.push({ sell: sellStrike, buy: buyStrike, sellType: 'PE', buyType: 'PE' });
-                }
-            }
-            break;
-        case 'BULL_CALL': // Buy CE near, Sell CE far (debit) — no wall anchoring
-            for (let buyStrike = atm; buyStrike <= atm + range; buyStrike += step) {
-                const sellStrike = buyStrike + width;
-                if (allStrikes.includes(buyStrike) && allStrikes.includes(sellStrike)) {
-                    pairs.push({ sell: sellStrike, buy: buyStrike, sellType: 'CE', buyType: 'CE' });
-                }
-            }
-            break;
-    }
-    return pairs.slice(0, 10); // increased from 8 to accommodate wall pairs
-}
-
-function buildCandidate(sType, pair, strikes, spot, lotSize, width, T, T_prob, tDTE, vol, expiry, isBNF, vix) {
-    const sellData = strikes[pair.sell]?.[pair.sellType];
-    const buyData = strikes[pair.buy]?.[pair.buyType];
-    if (!sellData || !buyData) return null;
-
-    const isCredit = C.CREDIT_TYPES.includes(sType);
-
-    // Use bid for selling, ask for buying (conservative)
-    const sellPrice = isCredit ? sellData.bid : sellData.ask;
-    const buyPrice = isCredit ? buyData.ask : buyData.bid;
-    if (!sellPrice || !buyPrice) return null;
-
-    let netPremium, maxProfit, maxLoss;
-    if (isCredit) {
-        netPremium = sellPrice - buyPrice;
-        if (netPremium <= 0) return null;
-        maxProfit = netPremium * lotSize;
-        maxLoss = (width - netPremium) * lotSize;
-    } else {
-        netPremium = buyPrice - sellPrice;
-        if (netPremium <= 0) return null;
-        maxProfit = (width - netPremium) * lotSize;
-        maxLoss = netPremium * lotSize;
-    }
-
-    if (maxLoss <= 0 || maxProfit <= 0) return null;
-
-    // Risk check
-    if (maxLoss > C.CAPITAL * C.MAX_RISK_PCT / 100) return null;
-
-    // ═══ b69: MINIMUM STRIKE DISTANCE — credit directional sells only ═══
-    // Data: ATM sells (<0.2σ) lose on reversals. OTM sells (>0.5σ) win 100%.
-    // IB exempt (needs ATM). IC exempt (OTM by construction).
-    // This HARD FILTER prevents the #1 cause of losses.
-    let sigmaOTM = null;
-    if (isCredit && (sType === 'BEAR_CALL' || sType === 'BULL_PUT')) {
-        const dailySigma = spot * (vix / 100) / 15.8745  /* √252, aligned with Python */;
-        if (dailySigma > 0) {
-            sigmaOTM = Math.abs(pair.sell - spot) / dailySigma;
-            if (sigmaOTM < C.MIN_SIGMA_OTM) return null; // REJECT below 0.5σ
-            sigmaOTM = +sigmaOTM.toFixed(2);
-        }
-    }
-
-    // ═══ b69: MINIMUM WIDTH — narrow directional spreads get hunted ═══
-    // Data: width has +0.727 correlation with P&L for 2-leg directional.
-    // IC/IB width means wing distance, not buffer — different mechanic, don't filter.
-    if (isCredit && (sType === 'BEAR_CALL' || sType === 'BULL_PUT')) {
-        const minW = isBNF ? C.MIN_WIDTH_BNF : C.MIN_WIDTH_NF;
-        if (width < minW) return null; // REJECT narrow directional credit spreads
-    }
-
-    // Probability — use BREAKEVEN, not sell strike
-    // b84: INTRADAY uses BS.delta with today's remaining time (T_prob)
-    // SWING uses chain delta interpolation with full DTE
-    const deltaFn = (price, type) => STATE.tradeMode === 'intraday'
-        ? BS.delta(spot, price, T_prob, vol, type)
-        : chainDeltaAtPrice(strikes, price, type, spot, T, vol);
-
-    let probProfit;
-    if (isCredit) {
-        const breakeven = pair.sellType === 'CE' ? pair.sell + netPremium : pair.sell - netPremium;
-        probProfit = 1 - Math.abs(deltaFn(breakeven, pair.sellType));
-    } else {
-        const breakeven = pair.buyType === 'CE' ? pair.buy + netPremium : pair.buy - netPremium;
-        probProfit = Math.abs(deltaFn(breakeven, pair.buyType));
-    }
-
-    // ═══ IV EDGE PROBABILITY BOOST — DISABLED (b67) ═══
-    // Was: +10% boost for credit sellers when VIX ≥ 18.
-    // Calibration Run #1 (18 trades): predicted 80% vs actual 56% = 24% inflation.
-    // Upstox pop comparison: our 70.9% vs Upstox 17.1% on IB.
-    // DISABLED until calibration engine determines correct boost (if any).
-    // Original: if (isCredit && vix >= 18) { ivEdge = Math.min(0.10, (vix-16)*0.015); probProfit += ivEdge; }
-
-    if (probProfit < C.MIN_PROB) return null;
-
-    // Credit ratio filter
-    if (isCredit && (netPremium / width) < C.MIN_CREDIT_RATIO) return null;
-
-    // EV
-    const ev = (probProfit * maxProfit * 0.65) - ((1 - probProfit) * maxLoss); // Gemini fix: discount — max profit rarely achieved
-
-    // Theta estimate — read from chain, BS fallback
-    const sellTheta = chainTheta(strikes, pair.sell, pair.sellType, spot, T, vol) * lotSize;
-    const buyTheta = chainTheta(strikes, pair.buy, pair.buyType, spot, T, vol) * lotSize;
-    const netTheta = isCredit ? -(sellTheta - buyTheta) : (sellTheta - buyTheta); // positive = in your favor
-
-    // Liquidity score (from OI)
-    const liq = Math.min(1, (sellData.oi + buyData.oi) / 200000);
-
-    // Greeks — net position, read from chain
-    const sellDeltaVal = chainDelta(strikes, pair.sell, pair.sellType, spot, T, vol);
-    const netDelta = isCredit ? sellDeltaVal : -sellDeltaVal;
-
-    // R:R and targets
-    const riskReward = maxLoss > 0 ? `1:${(maxProfit / maxLoss).toFixed(2)}` : '--';
-    // b116: Theta formula ONLY for long-dated swing (DTE > 10) — not intraday, not short swing
-    // For intraday any DTE: target = 50% max profit (you exit same day)
-    // For swing DTE ≤ 10: target = 50% max profit
-    // For swing DTE > 10 credit: target = daily theta capture (hold for decay)
-    const useIntradayTheta = STATE.tradeMode !== 'intraday' && tDTE > 10 && isCredit && Math.abs(netTheta) > 0;
-    const targetProfit = useIntradayTheta ? Math.round(Math.abs(netTheta) * 0.5) : Math.round(maxProfit * 0.5);
-    const stopLoss = isCredit
-        ? (useIntradayTheta
-            ? Math.round(Math.abs(netTheta))
-            : Math.min(Math.round(maxProfit), Math.round(maxLoss * 0.6)))  // can't lose more than you target to make, capped at 60% maxLoss
-        : Math.round(maxLoss * 0.5);
-
-    const id = `${sType}_${isBNF ? 'BNF' : 'NF'}_${pair.sell}_${pair.buy}_W${width}`;
-
-    return {
-        id, type: sType, width, legs: 2,
-        sellStrike: pair.sell, buyStrike: pair.buy,
-        sellType: pair.sellType, buyType: pair.buyType,
-        sellLTP: sellPrice, buyLTP: buyPrice,
-        sellOI: sellData.oi, buyOI: buyData.oi,
-        sellInstrumentKey: sellData.instrumentKey,
-        buyInstrumentKey: buyData.instrumentKey,
-        netPremium: +netPremium.toFixed(2),
-        maxProfit: Math.round(maxProfit),
-        maxLoss: Math.round(maxLoss),
-        probProfit: +probProfit.toFixed(3),
-        ev: Math.round(ev),
-        netTheta: Math.round(netTheta),
-        netDelta: +netDelta.toFixed(4),
-        riskReward,
-        targetProfit,
-        stopLoss,
-        liq,
-        isCredit,
-        lotSize,
-        upstoxPop: sellData.pop ?? null,
-        sigmaOTM,  // b70: strike distance from ATM in σ (null for IB/IC/debit)
-        intradayTheta: isCredit && Math.abs(netTheta) > 0 ? Math.round(Math.abs(netTheta)) : null,
-        // b115: Breakeven — the REAL danger line (not sell strike)
-        beUpper: isCredit
-            ? (pair.sellType === 'CE' ? Math.round(pair.sell + netPremium) : null)
-            : (pair.buyType === 'CE' ? Math.round(pair.buy + netPremium) : null),
-        beLower: isCredit
-            ? (pair.sellType === 'PE' ? Math.round(pair.sell - netPremium) : null)
-            : (pair.buyType === 'PE' ? Math.round(pair.buy - netPremium) : null)
-    };
-}
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -4887,125 +3002,15 @@ function isDirectionSafe(candidate) {
 // When brain says BUY PREMIUM → debit strategies boosted, IC/IB penalized
 // When brain says SELL PREMIUM → IC/IB boosted, debit penalized
 // Only applies when brain confidence > 30% (meaningful signal)
-function getBrainVerdictBoost(cand) {
-    const verdict = STATE.brainInsights?.verdict;
-    if (!verdict || !verdict.action || (verdict.confidence || 0) < 30) return 0;
 
-    const isBuy = verdict.action === 'BUY PREMIUM';
-    const isSell = verdict.action === 'SELL PREMIUM';
-    const isDebit = !cand.isCredit;
-    const is4Leg = cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY';
-    const isCredit2Leg = cand.isCredit && !is4Leg; // Bear Call, Bull Put
-
-    if (isBuy && isDebit) return 2;       // Brain says BUY → debit aligned
-    if (isSell && is4Leg) return 2;       // Brain says SELL → IC/IB aligned
-    if (isSell && isCredit2Leg) return 1; // Brain says SELL → 2-leg credit partial
-    if (isBuy && is4Leg) return -1;       // Brain says BUY but IC/IB sells → penalty
-    if (isSell && isDebit) return -1;     // Brain says SELL but debit buys → penalty
-    return 0;
-}
-
-function rankCandidates(candidates) {
-    return candidates
-        .filter(c => !c.capitalBlocked)
-        .sort((a, b) => {
-            // 0th: DIRECTION SAFETY — F1-against directional ALWAYS ranks last
-            const aSafe = isDirectionSafe(a) ? 0 : 1;
-            const bSafe = isDirectionSafe(b) ? 0 : 1;
-            if (aSafe !== bSafe) return aSafe - bSafe;
-            // 1st: Varsity tier — PRIMARY before ALLOWED
-            const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
-            const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
-            if (tierDiff !== 0) return tierDiff;
-            // 1.5: Brain verdict alignment — phase-aware strategy preference (b89)
-            const bvA = getBrainVerdictBoost(a);
-            const bvB = getBrainVerdictBoost(b);
-            if (bvA !== bvB) return bvB - bvA; // higher boost ranks first
-            // 2nd: Calibration win rate — strategies that actually WIN rank higher
-            const calA = CALIBRATION.win_rates[a.type]?.rate ?? 0.5;
-            const calB = CALIBRATION.win_rates[b.type]?.rate ?? 0.5;
-            if (Math.abs(calB - calA) > 0.1) return calB - calA;
-            // 3rd: force alignment (3/3 > 2/3 > 1/3) — within same tier + calibration
-            if (b.forces.aligned !== a.forces.aligned) return b.forces.aligned - a.forces.aligned;
-            // 4th: fewer forces against
-            if (a.forces.against !== b.forces.against) return a.forces.against - b.forces.against;
-            // 5th: context score + brain score — Varsity rules + live copilot intelligence
-            const scoreA = (a.contextScore || 0) + (a.brainScore || 0);
-            const scoreB = (b.contextScore || 0) + (b.brainScore || 0);
-            const ctxDiff = scoreB - scoreA;
-            if (Math.abs(ctxDiff) > 0.1) return ctxDiff;
-            // 6th: lower gamma risk
-            const gammaDiff = (a.gammaRisk || 0) - (b.gammaRisk || 0);
-            if (Math.abs(gammaDiff) > 0.2) return gammaDiff;
-            // 7th: wall-backed candidates rank higher
-            const wallDiff = (b.wallScore || 0) - (a.wallScore || 0);
-            if (Math.abs(wallDiff) > 0.2) return wallDiff;
-            // 8th: Capital efficiency — EV per ₹ deployed
-            const pcA = peakCash(a) || 1;
-            const pcB = peakCash(b) || 1;
-            const effA = a.ev / pcA;
-            const effB = b.ev / pcB;
-            if (Math.abs(effB - effA) > 0.01) return effB - effA;
-            // 9th: probability as tiebreaker
-            return b.probProfit - a.probProfit;
-        });
-}
 
 // ═══ BRAIN SCORING — converts copilot insights into ranking adjustments ═══
 // Runs after every brain cycle. Re-sorts watchlist so #1 at 11:00 reflects 90min of reality.
-function applyBrainScores() {
-    const candInsights = STATE.brainInsights?.candidates || {};
-    if (!Object.keys(candInsights).length && !STATE.brainReady) return;
-
-    const impactWeights = { bullish: 0.08, neutral: 0.02, caution: -0.08, bearish: -0.04 };
-
-    for (const cand of STATE.watchlist) {
-        const insights = candInsights[cand.id] || [];
-        let score = 0;
-        for (const ins of insights) {
-            const w = impactWeights[ins.impact] || 0;
-            score += w * (ins.strength || 1);
-        }
-        cand.brainScore = +score.toFixed(3);
-    }
-
-    // Re-sort watchlist with brain scores included (rankCandidates uses contextScore + brainScore)
-    STATE.watchlist.sort((a, b) => {
-        // 0th: DIRECTION SAFETY — F1-against directional ALWAYS ranks last
-        const aSafe = isDirectionSafe(a) ? 0 : 1;
-        const bSafe = isDirectionSafe(b) ? 0 : 1;
-        if (aSafe !== bSafe) return aSafe - bSafe;
-        // Same sort logic as rankCandidates but on existing watchlist
-        const tierOrder = { PRIMARY: 0, ALLOWED: 1 };
-        const tierDiff = (tierOrder[a.varsityTier] || 1) - (tierOrder[b.varsityTier] || 1);
-        if (tierDiff !== 0) return tierDiff;
-        // 1.5: Brain verdict alignment (b89)
-        const bvA = getBrainVerdictBoost(a);
-        const bvB = getBrainVerdictBoost(b);
-        if (bvA !== bvB) return bvB - bvA;
-        const calA = CALIBRATION.win_rates[a.type]?.rate ?? 0.5;
-        const calB = CALIBRATION.win_rates[b.type]?.rate ?? 0.5;
-        if (Math.abs(calB - calA) > 0.1) return calB - calA;
-        if (b.forces.aligned !== a.forces.aligned) return b.forces.aligned - a.forces.aligned;
-        if (a.forces.against !== b.forces.against) return a.forces.against - b.forces.against;
-        const scoreA = (a.contextScore || 0) + (a.brainScore || 0);
-        const scoreB = (b.contextScore || 0) + (b.brainScore || 0);
-        const ctxDiff = scoreB - scoreA;
-        if (Math.abs(ctxDiff) > 0.1) return ctxDiff;
-        const gammaDiff = (a.gammaRisk || 0) - (b.gammaRisk || 0);
-        if (Math.abs(gammaDiff) > 0.2) return gammaDiff;
-        const wallDiff = (b.wallScore || 0) - (a.wallScore || 0);
-        if (Math.abs(wallDiff) > 0.2) return wallDiff;
-        const pcA = peakCash(a) || 1; const pcB = peakCash(b) || 1;
-        if (Math.abs(b.ev/pcB - a.ev/pcA) > 0.01) return b.ev/pcB - a.ev/pcA;
-        return b.probProfit - a.probProfit;
-    });
-}
 
 // ═══ Free capital filter — check peakCash (buy leg cost) + margin against available capital ═══
 function applyFreeCapitalFilter(candidates) {
     let marginUsed = 0;
-    for (const t of STATE.openTrades) {
+    for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
         if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin, not just maxLoss
     }
     const freeCapital = C.CAPITAL - marginUsed;
@@ -5023,902 +3028,23 @@ function applyFreeCapitalFilter(candidates) {
 // ═══════════════════════════════════════════════════════════════
 
 async function initialFetch() {
-    const statusEl = document.getElementById('status');
-    const dbg = (label, data) => {
-        const entry = { time: API.istNow(), label, ...data };
-        (window._API_DEBUG || []).push(entry);
-        console.log(`[APP] ${label}`, data);
-    };
-
+    // F.2 reduced: read form fields, push baseline to Kotlin, trigger render.
+    // All chain fetching now done by Kotlin service.
     try {
-        statusEl.textContent = 'Fetching spots & VIX...';
-        const spots = await API.fetchSpots();
-        if (!spots.nfSpot || !spots.bnfSpot || !spots.vix) {
-            dbg('SPOTS_FAIL', { spots });
-            throw new Error(`Missing spot/VIX data — NF:${spots.nfSpot} BNF:${spots.bnfSpot} VIX:${spots.vix}`);
+        const baseline = collectBaselineFromForm();  // reads input fields
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
+            NativeBridge.setBaseline(JSON.stringify(baseline));
         }
-        dbg('SPOTS_OK', { nf: spots.nfSpot, bnf: spots.bnfSpot, vix: spots.vix });
-
-        statusEl.textContent = 'Fetching BNF expiries...';
-        const bnfExpiries = await API.fetchExpiries(API.BNF_KEY);
-        STATE.bnfExpiry = API.nearestExpiry(bnfExpiries);
-        dbg('BNF_EXPIRY', { selected: STATE.bnfExpiry, total: bnfExpiries.length });
-
-        statusEl.textContent = 'Fetching NF expiries...';
-        const nfExpiries = await API.fetchExpiries(API.NF_KEY);
-        STATE.nfExpiry = API.nearestExpiry(nfExpiries);
-        dbg('NF_EXPIRY', { selected: STATE.nfExpiry, total: nfExpiries.length });
-
-        statusEl.textContent = 'Fetching BNF chain...';
-        const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
-        STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
-        dbg('BNF_CHAIN', { strikes: STATE.bnfChain.allStrikes.length, atm: STATE.bnfChain.atm, pcr: STATE.bnfChain.pcr, maxPain: STATE.bnfChain.maxPain });
-
-        statusEl.textContent = 'Fetching NF chain...';
-        const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
-        STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
-        dbg('NF_CHAIN', { strikes: STATE.nfChain.allStrikes.length, atm: STATE.nfChain.atm, pcr: STATE.nfChain.pcr });
-
-        // Fetch BNF breadth (5 constituents, 79% weight)
-        statusEl.textContent = 'Fetching BNF breadth...';
-        STATE.bnfBreadth = await API.fetchBnfBreadth();
-
-        // Fetch NF50 breadth (50 constituents)
-        statusEl.textContent = 'Fetching NF50 breadth...';
-        STATE.nf50Breadth = await API.fetchNf50Breadth();
-
-        // Load premium history FIRST (needed for yesterday date + IV percentile)
-        statusEl.textContent = 'Loading premium history...';
-        STATE.premiumHistory = await DB.getPremiumHistory(60);
-        dbg('PREMIUM_HISTORY', { days: STATE.premiumHistory.length, sample: STATE.premiumHistory.slice(0, 3).map(p => `${p.date}:${p.vix}`) });
-
-        const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
-        dbg('IV_PERCENTILE', { currentVix: spots.vix, historyCount: vixHistory.length, percentile: ivPctl });
-
-        // Find YESTERDAY's row — skip today's date
-        const today = API.todayIST();
-        const ydayRow = STATE.premiumHistory.find(p => p.date !== today) || null;
-        // Also create a history array that excludes today (for VIX direction, trajectory etc)
-        STATE.yesterdayHistory = STATE.premiumHistory.filter(p => p.date !== today);
-
-        // Fetch yesterday's OHLC for auto Close Character
-        statusEl.textContent = 'Fetching yesterday OHLC...';
-        const yesterday = ydayRow?.date || null;
-        let bnfCloseChar = 0;
-        let nfCloseChar = 0;
-        let ydayBnfOHLC = null;
-        let ydayNfOHLC = null;
-        if (yesterday) {
-            ydayBnfOHLC = await API.fetchHistoricalOHLC(API.BNF_KEY, yesterday);
-            ydayNfOHLC = await API.fetchHistoricalOHLC(API.NF_KEY, yesterday);
-            if (ydayBnfOHLC) bnfCloseChar = API.calcCloseChar(ydayBnfOHLC);
-            if (ydayNfOHLC) nfCloseChar = API.calcCloseChar(ydayNfOHLC);
-            dbg('CLOSE_CHAR', { bnf: bnfCloseChar, nf: nfCloseChar, ydayDate: yesterday, bnfClose: ydayBnfOHLC?.close, bnfLow: ydayBnfOHLC?.low, bnfHigh: ydayBnfOHLC?.high });
-        } else {
-            dbg('CLOSE_CHAR', { msg: 'No yesterday date - first run' });
-        }
-
-        // Gap classification (uses yesterday's actual close, not today's seeded data)
-        const ydayClose = ydayBnfOHLC?.close || ydayRow?.bnf_spot || null;
-        STATE.prevCloseBnf = ydayClose; // b104: stored for sigma calculation in lightFetch
-        STATE.gapInfo = API.classifyGap(spots.bnfSpot, ydayClose, spots.vix);
-        const ydayNfClose = ydayNfOHLC?.close || ydayRow?.nf_spot || null;
-        STATE.prevCloseNf = ydayNfClose; // b104: stored for sigma calculation
-        STATE.nfGapInfo = ydayNfClose ? API.classifyGap(spots.nfSpot, ydayNfClose, spots.vix) : null;
-        dbg('GAP', { bnf: STATE.gapInfo, nf: STATE.nfGapInfo });
-
-        // Phase 10: Overnight Delta — compare evening close (stored at 6 AM) vs morning inputs
-        const overnightDelta = computeOvernightDelta(spots.nfSpot);
-        if (overnightDelta) dbg('OVERNIGHT_DELTA', overnightDelta);
-
-        // Compute bias — 6 data-driven signals + Upstox comparison
-        const biasResult = computeBias(STATE.morningInput, {
-            pcr: STATE.bnfChain.pcr,
-            nearAtmPCR: STATE.bnfChain.nearAtmPCR,
-            vix: spots.vix,
-            futuresPremium: STATE.bnfChain.futuresPremium,
-            closeChar: bnfCloseChar
-        });
-        dbg('BIAS', { label: biasResult.label, net: biasResult.net, bull: biasResult.votes.bull, bear: biasResult.votes.bear, signalCount: biasResult.signals.length, signals: biasResult.signals.map(s => `${s.name}:${s.dir}`) });
-        dbg('MORNING_INPUT', STATE.morningInput);
-
-        // ═══ MORNING BIAS — save the plan (only on first scan, not re-scan) ═══
-        if (!STATE.morningBias) {
-            // First scan today — this IS the morning plan
-            STATE.morningBias = biasResult;
-            STATE.biasDrift = 0;
-            STATE.driftOverridden = false;
-            const morningData = JSON.parse(localStorage.getItem('mr2_morning') || '{}');
-            morningData.biasLabel = biasResult.label;
-            morningData.biasNet = biasResult.net;
-            morningData.biasBull = biasResult.votes.bull;
-            morningData.biasBear = biasResult.votes.bear;
-            morningData.signals = biasResult.signals.map(s => ({ name: s.name, dir: s.dir, value: s.value }));
-            localStorage.setItem('mr2_morning', JSON.stringify(morningData));
-            DB.setConfig('morning_bias', {
-                label: biasResult.label, net: biasResult.net,
-                biasBull: biasResult.votes.bull, biasBear: biasResult.votes.bear,
-                signals: morningData.signals,
-                date: API.todayIST()
-            });
-        } else {
-            // Re-scan — morning plan restored from localStorage. Compute drift.
-            STATE.biasDrift = biasResult.net - STATE.morningBias.net;
-            if (Math.abs(STATE.biasDrift) >= 2 && !STATE.driftOverridden) {
-                STATE.driftOverridden = true;
-                addNotificationLog('⚠️ Morning Plan Overridden',
-                    `Market shifted from ${STATE.morningBias.label} to ${biasResult.label} (drift ${STATE.biasDrift > 0 ? '+' : ''}${STATE.biasDrift}). Using live bias.`, 'urgent');
-            }
-        }
-
-        // Direction intelligence (use yesterdayHistory to avoid comparing today with today)
-        STATE.contrarianPCR = getContrarianPCR(STATE.bnfChain.nearAtmPCR || STATE.bnfChain.pcr, STATE.yesterdayHistory);
-        STATE.pcrContext = getInstitutionalPCR(
-            STATE.bnfChain.nearAtmPCR || STATE.bnfChain.pcr,
-            spots.vix, STATE.gapInfo, STATE.yesterdayHistory,
-            STATE.afternoonBaseline, STATE.bnfChain
-        );
-        STATE.fiiTrend = getFiiShortTrend(STATE.morningInput?.fiiShortPct, STATE.yesterdayHistory);
-        STATE.trajectory = getSessionTrajectory(STATE.yesterdayHistory);
-
-        // Generate candidates — use morning bias (plan) unless drift overridden
-        statusEl.textContent = 'Generating candidates...';
-        const activeBias = STATE.driftOverridden ? biasResult : STATE.morningBias;
-        const bnfCandidates = generateCandidates(
-            STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, activeBias, ivPctl
-        );
-        const nfCandidates = generateCandidates(
-            STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, activeBias, ivPctl
-        );
-
-        const allCandidates = [...bnfCandidates, ...nfCandidates];
-        STATE.candidates = rankCandidates(allCandidates);
-        STATE.lastScanTime = Date.now(); // Track when candidates were generated
-        STATE._lastCandidateBias = biasResult.bias; // b98: track what bias generated candidates
-        STATE.watchlist = STATE.candidates.slice(0, 6); // top 6 overall
-
-        // Add diverse picks to watchlist so they get live updates during polls
-        const seenIds = new Set(STATE.watchlist.map(c => c.id));
-        for (const index of ['BNF', 'NF']) {
-            const seen = new Set();
-            for (const c of STATE.candidates.filter(c => c.index === index && !c.capitalBlocked)) {
-                if (!seen.has(c.type) && !seenIds.has(c.id)) {
-                    seen.add(c.type);
-                    seenIds.add(c.id);
-                    STATE.watchlist.push(c);
-                }
-                if (seen.size >= 5) break;
-            }
-        }
-        dbg('CANDIDATES', {
-            bnf: bnfCandidates.length, nf: nfCandidates.length, total: allCandidates.length,
-            ranked: STATE.candidates.length, watchlist: STATE.watchlist.length,
-            top3: STATE.watchlist.slice(0, 3).map(c => `${c.type} ${c.forces.aligned}/3 ${c.sellStrike}/${c.buyStrike}`)
-        });
-
-        // Set baseline
-        const bnfTDTE = API.tradingDTE(STATE.bnfExpiry);
-        const bnfT = bnfTDTE / BS.DAYS_PER_YEAR;
-        const bnfAtmIvDec = STATE.bnfChain.atmIv ? (STATE.bnfChain.atmIv > 1 ? STATE.bnfChain.atmIv / 100 : STATE.bnfChain.atmIv) : (spots.vix / 100);
-        const bnfAtmTheta = chainTheta(STATE.bnfChain.strikes, STATE.bnfChain.atm, 'CE', spots.bnfSpot, bnfT, bnfAtmIvDec)
-                          + chainTheta(STATE.bnfChain.strikes, STATE.bnfChain.atm, 'PE', spots.bnfSpot, bnfT, bnfAtmIvDec);
-        const dailySigmaBnf = BS.dailySigma(spots.bnfSpot, spots.vix);
-        const yesterdayVix = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0]?.vix : null;
-
-        // NF theta + DTE (same computation as BNF, different chain)
-        const nfTDTE = API.tradingDTE(STATE.nfExpiry);
-        const nfT = nfTDTE / BS.DAYS_PER_YEAR;
-        const nfAtmIvDec = STATE.nfChain.atmIv ? (STATE.nfChain.atmIv > 1 ? STATE.nfChain.atmIv / 100 : STATE.nfChain.atmIv) : (spots.vix / 100);
-        const nfAtmTheta = chainTheta(STATE.nfChain.strikes, STATE.nfChain.atm, 'CE', spots.nfSpot, nfT, nfAtmIvDec)
-                         + chainTheta(STATE.nfChain.strikes, STATE.nfChain.atm, 'PE', spots.nfSpot, nfT, nfAtmIvDec);
-
-        STATE.baseline = {
-            timestamp: Date.now(),
-            nfSpot: spots.nfSpot,
-            bnfSpot: spots.bnfSpot,
-            vix: spots.vix,
-            yesterdayVix,
-            nfAtmIv: STATE.nfChain.atmIv,
-            bnfAtmIv: STATE.bnfChain.atmIv,
-            pcr: STATE.bnfChain.pcr,
-            nearAtmPCR: STATE.bnfChain.nearAtmPCR,
-            maxPainBnf: STATE.bnfChain.maxPain,
-            maxPainNf: STATE.nfChain.maxPain,
-            futuresPremBnf: STATE.bnfChain.futuresPremium,
-            futuresPremNf: STATE.nfChain.futuresPremium,
-            bias: biasResult,
-            closeChar: bnfCloseChar,
-            ivPercentile: ivPctl,
-            // OI walls — BNF
-            bnfCallWall: STATE.bnfChain.callWallStrike,
-            bnfCallWallOI: STATE.bnfChain.callWallOI,
-            bnfPutWall: STATE.bnfChain.putWallStrike,
-            bnfPutWallOI: STATE.bnfChain.putWallOI,
-            // DTE — both indices
-            bnfExpiry: STATE.bnfExpiry,
-            bnfTDTE: bnfTDTE,
-            bnfCalendarDTE: API.calendarDTE(STATE.bnfExpiry),
-            nfExpiry: STATE.nfExpiry,
-            nfTDTE: nfTDTE,
-            nfCalendarDTE: API.calendarDTE(STATE.nfExpiry),
-            // Theta — both indices (₹/day for 1 lot)
-            bnfAtmTheta: Math.round(bnfAtmTheta * C.BNF_LOT),
-            nfAtmTheta: Math.round(nfAtmTheta * C.NF_LOT),
-            // Range budget — both indices
-            dailySigmaBnf: Math.round(dailySigmaBnf),
-            tradeSigmaBnf: Math.round(BS.sigmaDays(spots.bnfSpot, spots.vix, bnfTDTE)),
-            dailySigmaNf: Math.round(BS.dailySigma(spots.nfSpot, spots.vix)),
-            tradeSigmaNf: Math.round(BS.sigmaDays(spots.nfSpot, spots.vix, nfTDTE)),
-            // Total OI
-            bnfTotalCallOI: STATE.bnfChain.totalCallOI,
-            bnfTotalPutOI: STATE.bnfChain.totalPutOI,
-            // ATM — both indices
-            bnfAtm: STATE.bnfChain.atm,
-            nfAtm: STATE.nfChain.atm,
-            bnfSynthFutures: STATE.bnfChain.synthFutures,
-            nfSynthFutures: STATE.nfChain.synthFutures,
-            // Breadth
-            bnfBreadth: STATE.bnfBreadth,
-            nf50Breadth: STATE.nf50Breadth,
-            bnfAdvancing: STATE.bnfBreadth?.advancing || 0,
-            nf50Advancing: STATE.nf50Breadth?.scaled || 0
-        };
-
-        STATE.live = { ...STATE.baseline };
-        STATE.lastPollTime = Date.now();
-        STATE.pollCount = 0;
-
-        // b97: Save baseline to Supabase — survives background kill
-        // Without this, lightFetch crashes after kill (needs STATE.baseline.bnfSpot)
-        try {
-            DB.setConfig('morning_baseline', {
-                _date: today,
-                baseline: STATE.baseline,
-                bnfExpiry: STATE.bnfExpiry,
-                nfExpiry: STATE.nfExpiry,
-                bnfOHLC: STATE.baseline.bnfOHLC ?? null,
-                nfOHLC: STATE.baseline.nfOHLC ?? null
-            });
-        } catch(e) { console.warn('Baseline save failed:', e); }
-        STATE.lastForceState = {};
-        STATE.watchlist.forEach(c => {
-            STATE.lastForceState[c.id] = c.forces.aligned;
-        });
-
-        // Save MORNING snapshot to premium history
-        DB.savePremiumSnapshot({
-            date: today,
-            nfSpot: spots.nfSpot,
-            bnfSpot: spots.bnfSpot,
-            vix: spots.vix,
-            nfAtmIv: STATE.nfChain.atmIv,
-            bnfAtmIv: STATE.bnfChain.atmIv,
-            pcr: STATE.bnfChain.pcr,
-            fiiCash: parseFloat(STATE.morningInput.fiiCash) || null,
-            fiiShortPct: parseFloat(STATE.morningInput.fiiShortPct) || null,
-            diiCash: parseFloat(STATE.morningInput.diiCash) || null,
-            fiiIdxFut: parseFloat(STATE.morningInput.fiiIdxFut) || null,
-            fiiStkFut: parseFloat(STATE.morningInput.fiiStkFut) || null,
-            futuresPremBnf: STATE.bnfChain.futuresPremium,
-            bias: biasResult.label,
-            biasNet: biasResult.net
-        }, 'morning');
-
-        // Compute institutional regime
-        STATE.institutionalRegime = computeInstitutionalRegime(STATE.morningInput);
-
-        // Save FII short% as yesterday's baseline for next session
-        if (STATE.morningInput.fiiShortPct) {
-            localStorage.setItem('mr2_fii_short_prev', STATE.morningInput.fiiShortPct);
-        }
-
-        // Save morning CHAIN SNAPSHOT for afternoon comparison
-        const morningSnap = buildChainSnapshotData();
-        DB.saveChainSnapshot(morningSnap, 'morning');
-
-        // Validate yesterday's positioning signal against today's gap
-        STATE.signalValidation = await validateYesterdaySignal(STATE.gapInfo);
-        if (STATE.signalValidation) {
-            dbg('SIGNAL_VALIDATION', STATE.signalValidation);
-            // Save result to Supabase (on yesterday's 315pm chain_snapshot row)
-            const ydayDate = STATE.signalValidation.date;
-            if (ydayDate) {
-                await DB.updateSignalResult(ydayDate, STATE.signalValidation.correct, STATE.signalValidation.actualDir);
-            }
-            // Load accuracy stats from Supabase
-            STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
-        }
-
-        // ═══ CHECK: Did today's 2PM / 3:15PM snapshots already get saved? ═══
-        // This survives page refreshes, code pushes, Clear & Reset
-        const existing2pm = await DB.getChainSnapshot(today, '2pm');
-        const existing315pm = await DB.getChainSnapshot(today, '315pm');
-        if (existing2pm) {
-            STATE._captured2pm = true;
-            STATE.afternoonBaseline = existing2pm;
-            dbg('RESTORE_2PM', { date: today, status: 'Found in Supabase — flag set, will NOT re-capture' });
-        }
-        if (existing315pm) {
-            STATE._captured315pm = true;
-            dbg('RESTORE_315PM', { date: today, signal: existing315pm.tomorrow_signal, strength: existing315pm.signal_strength });
-            // Restore tomorrow signal + positioning result
-            if (existing315pm.tomorrow_signal) {
-                STATE.tomorrowSignal = { signal: existing315pm.tomorrow_signal, strength: existing315pm.signal_strength || 0 };
-                // Re-generate positioning trades with restored signal
-                const tSignal = STATE.tomorrowSignal.signal;
-                const positioningBias = {
-                    bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
-                    strength: STATE.tomorrowSignal.strength >= 3 ? 'STRONG' : 'MILD',
-                    net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
-                    votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
-                    signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${STATE.tomorrowSignal.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
-                    label: `${STATE.tomorrowSignal.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
-                };
-                const posBnf = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
-                const posNf = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
-                STATE.positioningCandidates = applyFreeCapitalFilter(rankCandidates([...posBnf, ...posNf])).slice(0, 10);
-                if (existing2pm) {
-                    STATE.positioningResult = computePositioning(existing2pm, existing315pm);
-                }
-            }
-        }
-
-        statusEl.textContent = '';
-        // Reset button after successful scan
-        document.getElementById('btn-lock').disabled = true;
-        document.getElementById('btn-lock').textContent = '✅ Scanned';
-        document.getElementById('btn-stop').style.display = 'inline-block';
-
-        // b111: Compute chain profiles for native mode and push to Kotlin immediately.
-        // runBrain() Pyodide path never runs on APK -> STATE._lastChainProfile always null.
-        // startWatchLoop() returns early if STATE.isWatching=true (auto-restart case).
-        // lightFetch disabled in native mode. syncToNative must fire EXPLICITLY here.
-        try {
-            STATE._lastChainProfile = {
-                bnf: computeChainProfile(STATE.bnfChain, spots.bnfSpot, STATE.baseline?.bnfOHLC),
-                nf: computeChainProfile(STATE.nfChain, spots.nfSpot, STATE.baseline?.nfOHLC)
-            };
-            syncToNative(); // Push rich bnfProfile to Kotlin immediately after Lock & Scan
-        } catch(e) { console.warn('[b111] chainProfile+sync failed:', e.message); }
-
-        // Auto-collapse morning section
-        collapseMorning();
-
         renderAll();
-        startWatchLoop();
-
-        // Ensure brain is loaded — fallback if DOMContentLoaded path didn't fire
-        if (!STATE.brainReady && !STATE.brainError) {
-            initBrain().catch(e => console.warn('[Brain] Init from scan failed:', e));
-        }
-
-    } catch (err) {
-        statusEl.textContent = `Error: ${err.message}`;
-        console.error('initialFetch error:', err);
-        // Log to debug panel even on error
-        if (window._API_DEBUG) {
-            window._API_DEBUG.push({ time: API.istNow(), label: 'FETCH_ERROR', message: err.message, stack: err.stack?.split('\n')[1] || '' });
-        }
-        renderDebug();
-        // Re-enable lock button so user can retry
-        document.getElementById('btn-lock').disabled = false;
-        document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
-        document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
+    } catch (e) {
+        console.error('initialFetch failed:', e);
+        STATE.brainError = e.message;
     }
 }
 
-async function lightFetch() {
-    // Concurrency guard — prevent double API calls if two triggers fire simultaneously
-    if (STATE._lightFetchRunning) { console.log('[lightFetch] Skipped — already running'); return; }
-    STATE._lightFetchRunning = true;
-    try {
-        const spots = await API.fetchSpots();
-        if (!spots.bnfSpot || !spots.vix) return;
 
-        // Fetch updated BNF chain (for live LTPs on watched candidates)
-        const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
-        const bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
 
-        // Fetch NF chain if NF trade is open OR for OI tab display
-        let nfChain = STATE.nfChain; // keep morning chain as fallback
-        if (STATE.openTrades.some(t => t.index_key === 'NF') || STATE.nfExpiry) {
-            try {
-                const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
-                nfChain = API.parseChain(nfRaw, spots.nfSpot);
-            } catch (e) { console.warn('NF chain fetch skipped:', e.message); }
-        }
 
-        const elapsed = API.minutesSinceOpen();
-        const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-        const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
-
-        // σ scores — how significant are the moves?
-        // b104 FIX: Use yesterday's close as base, NOT Lock & Scan baseline.
-        // Even if user scans at 10:30 AM, sigma reflects FULL day's move from previous close.
-        const prevCloseBnf = STATE.prevCloseBnf || STATE.premiumHistory?.[0]?.bnf_spot || STATE.baseline.bnfSpot;
-        const prevCloseVix = STATE.premiumHistory?.[0]?.vix || STATE.baseline.vix;
-        const spotSigma = BS.sigmaScore(spots.bnfSpot, prevCloseBnf, prevCloseVix, elapsed);
-        const vixSigma = BS.vixSigmaScore(spots.vix, prevCloseVix, elapsed);
-
-        // Update chain references for positioning/snapshot functions
-        STATE.bnfChain = bnfChain;
-        STATE.nfChain = nfChain;
-
-        STATE.live = {
-            ...STATE.baseline,
-            nfSpot: spots.nfSpot,
-            bnfSpot: spots.bnfSpot,
-            vix: spots.vix,
-            pcr: bnfChain.pcr,
-            nearAtmPCR: bnfChain.nearAtmPCR,
-            maxPainBnf: bnfChain.maxPain,
-            futuresPremBnf: bnfChain.futuresPremium,
-            bnfAtmIv: bnfChain.atmIv,
-            // OI walls — live BNF
-            bnfCallWall: bnfChain.callWallStrike,
-            bnfCallWallOI: bnfChain.callWallOI,
-            bnfPutWall: bnfChain.putWallStrike,
-            bnfPutWallOI: bnfChain.putWallOI,
-            bnfTotalCallOI: bnfChain.totalCallOI,
-            bnfTotalPutOI: bnfChain.totalPutOI,
-            // NF live data
-            nfAtmIv: nfChain?.atmIv || STATE.baseline?.nfAtmIv,
-            nfPcr: nfChain?.pcr,
-            nfNearAtmPCR: nfChain?.nearAtmPCR,
-            futuresPremNf: nfChain?.futuresPremium,
-            ivPercentile: ivPctl,
-            spotSigma: +spotSigma.toFixed(2),
-            vixSigma: +vixSigma.toFixed(2),
-            timestamp: Date.now()
-        };
-
-        // Recompute bias with live chain data
-        const biasResult = computeBias(STATE.morningInput, {
-            pcr: bnfChain.pcr,
-            nearAtmPCR: bnfChain.nearAtmPCR,
-            vix: spots.vix,
-            futuresPremium: bnfChain.futuresPremium,
-            closeChar: STATE.baseline?.closeChar || 0
-        });
-        STATE.live.bias = biasResult;
-
-        // ═══ DRIFT DETECTION — morning plan vs live reality ═══
-        // Phase 4: In native mode, Kotlin brain handles bias + candidate regen
-        if (!STATE._nativeMode && STATE.morningBias) {
-            STATE.biasDrift = biasResult.net - STATE.morningBias.net;
-            // Auto-switch at ±2 drift — regenerate candidates with live bias
-            if (Math.abs(STATE.biasDrift) >= 2 && !STATE.driftOverridden) {
-                STATE.driftOverridden = true;
-                sendNotification('⚠️ Market Regime Shift',
-                    `Morning: ${STATE.morningBias.label} → Now: ${biasResult.label} (drift ${STATE.biasDrift > 0 ? '+' : ''}${STATE.biasDrift}). Strategies updated.`);
-                addNotificationLog('⚠️ Drift Override',
-                    `Morning: ${STATE.morningBias.label} (${STATE.morningBias.net}) → Now: ${biasResult.label} (${biasResult.net}). Candidates regenerated with live bias.`, 'urgent');
-                // Regenerate candidates with live bias
-                const bnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, biasResult, ivPctl);
-                const nfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, biasResult, ivPctl);
-                STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
-                STATE.lastScanTime = Date.now(); // Track when candidates were regenerated
-                STATE.watchlist = STATE.candidates.slice(0, 6);
-                const seenIds = new Set(STATE.watchlist.map(c => c.id));
-                for (const idx of ['BNF', 'NF']) {
-                    const seen = new Set();
-                    for (const c of STATE.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
-                        if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
-                        if (seen.size >= 5) break;
-                    }
-                }
-            }
-        }
-
-        // b98: Effective Bias — if brain computed a different bias, regenerate candidates
-        // b114: Removed !_nativeMode guard — brain effective_bias is primary in all modes
-        if (STATE.effectiveBias && STATE.effectiveBias.bias !== (STATE._lastCandidateBias || STATE.morningBias?.bias)) {
-            const eb = STATE.effectiveBias;
-            const effectiveBiasResult = {
-                bias: eb.bias, strength: eb.strength || '', net: eb.net,
-                label: eb.label, votes: STATE.morningBias?.votes || { bull: 0, bear: 0 }
-            };
-            const bnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, effectiveBiasResult, ivPctl);
-            const nfCands = STATE.nfChain ? generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, effectiveBiasResult, ivPctl) : [];
-            STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
-            STATE.lastScanTime = Date.now();
-            STATE.watchlist = STATE.candidates.slice(0, 6);
-            const seenIds = new Set(STATE.watchlist.map(c => c.id));
-            for (const idx of ['BNF', 'NF']) {
-                const seen = new Set();
-                for (const c of STATE.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
-                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
-                    if (seen.size >= 5) break;
-                }
-            }
-            STATE._lastCandidateBias = eb.bias;
-            console.log(`[b98] lightFetch: candidates regenerated with effective bias ${eb.bias}`);
-        }
-
-        // Update contrarian PCR with live near-ATM PCR
-        STATE.contrarianPCR = getContrarianPCR(bnfChain.nearAtmPCR || bnfChain.pcr, STATE.yesterdayHistory);
-        STATE.pcrContext = getInstitutionalPCR(
-            bnfChain.nearAtmPCR || bnfChain.pcr,
-            spots.vix, STATE.gapInfo, STATE.yesterdayHistory,
-            STATE.afternoonBaseline, bnfChain
-        );
-
-        // Check: is any σ move significant enough to recalculate?
-        const absSpotSigma = Math.abs(spotSigma);
-        const absVixSigma = Math.abs(vixSigma);
-        const threshold = STATE.openTrades.length > 0 ? C.SIGMA_EXIT_THRESHOLD : C.SIGMA_ENTRY_THRESHOLD;
-
-        const significantMove = absSpotSigma > threshold || absVixSigma > threshold;
-
-        if (significantMove) {
-            // Recalculate force alignment for watchlist
-            updateWatchlistForces(bnfChain, spots, biasResult, ivPctl);
-        }
-
-        // Update ALL open trade P&Ls — use correct chain based on trade index
-        for (const trade of STATE.openTrades) {
-            const tradeChain = trade.index_key === 'NF' ? nfChain : bnfChain;
-            const tradeSpot = trade.index_key === 'NF' ? spots.nfSpot : spots.bnfSpot;
-            updateOpenTradePnL(trade, tradeChain, spots, tradeSpot);
-            // Adversarial Control Index — use correct chain
-            trade.controlIndex = computeControlIndex(trade, tradeChain, tradeSpot, STATE.bnfBreadth);
-
-            // Wall Drift Monitor — detect when institutional defense moves away
-            const drift = computeWallDrift(trade, tradeChain);
-            trade.wallDrift = drift;
-            if (drift && drift.severity >= 2 && !trade._notifiedWallExposed) {
-                trade._notifiedWallExposed = true;
-                const label = `${trade.paper ? '📋 ' : ''}${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
-                sendNotification('🛡️ WALL RETREATED — EXPOSED', `${label}: ${drift.warning}`, 'urgent');
-            } else if (drift && drift.severity === 1 && !trade._notifiedWallWeakened) {
-                trade._notifiedWallWeakened = true;
-                const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
-                addNotificationLog('🛡️ Wall shifted', `${label}: ${drift.warning}`, 'important');
-            }
-
-            // ═══ VIX SPIKE MONITOR — detect VIX rising against credit positions (b89) ═══
-            // IC/IB profit from VIX falling. VIX rising = premiums expanding = loss accelerating.
-            // VIX asymmetry: a 5pt spike hurts MORE than a 5pt crush helps (convexity).
-            if (trade.is_credit && trade.entry_vix && spots.vix) {
-                const vixChange = spots.vix - trade.entry_vix;
-                const is4Leg = trade.strategy_type === 'IRON_CONDOR' || trade.strategy_type === 'IRON_BUTTERFLY';
-                trade.vixSpike = { entryVix: trade.entry_vix, currentVix: spots.vix, change: +vixChange.toFixed(1) };
-
-                // Tier 2: VIX up ≥2.0 for IC/IB → EXIT (premiums expanding fast)
-                if (is4Leg && vixChange >= 2.0 && !trade._notifiedVixSpike2) {
-                    trade._notifiedVixSpike2 = true;
-                    const label = `${trade.paper ? '📋 ' : ''}${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
-                    sendNotification('🌡️ VIX SPIKE — EXIT IC/IB',
-                        `${label}: VIX ${trade.entry_vix.toFixed(1)}→${spots.vix.toFixed(1)} (+${vixChange.toFixed(1)}). Premiums expanding. EXIT before loss accelerates.`, 'urgent');
-                }
-                // Tier 1: VIX up ≥1.0 for any credit → WATCH
-                else if (vixChange >= 1.0 && !trade._notifiedVixSpike1) {
-                    trade._notifiedVixSpike1 = true;
-                    const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
-                    addNotificationLog('🌡️ VIX rising against you',
-                        `${label}: VIX ${trade.entry_vix.toFixed(1)}→${spots.vix.toFixed(1)} (+${vixChange.toFixed(1)}). Watch closely.`, 'important');
-                }
-            }
-        }
-
-        // Check for notifications
-        await handleNotifications(absSpotSigma, absVixSigma, significantMove);
-
-        // ═══ POSITION HEALTH CHECK — runs EVERY poll, not just σ moves ═══
-        // b89: Brain's position_verdict now handles P&L targets, CI, peak erosion, VIX.
-        // Individual alerts REMOVED — brain synthesizes ONE verdict per trade.
-        // KEPT: First poll status, sell strike crossed (circuit breaker), EXIT TODAY reminder.
-        for (const trade of STATE.openTrades) {
-            const paperPrefix = trade.paper ? '📋 ' : '';
-            const tradeLabel = `${paperPrefix}${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
-            const pnlPct = trade.max_profit > 0 ? trade.current_pnl / trade.max_profit : 0;
-            const lossPct = trade.max_loss > 0 ? Math.abs(trade.current_pnl) / trade.max_loss : 0;
-            const ci = trade.controlIndex;
-
-            // First poll — always show status
-            if (STATE.pollCount <= 1) {
-                addNotificationLog('📊 Position Status',
-                    `${tradeLabel} | P&L: ₹${trade.current_pnl} | Spot: ${trade.current_spot?.toFixed(0)} | Ctrl: ${ci ?? '--'}`,
-                    'routine');
-            }
-
-            if (trade.is_credit && trade.current_spot && trade.sell_strike) {
-                // ═══ b69: SELL STRIKE CROSSED — most urgent alert ═══
-                // Apr 2 lesson: spot crossed 22,300 sell strike, CI showed "in control"
-                // This is the EXIT signal — you're ITM, position is structurally threatened
-                const isBearType = trade.strategy_type?.includes('BEAR');
-                const isBullType = trade.strategy_type?.includes('BULL');
-                const crossed = (isBearType && trade.current_spot > trade.sell_strike) ||
-                                (isBullType && trade.current_spot < trade.sell_strike);
-                if (crossed && !trade._notifiedCrossed) {
-                    trade._notifiedCrossed = true;
-                    sendNotification('🚨 SELL STRIKE BREACHED — EXIT',
-                        `${tradeLabel} Spot ${trade.current_spot.toFixed(0)} has CROSSED sell strike ${trade.sell_strike}. Position is ITM. Consider immediate exit.`,
-                        'urgent');
-                }
-
-                // Existing: spot approaching sell strike (warning)
-                const cushion = Math.abs(trade.sell_strike - trade.current_spot);
-                const width = trade.width || 300;
-                if (cushion < width && !trade._notifiedCushion) {
-                    trade._notifiedCushion = true;
-                    sendNotification('⚡ Spot Near Sold Strike', `${tradeLabel} Only ${cushion.toFixed(0)} pts cushion. Sold: ${trade.sell_strike}, Spot: ${trade.current_spot.toFixed(0)}`, 'urgent');
-                }
-            }
-
-            // ═══ b70: IB/IC INTRADAY-ONLY — 3PM EXIT ALERT ═══
-            // Backtest Table 6 (552 days): IB 0%, IC 0-4% overnight survival.
-            // ATM/near-ATM sold strikes ALWAYS get breached next day.
-            // Alert at 2:45 PM (330 min after 9:15): "EXIT before close"
-            const is4LegCredit = trade.strategy_type === 'IRON_BUTTERFLY' || trade.strategy_type === 'IRON_CONDOR';
-            const minsOpen = API.minutesSinceOpen?.() ?? 0;
-            if (is4LegCredit && minsOpen >= 330 && !trade._notified4LegExit) {
-                trade._notified4LegExit = true;
-                sendNotification('⏱️ EXIT 4-LEG BEFORE CLOSE',
-                    `${tradeLabel} is ${trade.strategy_type} — backtest: 0% overnight survival. EXIT before 3:20 PM.`,
-                    'urgent');
-            }
-        }
-
-        // Save CLOSE snapshot — upserts by (date, 'close'), last poll = closing data
-        const today = API.todayIST();
-        DB.savePremiumSnapshot({
-            date: today,
-            nfSpot: spots.nfSpot,
-            bnfSpot: spots.bnfSpot,
-            vix: spots.vix,
-            nfAtmIv: STATE.nfChain?.atmIv,
-            bnfAtmIv: bnfChain.atmIv,
-            pcr: bnfChain.pcr,
-            fiiCash: parseFloat(STATE.morningInput?.fiiCash) || null,
-            fiiShortPct: parseFloat(STATE.morningInput?.fiiShortPct) || null,
-            diiCash: parseFloat(STATE.morningInput?.diiCash) || null,
-            fiiIdxFut: parseFloat(STATE.morningInput?.fiiIdxFut) || null,
-            fiiStkFut: parseFloat(STATE.morningInput?.fiiStkFut) || null,
-            futuresPremBnf: bnfChain.futuresPremium,
-            bias: STATE.live.bias?.label,
-            biasNet: STATE.live.bias?.net
-        }, 'close');
-
-        STATE.pollCount++;
-        STATE.lastPollTime = Date.now();
-
-        // Phase 11: Store poll snapshot for intraday pattern matching
-        // Helper: extract ATM ± 10 strikes with key fields (compact format)
-        const extractStrikes = (chain, n = 10) => {
-            if (!chain?.atm || !chain?.strikes || !chain?.allStrikes) return [];
-            const atm = chain.atm;
-            const step = chain.allStrikes.length > 1 ? chain.allStrikes[1] - chain.allStrikes[0] : (atm > 30000 ? 100 : 50);
-            const result = [];
-            for (let i = -n; i <= n; i++) {
-                const strike = atm + (i * step);
-                const ce = chain.strikes[strike]?.CE;
-                const pe = chain.strikes[strike]?.PE;
-                if (!ce && !pe) continue;
-                result.push({
-                    k: strike,
-                    c: ce ? { o: ce.oi ?? 0, v: ce.volume ?? 0, l: +(ce.ltp?.toFixed(2) ?? 0), i: +(ce.iv?.toFixed(1) ?? 0), d: +(ce.delta?.toFixed(3) ?? 0), g: +(ce.gamma?.toFixed(5) ?? 0), p: +(ce.pop?.toFixed(1) ?? 0) } : null,
-                    p: pe ? { o: pe.oi ?? 0, v: pe.volume ?? 0, l: +(pe.ltp?.toFixed(2) ?? 0), i: +(pe.iv?.toFixed(1) ?? 0), d: +(pe.delta?.toFixed(3) ?? 0), g: +(pe.gamma?.toFixed(5) ?? 0), p: +(pe.pop?.toFixed(1) ?? 0) } : null
-                });
-            }
-            return result;
-        };
-
-        const pollSnap = {
-            t: new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }),
-            nf: spots.nfSpot,
-            bnf: spots.bnfSpot,
-            vix: +(spots.vix?.toFixed(1) ?? 0),
-            pcr: +(bnfChain.nearAtmPCR?.toFixed(2) ?? 0),
-            nfPcr: +(nfChain?.nearAtmPCR?.toFixed(2) ?? 0),
-            // BNF walls
-            cw: bnfChain.callWallStrike ?? null,
-            cwOI: bnfChain.callWallOI ?? null,
-            pw: bnfChain.putWallStrike ?? null,
-            pwOI: bnfChain.putWallOI ?? null,
-            // NF walls (strike + OI)
-            nfCW: nfChain?.callWallStrike ?? null,
-            nfCWOI: nfChain?.callWallOI ?? null,
-            nfPW: nfChain?.putWallStrike ?? null,
-            nfPWOI: nfChain?.putWallOI ?? null,
-            // Total OI — for velocity tracking (is OI building or leaving?)
-            bnfCOI: bnfChain.totalCallOI ?? null,
-            bnfPOI: bnfChain.totalPutOI ?? null,
-            nfCOI: nfChain?.totalCallOI ?? null,
-            nfPOI: nfChain?.totalPutOI ?? null,
-            // Max pain + futures premium
-            mp: bnfChain.maxPain ?? null,
-            nfMP: nfChain?.maxPain ?? null,
-            fp: +(bnfChain.futuresPremium?.toFixed(3) ?? 0),
-            // Breadth — heavyweight confirmation
-            brd: STATE.bnfBreadth?.weightedPct ?? null,
-            nfAdv: STATE.nf50Breadth?.scaled ?? null,
-            // Bias
-            bias: STATE.live.bias?.net ?? 0,
-            // b93: ATM Straddle premium — "Premium is King" tracking
-            straddle: (() => {
-                const atm = bnfChain.atm;
-                const ceLTP = bnfChain.strikes?.[atm]?.CE?.ltp ?? 0;
-                const peLTP = bnfChain.strikes?.[atm]?.PE?.ltp ?? 0;
-                return ceLTP > 0 && peLTP > 0 ? +(ceLTP + peLTP).toFixed(1) : null;
-            })(),
-            // Per-strike data: ATM ± 10 strikes (oi, volume, ltp, iv, delta, pop)
-            bnfS: extractStrikes(bnfChain),
-            nfS: extractStrikes(nfChain)
-        };
-        STATE.pollHistory.push(pollSnap);
-
-        // Save to Supabase — one key per day, array grows with each poll
-        DB.setConfig('poll_history_' + today, STATE.pollHistory);
-
-        // Phase 12: Run Pyodide brain — Python analysis on poll history
-        // Init brain if not ready (belt + suspenders — catches any init failure)
-        if (!STATE.brainReady && !STATE._brainInitAttempted) {
-            STATE._brainInitAttempted = true;
-            try { await initBrain(); } catch(e) { console.warn('[Brain] Poll-triggered init failed:', e); }
-        }
-        await runBrain();
-
-        // b99: Sync latest state to Kotlin after every poll
-        syncToNative();
-
-        renderAll();
-
-    } catch (err) {
-        console.warn('lightFetch error:', err.message);
-        document.getElementById('status').textContent = `Poll error: ${err.message}`;
-    } finally {
-        STATE._lightFetchRunning = false;
-    }
-}
-
-function updateWatchlistForces(bnfChain, spots, biasResult, ivPctl) {
-    for (const cand of STATE.watchlist) {
-        // Use correct chain for this candidate's index
-        const chain = cand.index === 'NF' ? STATE.nfChain : bnfChain;
-        if (!chain) continue;
-
-        // Update LTPs from live chain — leg 1+2
-        const sellData = chain.strikes[cand.sellStrike]?.[cand.sellType];
-        const buyData = chain.strikes[cand.buyStrike]?.[cand.buyType];
-        if (sellData) {
-            cand.sellLTP = cand.isCredit ? sellData.bid : sellData.ask;
-            cand.sellOI = sellData.oi;
-        }
-        if (buyData) {
-            cand.buyLTP = cand.isCredit ? buyData.ask : buyData.bid;
-            cand.buyOI = buyData.oi;
-        }
-
-        // 4-leg: update leg 3+4
-        if (cand.legs === 4 && cand.sellStrike2) {
-            const sellData2 = chain.strikes[cand.sellStrike2]?.[cand.sellType2];
-            const buyData2 = chain.strikes[cand.buyStrike2]?.[cand.buyType2];
-            if (sellData2) cand.sellLTP2 = cand.isCredit ? sellData2.bid : sellData2.ask;
-            if (buyData2) cand.buyLTP2 = cand.isCredit ? buyData2.ask : buyData2.bid;
-        }
-
-        // Recalculate premium
-        if (cand.legs === 4) {
-            if (cand.isCredit) {
-                const credit1 = (cand.sellLTP || 0) - (cand.buyLTP || 0);
-                const credit2 = (cand.sellLTP2 || 0) - (cand.buyLTP2 || 0);
-                cand.netPremium = +(credit1 + credit2).toFixed(2);
-                cand.maxProfit = Math.round(cand.netPremium * cand.lotSize);
-                cand.maxLoss = Math.round((cand.width - cand.netPremium) * cand.lotSize);
-            } else {
-                const debit1 = (cand.buyLTP || 0) - (cand.sellLTP || 0);
-                const debit2 = (cand.buyLTP2 || 0) - (cand.sellLTP2 || 0);
-                cand.netPremium = +(debit1 + debit2).toFixed(2);
-                cand.maxProfit = Math.round((cand.width - cand.netPremium) * cand.lotSize);
-                cand.maxLoss = Math.round(cand.netPremium * cand.lotSize);
-            }
-        } else if (cand.isCredit) {
-            cand.netPremium = +(cand.sellLTP - cand.buyLTP).toFixed(2);
-            cand.maxProfit = Math.round(cand.netPremium * cand.lotSize);
-            cand.maxLoss = Math.round((cand.width - cand.netPremium) * cand.lotSize);
-        } else {
-            cand.netPremium = +(cand.buyLTP - cand.sellLTP).toFixed(2);
-            cand.maxProfit = Math.round((cand.width - cand.netPremium) * cand.lotSize);
-            cand.maxLoss = Math.round(cand.netPremium * cand.lotSize);
-        }
-
-        // Recalculate forces
-        const oldAlignment = cand.forces.aligned;
-        cand.forces = getForceAlignment(cand.type, biasResult, spots.vix, ivPctl);
-        cand._alignmentChanged = (cand.forces.aligned !== oldAlignment);
-        cand._prevAlignment = oldAlignment;
-    }
-}
-
-function updateOpenTradePnL(trade, chain, spots, tradeSpot) {
-    if (!trade || !chain) return;
-
-    const sellData = chain.strikes[trade.sell_strike]?.[trade.sell_type];
-    const buyData = chain.strikes[trade.buy_strike]?.[trade.buy_type];
-    if (!sellData || !buyData) return;
-
-    const lotSize = trade.index_key === 'BNF' ? C.BNF_LOT : C.NF_LOT;
-
-    if (trade.is_credit) {
-        const currentNet = sellData.ltp - buyData.ltp;
-        trade.current_premium = +currentNet.toFixed(2);
-        trade.current_pnl = Math.round((trade.entry_premium - currentNet) * lotSize);
-    } else {
-        const currentNet = buyData.ltp - sellData.ltp;
-        trade.current_premium = +currentNet.toFixed(2);
-        trade.current_pnl = Math.round((currentNet - trade.entry_premium) * lotSize);
-    }
-
-    trade.current_spot = tradeSpot || spots.bnfSpot;
-    trade.current_vix = spots.vix;
-
-    // Update peak and trough (for calibration: max favorable + max adverse excursion)
-    if (!trade.peak_pnl || trade.current_pnl > trade.peak_pnl) {
-        trade.peak_pnl = trade.current_pnl;
-    }
-    if (trade.trough_pnl === undefined || trade.trough_pnl === null || trade.current_pnl < trade.trough_pnl) {
-        trade.trough_pnl = trade.current_pnl;
-    }
-    trade.poll_count = (trade.poll_count || 0) + 1;
-
-    // Journey tracking — aggregated for calibration
-    if (!trade._journey) trade._journey = {};
-    const j = trade._journey;
-    if (!j.spot_high || trade.current_spot > j.spot_high) j.spot_high = trade.current_spot;
-    if (!j.spot_low || trade.current_spot < j.spot_low) j.spot_low = trade.current_spot;
-    const ci = trade.controlIndex;
-    if (ci !== null && ci !== undefined) {
-        if (j.max_ci === undefined || ci > j.max_ci) j.max_ci = ci;
-        if (j.min_ci === undefined || ci < j.min_ci) j.min_ci = ci;
-    }
-    // Track force alignment changes
-    const prevAlign = j._lastAlignment;
-    const currAlign = trade.forces?.aligned;
-    if (prevAlign !== undefined && prevAlign !== currAlign) {
-        j.forces_changed_count = (j.forces_changed_count || 0) + 1;
-    }
-    j._lastAlignment = currAlign;
-
-    // Journey timeline — full time-series for exit pattern analysis
-    if (!j.timeline) j.timeline = [];
-    const now = new Date();
-    const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    j.timeline.push({
-        t: timeStr,
-        pnl: trade.current_pnl ?? 0,
-        ci: ci ?? null,
-        spot: trade.current_spot ?? null,
-        vix: trade.current_vix ?? null,
-        pcr: STATE.live?.nearAtmPCR ?? STATE.live?.pcr ?? null,
-        fa: trade.forces?.aligned ?? null
-    });
-
-    // Force alignment for position
-    const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-    const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(spots.vix, vixHistory) : 50; // Gemini fix: safe fallback
-    trade.forces = getForceAlignment(trade.strategy_type, STATE.live.bias, spots.vix, ivPctl);
-
-    // Update in Supabase
-    DB.updateTrade(trade.id, {
-        current_pnl: trade.current_pnl,
-        current_spot: trade.current_spot,
-        peak_pnl: trade.peak_pnl,
-        trough_pnl: trade.trough_pnl,
-        current_premium: trade.current_premium,
-        poll_count: trade.poll_count,
-        // Journey persisted for refresh survival
-        journey_stats: {
-            spot_high: j.spot_high ?? null,
-            spot_low: j.spot_low ?? null,
-            max_ci: j.max_ci ?? null,
-            min_ci: j.min_ci ?? null,
-            forces_changed_count: j.forces_changed_count ?? 0,
-            timeline: j.timeline || []
-        }
-    });
-}
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -5936,7 +3062,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
     if (significantMove) {
 
         // Check for force alignment changes on watchlist
-        for (const cand of STATE.watchlist) {
+        for (const cand of (bd.watchlist || [])) {
             if (!cand._alignmentChanged) continue;
 
             if (cand.forces.aligned === 3 && cand._prevAlignment < 3) {
@@ -5959,7 +3085,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         }
 
         // Check position exit signals (all open trades)
-        for (const trade of STATE.openTrades) {
+        for (const trade of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
             const tradeLabel = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
 
             // Target hit
@@ -5994,7 +3120,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         if (absSpotSigma > C.SIGMA_IMPORTANT_THRESHOLD || absVixSigma > C.SIGMA_IMPORTANT_THRESHOLD) {
             sendNotification(
                 '📊 Significant Move',
-                `BNF ${STATE.live.bnfSpot?.toFixed(0)} (${STATE.live.spotSigma}σ) VIX ${STATE.live.vix?.toFixed(1)} (${STATE.live.vixSigma}σ)`,
+                `BNF ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot?.toFixed(0)} (${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).spotSigma}σ) VIX ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix?.toFixed(1)} (${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).vixSigma}σ)`,
                 'important'
             );
         }
@@ -6004,13 +3130,13 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
     if (now - STATE.lastRoutineNotify >= C.ROUTINE_NOTIFY_MS) {
         STATE.lastRoutineNotify = now;
 
-        let body = `BNF ${STATE.live.bnfSpot?.toFixed(0)} | VIX ${STATE.live.vix?.toFixed(1)}`;
-        if (STATE.openTrades.length > 0) {
-            const totalPnL = STATE.openTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
-            body += ` | ${STATE.openTrades.length} pos P&L ₹${totalPnL}`;
+        let body = `BNF ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot?.toFixed(0)} | VIX ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix?.toFixed(1)}`;
+        if ((JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
+            const totalPnL = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).reduce((s, t) => s + (t.current_pnl || 0), 0);
+            body += ` | ${(JSON.parse(NativeBridge.getOpenTrades() || '[]')).length} pos P&L ₹${totalPnL}`;
         }
-        const top = STATE.watchlist[0];
-        if (top && STATE.openTrades.length === 0) {
+        const top = (bd.watchlist || [])[0];
+        if (top && (JSON.parse(NativeBridge.getOpenTrades() || '[]')).length === 0) {
             body += ` | Top: ${top.forces.aligned}/3 ${friendlyType(top.type)}`;
         }
 
@@ -6078,7 +3204,7 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
                 STATE.tomorrowSignal = posResult ? { signal: posResult.signal, strength: posResult.strength } : null;
 
                 // ═══ GLOBAL DIRECTION BOOST — auto-computed from Dow, Crude, GIFT ═══
-                computeGlobalBoost(STATE.tomorrowSignal, STATE.positioningResult);
+                computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
 
                 // Save with tomorrow signal
                 snapData315.tomorrowSignal = posResult?.signal;
@@ -6095,25 +3221,25 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
 
             await DB.saveChainSnapshot(snapData315, '315pm');
             STATE._captured315pm = true;  // Flag AFTER success
-            addNotificationLog('✅ 3:15 PM Scan Complete', `Tomorrow Signal: ${STATE.tomorrowSignal?.signal || 'NEUTRAL'} (${STATE.tomorrowSignal?.strength || 0}/5)`, 'urgent');
+            addNotificationLog('✅ 3:15 PM Scan Complete', `Tomorrow Signal: ${bd.tomorrow_signal?.signal || 'NEUTRAL'} (${bd.tomorrow_signal?.strength || 0}/5)`, 'urgent');
 
             // ═══ GENERATE POSITIONING TRADES ═══
-            const tSignal = STATE.tomorrowSignal?.signal || 'NEUTRAL';
+            const tSignal = bd.tomorrow_signal?.signal || 'NEUTRAL';
             const positioningBias = {
                 bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
-                strength: STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD',
+                strength: bd.tomorrow_signal?.strength >= 3 ? 'STRONG' : 'MILD',
                 net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
                 votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
-                signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${STATE.tomorrowSignal?.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
-                label: `${STATE.tomorrowSignal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
+                signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${bd.tomorrow_signal?.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
+                label: `${bd.tomorrow_signal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
             };
 
-            const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-            const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(STATE.live.vix, vixHistory) : 50; // Gemini fix
-            const spots = { bnfSpot: STATE.live.bnfSpot, nfSpot: STATE.live.nfSpot, vix: STATE.live.vix };
+            const vixHistory = (JSON.parse(NativeBridge.getPremiumHistory(7) || '[]')).map(p => p.vix).filter(Boolean);
+            const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile((JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix, vixHistory) : 50; // Gemini fix
+            const spots = { bnfSpot: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot, nfSpot: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfSpot, vix: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix };
 
-            const posBnfCands = generateCandidates(STATE.bnfChain, spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
-            const posNfCands = generateCandidates(STATE.nfChain, spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
+            const posBnfCands = generateCandidates((JSON.parse(NativeBridge.getBnfChain() || '{}')), spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
+            const posNfCands = generateCandidates((JSON.parse(NativeBridge.getNfChain() || '{}')), spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
             const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
 
             STATE.positioningCandidates = applyFreeCapitalFilter(allPosCands).slice(0, 10);
@@ -6176,231 +3302,25 @@ function addNotificationLog(title, body, type) {
 // ═══════════════════════════════════════════════════════════════
 
 function startWatchLoop() {
-    if (STATE.isWatching) return;
-    STATE.isWatching = true;
-    STATE.lastRoutineNotify = Date.now();
-
-    // Start native foreground service (keeps app alive in APK)
-    if (window.NativeBridge && window.NativeBridge.isNative()) {
-        try { window.NativeBridge.startMarketService(); } catch(e) {}
-        // b99: Sync all data to Kotlin service for background polling
-        syncToNative();
+    // F.2 reduced: delegate to Kotlin service.
+    if (typeof NativeBridge !== 'undefined' && NativeBridge.startMarketService) {
+        NativeBridge.startMarketService();
     }
-
-    // Request notification permission
-    if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission();
-    }
-
-    // Run first poll immediately (don't wait 5 min)
-    // Phase 4: In native mode, skip JS polling — Kotlin is the sole poller
-    if (STATE._nativeMode) {
-        console.log('[Phase 4] Native mode — JS polling DISABLED. Kotlin polls independently.');
-        const el = document.getElementById('watch-status');
-        if (el) el.textContent = '🟢 Native engine watching';
-        const stopBtn = document.getElementById('btn-stop');
-        if (stopBtn) stopBtn.style.display = 'inline-block';
-        return; // No JS timer, no lightFetch. Kotlin handles everything.
-    }
-
-    setTimeout(async () => {
-        if (API.isMarketHours()) {
-            await lightFetch();
-        }
-    }, 3000);
-
-    STATE.pollTimer = setInterval(async () => {
-        if (!API.isMarketHours()) {
-            // Auto-stop polling — market is closed, don't waste battery
-            clearInterval(STATE.pollTimer);
-            STATE.pollTimer = null;
-            STATE.isWatching = false;
-            const el = document.getElementById('watch-status');
-            if (el) el.textContent = '⏹ Market closed — polling stopped';
-            const stopBtn = document.getElementById('btn-stop');
-            if (stopBtn) stopBtn.style.display = 'none';
-            document.getElementById('footer-status').textContent =
-                `🔴 ${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true })} · Polls: ${STATE.pollCount} · Market closed`;
-            return;
-        }
-        const el = document.getElementById('watch-status');
-        if (el) el.textContent = '🔴 Polling...';
-        await lightFetch();
-        if (el) el.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
-    }, C.POLL_INTERVAL_MS);
-
-    const el = document.getElementById('watch-status');
-    if (el) el.textContent = '🟢 Watching';
-    const stopBtn = document.getElementById('btn-stop');
-    if (stopBtn) stopBtn.style.display = 'inline-block';
+    renderAll();
 }
+
 
 function stopWatchLoop() {
-    STATE.isWatching = false;
-    if (STATE.pollTimer) { clearInterval(STATE.pollTimer); STATE.pollTimer = null; }
-
-    // Stop native foreground service
-    if (window.NativeBridge && window.NativeBridge.isNative()) {
-        try { window.NativeBridge.stopMarketService(); } catch(e) {}
+    // F.2 reduced: delegate to Kotlin service.
+    if (typeof NativeBridge !== 'undefined' && NativeBridge.stopMarketService) {
+        NativeBridge.stopMarketService();
     }
-
-    document.getElementById('watch-status').textContent = '⏹ Stopped';
-    document.getElementById('btn-stop').style.display = 'none';
+    renderAll();
 }
+
 
 // ═══ b99: NATIVE BRIDGE SYNC — push app state to Kotlin for background polling ═══
 // Without these calls, Kotlin service has no token, no baseline, no trades.
-function syncToNative() {
-    if (!window.NativeBridge || !window.NativeBridge.isNative()) return;
-    try {
-        // 1. API token — Kotlin needs this to call Upstox API
-        if (typeof API !== 'undefined' && API.TOKEN) {
-            window.NativeBridge.setApiToken(API.TOKEN);
-        }
-        // 2. Baseline — Kotlin needs spots, VIX, walls for brain analysis
-        if (STATE.baseline) {
-            window.NativeBridge.setBaseline(JSON.stringify(STATE.baseline));
-        }
-        // 3. Expiry dates — Kotlin needs these to fetch option chains
-        if (STATE.bnfExpiry && STATE.nfExpiry) {
-            window.NativeBridge.setExpiries(STATE.bnfExpiry, STATE.nfExpiry);
-        }
-        // 4. Open trades — Kotlin monitors for danger alerts
-        if (STATE.openTrades) {
-            const tradesLite = STATE.openTrades.map(t => ({
-                id: t.id, strategy_type: t.strategy_type, sell_strike: t.sell_strike,
-                sell_strike2: t.sell_strike2 ?? null, buy_strike: t.buy_strike,
-                index_key: t.index_key, is_credit: t.is_credit, entry_vix: t.entry_vix ?? null,
-                paper: t.paper ?? false, width: t.width ?? null,
-                current_pnl: t.current_pnl ?? 0, peak_pnl: t.peak_pnl ?? 0,
-                max_profit: t.max_profit ?? 0, max_loss: t.max_loss ?? 0,
-                controlIndex: t.controlIndex ?? null, entry_premium: t.entry_premium ?? null,
-                trade_mode: t.trade_mode ?? 'swing',
-                entry_bias: t.entry_bias ?? null,
-                wallDrift: t.wallDrift ? { severity: t.wallDrift.severity, warning: t.wallDrift.warning } : null,
-                vixChange: t.vixSpike ? t.vixSpike.change : 0,
-                peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0,
-                // b115: Real breakeven — critical for brain position_verdict
-                be_upper: t.be_upper ?? t.beUpper ?? null,
-                be_lower: t.be_lower ?? t.beLower ?? null
-            }));
-            window.NativeBridge.setOpenTrades(JSON.stringify(tradesLite));
-        }
-        // 5. Phase 2: Full context — Kotlin runs full brain in background
-        if (window.NativeBridge.setContext && STATE.live) {
-            // Compute daily P&L and trade counts (same logic as WebView context_json)
-            const _today = API.todayIST();
-            const _todayTrades = (STATE.openTrades || []).filter(t => {
-                const d = t.entry_date ? t.entry_date.split('T')[0] : '';
-                return d === _today;
-            });
-            const _closedToday = (STATE._brainTradesCache || []).filter(t => {
-                const d = t.exit_date ? t.exit_date.split('T')[0] : '';
-                return d === _today && t.status === 'CLOSED';
-            });
-            const _dailyPnl = _closedToday.filter(t => !t.paper).reduce((s, t) => s + (t.actual_pnl ?? 0), 0);
-            const _dailyRealCount = _closedToday.filter(t => !t.paper).length + _todayTrades.filter(t => !t.paper).length;
-
-            // Compute globalDirection pct changes
-            const _gd = STATE.globalDirection || {};
-            const _ec = STATE.eveningClose || {};
-            const _dowPct = (_gd.dowClose && _gd.dowNow) ? +((_gd.dowNow - _gd.dowClose) / _gd.dowClose * 100).toFixed(2) : null;
-            const _crudePct = (_gd.crudeSettle && _gd.crudeNow) ? +((_gd.crudeNow - _gd.crudeSettle) / _gd.crudeSettle * 100).toFixed(2) : null;
-            const _giftPct = (_ec.gift && _gd.giftNow) ? +((_gd.giftNow - _ec.gift) / _ec.gift * 100).toFixed(2) : null;
-
-            const ctx = {
-                // ── Chain profiles (22-field computed summaries) ──
-                bnfProfile: STATE._lastChainProfile?.bnf ?? null,
-                nfProfile: STATE._lastChainProfile?.nf ?? null,
-                // ── Raw chains WITH computed headers (required by generate_candidates) ──
-                // brain.py Phase 3 gate: chain_data.get('strikes') AND chain_data.get('atm')
-                bnfChain: STATE.bnfChain ? {
-                    strikes: STATE.bnfChain.strikes,
-                    atm: STATE.bnfChain.atm,
-                    allStrikes: STATE.bnfChain.allStrikes,
-                    callWallStrike: STATE.bnfChain.callWallStrike,
-                    putWallStrike: STATE.bnfChain.putWallStrike,
-                    atmIv: STATE.bnfChain.atmIv,
-                    maxPain: STATE.bnfChain.maxPain,
-                    callWallOI: STATE.bnfChain.callWallOI,
-                    putWallOI: STATE.bnfChain.putWallOI
-                } : null,
-                nfChain: STATE.nfChain ? {
-                    strikes: STATE.nfChain.strikes,
-                    atm: STATE.nfChain.atm,
-                    allStrikes: STATE.nfChain.allStrikes,
-                    callWallStrike: STATE.nfChain.callWallStrike,
-                    putWallStrike: STATE.nfChain.putWallStrike,
-                    atmIv: STATE.nfChain.atmIv,
-                    maxPain: STATE.nfChain.maxPain,
-                    callWallOI: STATE.nfChain.callWallOI,
-                    putWallOI: STATE.nfChain.putWallOI
-                } : null,
-                // ── Standard context ──
-                bnfBreadth: STATE.bnfBreadth ? { pct: STATE.bnfBreadth.weightedPct, adv: STATE.bnfBreadth.advancing, dec: STATE.bnfBreadth.declining } : null,
-                fiiHistory: (STATE.premiumHistory || []).slice(0, 5).map(p => ({
-                    date: p.date, fiiCash: p.fii_cash, fiiShort: p.fii_short_pct, vix: p.vix
-                })),
-                morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null,
-                capital: typeof C !== 'undefined' ? C.CAPITAL : 250000,
-                tradeMode: STATE.tradeMode || 'swing',
-                bnfDTE: STATE.baseline?.bnfTDTE ?? 5,
-                nfDTE: STATE.baseline?.nfTDTE ?? 2,
-                // ── Expiry dates (required by generate_candidates) ──
-                bnfExpiry: STATE.bnfExpiry ?? null,
-                nfExpiry: STATE.nfExpiry ?? null,
-                // ── Market context ──
-                vix: STATE.live?.vix ?? STATE.baseline?.vix ?? null,
-                marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN',
-                gap: STATE.gapInfo ? { sigma: STATE.gapInfo.sigma ?? 0, pts: STATE.gapInfo.gap ?? 0, type: STATE.gapInfo.type ?? 'FLAT' } : null,
-                overnightDelta: STATE.overnightDelta ? {
-                    summary: STATE.overnightDelta.summary,
-                    signals: (STATE.overnightDelta.signals || []).map(s => ({ name: s.name, dir: s.dir, pct: s.pct }))
-                } : null,
-                biasDrift: STATE.biasDrift ?? 0,
-                rangeSigma: STATE.rangeSigma ?? null,
-                // ── External signals (Dow, Crude, GIFT) ──
-                globalDirection: (_gd.dowClose || _gd.crudeSettle || _ec.gift) ? {
-                    dowClose: _gd.dowClose ?? null,
-                    crudeSettle: _gd.crudeSettle ?? null,
-                    giftPrev: _ec.gift ?? null,
-                    dowPct: _dowPct,
-                    crudePct: _crudePct,
-                    giftPct: _giftPct
-                } : null,
-                // ── Institutional regime ──
-                institutionalRegime: STATE.institutionalRegime ? {
-                    regime: STATE.institutionalRegime.regime ?? null,
-                    creditConfidence: STATE.institutionalRegime.creditConfidence ?? null,
-                    absorptionRatio: STATE.institutionalRegime.absorptionRatio ?? null
-                } : null,
-                // ── Daily discipline ──
-                dailyPnl: _dailyPnl,
-                dailyTradeCount: _dailyRealCount,
-                scanAgeMin: STATE.lastScanTime ? Math.floor((Date.now() - STATE.lastScanTime) / 60000) : null,
-                // ── Signal accuracy + verdicts ──
-                signalAccuracy: STATE.signalAccuracyStats ? { pct: STATE.signalAccuracyStats.pct, total: STATE.signalAccuracyStats.total } : null,
-                priorVerdict: STATE.brainInsights?.verdict ? {
-                    action: STATE.brainInsights.verdict.action,
-                    strategy: STATE.brainInsights.verdict.strategy,
-                    direction: STATE.brainInsights.verdict.direction,
-                    confidence: STATE.brainInsights.verdict.confidence
-                } : null,
-                // ── b114: Effective bias for THESIS_BROKEN detection ──
-                effective_bias: STATE.effectiveBias ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength || '' } : null,
-                ivPercentile: STATE.live?.ivPercentile ?? null
-            };
-            window.NativeBridge.setContext(JSON.stringify(ctx));
-        }
-        // 6. Phase 2: Closed trades — Kotlin needs for calibration
-        if (window.NativeBridge.setClosedTrades && STATE._brainTradesCache) {
-            window.NativeBridge.setClosedTrades(JSON.stringify(STATE._brainTradesCache));
-        }
-        console.log('[b102] syncToNative complete');
-    } catch(e) {
-        console.warn('[b102] syncToNative error:', e.message);
-    }
-}
 
 // Also sync from Kotlin when app resumes from background
 // Kotlin pushes latest polls via evaluateJavascript → window.syncFromNative(data)
@@ -6413,7 +3333,7 @@ window.syncFromNative = function(dataJson) {
 
         // Poll history — only update if Kotlin has more polls than we do
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
-            if (data.pollHistory.length > STATE.pollHistory.length) {
+            if (data.pollHistory.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
                 STATE.pollHistory = data.pollHistory;
                 // b121: Use pollHistory length directly — it's the true running total
                 STATE.pollCount = data.pollHistory.length;
@@ -6450,39 +3370,39 @@ window.syncFromNative = function(dataJson) {
         if (data.brainResult?.generated_candidates?.length > 0) {
             const brainCands = data.brainResult.generated_candidates;
             STATE.candidates = rankCandidates(brainCands);
-            STATE.watchlist = STATE.candidates.slice(0, 6);
-            const seenIds = new Set(STATE.watchlist.map(c => c.id));
+            STATE.watchlist = (bd.generated_candidates || []).slice(0, 6);
+            const seenIds = new Set((bd.watchlist || []).map(c => c.id));
             for (const idx of ['BNF', 'NF']) {
                 const seen = new Set();
-                for (const c of STATE.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
-                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                for (const c of (bd.generated_candidates || []).filter(c => c.index === idx && !c.capitalBlocked)) {
+                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
                     if (seen.size >= 5) break;
                 }
             }
-            STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
+            STATE._lastCandidateBias = bd.effective_bias?.bias || bd.morningBias?.bias;
         }
 
         // Phase 4: Candidates from Kotlin
         if (data.candidates && Array.isArray(data.candidates) && data.candidates.length > 0) {
             STATE.candidates = data.candidates;
             STATE.watchlist = data.candidates.slice(0, 6);
-            const seenIds = new Set(STATE.watchlist.map(c => c.id));
+            const seenIds = new Set((bd.watchlist || []).map(c => c.id));
             for (const idx of ['BNF', 'NF']) {
                 const seen = new Set();
                 for (const c of data.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
-                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
                     if (seen.size >= 5) break;
                 }
             }
-            STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
+            STATE._lastCandidateBias = bd.effective_bias?.bias || bd.morningBias?.bias;
         }
         
         // Phase 4: Live spots from Kotlin
         if (data.spots) {
-            if (STATE.live) {
-                if (data.spots.bnfSpot) STATE.live.bnfSpot = data.spots.bnfSpot;
-                if (data.spots.nfSpot) STATE.live.nfSpot = data.spots.nfSpot;
-                if (data.spots.vix) STATE.live.vix = data.spots.vix;
+            if ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))) {
+                if (data.spots.bnfSpot) (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot = data.spots.bnfSpot;
+                if (data.spots.nfSpot) (JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfSpot = data.spots.nfSpot;
+                if (data.spots.vix) (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix = data.spots.vix;
             }
             // Update header display
             const bnfEl = document.querySelector('.spot-bnf, [data-spot="bnf"]');
@@ -6493,7 +3413,7 @@ window.syncFromNative = function(dataJson) {
         // Phase 4: Updated trade P&L from Kotlin
         if (data.openTrades && Array.isArray(data.openTrades)) {
             for (const nt of data.openTrades) {
-                const existing = STATE.openTrades.find(t => String(t.id) === String(nt.id));
+                const existing = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).find(t => String(t.id) === String(nt.id));
                 if (existing) {
                     if (nt.current_pnl !== undefined) existing.current_pnl = nt.current_pnl;
                     if (nt.current_spot !== undefined) existing.current_spot = nt.current_spot;
@@ -6513,714 +3433,9 @@ window.syncFromNative = function(dataJson) {
 // Loads async (non-blocking). Runs every poll. Graceful degradation.
 // ═══════════════════════════════════════════════════════════════
 
-async function initBrain() {
-    // Race condition guard — prevent double loadPyodide which crashes WASM
-    if (STATE.brainReady || STATE._brainLoading) return;
-
-    // ═══ Phase 4: NATIVE MODE — Kotlin brain is the single source of truth ═══
-    // Skip Pyodide entirely. No 11MB WASM download. No 5-second init.
-    // All brain data comes from NativeBridge. WebView = pure renderer.
-    if (window.NativeBridge && window.NativeBridge.isNative()) {
-        console.log('[Brain] Native engine detected. Pyodide SKIPPED. WebView = display only.');
-        STATE.brainReady = true;
-        STATE._nativeMode = true;
-        // Pull initial brain data from Kotlin
-        try {
-            if (window.NativeBridge.getBrainResult) {
-                const brJson = window.NativeBridge.getBrainResult();
-                if (brJson && brJson !== '{}' && brJson !== 'null') {
-                    const br = JSON.parse(brJson);
-                    STATE.brainInsights = br;
-                    if (br.effective_bias) {
-                        STATE.effectiveBias = {
-                            bias: br.effective_bias.bias, strength: br.effective_bias.strength || '',
-                            net: br.effective_bias.net, morning_weight: br.effective_bias.morning_weight,
-                            drift_reasons: br.effective_bias.drift_reasons || [],
-                            label: `${br.effective_bias.strength ? br.effective_bias.strength + ' ' : ''}${br.effective_bias.bias}`
-                        };
-                    }
-                }
-            }
-            if (window.NativeBridge.getCandidates) {
-                const candJson = window.NativeBridge.getCandidates();
-                if (candJson && candJson !== '[]' && candJson !== 'null') {
-                    const cands = JSON.parse(candJson);
-                    if (Array.isArray(cands) && cands.length > 0) {
-                        STATE.candidates = cands;
-                        STATE.watchlist = cands.slice(0, 6);
-                        STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
-                        console.log(`[Brain] Native: ${cands.length} candidates pulled from Kotlin`);
-                    }
-                }
-            }
-        } catch(e) {
-            console.warn('[Brain] Native pull failed:', e.message);
-        }
-        renderFooter();
-        renderAll();
-        return;
-    }
-
-    // ═══ BROWSER MODE — Load Pyodide as before ═══
-    if (typeof loadPyodide !== 'function') {
-        STATE.brainError = 'loadPyodide not available — CDN script may have failed';
-        console.error('[Brain] loadPyodide not found');
-        renderFooter();
-        return;
-    }
-
-    STATE._brainLoading = true;
-    STATE.brainLoadStart = performance.now();
-    console.log('[Brain] Loading Python WASM runtime...');
-
-    try {
-        // 60s timeout for WASM download (first load ~11MB, cached after)
-        const pyPromise = loadPyodide();
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('WASM download timeout (60s)')), 60000)
-        );
-        STATE._pyodide = await Promise.race([pyPromise, timeoutPromise]);
-
-        // Load the Python brain code
-        STATE._pyodide.runPython(BRAIN_PYTHON);
-
-        STATE.brainReady = true;
-        STATE._brainLoading = false;
-        const elapsed = ((performance.now() - STATE.brainLoadStart) / 1000).toFixed(1);
-        console.log(`[Brain] Ready in ${elapsed}s`);
-        renderFooter();
-
-        // Run brain immediately if we already have poll data
-        if (STATE.pollHistory.length >= 3) {
-            await runBrain();
-            renderAll(); // b101: render after brain-triggered candidate regeneration
-        }
-
-    } catch (err) {
-        console.error('[Brain] Init failed:', err);
-        STATE.brainError = err.message;
-        STATE.brainReady = false;
-        STATE._brainLoading = false;
-        renderFooter();
-    }
-}
 
 // ═══ CHAIN PROFILE — compress per-strike intelligence into ~25 numbers for Python ═══
-function computeChainProfile(chain, spot, ohlc) {
-    if (!chain?.strikes || !chain?.atm || !chain?.allStrikes) return null;
-    const strikes = chain.strikes;
-    const allK = chain.allStrikes;
-    const vix = STATE.live?.vix ?? STATE.baseline?.vix ?? 20;
-    const dailySigma = BS.dailySigma(spot, vix);
-    if (dailySigma <= 0) return null;
-    const step = allK.length > 1 ? allK[1] - allK[0] : (spot > 30000 ? 100 : 50);
 
-    // IV Skew: OTM put IV vs OTM call IV at ~0.5σ
-    const otmDist = Math.round(dailySigma * 0.5 / step) * step || step;
-    const callIV = strikes[chain.atm + otmDist]?.CE?.iv ?? 0;
-    const putIV = strikes[chain.atm - otmDist]?.PE?.iv ?? 0;
-
-    // Sigma-zone PCR
-    const zonePCR = (lo, hi) => {
-        let c = 0, p = 0;
-        for (const k of allK) {
-            const sigma = Math.abs(k - chain.atm) / dailySigma;
-            if (sigma >= lo && sigma < hi) { c += strikes[k]?.CE?.oi ?? 0; p += strikes[k]?.PE?.oi ?? 0; }
-        }
-        return c > 0 ? +(p / c).toFixed(2) : 0;
-    };
-
-    // Wall freshness + OI change from prev_oi
-    const wallFresh = (strike, type) => {
-        const d = strikes[strike]?.[type];
-        if (!d) return { fresh: 0, oiChg: null };
-        return { fresh: +((d.volume || 0) / Math.max(1, d.oi || 1)).toFixed(3), oiChg: d.prev_oi != null ? d.oi - d.prev_oi : null };
-    };
-    const cw = wallFresh(chain.callWallStrike, 'CE');
-    const pw = wallFresh(chain.putWallStrike, 'PE');
-
-    // ATM bid-ask spread
-    const atmCE = strikes[chain.atm]?.CE;
-    const atmPE = strikes[chain.atm]?.PE;
-
-    // Day range position
-    const dayRange = ohlc && ohlc.high > ohlc.low ? +((spot - ohlc.low) / (ohlc.high - ohlc.low)).toFixed(2) : 0.5;
-
-    // OI concentration (top 3 strikes % of near-ATM total)
-    const nearK = allK.filter(k => Math.abs(k - chain.atm) / dailySigma < 1.5);
-    const cOIs = nearK.map(k => strikes[k]?.CE?.oi ?? 0).sort((a, b) => b - a);
-    const pOIs = nearK.map(k => strikes[k]?.PE?.oi ?? 0).sort((a, b) => b - a);
-    const cTotal = cOIs.reduce((s, v) => s + v, 0) || 1;
-    const pTotal = pOIs.reduce((s, v) => s + v, 0) || 1;
-
-    // Gap fill %
-    const gapFill = ohlc && STATE.gapInfo?.gap && Math.abs(STATE.gapInfo.gap) > 10 ?
-        +Math.min(1, Math.abs(spot - ohlc.open) / Math.abs(STATE.gapInfo.gap)).toFixed(2) : null;
-
-    // Gamma at ATM (for regime assessment)
-    const atmGamma = atmCE?.gamma ?? null;
-
-    // ═══ b90: GREEKS + VOLUME + LIQUIDITY FEATURES ═══
-    // Computed features from chain — 10 numbers instead of 1000 raw values
-
-    // 1. IV Smile Slope — steepness of put skew (institutions hedging)
-    const otmDist2 = Math.round(dailySigma * 1.0 / step) * step || step * 2;
-    const farPutIV = strikes[chain.atm - otmDist2]?.PE?.iv ?? 0;
-    const ivSlope = farPutIV > 0 && callIV > 0 ? +((farPutIV - callIV) / 2).toFixed(1) : 0;
-
-    // 2. Gamma Clustering — % of total gamma within ±0.3σ of ATM
-    let gammaTotal = 0, gammaNear = 0;
-    for (const k of nearK) {
-        const g = (Math.abs(strikes[k]?.CE?.gamma ?? 0) + Math.abs(strikes[k]?.PE?.gamma ?? 0));
-        gammaTotal += g;
-        if (Math.abs(k - chain.atm) / dailySigma < 0.3) gammaNear += g;
-    }
-    const gammaCluster = gammaTotal > 0 ? +(gammaNear / gammaTotal).toFixed(3) : 0;
-
-    // 3. Volume Ratio — call volume / put volume near ATM (real-time flow)
-    let callVol = 0, putVol = 0;
-    for (const k of nearK) {
-        callVol += strikes[k]?.CE?.volume ?? 0;
-        putVol += strikes[k]?.PE?.volume ?? 0;
-    }
-    const volRatio = putVol > 0 ? +(callVol / putVol).toFixed(2) : (callVol > 0 ? 5.0 : 1.0);
-
-    // 4. Net Delta near ATM (institutional directional bias from OI × delta)
-    let netDelta = 0;
-    for (const k of nearK) {
-        const ceD = strikes[k]?.CE?.delta ?? 0;
-        const peD = strikes[k]?.PE?.delta ?? 0;
-        const ceOI = strikes[k]?.CE?.oi ?? 0;
-        const peOI = strikes[k]?.PE?.oi ?? 0;
-        netDelta += (ceOI * ceD + peOI * peD);
-    }
-    const normDelta = nearK.length > 0 ? +(netDelta / 100000).toFixed(2) : 0; // normalize to readable scale
-
-    // 5. Net Theta near ATM (daily time decay the market is paying)
-    let netTheta = 0;
-    for (const k of nearK) {
-        netTheta += Math.abs(strikes[k]?.CE?.theta ?? 0) + Math.abs(strikes[k]?.PE?.theta ?? 0);
-    }
-    const avgTheta = nearK.length > 0 ? +(netTheta / nearK.length).toFixed(2) : 0;
-
-    // 6. Aggregate Vega (premium sensitivity to VIX — how much a 1pt VIX move matters)
-    let totalVega = 0;
-    for (const k of nearK) {
-        totalVega += Math.abs(strikes[k]?.CE?.vega ?? 0) + Math.abs(strikes[k]?.PE?.vega ?? 0);
-    }
-    const avgVega = nearK.length > 0 ? +(totalVega / nearK.length).toFixed(2) : 0;
-
-    // 7. OI Velocity — net OI change at top 5 strikes (wall building speed)
-    let oiVelocity = 0;
-    const topCallK = nearK.slice().sort((a, b) => (strikes[b]?.CE?.oi ?? 0) - (strikes[a]?.CE?.oi ?? 0)).slice(0, 5);
-    const topPutK = nearK.slice().sort((a, b) => (strikes[b]?.PE?.oi ?? 0) - (strikes[a]?.PE?.oi ?? 0)).slice(0, 5);
-    for (const k of topCallK) {
-        const d = strikes[k]?.CE;
-        if (d?.prev_oi != null) oiVelocity += d.oi - d.prev_oi;
-    }
-    for (const k of topPutK) {
-        const d = strikes[k]?.PE;
-        if (d?.prev_oi != null) oiVelocity += d.oi - d.prev_oi;
-    }
-    const normOiVelocity = +(oiVelocity / 10000).toFixed(2); // normalize to lakhs
-
-    // 8. Bid-Ask Quality — avg spread as % of premium (liquidity measure)
-    let spreadSum = 0, spreadCount = 0;
-    for (const k of nearK) {
-        const ce = strikes[k]?.CE;
-        const pe = strikes[k]?.PE;
-        if (ce && ce.ltp > 1) { spreadSum += (ce.ask - ce.bid) / ce.ltp; spreadCount++; }
-        if (pe && pe.ltp > 1) { spreadSum += (pe.ask - pe.bid) / pe.ltp; spreadCount++; }
-    }
-    const bidAskQuality = spreadCount > 0 ? +(spreadSum / spreadCount * 100).toFixed(2) : 0; // % of premium
-
-    // 9. Wall Cluster Depth — how many strikes near each wall also have significant OI
-    // Single wall = fragile (one unwind breaks it). Clustered wall = fortress (zone must break)
-    const wallClusterRadius = spot > 30000 ? 5 : 4; // ±5 steps BNF (±500pts), ±4 NF (±200pts)
-    const callWallK = chain.callWallStrike;
-    const putWallK = chain.putWallStrike;
-
-    // Median OI as baseline for "significant"
-    const allCallOI = allK.map(k => strikes[k]?.CE?.oi ?? 0).filter(v => v > 0);
-    const allPutOI = allK.map(k => strikes[k]?.PE?.oi ?? 0).filter(v => v > 0);
-    const medianOI = (arr) => { if (!arr.length) return 0; const s = arr.slice().sort((a,b) => a-b); return s[Math.floor(s.length/2)]; };
-    const callMedian = medianOI(allCallOI);
-    const putMedian = medianOI(allPutOI);
-    const clusterThresholdMult = 2; // OI must be 2× median to count
-
-    let callClusterDepth = 0, putClusterDepth = 0;
-    for (const k of allK) {
-        if (Math.abs(k - callWallK) <= wallClusterRadius * step && (strikes[k]?.CE?.oi ?? 0) > callMedian * clusterThresholdMult) callClusterDepth++;
-        if (Math.abs(k - putWallK) <= wallClusterRadius * step && (strikes[k]?.PE?.oi ?? 0) > putMedian * clusterThresholdMult) putClusterDepth++;
-    }
-
-    return {
-        ivSkew: +(putIV - callIV).toFixed(1),
-        pcrZ1: zonePCR(0.3, 0.5), pcrZ2: zonePCR(0.5, 0.8), pcrZ3: zonePCR(0.8, 1.2),
-        cwFresh: cw.fresh, cwOiChg: cw.oiChg, pwFresh: pw.fresh, pwOiChg: pw.oiChg,
-        atmSpread: +((atmCE ? atmCE.ask - atmCE.bid : 0) + (atmPE ? atmPE.ask - atmPE.bid : 0)).toFixed(1),
-        dayRange, gapFill,
-        callConc: +(((cOIs[0] || 0) + (cOIs[1] || 0) + (cOIs[2] || 0)) / cTotal).toFixed(3),
-        putConc: +(((pOIs[0] || 0) + (pOIs[1] || 0) + (pOIs[2] || 0)) / pTotal).toFixed(3),
-        pctFromOpen: ohlc?.open ? +((spot - ohlc.open) / ohlc.open * 100).toFixed(2) : 0,
-        maxPain: chain.maxPain, callWall: chain.callWallStrike, putWall: chain.putWallStrike,
-        atm: chain.atm, spot, atmGamma,
-        // b90: New chain intelligence features
-        ivSlope,          // IV smile steepness (higher = more fear)
-        gammaCluster,     // Gamma near ATM (higher = coiled for big move)
-        volRatio,         // Call/Put volume ratio (>1 = call buying, <1 = put buying)
-        netDelta: normDelta,  // Net directional bias from OI × delta
-        avgTheta,         // Average theta near ATM (daily decay rate)
-        avgVega,          // Average vega near ATM (VIX sensitivity)
-        oiVelocity: normOiVelocity,  // Wall building speed (lakhs/day)
-        bidAskQuality,    // Spread as % of premium (lower = better liquidity)
-        // b91: Wall cluster depth — fortress vs fragile
-        callClusterDepth, // Strikes near call wall with OI > 2× median (1=fragile, 5+=fortress)
-        putClusterDepth   // Same for put wall
-    };
-}
-
-async function runBrain() {
-    // ═══ Phase 4: NATIVE MODE — pull from Kotlin instead of running Pyodide ═══
-    if (STATE._nativeMode) {
-        try {
-            if (!window.NativeBridge?.getBrainResult) return;
-            const brJson = window.NativeBridge.getBrainResult();
-            if (!brJson || brJson === '{}' || brJson === 'null') return;
-            const result = JSON.parse(brJson);
-            
-            // Store brain insights
-            STATE.brainInsights = result;
-            STATE.brainLastRun = Date.now();
-            STATE.brainError = null;
-            
-            // Effective bias from Kotlin brain
-            const eb = result.effective_bias;
-            if (eb && eb.bias) {
-                const currentBias = STATE.effectiveBias?.bias;
-                STATE.effectiveBias = {
-                    bias: eb.bias, strength: eb.strength || '',
-                    net: eb.net, morning_weight: eb.morning_weight,
-                    drift_reasons: eb.drift_reasons || [],
-                    label: `${eb.strength ? eb.strength + ' ' : ''}${eb.bias}`
-                };
-                // If bias changed, candidates already regenerated by Kotlin
-                if (currentBias && eb.bias !== currentBias) {
-                    console.log(`[Brain Native] Effective bias ${currentBias} → ${eb.bias}`);
-                }
-            }
-            
-            // Candidates from Kotlin
-            if (window.NativeBridge.getCandidates) {
-                const candJson = window.NativeBridge.getCandidates();
-                if (candJson && candJson !== '[]') {
-                    const cands = JSON.parse(candJson);
-                    if (Array.isArray(cands) && cands.length > 0) {
-                        STATE.candidates = cands;
-                        STATE.watchlist = cands.slice(0, 6);
-                        // Add diverse picks per index
-                        const seenIds = new Set(STATE.watchlist.map(c => c.id));
-                        for (const idx of ['BNF', 'NF']) {
-                            const seen = new Set();
-                            for (const c of cands.filter(c => c.index === idx && !c.capitalBlocked)) {
-                                if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
-                                if (seen.size >= 5) break;
-                            }
-                        }
-                        STATE._lastCandidateBias = STATE.effectiveBias?.bias || STATE.morningBias?.bias;
-                    }
-                }
-            }
-            
-            applyBrainScores();
-        } catch(e) {
-            console.warn('[Brain Native] Pull failed:', e.message);
-            STATE.brainError = e.message;
-        }
-        return;
-    }
-
-    // ═══ BROWSER MODE — run Pyodide as before ═══
-    if (!STATE.brainReady || !STATE._pyodide) return;
-    if (STATE.pollHistory.length < 3) return;
-
-    try {
-        const py = STATE._pyodide;
-
-        // 1. Poll data — strip per-strike arrays (heavy), keep everything else
-        const pollsLite = STATE.pollHistory.map(p => {
-            const { bnfS, nfS, ...rest } = p;
-            return rest;
-        });
-
-        // 2. Closed trades cache — refresh every 10 min
-        if (!STATE._brainTradesCache || Date.now() - (STATE._brainTradesCacheTime ?? 0) > 600000) {
-            try {
-                STATE._brainTradesCache = (await DB.getClosedTrades(50)) || [];
-                STATE._brainTradesCacheTime = Date.now();
-            } catch (e) { STATE._brainTradesCache = STATE._brainTradesCache || []; }
-        }
-
-        // 3. Open trades — slim to essential fields for Python
-        const openTradesLite = STATE.openTrades.map(t => ({
-            id: t.id, strategy_type: t.strategy_type, sell_strike: t.sell_strike,
-            buy_strike: t.buy_strike, sell_strike2: t.sell_strike2 ?? null,
-            index_key: t.index_key, is_credit: t.is_credit,
-            current_pnl: t.current_pnl ?? 0, peak_pnl: t.peak_pnl ?? 0,
-            max_profit: t.max_profit ?? 0, max_loss: t.max_loss ?? 0,
-            controlIndex: t.controlIndex ?? null, width: t.width ?? null,
-            entry_vix: t.entry_vix ?? null, entry_premium: t.entry_premium ?? null,
-            entry_bias: t.entry_bias ?? null,
-            trade_mode: t.trade_mode ?? 'swing', paper: t.paper ?? false,
-            // b89: Feed wall drift + VIX spike + peak erosion to brain
-            wallDrift: t.wallDrift ? { severity: t.wallDrift.severity, warning: t.wallDrift.warning } : null,
-            vixChange: t.vixSpike ? t.vixSpike.change : 0,
-            peakErosion: (t.peak_pnl > 0 && t.current_pnl < t.peak_pnl) ? +((1 - t.current_pnl / t.peak_pnl) * 100).toFixed(1) : 0,
-            // b115: Real breakeven — critical for brain position_verdict
-            be_upper: t.be_upper ?? t.beUpper ?? null,
-            be_lower: t.be_lower ?? t.beLower ?? null
-        }));
-
-        // 4. Candidates — b92: FULL data for brain evaluation (was 7 fields, now 20+)
-        const candsLite = (STATE.watchlist || []).slice(0, 10).map(c => ({
-            id: c.id, type: c.type, sellStrike: c.sellStrike, buyStrike: c.buyStrike,
-            sellStrike2: c.sellStrike2 ?? null, buyStrike2: c.buyStrike2 ?? null,
-            index: c.index, isCredit: c.isCredit, sigmaOTM: c.sigmaOTM ?? null,
-            width: c.width ?? null, legs: c.legs ?? 2,
-            forces: c.forces ? { f1: c.forces.f1, f2: c.forces.f2, f3: c.forces.f3, aligned: c.forces.aligned } : null,
-            contextScore: c.contextScore ?? 0, wallScore: c.wallScore ?? 0,
-            probProfit: c.probProfit ?? 0, maxProfit: c.maxProfit ?? 0, maxLoss: c.maxLoss ?? 0,
-            estCost: c.estCost ?? 0, estCostPct: c.estCostPct ?? 0,
-            varsityTier: c.varsityTier ?? null,
-            realisticMaxProfit: c.realisticMaxProfit ?? null,
-            netTheta: c.netTheta ?? c.intradayTheta ?? 0
-        }));
-
-        // 5. Strike OI history — extract OI at traded strikes from full poll data
-        const strikeOI = {};
-        for (const t of STATE.openTrades) {
-            const field = t.index_key === 'NF' ? 'nfS' : 'bnfS';
-            strikeOI[t.id] = STATE.pollHistory.slice(-6).map(p => {
-                const sellData = (p[field] || []).find(s => s.k === t.sell_strike);
-                const buyData = (p[field] || []).find(s => s.k === t.buy_strike);
-                return {
-                    t: p.t,
-                    sellCOI: sellData?.c?.o ?? null, sellPOI: sellData?.p?.o ?? null,
-                    buyCOI: buyData?.c?.o ?? null, buyPOI: buyData?.p?.o ?? null
-                };
-            });
-        }
-
-        // Pass all data via globals — safe, no escaping issues
-        py.globals.set('_poll_json', JSON.stringify(pollsLite));
-        py.globals.set('_trades_json', JSON.stringify(STATE._brainTradesCache));
-        py.globals.set('_baseline_json', JSON.stringify({
-            vix: STATE.baseline?.vix ?? 15,
-            bnfSpot: STATE.baseline?.bnfSpot ?? 50000,
-            nfSpot: STATE.baseline?.nfSpot ?? 23000
-        }));
-        py.globals.set('_open_trades_json', JSON.stringify(openTradesLite));
-        py.globals.set('_candidates_json', JSON.stringify(candsLite));
-        py.globals.set('_strike_oi_json', JSON.stringify(strikeOI));
-
-        // 7. CONTEXT — everything the brain was blind to (b72 upgrade)
-        const todayTrades = STATE.openTrades.filter(t => {
-            const d = t.entry_date ? t.entry_date.split('T')[0] : '';
-            return d === API.todayIST();
-        });
-        const closedToday = (STATE._brainTradesCache || []).filter(t => {
-            const d = t.exit_date ? t.exit_date.split('T')[0] : '';
-            return d === API.todayIST() && t.status === 'CLOSED';
-        });
-        const dailyPnl = closedToday.filter(t => !t.paper).reduce((s, t) => s + (t.actual_pnl ?? 0), 0);
-        const dailyRealCount = closedToday.filter(t => !t.paper).length + todayTrades.filter(t => !t.paper).length;
-        const dailyPaperCount = closedToday.filter(t => t.paper).length + todayTrades.filter(t => t.paper).length;
-
-        // b102: Cache chain profiles for syncToNative Phase 2
-        const _bnfProfile = computeChainProfile(STATE.bnfChain, STATE.live?.bnfSpot ?? STATE.baseline?.bnfSpot, STATE.baseline?.bnfOHLC);
-        const _nfProfile = computeChainProfile(STATE.nfChain, STATE.live?.nfSpot ?? STATE.baseline?.nfSpot, STATE.baseline?.nfOHLC);
-        STATE._lastChainProfile = { bnf: _bnfProfile, nf: _nfProfile };
-
-        py.globals.set('_context_json', JSON.stringify({
-            // Chain profiles (20 numbers each)
-            bnfProfile: _bnfProfile,
-            nfProfile: _nfProfile,
-            // Breadth
-            bnfBreadth: STATE.bnfBreadth ? { pct: STATE.bnfBreadth.weightedPct, adv: STATE.bnfBreadth.advancing, dec: STATE.bnfBreadth.declining, total: STATE.bnfBreadth.total } : null,
-            nf50Breadth: STATE.nf50Breadth ? { adv: STATE.nf50Breadth.advancing, dec: STATE.nf50Breadth.declining, scaled: STATE.nf50Breadth.scaled } : null,
-            // FII 5-day history (already in memory)
-            fiiHistory: (STATE.premiumHistory || []).slice(0, 5).map(p => ({
-                date: p.date, fiiCash: p.fii_cash, fiiShort: p.fii_short_pct,
-                diiCash: p.dii_cash, fiiIdxFut: p.fii_idx_fut, fiiStkFut: p.fii_stk_fut,
-                vix: p.vix, bias: p.bias_net
-            })),
-            // Gap info
-            gap: STATE.gapInfo ? { type: STATE.gapInfo.type, pts: STATE.gapInfo.gap, sigma: STATE.gapInfo.sigma, pct: STATE.gapInfo.pct } : null,
-            // Signal accuracy + yesterday's signal
-            signalAccuracy: STATE.signalAccuracyStats ? { pct: STATE.signalAccuracyStats.pct, total: STATE.signalAccuracyStats.total } : null,
-            yesterdaySignal: STATE.tomorrowSignal ? { signal: STATE.tomorrowSignal.signal, strength: STATE.tomorrowSignal.strength } : null,
-            // DTE
-            bnfDTE: STATE.baseline?.bnfTDTE ?? 5,
-            nfDTE: STATE.baseline?.nfTDTE ?? 5,
-            // Daily P&L discipline
-            dailyPnl, dailyTradeCount: dailyRealCount, dailyPaperCount,
-            // OHLC for day range
-            bnfOHLC: STATE.baseline?.bnfOHLC ?? null,
-            nfOHLC: STATE.baseline?.nfOHLC ?? null,
-            // Morning bias
-            morningBias: STATE.morningBias ? { label: STATE.morningBias.label, net: STATE.morningBias.net } : null,
-            // Capital — single source of truth for Kelly and position sizing
-            capital: C.CAPITAL,
-            // b89: Market phase for position decisions
-            marketPhase: STATE.marketPhase?.id ?? 'UNKNOWN',
-
-            // ═══ b92: FULL OMNISCIENCE — 12 missing data streams ═══
-
-            // 1. Trade mode — brain must know if user is in SWING or INTRADAY
-            tradeMode: STATE.tradeMode || 'swing',
-
-            // 2. Global direction — Dow/Crude/GIFT live % changes
-            globalDirection: {
-                dowClose: STATE.globalDirection?.dowClose ?? null,
-                crudeSettle: STATE.globalDirection?.crudeSettle ?? null,
-                dowNow: STATE.globalDirection?.dowNow ?? null,
-                crudeNow: STATE.globalDirection?.crudeNow ?? null,
-                giftNow: STATE.globalDirection?.giftNow ?? null,
-                dowPct: (STATE.globalDirection?.dowClose && STATE.globalDirection?.dowNow)
-                    ? +((STATE.globalDirection.dowNow - STATE.globalDirection.dowClose) / STATE.globalDirection.dowClose * 100).toFixed(2) : null,
-                crudePct: (STATE.globalDirection?.crudeSettle && STATE.globalDirection?.crudeNow)
-                    ? +((STATE.globalDirection.crudeNow - STATE.globalDirection.crudeSettle) / STATE.globalDirection.crudeSettle * 100).toFixed(2) : null,
-                giftPct: (STATE.eveningClose?.gift && STATE.globalDirection?.giftNow)
-                    ? +((STATE.globalDirection.giftNow - STATE.eveningClose.gift) / STATE.eveningClose.gift * 100).toFixed(2) : null
-            },
-
-            // 3. Overnight delta — computed signals from evening→morning
-            overnightDelta: STATE.overnightDelta ? {
-                summary: STATE.overnightDelta.summary,
-                signals: STATE.overnightDelta.signals?.map(s => ({ name: s.name, dir: s.dir, pct: s.pct })) || []
-            } : null,
-
-            // 4. Institutional regime — credit confidence, absorption ratio
-            institutionalRegime: STATE.institutionalRegime ? {
-                regime: STATE.institutionalRegime.regime,
-                creditConfidence: STATE.institutionalRegime.creditConfidence,
-                absorptionRatio: STATE.institutionalRegime.absorptionRatio ?? null
-            } : null,
-
-            // 5. Bias drift — how much has bias changed since morning
-            biasDrift: STATE.biasDrift ?? 0,
-            driftOverridden: STATE.driftOverridden ?? false,
-            liveBias: STATE.live?.bias ? { label: STATE.live.bias.label, net: STATE.live.bias.net } : null,
-
-            // 6. Range sigma — exact value for IC/IB timing
-            rangeSigma: STATE.rangeSigma ?? null,
-
-            // 7. Tomorrow signal — institutional direction for positioning
-            tomorrowSignal: STATE.tomorrowSignal ? {
-                signal: STATE.tomorrowSignal.signal,
-                strength: STATE.tomorrowSignal.strength,
-                globalBoost: STATE.tomorrowSignal.globalBoost ?? 0
-            } : null,
-
-            // 8. Varsity filter output — what strategy types are PRIMARY vs ALLOWED
-            varsityFilter: (() => {
-                const b = STATE.live?.bias || STATE.baseline?.bias;
-                const v = STATE.live?.vix || STATE.baseline?.vix || 20;
-                if (!b) return null;
-                const vf = getVarsityFilter(b, v);
-                return { primary: vf.primary, allowed: vf.allowed, rangeDetected: vf.rangeDetected ?? false };
-            })(),
-
-            // 9. Scan freshness — minutes since last scan
-            scanAgeMin: STATE.lastScanTime ? Math.floor((Date.now() - STATE.lastScanTime) / 60000) : null,
-
-            // 10. Evening close — reference for overnight gaps
-            eveningClose: STATE.eveningClose ? {
-                dow: STATE.eveningClose.dow, crude: STATE.eveningClose.crude,
-                gift: STATE.eveningClose.gift, date: STATE.eveningClose.date
-            } : null,
-
-            // 11. Signal accuracy — full stats for confidence weighting
-            signalAccuracyFull: STATE.signalAccuracyStats ? {
-                correct: STATE.signalAccuracyStats.correct,
-                total: STATE.signalAccuracyStats.total,
-                pct: STATE.signalAccuracyStats.pct
-            } : null,
-
-            // 12. Brain's own prior verdict — for flip-flop detection
-            priorVerdict: STATE.brainInsights?.verdict ? {
-                action: STATE.brainInsights.verdict.action,
-                strategy: STATE.brainInsights.verdict.strategy,
-                direction: STATE.brainInsights.verdict.direction,
-                confidence: STATE.brainInsights.verdict.confidence
-            } : null,
-
-            // ═══ b93: HISTORICAL ARRAYS for Z-score computation ═══
-            // 30-60 days of daily data for dynamic thresholds
-            vixHistory: (STATE.premiumHistory || []).map(p => p.vix).filter(Boolean).slice(0, 60),
-            pcrHistory: (STATE.premiumHistory || []).map(p => p.pcr).filter(Boolean).slice(0, 60),
-            spotHistory: (STATE.premiumHistory || []).map(p => p.bnf_spot).filter(Boolean).slice(0, 60),
-            ivPercentile: (() => {
-                const vh = (STATE.premiumHistory || []).map(p => p.vix).filter(Boolean);
-                return vh.length > 10 ? BS.ivPercentile(STATE.live?.vix || STATE.baseline?.vix || 20, vh) : 50;
-            })()
-        }));
-
-        const resultJson = py.runPython(
-            'analyze(_poll_json, _trades_json, _baseline_json, _open_trades_json, _candidates_json, _strike_oi_json, _context_json)'
-        );
-        const result = JSON.parse(resultJson);
-
-        if (result && typeof result === 'object') {
-            // ═══ SMART NOTIFICATIONS — brain-driven, 3 tiers ═══
-            // Tier 1: ACT NOW (sendNotification — sound + vibrate)
-            // Tier 2: WATCH (addNotificationLog — silent, in panel)
-            // Tier 3: FYI (addNotificationLog — bundled)
-
-            // Dedup — only NEW insights
-            const prevKeys = new Set();
-            const prev = STATE.brainInsights;
-            [...(prev?.market || []), ...(prev?.timing || []), ...(prev?.risk || [])].forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
-            for (const tid in (prev?.positions || {})) ((prev.positions[tid]?.insights) || []).forEach(i => prevKeys.add((i.type || '') + '|' + (i.label || '')));
-
-            // Tier 3 (FYI): New high-strength insights
-            const allNew = [...(result.market || []), ...(result.timing || []), ...(result.risk || [])];
-            for (const tid in (result.positions || {})) allNew.push(...((result.positions[tid]?.insights) || []));
-            for (const ins of allNew) {
-                const key = (ins.type || '') + '|' + (ins.label || '');
-                if (ins.strength >= 4 && !prevKeys.has(key)) {
-                    addNotificationLog(`🧠 ${ins.label}`, ins.detail, ins.strength >= 5 ? 'urgent' : 'important');
-                }
-            }
-
-            // Tier 1 (ACT NOW): Position BOOK/EXIT with urgency NOW
-            for (const tid in (result.positions || {})) {
-                const pv = result.positions[tid]?.verdict;
-                const prevPv = prev?.positions?.[tid]?.verdict;
-                if (pv && pv.action !== prevPv?.action) {
-                    const trade = STATE.openTrades.find(t => t.id === tid);
-                    if (!trade) continue;
-                    const label = `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}`;
-                    const pnl = trade.current_pnl != null ? `₹${trade.current_pnl.toLocaleString()}` : '';
-                    // [b115] Use real stored breakeven, fall back to approximation
-                    const _spot = trade.index_key === 'BNF' ? STATE.live.bnf : STATE.live.nf;
-                    const _lot = trade.index_key === 'BNF' ? 30 : 65;
-                    const _beU = trade.be_upper ?? trade.beUpper ?? null;
-                    const _beL = trade.be_lower ?? trade.beLower ?? null;
-                    const _netCr = (!_beU && !_beL && trade.max_profit != null) ? Math.round(trade.max_profit / _lot) : null;
-                    const _beUfinal = _beU ?? (_netCr ? trade.sell_strike + _netCr : null);
-                    const _beLfinal = _beL ?? (_netCr ? trade.sell_strike - _netCr : null);
-                    const _cush = _spot && trade.sell_strike ? Math.round(Math.abs(_spot - trade.sell_strike)) : null;
-                    const _pct = trade.max_profit ? Math.round((trade.current_pnl / trade.max_profit) * 100) : null;
-                    // b115: Compute cushion to nearest breakeven
-                    const _nearBE = _spot ? (
-                        _beUfinal && _beLfinal ? Math.min(_beUfinal - _spot, _spot - _beLfinal) :
-                        _beUfinal ? (_beUfinal - _spot) :
-                        _beLfinal ? (_spot - _beLfinal) : null
-                    ) : null;
-                    const _richBody = [
-                        `${pnl}${_pct != null ? ` (${_pct}% of max)` : ''}`,
-                        _spot && trade.sell_strike ? `Spot ${Math.round(_spot)} | Sold ${trade.sell_strike} | ${_cush}pts to strike` : null,
-                        _beUfinal && _beLfinal ? `BE: ${_beLfinal}/${_beUfinal}${_nearBE != null ? ` | ${Math.round(_nearBE)}pts buffer` : ''}` :
-                        _beUfinal ? `BE: ${_beUfinal}${_nearBE != null ? ` | ${Math.round(_nearBE)}pts buffer` : ''}` :
-                        _beLfinal ? `BE: ${_beLfinal}${_nearBE != null ? ` | ${Math.round(_nearBE)}pts buffer` : ''}` : null
-                    ].filter(Boolean).join(' · ');
-                    if (pv.action === 'BOOK' && pv.urgency === 'NOW') {
-                        sendNotification(`💰 BOOK ${pnl} ${label}`, _richBody, 'urgent');
-                    } else if (pv.action === 'EXIT' && pv.urgency === 'NOW') {
-                        sendNotification(`🚨 EXIT ${pnl} ${label}`, `${pv.reason}`, 'urgent');
-                    } else if (pv.action === 'EXIT' && pv.urgency === 'SOON') {
-                        sendNotification(`⚠️ EXIT SOON ${label}`, `${pnl}. ${pv.reason}`, 'important');
-                    } else if (pv.action === 'BOOK') {
-                        addNotificationLog(`💰 BOOK ${label}`, _richBody, 'important');
-                    } else {
-                        addNotificationLog(`🧠 ${pv.action} ${label}`, pv.reason, 'routine');
-                    }
-                }
-            }
-
-            // Tier 1 (ACT NOW): New entry opportunity
-            const newV = result.verdict;
-            const prevV = prev?.verdict;
-            if (newV && newV.action !== 'WAIT' && newV.action !== 'STOP') {
-                const actionChanged = newV.action !== prevV?.action || newV.strategy !== prevV?.strategy;
-                const confJumped = newV.confidence >= 50 && (prevV?.confidence || 0) < 40;
-                if (actionChanged && newV.confidence >= 50 && newV.urgency === 'ENTER NOW') {
-                    sendNotification(
-                        `⚡ ${newV.action === 'SELL PREMIUM' ? 'SELL' : 'BUY'} ${friendlyType(newV.strategy || '')} · ${newV.confidence}%`,
-                        `${newV.reasoning || ''} Brain says ENTER NOW.`, 'urgent');
-                } else if (actionChanged || confJumped) {
-                    // Tier 2 (WATCH): Verdict changed or confidence jumped
-                    addNotificationLog(
-                        `🧠 ${newV.action} — ${friendlyType(newV.strategy || '')}`,
-                        `Confidence ${newV.confidence}% · ${newV.urgency || ''} · ${newV.reasoning || ''}`, 'important');
-                }
-            }
-
-            // Tier 2 (WATCH): Verdict downgraded to STOP
-            if (newV?.action === 'STOP' && prevV?.action !== 'STOP') {
-                sendNotification('🛑 STOP TRADING', `${newV.reasoning || 'Brain says stop. Overtrading risk.'}`, 'urgent');
-            }
-
-            STATE.brainInsights = result;
-            STATE.brainLastRun = Date.now();
-            STATE.brainError = null;
-
-            // Level 1: Re-rank candidates based on brain intelligence
-            applyBrainScores();
-
-            // b97: Effective Bias — regenerate candidates when brain detects bias drift
-            const eb = result.effective_bias;
-            if (eb && eb.bias && STATE.live?.bias) {
-                const currentBias = STATE.effectiveBias?.bias || STATE.live.bias.bias;
-                const changed = eb.bias !== currentBias;
-                STATE.effectiveBias = {
-                    bias: eb.bias,
-                    strength: eb.strength || '',
-                    net: eb.net,
-                    morning_weight: eb.morning_weight,
-                    drift_reasons: eb.drift_reasons || [],
-                    label: `${eb.strength ? eb.strength + ' ' : ''}${eb.bias}`
-                };
-                // Regenerate candidates ONLY when classification changes (not every poll)
-                if (changed && STATE.bnfChain && STATE.nfChain) {
-                    const effectiveBiasResult = {
-                        bias: eb.bias,
-                        strength: eb.strength || '',
-                        net: eb.net,
-                        label: STATE.effectiveBias.label,
-                        votes: STATE.morningBias?.votes || { bull: 0, bear: 0 }
-                    };
-                    const vix = STATE.live.vix;
-                    const ivPctl = STATE.live.ivPercentile;
-                    const bnfCands = generateCandidates(STATE.bnfChain, STATE.live.bnfSpot, 'BNF', STATE.bnfExpiry, vix, effectiveBiasResult, ivPctl);
-                    const nfCands = generateCandidates(STATE.nfChain, STATE.live.nfSpot, 'NF', STATE.nfExpiry, vix, effectiveBiasResult, ivPctl);
-                    STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
-                    STATE.lastScanTime = Date.now();
-                    STATE.watchlist = STATE.candidates.slice(0, 6);
-                    const seenIds = new Set(STATE.watchlist.map(c => c.id));
-                    for (const idx of ['BNF', 'NF']) {
-                        const seen = new Set();
-                        for (const c of STATE.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
-                            if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
-                            if (seen.size >= 5) break;
-                        }
-                    }
-                    console.log(`[b97] Effective bias ${currentBias} → ${eb.bias}. Candidates regenerated.`);
-                    sendNotification('🧠 Bias Adapted',
-                        `Morning: ${STATE.morningBias?.label || '?'} → Effective: ${STATE.effectiveBias.label} (${eb.drift_reasons?.join(', ') || 'intraday evidence'})`,
-                        'important');
-                    addNotificationLog('🧠 Effective Bias Override',
-                        `${currentBias} → ${eb.bias} (net ${eb.net}). MW: ${(eb.morning_weight*100).toFixed(0)}%. Reasons: ${eb.drift_reasons?.join(', ') || '-'}`, 'important');
-                }
-            }
-        }
-
-    } catch (err) {
-        console.warn('[Brain] Run error:', err.message);
-        STATE.brainError = err.message;
-    }
-}
 
 // ═══ TRADE MODE TOGGLE — Intraday vs Swing ═══
 function toggleTradeMode() {
@@ -7229,19 +3444,19 @@ function toggleTradeMode() {
     const currentTheme = document.body.classList.contains('dark') ? 'dark' : 'light';
     DB.setConfig('settings', { theme: currentTheme, tradeMode: STATE.tradeMode });
     // Regenerate candidates with new mode (contextScore + gamma block change)
-    if (STATE.bnfChain && STATE.nfChain && STATE.live?.bias) {
-        const vix = STATE.live.vix;
-        const ivPctl = STATE.live.ivPercentile;
+    if ((JSON.parse(NativeBridge.getBnfChain() || '{}')) && (JSON.parse(NativeBridge.getNfChain() || '{}')) && (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias) {
+        const vix = (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix;
+        const ivPctl = (JSON.parse(NativeBridge.getLatestPoll() || '{}')).ivPercentile;
         // b99: Use effective bias if brain has computed one
-        const biasForCands = STATE.effectiveBias
-            ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength, net: STATE.effectiveBias.net, label: STATE.effectiveBias.label, votes: STATE.morningBias?.votes || {bull:0, bear:0} }
-            : STATE.live.bias;
-        const bnfCands = generateCandidates(STATE.bnfChain, STATE.live.bnfSpot, 'BNF', STATE.bnfExpiry, vix, biasForCands, ivPctl);
-        const nfCands = STATE.nfChain ? generateCandidates(STATE.nfChain, STATE.live.nfSpot, 'NF', STATE.nfExpiry, vix, biasForCands, ivPctl) : [];
+        const biasForCands = bd.effective_bias
+            ? { bias: bd.effective_bias.bias, strength: bd.effective_bias.strength, net: bd.effective_bias.net, label: bd.effective_bias.label, votes: bd.morningBias?.votes || {bull:0, bear:0} }
+            : (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias;
+        const bnfCands = generateCandidates((JSON.parse(NativeBridge.getBnfChain() || '{}')), (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot, 'BNF', STATE.bnfExpiry, vix, biasForCands, ivPctl);
+        const nfCands = (JSON.parse(NativeBridge.getNfChain() || '{}')) ? generateCandidates((JSON.parse(NativeBridge.getNfChain() || '{}')), (JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfSpot, 'NF', STATE.nfExpiry, vix, biasForCands, ivPctl) : [];
         STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
         STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
-        STATE.watchlist = STATE.candidates.filter(c => c.forces.aligned >= 2 && !c.capitalBlocked);
-        addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. ${STATE.candidates.filter(c => !c.capitalBlocked).length} candidates.`, 'info');
+        STATE.watchlist = (bd.generated_candidates || []).filter(c => c.forces.aligned >= 2 && !c.capitalBlocked);
+        addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. ${(bd.generated_candidates || []).filter(c => !c.capitalBlocked).length} candidates.`, 'info');
     }
     renderWatchlist();
     renderFooter();
@@ -7249,129 +3464,15 @@ function toggleTradeMode() {
 
 // ═══ RESCAN STRATEGIES — fetch fresh chains + regenerate candidates ═══
 async function rescanStrategies() {
-    if (!STATE.baseline || !STATE.bnfExpiry || !STATE.nfExpiry) {
-        alert('No live data yet. Run Lock & Scan first.');
-        return;
-    }
-    // Prevent overlap with lightFetch
-    if (STATE._lightFetchRunning) { console.log('[Rescan] Skipped — lightFetch running'); return; }
-    STATE._lightFetchRunning = true;
+    // F.2 reduced: brain.py generates candidates inside analyze().
+    // PWA only triggers a refresh and re-renders.
     try {
-
-    // ═══ FRESH FETCH — actual live data from Upstox ═══
-    const statusEl = document.getElementById('status');
-    try {
-        if (statusEl) statusEl.textContent = '🔄 Fetching live data...';
-        const spots = await API.fetchSpots();
-        if (!spots.bnfSpot || !spots.vix) throw new Error('Spots fetch failed');
-
-        const bnfRaw = await API.fetchChain(API.BNF_KEY, STATE.bnfExpiry);
-        STATE.bnfChain = API.parseChain(bnfRaw, spots.bnfSpot);
-
-        const nfRaw = await API.fetchChain(API.NF_KEY, STATE.nfExpiry);
-        STATE.nfChain = API.parseChain(nfRaw, spots.nfSpot);
-
-        // Update live state with fresh data
-        STATE.live = { ...STATE.live,
-            nfSpot: spots.nfSpot, bnfSpot: spots.bnfSpot, vix: spots.vix,
-            pcr: STATE.bnfChain.pcr, nearAtmPCR: STATE.bnfChain.nearAtmPCR,
-            maxPainBnf: STATE.bnfChain.maxPain, futuresPremBnf: STATE.bnfChain.futuresPremium,
-            bnfAtmIv: STATE.bnfChain.atmIv,
-            bnfCallWall: STATE.bnfChain.callWallStrike, bnfCallWallOI: STATE.bnfChain.callWallOI,
-            bnfPutWall: STATE.bnfChain.putWallStrike, bnfPutWallOI: STATE.bnfChain.putWallOI,
-            nfAtmIv: STATE.nfChain.atmIv, nfPcr: STATE.nfChain.pcr,
-            futuresPremNf: STATE.nfChain.futuresPremium,
-            timestamp: Date.now()
-        };
-
-        // Recompute bias with fresh chain data
-        const biasResult = computeBias(STATE.morningInput, {
-            pcr: STATE.bnfChain.pcr,
-            nearAtmPCR: STATE.bnfChain.nearAtmPCR,
-            vix: spots.vix,
-            futuresPremium: STATE.bnfChain.futuresPremium,
-            closeChar: STATE.baseline?.closeChar || 0
-        });
-        STATE.live.bias = biasResult;
-
-        if (statusEl) statusEl.textContent = '';
+        renderAll();
     } catch (e) {
-        if (statusEl) statusEl.textContent = `Rescan error: ${e.message}`;
-        console.error('[RESCAN] Fetch failed:', e);
-        // Fall through — use whatever STATE has from last poll
-    }
-
-    const liveData = STATE.live;
-    const liveBias = liveData.bias || STATE.baseline?.bias;
-    if (!liveBias) {
-        alert('No bias data. Run Lock & Scan first.');
-        return;
-    }
-
-    // ═══ BIAS PRIORITY: institutional > effective (brain) > drift-overridden > morning ═══
-    const useInstitutional = STATE._captured315pm && STATE.positioningBias;
-    const effectiveBiasObj = STATE.effectiveBias
-        ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength, net: STATE.effectiveBias.net, label: STATE.effectiveBias.label, votes: STATE.morningBias?.votes || {bull:0, bear:0} }
-        : null;
-    const activeBias = useInstitutional ? STATE.positioningBias
-        : (effectiveBiasObj ? effectiveBiasObj
-        : (STATE.driftOverridden ? liveBias
-        : (STATE.morningBias || liveBias)));
-
-    if (useInstitutional) {
-        addNotificationLog('🔄 Rescan', `Using institutional bias: ${STATE.positioningBias.label}`, 'important');
-    } else if (effectiveBiasObj) {
-        addNotificationLog('🔄 Rescan', `Using brain effective bias: ${effectiveBiasObj.label}`, 'important');
-    } else if (STATE.driftOverridden) {
-        addNotificationLog('🔄 Rescan', `Using live bias (drift override): ${liveBias.label}`, 'important');
-    } else if (STATE.morningBias) {
-        addNotificationLog('🔄 Rescan', `Using morning plan: ${STATE.morningBias.label}${STATE.biasDrift ? ` (drift ${STATE.biasDrift > 0 ? '+' : ''}${STATE.biasDrift})` : ''}`, 'important');
-    }
-
-    const vixHistory = STATE.premiumHistory.map(p => p.vix).filter(Boolean);
-    const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile(liveData.vix, vixHistory) : 50; // Gemini fix
-
-    const bnfCandidates = generateCandidates(
-        STATE.bnfChain, liveData.bnfSpot, 'BNF', STATE.bnfExpiry, liveData.vix, activeBias, ivPctl
-    );
-    const nfCandidates = generateCandidates(
-        STATE.nfChain, liveData.nfSpot, 'NF', STATE.nfExpiry, liveData.vix, activeBias, ivPctl
-    );
-
-    const allCandidates = [...bnfCandidates, ...nfCandidates];
-    STATE.candidates = rankCandidates(allCandidates);
-    STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
-    STATE.watchlist = STATE.candidates.slice(0, 6);
-
-    // Add diverse picks to watchlist for live updates
-    const seenIds = new Set(STATE.watchlist.map(c => c.id));
-    for (const index of ['BNF', 'NF']) {
-        const seen = new Set();
-        for (const c of STATE.candidates.filter(c => c.index === index && !c.capitalBlocked)) {
-            if (!seen.has(c.type) && !seenIds.has(c.id)) {
-                seen.add(c.type);
-                seenIds.add(c.id);
-                STATE.watchlist.push(c);
-            }
-            if (seen.size >= 5) break;
-        }
-    }
-
-    // ═══ PHASE 8: Also regenerate positioning candidates if they exist ═══
-    if (STATE._captured315pm && STATE.positioningBias) {
-        const posBnf = generateCandidates(STATE.bnfChain, liveData.bnfSpot, 'BNF', STATE.bnfExpiry, liveData.vix, STATE.positioningBias, ivPctl);
-        const posNf = generateCandidates(STATE.nfChain, liveData.nfSpot, 'NF', STATE.nfExpiry, liveData.vix, STATE.positioningBias, ivPctl);
-        STATE.positioningCandidates = applyFreeCapitalFilter(rankCandidates([...posBnf, ...posNf])).slice(0, 10);
-    }
-
-    const biasSource = useInstitutional ? '(institutional)' : STATE.driftOverridden ? '(drift override)' : STATE.morningBias ? '(morning plan)' : '';
-    addNotificationLog('🔄 Rescan Complete', `${allCandidates.length} candidates. BNF ${liveData.bnfSpot?.toFixed(0)} NF ${liveData.nfSpot?.toFixed(0)} VIX ${liveData.vix?.toFixed(1)} ${biasSource}`, 'important');
-    console.log(`[RESCAN] ${allCandidates.length} candidates, ${STATE.candidates.length} ranked, spot BNF=${liveData.bnfSpot} NF=${liveData.nfSpot} ${biasSource}`);
-    renderAll();
-    } finally {
-        STATE._lightFetchRunning = false;
+        console.error('rescanStrategies render failed:', e);
     }
 }
+
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -7380,26 +3481,26 @@ async function rescanStrategies() {
 
 // ═══ PAPER TRADE LIMIT — max 2 per index (2 NF + 2 BNF = 4 total) ═══
 function canPaperTrade(indexKey) {
-    const paperCount = STATE.openTrades.filter(t => t.paper && t.index_key === indexKey).length;
+    const paperCount = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper && t.index_key === indexKey).length;
     return paperCount < 5; // 5 per index, 10 total — calibration needs data
 }
 function paperTradeCount() {
-    return STATE.openTrades.filter(t => t.paper).length;
+    return (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper).length;
 }
 
 async function takeTrade(candidateId, isPaper = false) {
-    const cand = STATE.watchlist.find(c => c.id === candidateId)
-        || STATE.candidates.find(c => c.id === candidateId)
+    const cand = (bd.watchlist || []).find(c => c.id === candidateId)
+        || (bd.generated_candidates || []).find(c => c.id === candidateId)
         || STATE.positioningCandidates.find(c => c.id === candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
 
     // b105: Pull fresh poll history from Kotlin before snapshotting.
     // Covers the case where user returns from background and takes a trade
-    // before the next poll fires — STATE.pollHistory could otherwise be stale.
+    // before the next poll fires — (JSON.parse(NativeBridge.getPollHistory() || '[]')) could otherwise be stale.
     if (window.NativeBridge?.getPollHistory) {
         try {
             const fresh = JSON.parse(window.NativeBridge.getPollHistory());
-            if (Array.isArray(fresh) && fresh.length > STATE.pollHistory.length) {
+            if (Array.isArray(fresh) && fresh.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
                 STATE.pollHistory = fresh;
             }
         } catch(e) {}
@@ -7426,13 +3527,13 @@ async function takeTrade(candidateId, isPaper = false) {
     }
 
     // Determine candidate rank
-    const rankList = STATE.candidates.filter(c => c.index === cand.index && !c.capitalBlocked && c.forces.aligned >= 2);
+    const rankList = (bd.generated_candidates || []).filter(c => c.index === cand.index && !c.capitalBlocked && c.forces.aligned >= 2);
     const candRank = rankList.findIndex(c => c.id === cand.id) + 1;
 
     const isBNF = cand.index === 'BNF';
-    const chain = isBNF ? STATE.bnfChain : STATE.nfChain;
-    const spot = isBNF ? STATE.live.bnfSpot : STATE.live.nfSpot;
-    const daily1Sigma = spot * (STATE.live.vix / 100) / 15.8745  /* √252 */;
+    const chain = isBNF ? (JSON.parse(NativeBridge.getBnfChain() || '{}')) : (JSON.parse(NativeBridge.getNfChain() || '{}'));
+    const spot = isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot : (JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfSpot;
+    const daily1Sigma = spot * ((JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix / 100) / 15.8745  /* √252 */;
 
     const trade = {
         strategy_type: cand.type,
@@ -7440,8 +3541,8 @@ async function takeTrade(candidateId, isPaper = false) {
         expiry: cand.expiry,
         entry_date: new Date().toISOString(),
         entry_spot: spot,
-        entry_vix: STATE.live.vix,
-        entry_atm_iv: isBNF ? STATE.live.bnfAtmIv : STATE.live.nfAtmIv,
+        entry_vix: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix,
+        entry_atm_iv: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfAtmIv : (JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfAtmIv,
         entry_premium: cand.netPremium,
         width: cand.width,
         sell_strike: cand.sellStrike,
@@ -7464,23 +3565,23 @@ async function takeTrade(candidateId, isPaper = false) {
         force_f1: cand.forces.f1,
         force_f2: cand.forces.f2,
         force_f3: cand.forces.f3,
-        entry_pcr: isBNF ? STATE.live.pcr : (STATE.live.nfPcr || STATE.nfChain?.pcr),
-        entry_futures_premium: isBNF ? STATE.live.futuresPremBnf : (STATE.live.futuresPremNf || STATE.nfChain?.futuresPremium),
-        entry_max_pain: isBNF ? (STATE.live.maxPainBnf ?? STATE.bnfChain?.maxPain) : (STATE.nfChain?.maxPain ?? STATE.baseline?.maxPainNf),
+        entry_pcr: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).pcr : ((JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfPcr || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.pcr),
+        entry_futures_premium: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).futuresPremBnf : ((JSON.parse(NativeBridge.getLatestPoll() || '{}')).futuresPremNf || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.futuresPremium),
+        entry_max_pain: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}')).maxPainBnf ?? (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? (JSON.parse(NativeBridge.getBaseline() || '{}'))?.maxPainNf),
         entry_sell_oi: (() => { return chain?.strikes[cand.sellStrike]?.[cand.sellType]?.oi ?? null; })(),
-        entry_bias: STATE.live.bias?.label,
-        entry_bias_net: STATE.live.bias?.net,
-        entry_regime: STATE.institutionalRegime?.regime || null,
-        entry_credit_confidence: STATE.institutionalRegime?.creditConfidence || null,
+        entry_bias: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias?.label,
+        entry_bias_net: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias?.net,
+        entry_regime: bd.institutionalRegime?.regime || null,
+        entry_credit_confidence: bd.institutionalRegime?.creditConfidence || null,
         entry_wall_score: cand.wallScore ?? null,
         entry_gamma_risk: cand.gammaRisk ?? null,
-        entry_dii_cash: parseFloat(STATE.morningInput?.diiCash) || null,
-        entry_absorption_ratio: STATE.institutionalRegime?.absorptionRatio ?? null,
+        entry_dii_cash: parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.diiCash) || null,
+        entry_absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
         // b115: Real breakeven lines — used by brain for position monitoring
         be_upper: cand.beUpper ?? null,
         be_lower: cand.beLower ?? null,
-        entry_gap_sigma: STATE.gapInfo?.sigma ?? null,
-        entry_gap_type: STATE.gapInfo?.type || null,
+        entry_gap_sigma: bd.gapInfo?.sigma ?? null,
+        entry_gap_type: bd.gapInfo?.type || null,
         prob_profit: cand.probProfit,
         // b105: ML fields on trades_v2 (lightweight — 5 columns for quick querying)
         p_ml:      cand.p_ml ?? null,
@@ -7517,42 +3618,42 @@ async function takeTrade(candidateId, isPaper = false) {
             buy_oi: chain?.strikes[cand.buyStrike]?.[cand.buyType]?.oi ?? null,
             sigma_from_atm: daily1Sigma > 0 ? +((Math.abs(cand.sellStrike - spot)) / daily1Sigma).toFixed(2) : null,
             // Market environment
-            near_atm_pcr: isBNF ? STATE.live.nearAtmPCR : (STATE.live.nfNearAtmPCR || STATE.nfChain?.nearAtmPCR),
-            iv_percentile: STATE.live.ivPercentile ?? null,
-            spot_sigma: STATE.live.spotSigma ?? null,
-            vix_sigma: STATE.live.vixSigma ?? null,
-            vix_direction: STATE.yesterdayHistory?.[0]?.vix ? +(STATE.live.vix - STATE.yesterdayHistory[0].vix).toFixed(2) : null,
+            near_atm_pcr: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).nearAtmPCR : ((JSON.parse(NativeBridge.getLatestPoll() || '{}')).nfNearAtmPCR || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR),
+            iv_percentile: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).ivPercentile ?? null,
+            spot_sigma: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).spotSigma ?? null,
+            vix_sigma: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vixSigma ?? null,
+            vix_direction: (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.[0]?.vix ? +((JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix - (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0].vix).toFixed(2) : null,
             // OI structure
-            call_wall: isBNF ? STATE.live.bnfCallWall : (STATE.nfChain?.callWallStrike ?? null),
-            call_wall_oi: isBNF ? STATE.live.bnfCallWallOI : (STATE.nfChain?.callWallOI ?? null),
-            put_wall: isBNF ? STATE.live.bnfPutWall : (STATE.nfChain?.putWallStrike ?? null),
-            put_wall_oi: isBNF ? STATE.live.bnfPutWallOI : (STATE.nfChain?.putWallOI ?? null),
+            call_wall: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfCallWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
+            call_wall_oi: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfCallWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallOI ?? null),
+            put_wall: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfPutWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
+            put_wall_oi: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfPutWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallOI ?? null),
             max_pain_dist: (() => {
-                const mp = isBNF ? (STATE.live.maxPainBnf || STATE.bnfChain?.maxPain) : (STATE.nfChain?.maxPain || null);
+                const mp = isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}')).maxPainBnf || (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain || null);
                 return mp ? Math.round(spot - mp) : null;
             })(),
-            total_call_oi: isBNF ? STATE.live.bnfTotalCallOI : (STATE.nfChain?.totalCallOI ?? null),
-            total_put_oi: isBNF ? STATE.live.bnfTotalPutOI : (STATE.nfChain?.totalPutOI ?? null),
+            total_call_oi: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfTotalCallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.totalCallOI ?? null),
+            total_put_oi: isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfTotalPutOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.totalPutOI ?? null),
             // Institutional
-            regime: STATE.institutionalRegime?.regime || null,
-            regime_detail: STATE.institutionalRegime?.regimeDetail || null,
-            fii_deriv_net: STATE.institutionalRegime ? (parseFloat(STATE.morningInput?.fiiIdxFut || 0) + parseFloat(STATE.morningInput?.fiiStkFut || 0)) : null,
-            absorption_ratio: STATE.institutionalRegime?.absorptionRatio ?? null,
+            regime: bd.institutionalRegime?.regime || null,
+            regime_detail: bd.institutionalRegime?.regimeDetail || null,
+            fii_deriv_net: bd.institutionalRegime ? (parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiIdxFut || 0) + parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiStkFut || 0)) : null,
+            absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
             contrarian_pcr: STATE.contrarianPCR?.signal || null,
             // Bias detail — all 7 signal votes
-            bias_signals: STATE.live.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
-            morning_bias: STATE.morningBias?.label || null,
+            bias_signals: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
+            morning_bias: bd.morningBias?.label || null,
             bias_drift: STATE.biasDrift ?? 0,
-            upstox_agrees: STATE.live.bias?.upstoxAgrees ?? null,
+            upstox_agrees: (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias?.upstoxAgrees ?? null,
             // Breadth
-            bnf_breadth_pct: STATE.bnfBreadth?.pct ?? null,
-            nf50_advancing: STATE.nf50Breadth?.advancing ?? null,
+            bnf_breadth_pct: (JSON.parse(NativeBridge.getBnfBreadth() || '{}'))?.pct ?? null,
+            nf50_advancing: (JSON.parse(NativeBridge.getNf50Breadth() || '{}'))?.advancing ?? null,
             // Global
-            dow_close: STATE.globalDirection?.dowClose ?? null,
-            crude_settle: STATE.globalDirection?.crudeSettle ?? null,
-            gap_type: STATE.gapInfo?.type || null,
-            gap_pts: STATE.gapInfo?.points ?? null,
-            gap_sigma: STATE.gapInfo?.sigma ?? null,
+            dow_close: (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))?.dowClose ?? null,
+            crude_settle: (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))?.crudeSettle ?? null,
+            gap_type: bd.gapInfo?.type || null,
+            gap_pts: bd.gapInfo?.points ?? null,
+            gap_sigma: bd.gapInfo?.sigma ?? null,
             // Timing
             minutes_since_open: API.minutesSinceOpen() ?? null,
             trading_dte: API.tradingDTE(cand.expiry) ?? null,
@@ -7568,7 +3669,7 @@ async function takeTrade(candidateId, isPaper = false) {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        STATE.openTrades.push(trade);
+        (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
         playSound('entry');
         syncToNative(); // b99: sync new trade to Kotlin
         switchTab('positions');
@@ -7576,7 +3677,7 @@ async function takeTrade(candidateId, isPaper = false) {
 
         // b105: Write full ML decision record for calibration tracking
         if (cand.p_ml != null) {
-            const pollSeq = STATE.pollHistory.slice(-6).map(p => ({
+            const pollSeq = (JSON.parse(NativeBridge.getPollHistory() || '[]')).slice(-6).map(p => ({
                 vix:           p.vix ?? null,
                 pcr:           p.pcr ?? p.nearAtmPcr ?? null,
                 bias_net:      p.biasNet ?? p.bias_net ?? null,
@@ -7584,7 +3685,7 @@ async function takeTrade(candidateId, isPaper = false) {
                 spot_move_pct: p.spotMovePct ?? null,
                 futures_prem:  p.futuresPremBnf ?? p.futuresPrem ?? null,
             }));
-            const last = STATE.pollHistory[STATE.pollHistory.length - 1] || {};
+            const last = (JSON.parse(NativeBridge.getPollHistory() || '[]'))[(JSON.parse(NativeBridge.getPollHistory() || '[]')).length - 1] || {};
             const mlDoc = {
                 trade_id:   saved.id,
                 date:       API.todayIST(),
@@ -7593,27 +3694,27 @@ async function takeTrade(candidateId, isPaper = false) {
                 index_name: cand.index,
                 mode:       trade.trade_mode,
                 paper:      isPaper,
-                vix:        STATE.live?.vix ?? null,
+                vix:        (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix ?? null,
                 sigma_away: cand.sigmaOTM ?? null,
-                gap_sigma:  STATE.gapInfo?.sigma ?? null,
+                gap_sigma:  bd.gapInfo?.sigma ?? null,
                 entry_credit: cand.netPremium ?? null,
                 width:      cand.width ?? null,
                 dte:        cand.tDTE ?? null,
                 max_profit: cand.maxProfit ?? null,
                 max_loss:   cand.maxLoss ?? null,
-                vix_regime: (STATE.live?.vix >= 20 ? 'HIGH (20-25)' : STATE.live?.vix < 15 ? 'LOW (<15)' : 'NORMAL (15-20)'),
+                vix_regime: ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix >= 20 ? 'HIGH (20-25)' : (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix < 15 ? 'LOW (<15)' : 'NORMAL (15-20)'),
                 day_direction: last.dayDirection ?? null,
                 day_range:  last.dayRange ?? null,
                 market_snapshot: {
-                    vix:          STATE.live?.vix,
-                    pcr:          STATE.live?.pcr,
-                    near_atm_pcr: STATE.live?.nearAtmPCR,
-                    breadth:      STATE.live?.breadth,
-                    futures_prem: STATE.live?.futuresPremBnf,
-                    spot:         isBNF ? STATE.live?.bnfSpot : STATE.live?.nfSpot,
-                    iv_percentile:STATE.live?.ivPercentile,
-                    bias_net:     STATE.live?.bias?.net,
-                    gap_sigma:    STATE.gapInfo?.sigma,
+                    vix:          (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix,
+                    pcr:          (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.pcr,
+                    near_atm_pcr: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nearAtmPCR,
+                    breadth:      (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.breadth,
+                    futures_prem: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.futuresPremBnf,
+                    spot:         isBNF ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfSpot : (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfSpot,
+                    iv_percentile:(JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.ivPercentile,
+                    bias_net:     (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.net,
+                    gap_sigma:    bd.gapInfo?.sigma,
                     weekday:      new Date().getDay(),
                 },
                 candidate_snap: {
@@ -7684,7 +3785,7 @@ async function takeTrade(candidateId, isPaper = false) {
         const retry = await DB.insertTrade(essentialTrade);
         if (retry) {
             trade.id = retry.id;
-            STATE.openTrades.push(trade);
+            (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
             playSound('entry');
             switchTab('positions');
             renderAll();
@@ -7741,9 +3842,9 @@ async function logManualTrade() {
         index_key: indexKey,
         expiry: indexKey === 'BNF' ? STATE.bnfExpiry : STATE.nfExpiry,
         entry_date: new Date().toISOString(),
-        entry_spot: indexKey === 'BNF' ? (STATE.live?.bnfSpot || STATE.baseline?.bnfSpot) : (STATE.live?.nfSpot || STATE.baseline?.nfSpot),
-        entry_vix: STATE.live?.vix || STATE.baseline?.vix,
-        entry_atm_iv: indexKey === 'BNF' ? (STATE.live?.bnfAtmIv || STATE.baseline?.bnfAtmIv) : (STATE.live?.nfAtmIv || STATE.baseline?.nfAtmIv),
+        entry_spot: indexKey === 'BNF' ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfSpot || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bnfSpot) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfSpot || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.nfSpot),
+        entry_vix: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.vix,
+        entry_atm_iv: indexKey === 'BNF' ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfAtmIv || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bnfAtmIv) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfAtmIv || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.nfAtmIv),
         entry_premium: netPremium,
         width,
         sell_strike: sellStrike,
@@ -7755,24 +3856,24 @@ async function logManualTrade() {
         max_profit: maxProfit,
         max_loss: maxLoss,
         is_credit: isCredit,
-        force_alignment: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).aligned : 0,
-        force_f1: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f1 : 0,
-        force_f2: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f2 : 0,
-        force_f3: STATE.live?.bias ? getForceAlignment(type, STATE.live.bias, STATE.live.vix, STATE.live.ivPercentile).f3 : 0,
-        entry_pcr: indexKey === 'BNF' ? (STATE.live?.pcr || STATE.baseline?.pcr) : (STATE.nfChain?.pcr || null),
-        entry_futures_premium: indexKey === 'BNF' ? (STATE.live?.futuresPremBnf || STATE.baseline?.futuresPremBnf) : (STATE.nfChain?.futuresPremium || null),
-        entry_max_pain: indexKey === 'BNF' ? (STATE.live?.maxPainBnf ?? STATE.bnfChain?.maxPain) : (STATE.nfChain?.maxPain ?? null),
-        entry_sell_oi: (() => { const ch = indexKey === 'BNF' ? STATE.bnfChain : STATE.nfChain; return ch?.strikes[sellStrike]?.[sellType]?.oi ?? null; })(),
-        entry_bias: STATE.live?.bias?.label || STATE.baseline?.bias?.label,
-        entry_bias_net: STATE.live?.bias?.net || STATE.baseline?.bias?.net,
-        entry_regime: STATE.institutionalRegime?.regime || null,
-        entry_credit_confidence: STATE.institutionalRegime?.creditConfidence || null,
+        force_alignment: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias ? getForceAlignment(type, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).ivPercentile).aligned : 0,
+        force_f1: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias ? getForceAlignment(type, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).ivPercentile).f1 : 0,
+        force_f2: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias ? getForceAlignment(type, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).ivPercentile).f2 : 0,
+        force_f3: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias ? getForceAlignment(type, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).bias, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix, (JSON.parse(NativeBridge.getLatestPoll() || '{}')).ivPercentile).f3 : 0,
+        entry_pcr: indexKey === 'BNF' ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.pcr || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.pcr) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.pcr || null),
+        entry_futures_premium: indexKey === 'BNF' ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.futuresPremBnf || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.futuresPremBnf) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.futuresPremium || null),
+        entry_max_pain: indexKey === 'BNF' ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.maxPainBnf ?? (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? null),
+        entry_sell_oi: (() => { const ch = indexKey === 'BNF' ? (JSON.parse(NativeBridge.getBnfChain() || '{}')) : (JSON.parse(NativeBridge.getNfChain() || '{}')); return ch?.strikes[sellStrike]?.[sellType]?.oi ?? null; })(),
+        entry_bias: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.label || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.label,
+        entry_bias_net: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.net || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.net,
+        entry_regime: bd.institutionalRegime?.regime || null,
+        entry_credit_confidence: bd.institutionalRegime?.creditConfidence || null,
         entry_wall_score: null, // manual trade — no candidate wall score
         entry_gamma_risk: null, // manual trade — no candidate gamma
-        entry_dii_cash: parseFloat(STATE.morningInput?.diiCash) || null,
-        entry_absorption_ratio: STATE.institutionalRegime?.absorptionRatio ?? null,
-        entry_gap_sigma: STATE.gapInfo?.sigma ?? null,
-        entry_gap_type: STATE.gapInfo?.type || null,
+        entry_dii_cash: parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.diiCash) || null,
+        entry_absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
+        entry_gap_sigma: bd.gapInfo?.sigma ?? null,
+        entry_gap_type: bd.gapInfo?.type || null,
         status: 'OPEN',
         current_pnl: 0,
         peak_pnl: 0,
@@ -7788,20 +3889,20 @@ async function logManualTrade() {
             context_score: null,
             ev: null,
             manual_entry: true,
-            near_atm_pcr: indexKey === 'BNF' ? STATE.live?.nearAtmPCR : (STATE.nfChain?.nearAtmPCR ?? null),
-            iv_percentile: STATE.live?.ivPercentile ?? null,
-            spot_sigma: STATE.live?.spotSigma ?? null,
-            vix_direction: STATE.yesterdayHistory?.[0]?.vix ? +(STATE.live?.vix - STATE.yesterdayHistory[0].vix).toFixed(2) : null,
-            call_wall: indexKey === 'BNF' ? STATE.live?.bnfCallWall : (STATE.nfChain?.callWallStrike ?? null),
-            put_wall: indexKey === 'BNF' ? STATE.live?.bnfPutWall : (STATE.nfChain?.putWallStrike ?? null),
-            bias_signals: STATE.live?.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
-            morning_bias: STATE.morningBias?.label || null,
+            near_atm_pcr: indexKey === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nearAtmPCR : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR ?? null),
+            iv_percentile: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.ivPercentile ?? null,
+            spot_sigma: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.spotSigma ?? null,
+            vix_direction: (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.[0]?.vix ? +((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix - (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0].vix).toFixed(2) : null,
+            call_wall: indexKey === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfCallWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
+            put_wall: indexKey === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfPutWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
+            bias_signals: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
+            morning_bias: bd.morningBias?.label || null,
             bias_drift: STATE.biasDrift ?? 0,
-            regime: STATE.institutionalRegime?.regime || null,
-            bnf_breadth_pct: STATE.bnfBreadth?.pct ?? null,
-            dow_close: STATE.globalDirection?.dowClose ?? null,
-            crude_settle: STATE.globalDirection?.crudeSettle ?? null,
-            gap_sigma: STATE.gapInfo?.sigma ?? null,
+            regime: bd.institutionalRegime?.regime || null,
+            bnf_breadth_pct: (JSON.parse(NativeBridge.getBnfBreadth() || '{}'))?.pct ?? null,
+            dow_close: (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))?.dowClose ?? null,
+            crude_settle: (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))?.crudeSettle ?? null,
+            gap_sigma: bd.gapInfo?.sigma ?? null,
             minutes_since_open: API.minutesSinceOpen() ?? null,
             // Cost & calibration
             event_driven: document.getElementById('mt-event')?.checked || false
@@ -7811,11 +3912,11 @@ async function logManualTrade() {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        STATE.openTrades.push(trade);
+        (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
         playSound('entry');
         switchTab('positions');
         renderAll();
-        if (!STATE.isWatching) startWatchLoop();
+        if (!(JSON.parse(NativeBridge.getServiceStatus() || '{}').running)) startWatchLoop();
     } else {
         // Retry with essential fields only
         const essentialTrade = {
@@ -7848,11 +3949,11 @@ async function logManualTrade() {
         const retry = await DB.insertTrade(essentialTrade);
         if (retry) {
             trade.id = retry.id;
-            STATE.openTrades.push(trade);
+            (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
             playSound('entry');
             switchTab('positions');
             renderAll();
-            if (!STATE.isWatching) startWatchLoop();
+            if (!(JSON.parse(NativeBridge.getServiceStatus() || '{}').running)) startWatchLoop();
             // Try to add full snapshot (non-blocking)
             DB.updateTrade(retry.id, {
                 force_f1: trade.force_f1, force_f2: trade.force_f2, force_f3: trade.force_f3,
@@ -7866,7 +3967,7 @@ async function logManualTrade() {
 }
 
 async function closeTrade(tradeId, exitReason) {
-    const trade = STATE.openTrades.find(t => String(t.id) === String(tradeId));
+    const trade = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).find(t => String(t.id) === String(tradeId));
     if (!trade) { console.warn('closeTrade: trade not found:', tradeId); alert('Trade not found. Try refreshing.'); return; }
 
     // Confirmation
@@ -7886,12 +3987,12 @@ async function closeTrade(tradeId, exitReason) {
         }
 
         const isBNF = trade.index_key === 'BNF';
-        const chain = isBNF ? STATE.bnfChain : STATE.nfChain;
+        const chain = isBNF ? (JSON.parse(NativeBridge.getBnfChain() || '{}')) : (JSON.parse(NativeBridge.getNfChain() || '{}'));
         const minsOpen = typeof API?.minutesSinceOpen === 'function' ? API.minutesSinceOpen() : null;
 
         // b108: Remove from STATE and re-render IMMEDIATELY — don't wait for Supabase
         // Trade disappears from Position tab right away regardless of network
-        STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
+        STATE.openTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => String(t.id) !== String(tradeId));
         syncToNative(); // push removal to Kotlin now
         renderAll();    // re-render immediately — card gone from UI
 
@@ -7902,36 +4003,36 @@ async function closeTrade(tradeId, exitReason) {
             actual_pnl: trade.current_pnl ?? 0,
             exit_premium: trade.current_premium ?? null,
             exit_reason: exitReason || 'Manual',
-            exit_vix: STATE.live?.vix ?? trade.current_vix ?? null,
-            exit_atm_iv: isBNF ? (STATE.live?.bnfAtmIv ?? null) : (STATE.live?.nfAtmIv ?? STATE.nfChain?.atmIv ?? null),
+            exit_vix: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix ?? trade.current_vix ?? null,
+            exit_atm_iv: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfAtmIv ?? null) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfAtmIv ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atmIv ?? null),
             exit_force_alignment: trade.forces?.aligned ?? trade.force_alignment ?? null,
             exit_hold_minutes: trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
             exit_spot: trade.current_spot ?? null,
-            exit_pcr: isBNF ? (STATE.live?.nearAtmPCR ?? STATE.live?.pcr ?? null) : (STATE.live?.nfNearAtmPCR ?? STATE.nfChain?.nearAtmPCR ?? null),
-            exit_bias: STATE.live?.bias?.label ?? null,
+            exit_pcr: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nearAtmPCR ?? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.pcr ?? null) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfNearAtmPCR ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR ?? null),
+            exit_bias: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.label ?? null,
             trough_pnl: trade.trough_pnl ?? null,
             poll_count: trade.poll_count ?? null,
 
             // ═══ EXIT SNAPSHOT — full market state at close (JSONB) ═══
             exit_snapshot: {
                 spot: trade.current_spot ?? null,
-                vix: STATE.live?.vix ?? trade.current_vix ?? null,
-                atm_iv: isBNF ? (STATE.live?.bnfAtmIv ?? null) : (STATE.live?.nfAtmIv ?? null),
-                near_atm_pcr: isBNF ? (STATE.live?.nearAtmPCR ?? null) : (STATE.live?.nfNearAtmPCR ?? STATE.nfChain?.nearAtmPCR ?? null),
-                futures_premium: isBNF ? (STATE.live?.futuresPremBnf ?? null) : (STATE.live?.futuresPremNf ?? null),
-                iv_percentile: STATE.live?.ivPercentile ?? null,
-                call_wall: isBNF ? (STATE.live?.bnfCallWall ?? null) : (STATE.nfChain?.callWallStrike ?? null),
-                put_wall: isBNF ? (STATE.live?.bnfPutWall ?? null) : (STATE.nfChain?.putWallStrike ?? null),
-                max_pain: isBNF ? (STATE.live?.maxPainBnf ?? null) : (STATE.nfChain?.maxPain ?? null),
+                vix: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix ?? trade.current_vix ?? null,
+                atm_iv: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfAtmIv ?? null) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfAtmIv ?? null),
+                near_atm_pcr: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nearAtmPCR ?? null) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfNearAtmPCR ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR ?? null),
+                futures_premium: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.futuresPremBnf ?? null) : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.futuresPremNf ?? null),
+                iv_percentile: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.ivPercentile ?? null,
+                call_wall: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfCallWall ?? null) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
+                put_wall: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfPutWall ?? null) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
+                max_pain: isBNF ? ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.maxPainBnf ?? null) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? null),
                 sell_oi: chain?.strikes?.[trade.sell_strike]?.[trade.sell_type]?.oi ?? null,
-                bias: STATE.live?.bias?.label ?? null,
-                bias_net: STATE.live?.bias?.net ?? null,
-                bias_signals: STATE.live?.bias?.signals?.map(s => ({ n: s.name, d: s.dir })) || [],
+                bias: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.label ?? null,
+                bias_net: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.net ?? null,
+                bias_signals: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.signals?.map(s => ({ n: s.name, d: s.dir })) || [],
                 force_f1: trade.forces?.f1 ?? trade.force_f1 ?? null,
                 force_f2: trade.forces?.f2 ?? trade.force_f2 ?? null,
                 force_f3: trade.forces?.f3 ?? trade.force_f3 ?? null,
-                regime: STATE.institutionalRegime?.regime ?? null,
-                spot_sigma: STATE.live?.spotSigma ?? null,
+                regime: bd.institutionalRegime?.regime ?? null,
+                spot_sigma: (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.spotSigma ?? null,
                 minutes_since_open: minsOpen,
                 premium: trade.current_premium ?? null,
                 drift_from_morning: STATE.biasDrift ?? 0
@@ -7966,8 +4067,8 @@ async function closeTrade(tradeId, exitReason) {
                 trough_pnl:   trade.trough_pnl ?? null,
                 hold_minutes: trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
                 exit_reason:  exitReason || 'Manual',
-                exit_vix:     STATE.live?.vix ?? null,
-                exit_pcr:     STATE.live?.pcr ?? null,
+                exit_vix:     (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix ?? null,
+                exit_pcr:     (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.pcr ?? null,
                 ci_min:       trade._journey?.min_ci ?? null,
                 ci_max:       trade._journey?.max_ci ?? null,
                 closed_at:    new Date().toISOString(),
@@ -7977,7 +4078,7 @@ async function closeTrade(tradeId, exitReason) {
     } catch (err) {
         console.error('closeTrade error:', err);
         // Even if something fails, ensure trade is removed from UI
-        STATE.openTrades = STATE.openTrades.filter(t => String(t.id) !== String(tradeId));
+        STATE.openTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => String(t.id) !== String(tradeId));
         syncToNative();
         renderAll();
         alert(`Exit logged locally. Supabase sync may have failed: ${err.message}`);
@@ -8035,7 +4136,7 @@ function renderBrainCard(ins) {
 }
 
 function renderBrainInsights() {
-    const bi = STATE.brainInsights;
+    const bi = bd;
     const verdict = bi?.verdict;
     const market = bi?.market || [];
     const timing = bi?.timing || [];
@@ -8079,7 +4180,7 @@ function renderBrainInsights() {
 }
 
 function renderBrainForTrade(tradeId) {
-    const data = STATE.brainInsights?.positions?.[tradeId];
+    const data = bd?.positions?.[tradeId];
     if (!data) return '';
     const v = data.verdict;
     const insights = data.insights || [];
@@ -8091,12 +4192,13 @@ function renderBrainForTrade(tradeId) {
 }
 
 function renderBrainForCandidate(candId) {
-    const insights = STATE.brainInsights?.candidates?.[candId];
+    const insights = bd?.candidates?.[candId];
     if (!insights || !insights.length) return '';
     return `<div class="brain-section" style="margin:4px 0 2px">${insights.map(renderBrainCard).join('')}</div>`;
 }
 
 function renderAll() {
+    refreshBrainData();  // F.2: keep bd fresh for all render functions
     renderTicker();
     renderMarket();
     renderOI();
@@ -8110,7 +4212,7 @@ function renderTicker() {
     const ticker = document.getElementById('live-ticker');
     if (!ticker) return;
 
-    const l = STATE.live || STATE.baseline;
+    const l = (JSON.parse(NativeBridge.getLatestPoll() || '{}')) || (JSON.parse(NativeBridge.getBaseline() || '{}'));
     if (!l) { ticker.style.display = 'none'; return; }
 
     ticker.style.display = 'flex';
@@ -8132,7 +4234,7 @@ function renderTicker() {
     const pnlEl = document.getElementById('tk-pnl');
 
     let marginUsed = 0;
-    for (const t of STATE.openTrades) {
+    for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
         if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin
     }
     const available = C.CAPITAL - marginUsed;
@@ -8140,9 +4242,9 @@ function renderTicker() {
     if (capEl) capEl.textContent = `₹${(C.CAPITAL / 1000).toFixed(1)}K`;
     if (marginEl) marginEl.textContent = marginUsed > 0 ? `Blocked: ₹${(marginUsed / 1000).toFixed(1)}K · Free: ₹${(available / 1000).toFixed(1)}K` : `Free: ₹${(C.CAPITAL / 1000).toFixed(1)}K`;
 
-    if (pnlEl && STATE.openTrades.length > 0) {
-        const realTrades = STATE.openTrades.filter(t => !t.paper);
-        const paperTrades = STATE.openTrades.filter(t => t.paper);
+    if (pnlEl && (JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
+        const realTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => !t.paper);
+        const paperTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper);
         let pnlText = '';
         if (realTrades.length > 0) {
             const realPnl = realTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
@@ -8243,21 +4345,21 @@ function renderDebug() {
 
     // Also add app-level state debug
     const stateInfo = [];
-    if (STATE.baseline) {
+    if ((JSON.parse(NativeBridge.getBaseline() || '{}'))) {
         stateInfo.push({
             time: '', label: 'APP_STATE',
             baseline: 'SET',
-            candidates: STATE.candidates.length,
-            watchlist: STATE.watchlist.length,
-            openTrades: STATE.openTrades.length,
-            premiumHistoryDays: STATE.premiumHistory.length,
-            ivPercentile: STATE.baseline.ivPercentile,
-            isWatching: STATE.isWatching,
+            candidates: (bd.generated_candidates || []).length,
+            watchlist: (bd.watchlist || []).length,
+            openTrades: (JSON.parse(NativeBridge.getOpenTrades() || '[]')).length,
+            premiumHistoryDays: (JSON.parse(NativeBridge.getPremiumHistory(7) || '[]')).length,
+            ivPercentile: (JSON.parse(NativeBridge.getBaseline() || '{}')).ivPercentile,
+            isWatching: (JSON.parse(NativeBridge.getServiceStatus() || '{}').running),
             pollCount: STATE.pollCount
         });
     }
     // Brain debug
-    const bdi = STATE.brainInsights || {};
+    const bdi = bd || {};
     const bdiTotal = (bdi.market || []).length + (bdi.timing || []).length + (bdi.risk || []).length
         + Object.values(bdi.positions || {}).reduce((s, p) => s + (p?.insights?.length || 0), 0)
         + Object.values(bdi.candidates || {}).reduce((s, a) => s + a.length, 0);
@@ -8300,7 +4402,7 @@ function renderDebug() {
 
 // ═══ INTRADAY CHART — SVG spot + VIX from poll history (b68) ═══
 function renderIntradayChart(index = 'NF') {
-    const polls = STATE.pollHistory;
+    const polls = (JSON.parse(NativeBridge.getPollHistory() || '[]'));
     if (!polls || polls.length < 2) return '<div style="text-align:center;font-size:11px;color:var(--text-muted);padding:8px">Chart appears after 2+ polls</div>';
 
     const spotKey = index === 'NF' ? 'nf' : 'bnf';
@@ -8350,7 +4452,7 @@ function renderIntradayChart(index = 'NF') {
 
     // Sell strike reference lines (from open trades)
     let strikeLines = '';
-    for (const t of STATE.openTrades) {
+    for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
         if (t.index_key !== index) continue;
         const strike = t.sell_strike;
         if (strike >= yMin && strike <= yMax) {
@@ -8366,7 +4468,7 @@ function renderIntradayChart(index = 'NF') {
         const last3 = spots.slice(-3);
         const range3 = Math.max(...last3) - Math.min(...last3);
         const spot = spots[spots.length - 1];
-        const dailySigma = spot * ((STATE.live?.vix || 20) / 100) / 15.8745  /* √252 */;
+        const dailySigma = spot * (((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix || 20) / 100) / 15.8745  /* √252 */;
         const rangeSigma = range3 / dailySigma;
         if (rangeSigma < 0.3) {
             rangeIndicator = `<rect x="${xScale(spots.length - 3).toFixed(1)}" y="${PAD_T}" width="${(xScale(spots.length - 1) - xScale(spots.length - 3)).toFixed(1)}" height="${plotH}" fill="var(--green)" opacity="0.06" rx="3"/>`;
@@ -8428,10 +4530,10 @@ function renderIntradayChart(index = 'NF') {
 
 function renderMarket() {
     const el = document.getElementById('market-content');
-    if (!el || !STATE.live) return;
+    if (!el || !(JSON.parse(NativeBridge.getLatestPoll() || '{}'))) return;
 
-    const l = STATE.live;
-    const b = STATE.baseline;
+    const l = (JSON.parse(NativeBridge.getLatestPoll() || '{}'));
+    const b = (JSON.parse(NativeBridge.getBaseline() || '{}'));
     const bias = l.bias;
 
     if (!b) {
@@ -8460,17 +4562,17 @@ function renderMarket() {
     }
 
     // Yesterday's data for comparisons
-    const yday = STATE.yesterdayHistory?.length > 0 ? STATE.yesterdayHistory[0] : null;
+    const yday = (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.length > 0 ? (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0] : null;
     let ydayComparisons = '';
     if (yday) {
         const items = [];
-        if (yday.fii_cash != null && STATE.morningInput?.fiiCash) {
-            const diff = parseFloat(STATE.morningInput.fiiCash) - yday.fii_cash;
-            items.push(`FII: ₹${yday.fii_cash}→₹${STATE.morningInput.fiiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        if (yday.fii_cash != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiCash) {
+            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiCash) - yday.fii_cash;
+            items.push(`FII: ₹${yday.fii_cash}→₹${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
-        if (yday.fii_short_pct != null && STATE.morningInput?.fiiShortPct) {
-            const diff = parseFloat(STATE.morningInput.fiiShortPct) - yday.fii_short_pct;
-            items.push(`Short%: ${yday.fii_short_pct}→${STATE.morningInput.fiiShortPct} (${diff > 0 ? '+' : ''}${diff.toFixed(1)})`);
+        if (yday.fii_short_pct != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiShortPct) {
+            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiShortPct) - yday.fii_short_pct;
+            items.push(`Short%: ${yday.fii_short_pct}→${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiShortPct} (${diff > 0 ? '+' : ''}${diff.toFixed(1)})`);
         }
         if (yday.pcr != null && l.pcr) {
             const diff = l.pcr - yday.pcr;
@@ -8480,13 +4582,13 @@ function renderMarket() {
             const diff = l.bnfSpot - yday.bnf_spot;
             items.push(`BNF: ${yday.bnf_spot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
-        if (yday.dii_cash != null && STATE.morningInput?.diiCash) {
-            const diff = parseFloat(STATE.morningInput.diiCash) - yday.dii_cash;
-            items.push(`DII: ₹${yday.dii_cash}→₹${STATE.morningInput.diiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        if (yday.dii_cash != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.diiCash) {
+            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).diiCash) - yday.dii_cash;
+            items.push(`DII: ₹${yday.dii_cash}→₹${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).diiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
-        if (yday.fii_stk_fut != null && STATE.morningInput?.fiiStkFut) {
-            const diff = parseFloat(STATE.morningInput.fiiStkFut) - yday.fii_stk_fut;
-            items.push(`FII Stk Fut: ₹${yday.fii_stk_fut}→₹${STATE.morningInput.fiiStkFut} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        if (yday.fii_stk_fut != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiStkFut) {
+            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiStkFut) - yday.fii_stk_fut;
+            items.push(`FII Stk Fut: ₹${yday.fii_stk_fut}→₹${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiStkFut} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
         ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
     }
@@ -8506,44 +4608,44 @@ function renderMarket() {
         <div class="env-verdict ${verdictClass}">${verdict}</div>
 
         <!-- INSTITUTIONAL REGIME — collapsible -->
-        ${STATE.institutionalRegime ? `
+        ${bd.institutionalRegime ? `
         <details>
-            <summary style="cursor:pointer;font-size:13px;font-weight:600;color:${STATE.institutionalRegime.regimeColor};padding:6px 0;">📊 ${STATE.institutionalRegime.regime} · Confidence: ${STATE.institutionalRegime.creditConfidence}${STATE.institutionalRegime.absorptionRatio !== null ? ` · Absorption: ${STATE.institutionalRegime.absorptionRatio}×` : ''} ▸</summary>
-            <div style="border-left: 3px solid ${STATE.institutionalRegime.regimeColor}; padding: 8px 12px; margin: 4px 0; background: var(--bg-input); border-radius: var(--radius-sm);">
-                <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">${STATE.institutionalRegime.regimeDetail}</div>
+            <summary style="cursor:pointer;font-size:13px;font-weight:600;color:${bd.institutionalRegime.regimeColor};padding:6px 0;">📊 ${bd.institutionalRegime.regime} · Confidence: ${bd.institutionalRegime.creditConfidence}${bd.institutionalRegime.absorptionRatio !== null ? ` · Absorption: ${bd.institutionalRegime.absorptionRatio}×` : ''} ▸</summary>
+            <div style="border-left: 3px solid ${bd.institutionalRegime.regimeColor}; padding: 8px 12px; margin: 4px 0; background: var(--bg-input); border-radius: var(--radius-sm);">
+                <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">${bd.institutionalRegime.regimeDetail}</div>
                 <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-                    FII: ₹${STATE.institutionalRegime.fiiCash}Cr · DII: ₹${STATE.institutionalRegime.diiCash > 0 ? '+' : ''}${STATE.institutionalRegime.diiCash}Cr
-                    ${STATE.institutionalRegime.absorptionRatio !== null ? ` · Absorption: ${STATE.institutionalRegime.absorptionRatio}×` : ''}
-                    · Idx Fut: ₹${STATE.institutionalRegime.fiiIdxFut}Cr · Stk Fut: ₹${STATE.institutionalRegime.fiiStkFut > 0 ? '+' : ''}${STATE.institutionalRegime.fiiStkFut}Cr
+                    FII: ₹${bd.institutionalRegime.fiiCash}Cr · DII: ₹${bd.institutionalRegime.diiCash > 0 ? '+' : ''}${bd.institutionalRegime.diiCash}Cr
+                    ${bd.institutionalRegime.absorptionRatio !== null ? ` · Absorption: ${bd.institutionalRegime.absorptionRatio}×` : ''}
+                    · Idx Fut: ₹${bd.institutionalRegime.fiiIdxFut}Cr · Stk Fut: ₹${bd.institutionalRegime.fiiStkFut > 0 ? '+' : ''}${bd.institutionalRegime.fiiStkFut}Cr
                 </div>
             </div>
         </details>
         ` : ''}
 
         <!-- GAP CLASSIFICATION -->
-        ${STATE.gapInfo && STATE.gapInfo.type !== 'UNKNOWN' ? `
+        ${bd.gapInfo && bd.gapInfo.type !== 'UNKNOWN' ? `
         <div class="env-row" style="padding: 6px 0;">
             <span class="env-row-label">BNF Gap</span>
-            <span class="env-row-value" style="color: ${STATE.gapInfo.gap > 0 ? 'var(--green)' : STATE.gapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
-                ${STATE.gapInfo.gap > 0 ? '+' : ''}${STATE.gapInfo.gap} pts (${STATE.gapInfo.pct}%, ${STATE.gapInfo.sigma}σ) — ${STATE.gapInfo.type.replace('_', ' ')}
+            <span class="env-row-value" style="color: ${bd.gapInfo.gap > 0 ? 'var(--green)' : bd.gapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+                ${bd.gapInfo.gap > 0 ? '+' : ''}${bd.gapInfo.gap} pts (${bd.gapInfo.pct}%, ${bd.gapInfo.sigma}σ) — ${bd.gapInfo.type.replace('_', ' ')}
             </span>
         </div>
         ` : ''}
-        ${STATE.nfGapInfo && STATE.nfGapInfo.type !== 'UNKNOWN' ? `
+        ${bd.nfGapInfo && bd.nfGapInfo.type !== 'UNKNOWN' ? `
         <div class="env-row" style="padding: 6px 0;">
             <span class="env-row-label">NF Gap</span>
-            <span class="env-row-value" style="color: ${STATE.nfGapInfo.gap > 0 ? 'var(--green)' : STATE.nfGapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
-                ${STATE.nfGapInfo.gap > 0 ? '+' : ''}${STATE.nfGapInfo.gap} pts (${STATE.nfGapInfo.pct}%, ${STATE.nfGapInfo.sigma}σ) — ${STATE.nfGapInfo.type.replace('_', ' ')}
+            <span class="env-row-value" style="color: ${bd.nfGapInfo.gap > 0 ? 'var(--green)' : bd.nfGapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+                ${bd.nfGapInfo.gap > 0 ? '+' : ''}${bd.nfGapInfo.gap} pts (${bd.nfGapInfo.pct}%, ${bd.nfGapInfo.sigma}σ) — ${bd.nfGapInfo.type.replace('_', ' ')}
             </span>
         </div>
         ` : ''}
 
         <!-- OVERNIGHT DELTA — Phase 10: Evening close vs morning inputs -->
-        ${STATE.overnightDelta && STATE.overnightDelta.signals.length > 0 ? `
-        <div style="padding:6px 10px; margin:4px 0; border-radius:8px; background:${STATE.overnightDelta.summary.includes('BEARISH') ? 'rgba(211,47,47,0.08)' : STATE.overnightDelta.summary.includes('BULLISH') ? 'rgba(56,142,60,0.08)' : 'rgba(128,128,128,0.06)'}; border-left:3px solid ${STATE.overnightDelta.summary.includes('BEARISH') ? 'var(--danger)' : STATE.overnightDelta.summary.includes('BULLISH') ? 'var(--green)' : 'var(--text-muted)'}">
-            <div style="font-weight:600; font-size:12px; margin-bottom:3px">${STATE.overnightDelta.summary}</div>
+        ${bd.overnightDelta && bd.overnightDelta.signals.length > 0 ? `
+        <div style="padding:6px 10px; margin:4px 0; border-radius:8px; background:${bd.overnightDelta.summary.includes('BEARISH') ? 'rgba(211,47,47,0.08)' : bd.overnightDelta.summary.includes('BULLISH') ? 'rgba(56,142,60,0.08)' : 'rgba(128,128,128,0.06)'}; border-left:3px solid ${bd.overnightDelta.summary.includes('BEARISH') ? 'var(--danger)' : bd.overnightDelta.summary.includes('BULLISH') ? 'var(--green)' : 'var(--text-muted)'}">
+            <div style="font-weight:600; font-size:12px; margin-bottom:3px">${bd.overnightDelta.summary}</div>
             <div style="font-size:11px; color:var(--text-muted)">
-                ${STATE.overnightDelta.signals.map(s => {
+                ${bd.overnightDelta.signals.map(s => {
                     const color = s.dir === 'BEAR' ? 'var(--danger)' : s.dir === 'BULL' ? 'var(--green)' : 'var(--text-muted)';
                     const val = s.isSigma ? `${s.pct > 0 ? '+' : ''}${s.pct.toFixed(2)}σ` : `${s.pct > 0 ? '+' : ''}${s.pct}%`;
                     return `<span style="color:${color}">${s.name}: ${s.from}→${s.to ?? '?'} (${val})</span>`;
@@ -8672,10 +4774,10 @@ function renderMarket() {
 
 function renderOI() {
     const el = document.getElementById('oi-content');
-    if (!el || !STATE.live) return;
+    if (!el || !(JSON.parse(NativeBridge.getLatestPoll() || '{}'))) return;
 
-    const l = STATE.live;
-    const b = STATE.baseline;
+    const l = (JSON.parse(NativeBridge.getLatestPoll() || '{}'));
+    const b = (JSON.parse(NativeBridge.getBaseline() || '{}'));
 
     if (!b) {
         el.innerHTML = '<div class="empty-state">Scan to see OI structure & institutional positioning</div>';
@@ -8698,14 +4800,14 @@ function renderOI() {
     const bnfCWOI = l.bnfCallWallOI || b.bnfCallWallOI;
     const bnfPW = l.bnfPutWall || b.bnfPutWall;
     const bnfPWOI = l.bnfPutWallOI || b.bnfPutWallOI;
-    const bnfCallOI = STATE.bnfChain?.nearTotalCallOI || l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
-    const bnfPutOI = STATE.bnfChain?.nearTotalPutOI || l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
+    const bnfCallOI = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.nearTotalCallOI || l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
+    const bnfPutOI = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.nearTotalPutOI || l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
     const bnfTotal = bnfCallOI + bnfPutOI;
     const bnfCPct = bnfTotal > 0 ? Math.round(bnfCallOI / bnfTotal * 100) : 50;
     const bnfFP = l.futuresPremBnf;
 
     // NF
-    const nfc = STATE.nfChain;
+    const nfc = (JSON.parse(NativeBridge.getNfChain() || '{}'));
     const nfPCR = nfc?.nearAtmPCR;
     const nfMP = nfc?.maxPain || b.maxPainNf;
     const nfMPDist = nfMP && l.nfSpot ? Math.round(l.nfSpot - nfMP) : 0;
@@ -8777,27 +4879,27 @@ function renderOI() {
 
         <!-- BREADTH -->
         <div class="env-section-title">📊 Market Breadth</div>
-        ${STATE.bnfBreadth ? `
+        ${(JSON.parse(NativeBridge.getBnfBreadth() || '{}')) ? `
         <div class="env-row">
             <span class="env-row-label">BNF (5 stocks, 79%)</span>
-            <span class="env-row-value" style="color:${STATE.bnfBreadth.weightedPct > 0 ? 'var(--green)' : STATE.bnfBreadth.weightedPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
-                ${STATE.bnfBreadth.weightedPct > 0 ? '+' : ''}${STATE.bnfBreadth.weightedPct}% · ${STATE.bnfBreadth.advancing}↑ ${STATE.bnfBreadth.declining}↓
+            <span class="env-row-value" style="color:${(JSON.parse(NativeBridge.getBnfBreadth() || '{}')).weightedPct > 0 ? 'var(--green)' : (JSON.parse(NativeBridge.getBnfBreadth() || '{}')).weightedPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
+                ${(JSON.parse(NativeBridge.getBnfBreadth() || '{}')).weightedPct > 0 ? '+' : ''}${(JSON.parse(NativeBridge.getBnfBreadth() || '{}')).weightedPct}% · ${(JSON.parse(NativeBridge.getBnfBreadth() || '{}')).advancing}↑ ${(JSON.parse(NativeBridge.getBnfBreadth() || '{}')).declining}↓
             </span>
         </div>
-        <div class="env-signals">${(STATE.bnfBreadth.results || []).map(r =>
+        <div class="env-signals">${((JSON.parse(NativeBridge.getBnfBreadth() || '{}')).results || []).map(r =>
             `<span class="signal-chip signal-${r.change > 0 ? 'bull' : r.change < 0 ? 'bear' : 'neutral'}">${r.name}: ${r.pctChange > 0 ? '+' : ''}${r.pctChange}%</span>`
         ).join('')}</div>
         ` : ''}
-        ${STATE.nf50Breadth ? `
+        ${(JSON.parse(NativeBridge.getNf50Breadth() || '{}')) ? `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>
-            <span class="env-row-value">${STATE.nf50Breadth.scaled}/50 advancing</span>
+            <span class="env-row-value">${(JSON.parse(NativeBridge.getNf50Breadth() || '{}')).scaled}/50 advancing</span>
         </div>
         ` : ''}
 
         <!-- INSTITUTIONAL PCR READ — Dynamic context-aware (Phase 8.1) -->
-        ${STATE.pcrContext ? (() => {
-            const ctx = STATE.pcrContext;
+        ${bd.pcrContext ? (() => {
+            const ctx = bd.pcrContext;
             const biasColor = ctx.bias === 'BULL' ? 'var(--green)' : ctx.bias === 'BEAR' ? 'var(--danger)' : ctx.bias === 'MILD_BULL' ? 'var(--green)' : 'var(--text-muted)';
             const phaseLabel = ctx.phase === 'B' ? '🔄 Live vs 2PM' : '📊 Morning Read';
             const confDot = ctx.confidence === 'HIGH' ? '🟢' : ctx.confidence === 'MEDIUM' ? '🟡' : '⚪';
@@ -8821,40 +4923,40 @@ function renderOI() {
         </details>
         ` : ''}
 
-        ${STATE.fiiTrend ? `
+        ${bd.fiiTrend ? `
         <details>
-            <summary class="env-section-title" style="cursor:pointer;user-select:none">📊 FII Short% Trend — <span style="color:${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--warn)'}">
-                ${STATE.fiiTrend.label}</span> ▸</summary>
+            <summary class="env-section-title" style="cursor:pointer;user-select:none">📊 FII Short% Trend — <span style="color:${bd.fiiTrend.trend === 'COVERING' ? 'var(--green)' : bd.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--warn)'}">
+                ${bd.fiiTrend.label}</span> ▸</summary>
             <div class="env-row">
                 <span class="env-row-label">3-Session</span>
-                <span class="env-row-value" style="color:${STATE.fiiTrend.trend === 'COVERING' ? 'var(--green)' : STATE.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--warn)'}">
-                    ${STATE.fiiTrend.label}${STATE.fiiTrend.accel ? ' ACCELERATING' : ''}${STATE.fiiTrend.aggressive ? ' ⚠️ AGGRESSIVE' : ''}
+                <span class="env-row-value" style="color:${bd.fiiTrend.trend === 'COVERING' ? 'var(--green)' : bd.fiiTrend.trend === 'BUILDING' ? 'var(--danger)' : 'var(--warn)'}">
+                    ${bd.fiiTrend.label}${bd.fiiTrend.accel ? ' ACCELERATING' : ''}${bd.fiiTrend.aggressive ? ' ⚠️ AGGRESSIVE' : ''}
                 </span>
             </div>
         </details>
         ` : ''}
 
-        ${STATE.trajectory ? `
+        ${bd.sessionTrajectory ? `
         <details class="traj-details">
-            <summary>📅 Session Trajectory (${STATE.trajectory.dates?.length || 0} sessions) ▸</summary>
+            <summary>📅 Session Trajectory (${bd.sessionTrajectory.dates?.length || 0} sessions) ▸</summary>
             <div class="traj-grid">
-            ${STATE.trajectory.trajectory.map(row =>
+            ${bd.sessionTrajectory.trajectory.map(row =>
                 `<div class="traj-row"><span class="traj-label">${row.label}</span>${row.arrows.map(a =>
                     `<span class="traj-arrow ${a === '↑' ? 'up' : a === '↓' ? 'down' : ''}">${a}</span>`
                 ).join('')}</div>`
             ).join('')}
             </div>
-            ${STATE.trajectory.reversal ? `<div class="traj-alert">${STATE.trajectory.reversal}</div>` : ''}
-            ${STATE.trajectory.alignment ? `<div class="traj-alert">${STATE.trajectory.alignment}</div>` : ''}
+            ${bd.sessionTrajectory.reversal ? `<div class="traj-alert">${bd.sessionTrajectory.reversal}</div>` : ''}
+            ${bd.sessionTrajectory.alignment ? `<div class="traj-alert">${bd.sessionTrajectory.alignment}</div>` : ''}
         </details>
         ` : ''}
 
-        ${STATE.signalValidation ? (() => {
-            const sv = STATE.signalValidation;
+        ${bd.signalValidation ? (() => {
+            const sv = bd.signalValidation;
             return `<div class="env-section-title">📡 Yesterday's Signal</div>
             <div class="traj-alert ${sv.correct ? '' : 'warn'}">
                 ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
-                ${STATE.signalAccuracyStats ? ` · Accuracy: ${STATE.signalAccuracyStats.correct}/${STATE.signalAccuracyStats.total} (${STATE.signalAccuracyStats.pct}%)` : ''}
+                ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')) ? ` · Accuracy: ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).correct}/${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).total} (${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).pct}%)` : ''}
             </div>`;
         })() : ''}
 
@@ -8866,32 +4968,32 @@ function renderWatchlist() {
     const el = document.getElementById('watchlist');
     if (!el) return;
 
-    if (!STATE.watchlist.length && !STATE.candidates.length) {
+    if (!(bd.watchlist || []).length && !(bd.generated_candidates || []).length) {
         el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
 
-    const bnfAtm = STATE.bnfChain?.atm || STATE.baseline?.bnfAtm || 0;
-    const nfAtm = STATE.nfChain?.atm || STATE.baseline?.nfAtm || 0;
+    const bnfAtm = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.atm || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bnfAtm || 0;
+    const nfAtm = (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atm || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.nfAtm || 0;
 
     // Count candidates that ACTUALLY fit market conditions
     // isDirectionSafe: directional strategies with F1 against are NOT executable
     // Range-detected: 4-leg strategies exempt from ev>0 (range detection IS the edge)
     const rangeActive = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
-    const executable = STATE.candidates.filter(c =>
+    const executable = (bd.generated_candidates || []).filter(c =>
         !c.capitalBlocked && c.forces.aligned >= 2 && (c.contextScore || 0) >= -0.3
         && (c.ev > 0 || (rangeActive && c.legs === 4))
         && isDirectionSafe(c)
     ).length;
-    const total = STATE.candidates.length;
+    const total = (bd.generated_candidates || []).length;
 
     // ═══ GO VERDICT BANNER ═══
     // b101: Use effective bias (brain-computed) when available — matches actual candidates
-    const activeBiasObj = STATE.effectiveBias
-        ? { bias: STATE.effectiveBias.bias, strength: STATE.effectiveBias.strength, net: STATE.effectiveBias.net, label: STATE.effectiveBias.label, votes: STATE.morningBias?.votes || {bull:0, bear:0} }
-        : (STATE.live?.bias || STATE.baseline?.bias);
-    const biasLabel = STATE.effectiveBias?.label || STATE.live?.bias?.label || STATE.baseline?.bias?.label || 'NEUTRAL';
-    const vix = STATE.live?.vix || STATE.baseline?.vix || 0;
+    const activeBiasObj = bd.effective_bias
+        ? { bias: bd.effective_bias.bias, strength: bd.effective_bias.strength, net: bd.effective_bias.net, label: bd.effective_bias.label, votes: bd.morningBias?.votes || {bull:0, bear:0} }
+        : ((JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias);
+    const biasLabel = bd.effective_bias?.label || (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias?.label || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.label || 'NEUTRAL';
+    const vix = (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.vix || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.vix || 0;
     const modeLabel = STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING';
     const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
     const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
@@ -8900,7 +5002,7 @@ function renderWatchlist() {
     const biasObj = activeBiasObj;
     const varsityInfo = biasObj ? getVarsityFilter(biasObj, vix) : null;
     // Show first PRIMARY that actually has candidates, not just primary[0]
-    const actualPrimary = varsityInfo?.primary?.find(p => STATE.candidates.some(c => c.type === p)) || varsityInfo?.primary?.[0];
+    const actualPrimary = varsityInfo?.primary?.find(p => (bd.generated_candidates || []).some(c => c.type === p)) || varsityInfo?.primary?.[0];
     const varsityLabel = actualPrimary ? friendlyType(actualPrimary) : '';
     const varsityAction = vix >= C.IV_HIGH ? 'SELL premium' : 'BUY premium';
 
@@ -8915,26 +5017,26 @@ function renderWatchlist() {
             const color = stale ? 'var(--danger)' : ageMin >= 15 ? 'var(--warn)' : 'var(--text-muted)';
             return `<div class="go-detail" style="font-size:11px;color:${color}">${stale ? '⚠️' : '⏱️'} Scanned ${ageMin}m ago${stale ? ' — tap Rescan for fresh candidates' : ''}</div>`;
         })()}
-        ${STATE.morningBias && STATE.live?.bias ? (() => {
+        ${bd.morningBias && (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bias ? (() => {
             const drift = STATE.biasDrift || 0;
             const driftColor = Math.abs(drift) >= 2 ? 'var(--danger)' : Math.abs(drift) >= 1 ? 'var(--warn)' : 'var(--green)';
             const driftIcon = STATE.driftOverridden ? '⚠️' : Math.abs(drift) >= 1 ? '🔄' : '✅';
-            const morningL = STATE.morningBias.label;
+            const morningL = bd.morningBias.label;
             const liveL = STATE.live.bias.label;
             return morningL !== liveL || drift !== 0
                 ? `<div class="go-detail" style="font-size:11px; color:${driftColor}">${driftIcon} Morning: ${morningL} · Now: ${liveL} · Drift: ${drift > 0 ? '+' : ''}${drift}${STATE.driftOverridden ? ' · OVERRIDDEN' : ''}</div>`
                 : `<div class="go-detail" style="font-size:11px; color:var(--green)">✅ Plan holding: ${morningL}</div>`;
         })() : ''}
         ${varsityLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">📖 Varsity: ${varsityLabel} · ${varsityAction}</div>` : ''}
-        ${STATE.effectiveBias && STATE.morningBias && STATE.effectiveBias.bias !== STATE.morningBias.bias ? (() => {
-            const eb = STATE.effectiveBias;
+        ${bd.effective_bias && bd.morningBias && bd.effective_bias.bias !== bd.morningBias.bias ? (() => {
+            const eb = bd.effective_bias;
             const mw = Math.round(eb.morning_weight * 100);
             const reasons = eb.drift_reasons?.length ? eb.drift_reasons.join(', ') : '';
-            return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${STATE.morningBias.label} → ${eb.label} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
+            return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${bd.morningBias.label} → ${eb.label} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
         })() : ''}
-        ${varsityInfo?.rangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — IB/IC prioritized over directional</div>` : (STATE.pollHistory?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Trending (${STATE.rangeSigma}σ) — directional strategies active</div>` : '')}
-        ${STATE.marketPhase && STATE.marketPhase.id !== 'PRE_MARKET' && STATE.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${STATE.marketPhase.label}: ${STATE.marketPhase.hint}</div>
-        <div class="go-detail" style="font-size:10px; color:var(--text-muted);">${STATE.marketPhase.detail}</div>` : ''}
+        ${varsityInfo?.rangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — IB/IC prioritized over directional</div>` : ((JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Trending (${STATE.rangeSigma}σ) — directional strategies active</div>` : '')}
+        ${bd.marketPhase && bd.marketPhase.id !== 'PRE_MARKET' && bd.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${bd.marketPhase.label}: ${bd.marketPhase.hint}</div>
+        <div class="go-detail" style="font-size:10px; color:var(--text-muted);">${bd.marketPhase.detail}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
             <button onclick="toggleTradeMode()" style="padding:6px 14px;font-size:12px;font-weight:600;border:2px solid ${STATE.tradeMode === 'intraday' ? 'var(--warn)' : 'var(--accent)'};background:${STATE.tradeMode === 'intraday' ? 'var(--warn)' : 'var(--accent)'};color:white;border-radius:var(--radius-sm);cursor:pointer;">
                 ${STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING'}
@@ -8946,9 +5048,9 @@ function renderWatchlist() {
     // ═══ PHASE 8: INSTITUTIONAL POSITIONING CYCLE ═══
     // Collapsible section: auto-expanded after 3:15PM, collapsed before
     // Global context is MANDATORY — gates positioning strategies
-    const has315 = STATE._captured315pm && STATE.tomorrowSignal;
+    const has315 = STATE._captured315pm && bd.tomorrow_signal;
     const posOpen = has315 ? 'open' : '';
-    const sig = STATE.tomorrowSignal;
+    const sig = bd.tomorrow_signal;
     const sigColor = sig ? (sig.signal === 'BEARISH' ? 'var(--danger)' : sig.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)') : 'var(--text-muted)';
 
     html += `<details class="positioning-section" ${posOpen}>
@@ -8959,15 +5061,15 @@ function renderWatchlist() {
         <div class="positioning-body">`;
 
     // Global Direction inputs — Dow Now + Crude Now + GIFT Now (b91: evening ref for GIFT)
-    const gd = STATE.globalDirection;
+    const gd = (JSON.parse(NativeBridge.getGlobalDirection() || '{}'));
     const hasMorningRef = gd.dowClose || gd.crudeSettle;
     const dowPct = (gd.dowClose && gd.dowNow) ? (((gd.dowNow - gd.dowClose) / gd.dowClose) * 100).toFixed(2) : null;
     const crudePct = (gd.crudeSettle && gd.crudeNow) ? (((gd.crudeNow - gd.crudeSettle) / gd.crudeSettle) * 100).toFixed(2) : null;
     // b91: GIFT reference from evening close (most direct gap signal for tomorrow)
-    const giftRef = STATE.eveningClose?.gift || null;
+    const giftRef = (JSON.parse(NativeBridge.getConfig('eveningClose') || '{}'))?.gift || null;
     const giftPct = (giftRef && gd.giftNow) ? (((gd.giftNow - giftRef) / giftRef) * 100).toFixed(2) : null;
     const giftDir = giftPct !== null ? (giftPct >= C.GIFT_THRESHOLD ? 'BULL' : giftPct <= -C.GIFT_THRESHOLD ? 'BEAR' : 'NEUTRAL')
-        : STATE.gapInfo?.sigma ? (STATE.gapInfo.sigma > 0.3 ? 'BULL' : STATE.gapInfo.sigma < -0.3 ? 'BEAR' : 'NEUTRAL') : null;
+        : bd.gapInfo?.sigma ? (bd.gapInfo.sigma > 0.3 ? 'BULL' : bd.gapInfo.sigma < -0.3 ? 'BEAR' : 'NEUTRAL') : null;
     const dowDir = dowPct !== null ? (dowPct >= C.DOW_THRESHOLD ? 'BULL' : dowPct <= -C.DOW_THRESHOLD ? 'BEAR' : 'NEUTRAL') : null;
     const crudeDir = crudePct !== null ? (crudePct >= C.CRUDE_THRESHOLD ? 'BEAR' : crudePct <= -C.CRUDE_THRESHOLD ? 'BULL' : 'NEUTRAL') : null;
     const dirIcon = (d) => d === 'BULL' ? '🟢' : d === 'BEAR' ? '🔴' : d === 'NEUTRAL' ? '⚪' : '—';
@@ -8999,7 +5101,7 @@ function renderWatchlist() {
         <span id="global-dir-saved" style="font-size:10px;color:var(--green);margin-left:8px;display:none">✓ Saved</span>
         <div id="global-dir-status" style="font-size:10px;color:var(--text-muted);margin-top:4px">${
             (gd.dowNow || gd.crudeNow || gd.giftNow)
-            ? `Loaded: ${STATE.globalDirection._date || API.todayIST()} · GIFT ${gd.giftNow || '--'}, Dow ${gd.dowNow || '--'}, Crude ${gd.crudeNow || '--'}`
+            ? `Loaded: ${(JSON.parse(NativeBridge.getGlobalDirection() || '{}'))._date || API.todayIST()} · GIFT ${gd.giftNow || '--'}, Dow ${gd.dowNow || '--'}, Crude ${gd.crudeNow || '--'}`
             : ''
         }</div>
         ${(dowDir || crudeDir || giftDir) ? `<div style="font-size:11px;margin-top:4px">
@@ -9028,7 +5130,7 @@ function renderWatchlist() {
 
             // Free capital check for positioning
             let marginUsed = 0;
-            for (const t of STATE.openTrades) {
+            for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
                 if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin
             }
             const freeCapital = C.CAPITAL - marginUsed;
@@ -9084,17 +5186,17 @@ function renderWatchlist() {
 
     // ═══ b91: MERGE positioning candidates into regular sections (Option C) ═══
     // Clear stale positioning flags from previous renders
-    for (const c of STATE.candidates) { delete c._posMatch; delete c._posOnly; }
+    for (const c of (bd.generated_candidates || [])) { delete c._posMatch; delete c._posOnly; }
     if (STATE.positioningCandidates) {
         for (const c of STATE.positioningCandidates) { delete c._posMatch; delete c._posOnly; }
     }
 
-    const nfCands = diverseTop(STATE.candidates, 'NF');
-    const bnfCands = diverseTop(STATE.candidates, 'BNF');
+    const nfCands = diverseTop((bd.generated_candidates || []), 'NF');
+    const bnfCands = diverseTop((bd.generated_candidates || []), 'BNF');
 
     // Build set of positioning candidate IDs (only if 315pm captured + global direction filled)
     const posIds = new Set();
-    const gd315 = STATE.globalDirection;
+    const gd315 = (JSON.parse(NativeBridge.getGlobalDirection() || '{}'));
     const gcFilled315 = has315 && gd315.dowNow !== null && gd315.crudeNow !== null;
     if (gcFilled315 && STATE.positioningCandidates?.length > 0) {
         for (const pc of STATE.positioningCandidates) posIds.add(pc.id);
@@ -9116,7 +5218,7 @@ function renderWatchlist() {
         for (const c of posOnlyNf) { c._posOnly = true; nfCands.push(c); }
         for (const c of posOnlyBnf) { c._posOnly = true; bnfCands.push(c); }
     }
-    const nfTotal = STATE.candidates.filter(c => c.index === 'NF').length;
+    const nfTotal = (bd.generated_candidates || []).filter(c => c.index === 'NF').length;
     if (nfCands.length) {
         html += renderCandidateCard(nfCands[0], nfAtm, 1);
         if (nfCands.length > 1) {
@@ -9125,7 +5227,7 @@ function renderWatchlist() {
             html += '</details>';
         }
     } else if (nfTotal > 0) {
-        const nfAgainst = STATE.candidates.filter(c => c.index === 'NF' && !isDirectionSafe(c)).length;
+        const nfAgainst = (bd.generated_candidates || []).filter(c => c.index === 'NF' && !isDirectionSafe(c)).length;
         const reason = nfAgainst > 0 ? `${nfAgainst} strategies exist but go AGAINST your bias. WAIT for aligned setup.` :
             STATE.tradeMode === 'swing' ? 'None fit conditions. Try INTRADAY mode?' : 'WAIT for better setup.';
         html += `<div class="empty-state">NF: ${nfTotal} generated — ${reason}</div>`;
@@ -9134,13 +5236,13 @@ function renderWatchlist() {
     }
 
     // ═══ BANK NIFTY — collapsed by default ═══
-    const bnfTotal = STATE.candidates.filter(c => c.index === 'BNF').length;
+    const bnfTotal = (bd.generated_candidates || []).filter(c => c.index === 'BNF').length;
     if (bnfCands.length) {
         html += `<details><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);padding:8px 0;user-select:none;">BANK NIFTY — ${bnfCands.length} candidates ▸</summary>`;
         bnfCands.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
         html += '</details>';
     } else if (bnfTotal > 0) {
-        const bnfAgainst = STATE.candidates.filter(c => c.index === 'BNF' && !isDirectionSafe(c)).length;
+        const bnfAgainst = (bd.generated_candidates || []).filter(c => c.index === 'BNF' && !isDirectionSafe(c)).length;
         const reason = bnfAgainst > 0 ? `${bnfAgainst} strategies exist but go AGAINST your bias. WAIT.` : 'None fit current conditions.';
         html += `<div class="empty-state">BNF: ${bnfTotal} generated — ${reason}</div>`;
     } else {
@@ -9186,8 +5288,8 @@ function renderCandidateCard(cand, atm, rank) {
 
     // VIX trend badge for IC/IB candidates
     let vixTrendBadge = '';
-    if ((cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') && STATE.pollHistory?.length >= 3) {
-        const recentPolls = STATE.pollHistory.slice(-3);
+    if ((cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') && (JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3) {
+        const recentPolls = (JSON.parse(NativeBridge.getPollHistory() || '[]')).slice(-3);
         const vixTrend = (recentPolls[recentPolls.length-1]?.vix || 0) - (recentPolls[0]?.vix || 0);
         if (vixTrend >= 0.5) {
             vixTrendBadge = `<span style="background:var(--warn);color:#000;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">🌡️ VIX↑${vixTrend.toFixed(1)}</span>`;
@@ -9212,18 +5314,18 @@ function renderCandidateCard(cand, atm, rank) {
         <div class="v1-prem">${premLabel} ₹${cand.netPremium}/share · W:${cand.width}</div>
         ${(() => {
             if (cand.beUpper && cand.beLower) {
-                const spot = cand.index === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const spot = cand.index === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfSpot : (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfSpot;
                 const upperCush = spot ? Math.round(cand.beUpper - spot) : null;
                 const lowerCush = spot ? Math.round(spot - cand.beLower) : null;
                 const cushStr = (upperCush != null && lowerCush != null)
                     ? ` <span style="color:var(--text-muted);font-size:9px">(↑${upperCush}pts / ↓${lowerCush}pts)</span>` : '';
                 return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()} ↔ ${cand.beUpper.toLocaleString()}</span>${cushStr}</div>`;
             } else if (cand.beUpper) {
-                const spot = cand.index === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const spot = cand.index === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfSpot : (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfSpot;
                 const cush = spot ? Math.round(cand.beUpper - spot) : null;
                 return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beUpper.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
             } else if (cand.beLower) {
-                const spot = cand.index === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const spot = cand.index === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfSpot : (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfSpot;
                 const cush = spot ? Math.round(spot - cand.beLower) : null;
                 return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
             }
@@ -9353,7 +5455,7 @@ function renderTradeCard(t, isPaper) {
             ${(() => {
                 const beU = t.be_upper ?? t.beUpper ?? null;
                 const beL = t.be_lower ?? t.beLower ?? null;
-                const curSpot = t.index_key === 'BNF' ? STATE.live?.bnfSpot : STATE.live?.nfSpot;
+                const curSpot = t.index_key === 'BNF' ? (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.bnfSpot : (JSON.parse(NativeBridge.getLatestPoll() || '{}'))?.nfSpot;
                 if (!curSpot || (!beU && !beL)) return '';
                 let beText = '', cushionPts = null, danger = false;
                 if (beU && beL) {
@@ -9414,24 +5516,24 @@ function renderPosition() {
     if (!el) return;
 
     let html = '';
-    const lastUpdate = STATE.lastPollTime ? new Date(STATE.lastPollTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+    const lastUpdate = (JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll) ? new Date((JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll)).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
 
     // ═══ SIGNAL ACCURACY — compact, collapsible ═══
-    if (STATE.signalValidation) {
-        const sv = STATE.signalValidation;
+    if (bd.signalValidation) {
+        const sv = bd.signalValidation;
         html += `<details>
-            <summary style="cursor:pointer;font-size:12px;padding:4px 0;user-select:none">📡 Yesterday: ${sv.predicted} → ${sv.correct ? '✅' : '❌'} ${sv.actualDir} (${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts)${STATE.signalAccuracyStats ? ` · ${STATE.signalAccuracyStats.pct}% accuracy` : ''} ▸</summary>
+            <summary style="cursor:pointer;font-size:12px;padding:4px 0;user-select:none">📡 Yesterday: ${sv.predicted} → ${sv.correct ? '✅' : '❌'} ${sv.actualDir} (${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts)${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')) ? ` · ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).pct}% accuracy` : ''} ▸</summary>
             <div class="signal-accuracy-card">
                 <div class="env-row"><span class="env-row-label">Predicted</span><span class="env-row-value">${sv.predicted} (${sv.strength}/5)</span></div>
                 <div class="env-row"><span class="env-row-label">Actual Gap</span><span class="env-row-value" style="color:${sv.correct ? 'var(--green)' : 'var(--danger)'}">${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts → ${sv.actualDir} ${sv.correct ? '✅' : '❌'}</span></div>
-                ${STATE.signalAccuracyStats ? `<div class="env-row"><span class="env-row-label">Accuracy</span><span class="env-row-value" style="color:var(--accent)">${STATE.signalAccuracyStats.correct}/${STATE.signalAccuracyStats.total} (${STATE.signalAccuracyStats.pct}%)</span></div>` : ''}
+                ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')) ? `<div class="env-row"><span class="env-row-label">Accuracy</span><span class="env-row-value" style="color:var(--accent)">${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).correct}/${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).total} (${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).pct}%)</span></div>` : ''}
             </div>
         </details>`;
     }
 
     // ═══ OPEN TRADES — split real vs paper ═══
-    const realTrades = STATE.openTrades.filter(t => !t.paper);
-    const paperTrades = STATE.openTrades.filter(t => t.paper);
+    const realTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => !t.paper);
+    const paperTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper);
 
     if (realTrades.length === 0 && paperTrades.length === 0) {
         html += '<div class="empty-state">No open positions</div>';
@@ -9563,9 +5665,9 @@ function renderFooter() {
     const el = document.getElementById('footer-status');
     if (!el) return;
     const time = API.istNow();
-    const watching = STATE.isWatching ? '🟢' : '⏹';
+    const watching = (JSON.parse(NativeBridge.getServiceStatus() || '{}').running) ? '🟢' : '⏹';
     const polls = STATE.pollCount;
-    const bi = STATE.brainInsights || {};
+    const bi = bd || {};
     const verdict = bi.verdict;
     const brain = STATE.brainReady ?
         (verdict?.action ? `🧠 ${verdict.action}${verdict.confidence ? ' ' + verdict.confidence + '%' : ''}` : '🧠 ready') :
@@ -9580,56 +5682,18 @@ function renderFooter() {
 // ═══════════════════════════════════════════════════════════════
 
 function lockMorningData() {
-    initAudio(); // Initialize audio on user tap
-
-    // Request notification permission on user tap (mobile Chrome requires gesture)
-    if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission();
+    // F.2 reduced: capture form values, push baseline to Kotlin, render.
+    try {
+        const baseline = collectBaselineFromForm();
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
+            NativeBridge.setBaseline(JSON.stringify(baseline));
+        }
+        renderAll();
+    } catch (e) {
+        console.error('lockMorningData failed:', e);
     }
-
-    // ═══ PHASE 8: Clear stale positioning from yesterday/previous scan ═══
-    STATE.positioningResult = null;
-    STATE.tomorrowSignal = null;
-    STATE.positioningCandidates = [];
-    STATE.positioningBias = null;
-    STATE._captured2pm = false;
-    STATE._captured315pm = false;
-    STATE.afternoonBaseline = null;
-    // Clear afternoon "now" values but KEEP morning reference (dowClose, crudeSettle)
-    STATE.globalDirection = { ...STATE.globalDirection, dowNow: null, crudeNow: null, giftNow: null };
-    localStorage.removeItem('mr2_global_context');
-
-    const fiiCash = document.getElementById('in-fii-cash').value;
-    const fiiShortPct = document.getElementById('in-fii-short').value;
-    const upstoxBias = document.getElementById('in-upstox-bias')?.value || '';
-    const diiCash = document.getElementById('in-dii-cash')?.value || '';
-    const fiiIdxFut = document.getElementById('in-fii-idx-fut')?.value || '';
-    const fiiStkFut = document.getElementById('in-fii-stk-fut')?.value || '';
-    const dowClose = document.getElementById('in-dow-close')?.value || '';
-    const crudeSettle = document.getElementById('in-crude-settle')?.value || '';
-
-    // Save Dow/Crude morning reference to STATE
-    if (dowClose) STATE.globalDirection.dowClose = parseFloat(dowClose);
-    if (crudeSettle) STATE.globalDirection.crudeSettle = parseFloat(crudeSettle);
-
-    // closeChar will be auto-calculated from yesterday's OHLC
-    STATE.morningInput = { fiiCash, fiiShortPct, upstoxBias, diiCash, fiiIdxFut, fiiStkFut };
-
-    // Save to localStorage for restore (includes Dow/Crude reference)
-    const morningPayload = {
-        ...STATE.morningInput, dowClose, crudeSettle,
-        date: API.todayIST()
-    };
-    localStorage.setItem('mr2_morning', JSON.stringify(morningPayload));
-    DB.setConfig('morning_inputs', morningPayload); // Supabase — survives device change
-
-    // Disable inputs
-    document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
-    document.getElementById('btn-lock').disabled = true;
-    document.getElementById('btn-lock').textContent = '⏳ Scanning...';
-
-    initialFetch();
 }
+
 
 function restoreMorningData(cloudConfig) {
     // Priority: Supabase → localStorage
@@ -9657,12 +5721,12 @@ function restoreMorningData(cloudConfig) {
     if (data.dowClose) {
         const el = document.getElementById('in-dow-close');
         if (el) el.value = data.dowClose;
-        STATE.globalDirection.dowClose = parseFloat(data.dowClose);
+        (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowClose = parseFloat(data.dowClose);
     }
     if (data.crudeSettle) {
         const el = document.getElementById('in-crude-settle');
         if (el) el.value = data.crudeSettle;
-        STATE.globalDirection.crudeSettle = parseFloat(data.crudeSettle);
+        (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeSettle = parseFloat(data.crudeSettle);
     }
     // Restore morning bias (the plan — survives device change via Supabase)
     const biasCloud = cloudConfig?.morning_bias;
@@ -9701,10 +5765,10 @@ function restoreGlobalContext(cloudConfig) {
         localStorage.removeItem('mr2_global_context');
         return;
     }
-    if (parsed.dowNow) STATE.globalDirection.dowNow = parsed.dowNow;
-    if (parsed.crudeNow) STATE.globalDirection.crudeNow = parsed.crudeNow;
-    if (parsed.giftNow) STATE.globalDirection.giftNow = parsed.giftNow;
-    if (parsed._date) STATE.globalDirection._date = parsed._date;
+    if (parsed.dowNow) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowNow = parsed.dowNow;
+    if (parsed.crudeNow) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeNow = parsed.crudeNow;
+    if (parsed.giftNow) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).giftNow = parsed.giftNow;
+    if (parsed._date) (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))._date = parsed._date;
 }
 
 async function loadOpenTrade() {
@@ -9740,13 +5804,13 @@ function collapseMorning() {
     const collapsed = document.getElementById('morning-collapsed');
     if (!section || !full || !collapsed) return;
 
-    const fii = STATE.morningInput?.fiiCash || '--';
-    const short = STATE.morningInput?.fiiShortPct || '--';
+    const fii = (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiCash || '--';
+    const short = (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiShortPct || '--';
     const time = API.istNow();
 
     full.style.display = 'none';
     collapsed.style.display = 'block';
-    const regime = STATE.institutionalRegime;
+    const regime = bd.institutionalRegime;
     const regimeTag = regime ? ` · <span style="color:${regime.regimeColor}">${regime.regime}</span>` : '';
     collapsed.innerHTML = `<div class="morning-collapsed-bar" onclick="expandMorning()">
         ☀️ FII ₹${fii}Cr · Short ${short}%${regimeTag} · Scanned ${time}
@@ -9782,30 +5846,19 @@ function switchTab(tabName) {
 // ═══════════════════════════════════════════════════════════════
 
 function saveEveningClose() {
-    const dow = document.getElementById('in-eve-dow')?.value;
-    const crude = document.getElementById('in-eve-crude')?.value;
-    const gift = document.getElementById('in-eve-gift')?.value;
-    const statusEl = document.getElementById('evening-status');
-
-    if (!dow && !crude && !gift) {
-        if (statusEl) statusEl.textContent = '⚠️ Enter at least one value';
-        return;
+    // F.2 reduced: capture form values. Persistence to Supabase will be F.3.
+    // For now, keep in-memory until proper NativeBridge.setConfig setter exists.
+    try {
+        const dow = parseFloat(document.getElementById('eveningDow')?.value || 0);
+        const crude = parseFloat(document.getElementById('eveningCrude')?.value || 0);
+        const gift = parseFloat(document.getElementById('eveningGift')?.value || 0);
+        STATE._eveningCloseTemp = { dow, crude, gift, captured: new Date().toISOString() };
+        renderAll();
+    } catch (e) {
+        console.error('saveEveningClose failed:', e);
     }
-
-    const payload = {
-        dow: dow ? parseFloat(dow) : null,
-        crude: crude ? parseFloat(crude) : null,
-        gift: gift ? parseFloat(gift) : null,
-        date: API.todayIST(),
-        saved_at: new Date().toISOString()
-    };
-
-    STATE.eveningClose = payload;
-    localStorage.setItem('mr2_evening_close', JSON.stringify(payload));
-    DB.setConfig('evening_close', payload);
-
-    if (statusEl) statusEl.textContent = `✅ Saved: Dow ${dow || '--'}, Crude ${crude || '--'}, GIFT ${gift || '--'} (${payload.date})`;
 }
+
 
 function restoreEveningClose(cloudConfig) {
     let data = cloudConfig?.evening_close || null;
@@ -9826,368 +5879,11 @@ function restoreEveningClose(cloudConfig) {
 }
 
 // Compute overnight delta — called during morning scan
-function computeOvernightDelta(currentNfSpot) {
-    const eve = STATE.eveningClose;
-    if (!eve) return null;
-
-    const morningDow = STATE.globalDirection?.dowClose;
-    const morningCrude = STATE.globalDirection?.crudeSettle;
-
-    const delta = { signals: [], summary: '' };
-
-    // Dow delta: evening stored vs today's morning input
-    if (eve.dow && morningDow) {
-        const pct = ((morningDow - eve.dow) / eve.dow * 100).toFixed(2);
-        const dir = Math.abs(pct) < C.DOW_THRESHOLD ? 'NEUTRAL' : (pct > 0 ? 'BULL' : 'BEAR');
-        delta.signals.push({ name: 'Dow', from: eve.dow, to: morningDow, pct: +pct, dir, threshold: C.DOW_THRESHOLD });
-    }
-
-    // Crude delta: evening stored vs today's morning input
-    if (eve.crude && morningCrude) {
-        const pct = ((morningCrude - eve.crude) / eve.crude * 100).toFixed(2);
-        // Crude up = bearish for India (cost push)
-        const dir = Math.abs(pct) < C.CRUDE_THRESHOLD ? 'NEUTRAL' : (pct > 0 ? 'BEAR' : 'BULL');
-        delta.signals.push({ name: 'Crude', from: eve.crude, to: morningCrude, pct: +pct, dir, threshold: C.CRUDE_THRESHOLD });
-    }
-
-    // GIFT delta: evening 9:15PM close vs current spot (passed from caller)
-    if (eve.gift && STATE.gapInfo) {
-        const gapDir = STATE.gapInfo.sigma > 0.3 ? 'BULL' : STATE.gapInfo.sigma < -0.3 ? 'BEAR' : 'NEUTRAL';
-        delta.signals.push({ name: 'GIFT', from: eve.gift, to: currentNfSpot ?? null, pct: STATE.gapInfo.sigma, dir: gapDir, isSigma: true });
-    }
-
-    // Count directional signals
-    const bullCount = delta.signals.filter(s => s.dir === 'BULL').length;
-    const bearCount = delta.signals.filter(s => s.dir === 'BEAR').length;
-    if (bearCount >= 2) delta.summary = '🔴 OVERNIGHT BEARISH';
-    else if (bullCount >= 2) delta.summary = '🟢 OVERNIGHT BULLISH';
-    else if (bearCount > bullCount) delta.summary = '🟡 OVERNIGHT MILDLY BEARISH';
-    else if (bullCount > bearCount) delta.summary = '🟡 OVERNIGHT MILDLY BULLISH';
-    else delta.summary = '⚪ OVERNIGHT NEUTRAL';
-
-    STATE.overnightDelta = delta;
-    return delta;
-}
 
 // ═══════════════════════════════════════════════════════════════
 // DATA EXPORT — One-click Excel download of all Supabase data
 // ═══════════════════════════════════════════════════════════════
 
-async function exportAllData() {
-    const statusEl = document.getElementById('export-status');
-    const btn = document.getElementById('btn-export');
-    if (!window.XLSX) { alert('SheetJS library not loaded. Check internet connection.'); return; }
-
-    try {
-        btn.disabled = true;
-        statusEl.textContent = '⏳ Fetching trades...';
-        // Create direct Supabase client for export queries
-        const sb = window.supabase.createClient(
-            'https://fdynxkfxohbnlvayouje.supabase.co',
-            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE'
-        );
-
-        // 1. Fetch ALL trades
-        const { data: trades } = await sb.from('trades_v2').select('*').order('created_at', { ascending: true });
-        statusEl.textContent = `⏳ ${trades?.length || 0} trades... fetching history...`;
-
-        // 2. Fetch ALL premium history
-        const { data: premHist } = await sb.from('premium_history').select('*').order('date', { ascending: true });
-        statusEl.textContent = `⏳ ${premHist?.length || 0} history rows... fetching snapshots...`;
-
-        // 3. Fetch ALL chain snapshots
-        const { data: chains } = await sb.from('chain_snapshots').select('*').order('date', { ascending: true });
-        statusEl.textContent = `⏳ ${chains?.length || 0} snapshots... fetching config...`;
-
-        // 4. Fetch ALL app_config
-        const { data: config } = await sb.from('app_config').select('*');
-
-        // ═══ SHEET 1: Trades (flattened) ═══
-        const tradeRows = (trades || []).map(t => {
-            const es = t.entry_snapshot || {};
-            const xs = t.exit_snapshot || {};
-            const js = t.journey_stats || {};
-            return {
-                id: t.id,
-                date: t.entry_date?.split('T')[0],
-                entry_time: t.entry_date?.split('T')[1]?.substring(0, 5),
-                exit_date: t.exit_date?.split('T')[0],
-                strategy: t.strategy_type,
-                index: t.index_key,
-                mode: t.trade_mode || '',
-                paper: t.paper ? 'PAPER' : 'REAL',
-                sell_strike: t.sell_strike,
-                buy_strike: t.buy_strike,
-                sell_type: t.sell_type,
-                width: t.width,
-                entry_premium: t.entry_premium,
-                exit_premium: t.exit_premium,
-                max_profit: t.max_profit,
-                max_loss: t.max_loss,
-                actual_pnl: t.actual_pnl,
-                peak_pnl: t.peak_pnl,
-                trough_pnl: t.trough_pnl,
-                prob_profit: t.prob_profit,
-                entry_spot: t.entry_spot,
-                exit_spot: xs.spot ?? t.exit_spot,
-                entry_vix: t.entry_vix,
-                exit_vix: xs.vix ?? t.exit_vix,
-                entry_pcr: t.entry_pcr,
-                exit_pcr: xs.near_atm_pcr ?? t.exit_pcr,
-                entry_bias: t.entry_bias,
-                entry_bias_net: t.entry_bias_net,
-                exit_bias: xs.bias ?? t.exit_bias,
-                force_alignment: t.force_alignment,
-                f1: t.force_f1, f2: t.force_f2, f3: t.force_f3,
-                exit_force: xs.force_f1 != null ? `${xs.force_f1}/${xs.force_f2}/${xs.force_f3}` : '',
-                regime: t.entry_regime,
-                wall_score: t.entry_wall_score,
-                gamma_risk: t.entry_gamma_risk,
-                gap_sigma: t.entry_gap_sigma,
-                gap_type: t.entry_gap_type,
-                hold_minutes: t.exit_hold_minutes,
-                poll_count: t.poll_count ?? js.poll_count,
-                exit_reason: t.exit_reason,
-                // Entry snapshot extras
-                candidate_rank: es.candidate_rank,
-                varsity_tier: es.varsity_tier,
-                context_score: es.context_score,
-                ev: es.ev,
-                sigma_from_atm: es.sigma_from_atm,
-                iv_percentile: es.iv_percentile,
-                vix_direction: es.vix_direction,
-                morning_bias: es.morning_bias,
-                bias_drift: es.bias_drift,
-                minutes_since_open: es.minutes_since_open,
-                // Journey stats
-                spot_high: js.spot_high,
-                spot_low: js.spot_low,
-                spot_range: js.spot_range,
-                max_ci: js.max_ci,
-                min_ci: js.min_ci,
-                forces_changed: js.forces_changed_count,
-                drawdown: js.drawdown_from_peak,
-                recovery: js.recovery,
-                pnl_per_poll: js.pnl_per_poll
-            };
-        });
-
-        // ═══ SHEET 2: Premium History ═══
-        const premRows = (premHist || []).map(p => ({
-            date: p.date,
-            session: p.session,
-            nf_spot: p.nf_spot,
-            bnf_spot: p.bnf_spot,
-            vix: p.vix,
-            nf_atm_iv: p.nf_atm_iv,
-            bnf_atm_iv: p.bnf_atm_iv,
-            pcr: p.pcr,
-            fii_cash: p.fii_cash,
-            fii_short_pct: p.fii_short_pct,
-            dii_cash: p.dii_cash,
-            fii_idx_fut: p.fii_idx_fut,
-            fii_stk_fut: p.fii_stk_fut,
-            futures_prem_bnf: p.futures_premium_bnf,
-            bias: p.bias,
-            bias_net: p.bias_net
-        }));
-
-        // ═══ SHEET 3: Chain Snapshots ═══
-        const chainRows = (chains || []).map(c => ({
-            date: c.date,
-            session: c.session,
-            bnf_spot: c.bnf_spot,
-            nf_spot: c.nf_spot,
-            vix: c.vix,
-            bnf_pcr: c.bnf_pcr,
-            bnf_near_atm_pcr: c.bnf_near_atm_pcr,
-            nf_pcr: c.nf_pcr,
-            bnf_call_wall: c.bnf_call_wall,
-            bnf_call_wall_oi: c.bnf_call_wall_oi,
-            bnf_put_wall: c.bnf_put_wall,
-            bnf_put_wall_oi: c.bnf_put_wall_oi,
-            bnf_max_pain: c.bnf_max_pain,
-            nf_max_pain: c.nf_max_pain,
-            bnf_total_call_oi: c.bnf_total_call_oi,
-            bnf_total_put_oi: c.bnf_total_put_oi,
-            nf_total_call_oi: c.nf_total_call_oi,
-            nf_total_put_oi: c.nf_total_put_oi,
-            bnf_atm_iv: c.bnf_atm_iv,
-            bnf_futures_prem: c.bnf_futures_prem,
-            bnf_breadth_pct: c.bnf_breadth_pct,
-            nf50_advancing: c.nf50_advancing,
-            tomorrow_signal: c.tomorrow_signal,
-            signal_strength: c.signal_strength,
-            signal_correct: c.signal_correct
-        }));
-
-        // ═══ SHEET 4: Poll History (all days) ═══
-        const pollRows = [];
-        for (const row of (config || [])) {
-            if (row.key.startsWith('poll_history_')) {
-                const date = row.key.replace('poll_history_', '');
-                const polls = Array.isArray(row.value) ? row.value : [];
-                for (const p of polls) {
-                    pollRows.push({
-                        date,
-                        time: p.t,
-                        nf: p.nf, bnf: p.bnf, vix: p.vix,
-                        pcr: p.pcr, nf_pcr: p.nfPcr,
-                        bnf_call_wall: p.cw, bnf_call_wall_oi: p.cwOI,
-                        bnf_put_wall: p.pw, bnf_put_wall_oi: p.pwOI,
-                        nf_call_wall: p.nfCW, nf_call_wall_oi: p.nfCWOI,
-                        nf_put_wall: p.nfPW, nf_put_wall_oi: p.nfPWOI,
-                        bnf_total_call_oi: p.bnfCOI, bnf_total_put_oi: p.bnfPOI,
-                        nf_total_call_oi: p.nfCOI, nf_total_put_oi: p.nfPOI,
-                        bnf_max_pain: p.mp, nf_max_pain: p.nfMP,
-                        futures_prem: p.fp,
-                        breadth: p.brd, nf50_adv: p.nfAdv,
-                        bias_net: p.bias
-                    });
-                }
-            }
-        }
-
-        // ═══ SHEET 5: Journey Timelines (per trade) ═══
-        const journeyRows = [];
-        for (const t of (trades || [])) {
-            const timeline = t.journey_stats?.timeline || [];
-            for (const pt of timeline) {
-                journeyRows.push({
-                    trade_id: t.id,
-                    strategy: t.strategy_type,
-                    index: t.index_key,
-                    date: t.entry_date?.split('T')[0],
-                    time: pt.t,
-                    pnl: pt.pnl,
-                    ci: pt.ci,
-                    spot: pt.spot,
-                    vix: pt.vix,
-                    pcr: pt.pcr,
-                    force_alignment: pt.fa
-                });
-            }
-        }
-
-        // ═══ SHEET 6: Strike Data (per-strike OI/IV/Delta/Pop from polls) ═══
-        const strikeRows = [];
-        for (const row of (config || [])) {
-            if (row.key.startsWith('poll_history_')) {
-                const date = row.key.replace('poll_history_', '');
-                const polls = Array.isArray(row.value) ? row.value : [];
-                for (const p of polls) {
-                    // BNF strikes
-                    for (const s of (p.bnfS || [])) {
-                        if (s.c) strikeRows.push({ date, time: p.t, idx: 'BNF', strike: s.k, side: 'CE', oi: s.c.o, volume: s.c.v, ltp: s.c.l, iv: s.c.i, delta: s.c.d, pop: s.c.p });
-                        if (s.p) strikeRows.push({ date, time: p.t, idx: 'BNF', strike: s.k, side: 'PE', oi: s.p.o, volume: s.p.v, ltp: s.p.l, iv: s.p.i, delta: s.p.d, pop: s.p.p });
-                    }
-                    // NF strikes
-                    for (const s of (p.nfS || [])) {
-                        if (s.c) strikeRows.push({ date, time: p.t, idx: 'NF', strike: s.k, side: 'CE', oi: s.c.o, volume: s.c.v, ltp: s.c.l, iv: s.c.i, delta: s.c.d, pop: s.c.p });
-                        if (s.p) strikeRows.push({ date, time: p.t, idx: 'NF', strike: s.k, side: 'PE', oi: s.p.o, volume: s.p.v, ltp: s.p.l, iv: s.p.i, delta: s.p.d, pop: s.p.p });
-                    }
-                }
-            }
-        }
-
-        // ═══ BUILD WORKBOOK ═══
-        statusEl.textContent = '⏳ Building Excel...';
-        const wb = XLSX.utils.book_new();
-
-        if (tradeRows.length) {
-            const ws1 = XLSX.utils.json_to_sheet(tradeRows);
-            XLSX.utils.book_append_sheet(wb, ws1, 'Trades');
-        }
-        if (premRows.length) {
-            const ws2 = XLSX.utils.json_to_sheet(premRows);
-            XLSX.utils.book_append_sheet(wb, ws2, 'Premium History');
-        }
-        if (chainRows.length) {
-            const ws3 = XLSX.utils.json_to_sheet(chainRows);
-            XLSX.utils.book_append_sheet(wb, ws3, 'Chain Snapshots');
-        }
-        if (pollRows.length) {
-            const ws4 = XLSX.utils.json_to_sheet(pollRows);
-            XLSX.utils.book_append_sheet(wb, ws4, 'Poll History');
-        }
-        if (journeyRows.length) {
-            const ws5 = XLSX.utils.json_to_sheet(journeyRows);
-            XLSX.utils.book_append_sheet(wb, ws5, 'Journey Timelines');
-        }
-        if (strikeRows.length) {
-            const ws6 = XLSX.utils.json_to_sheet(strikeRows);
-            XLSX.utils.book_append_sheet(wb, ws6, 'Strike Data');
-        }
-
-        // Summary sheet
-        const summary = [
-            { metric: 'Export Date', value: new Date().toISOString() },
-            { metric: 'Total Trades', value: trades?.length || 0 },
-            { metric: 'Real Trades', value: (trades || []).filter(t => !t.paper).length },
-            { metric: 'Paper Trades', value: (trades || []).filter(t => t.paper).length },
-            { metric: 'Premium History Days', value: premHist?.length || 0 },
-            { metric: 'Chain Snapshots', value: chains?.length || 0 },
-            { metric: 'Poll History Entries', value: pollRows.length },
-            { metric: 'Journey Timeline Points', value: journeyRows.length },
-            { metric: 'Strike Data Points', value: strikeRows.length },
-            { metric: 'App Version', value: 'v2.1 b122' }
-        ];
-        const ws0 = XLSX.utils.json_to_sheet(summary);
-        XLSX.utils.book_append_sheet(wb, ws0, 'Summary');
-
-        // ═══ DOWNLOAD via Supabase Storage (real HTTPS URL — works in ANY WebView) ═══
-        const today = API.todayIST();
-        const filename = `MarketRadar_Export_${today}.xlsx`;
-        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-        const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const stats = `${trades?.length || 0} trades · ${pollRows.length} polls · ${strikeRows.length} strikes`;
-
-        statusEl.textContent = '⏳ Uploading to cloud...';
-
-        // Upload to Supabase Storage (public 'exports' bucket)
-        const storagePath = `export_${today}_${Date.now()}.xlsx`;
-        const { error: uploadErr } = await sb.storage.from('EXPORTS').upload(storagePath, blob, {
-            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            upsert: true
-        });
-
-        if (uploadErr) throw new Error('Upload failed: ' + uploadErr.message);
-
-        // Get public URL with download header
-        const { data: urlData } = sb.storage.from('EXPORTS').getPublicUrl(storagePath, { download: filename });
-        const publicUrl = urlData?.publicUrl;
-        if (!publicUrl) throw new Error('Could not get public URL');
-
-        // Download via hidden iframe — proven technique for WebView downloads
-        // Content-Disposition: attachment header tells WebView to download, not render
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        iframe.src = publicUrl;
-        document.body.appendChild(iframe);
-        setTimeout(() => { try { document.body.removeChild(iframe); } catch(e) {} }, 30000);
-
-        statusEl.textContent = '';
-        statusEl.appendChild(document.createTextNode(`✅ ${stats}`));
-        statusEl.appendChild(document.createElement('br'));
-        const link = document.createElement('a');
-        link.href = publicUrl;
-        link.download = filename;
-        link.style.cssText = 'display:inline-block;margin-top:6px;padding:10px 16px;background:var(--accent);color:white;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none';
-        link.textContent = `📥 Download Excel`;
-        statusEl.appendChild(link);
-        statusEl.appendChild(document.createElement('br'));
-        const hint = document.createElement('span');
-        hint.style.cssText = 'font-size:10px;color:var(--text-muted)';
-        hint.textContent = 'If tap fails: long-press → "Open in browser"';
-        statusEl.appendChild(hint);
-        btn.disabled = false;
-
-    } catch (err) {
-        console.error('Export error:', err);
-        statusEl.textContent = `❌ Export failed: ${err.message}`;
-        btn.disabled = false;
-    }
-}
 
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', async () => {
@@ -10207,11 +5903,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (todayPolls && Array.isArray(todayPolls)) {
         // b95: MERGE — keep whichever is longer (Supabase vs in-memory)
         // Prevents background kill from overwriting morning data
-        if (todayPolls.length > STATE.pollHistory.length) {
+        if (todayPolls.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
             STATE.pollHistory = todayPolls;
         }
         // Sync pollCount so UI shows correct number
-        STATE.pollCount = STATE.pollHistory.length;
+        STATE.pollCount = (JSON.parse(NativeBridge.getPollHistory() || '[]')).length;
         // b121: Lock in the restored base NOW — before any Kotlin broadcast arrives
         // syncFromNative adds Kotlin's fresh count on top: total = base + kotlin count
         STATE._restoredPollBase = STATE.pollCount;
@@ -10220,9 +5916,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // b97: Restore baseline from Supabase — enables polling after background kill
     const savedBaseline = cloudConfig?.morning_baseline;
     if (savedBaseline && savedBaseline._date === API.todayIST() && savedBaseline.baseline) {
-        if (!STATE.baseline) {
+        if (!(JSON.parse(NativeBridge.getBaseline() || '{}'))) {
             STATE.baseline = savedBaseline.baseline;
-            STATE.live = { ...STATE.baseline };
+            STATE.live = { ...(JSON.parse(NativeBridge.getBaseline() || '{}')) };
             if (savedBaseline.bnfExpiry) STATE.bnfExpiry = savedBaseline.bnfExpiry;
             if (savedBaseline.nfExpiry) STATE.nfExpiry = savedBaseline.nfExpiry;
             console.log('[b97] Baseline restored from Supabase');
@@ -10237,7 +5933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
 
     // If open trades exist, show positions tab
-    if (STATE.openTrades.length > 0) {
+    if ((JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
         switchTab('positions');
     }
 
@@ -10245,8 +5941,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // b97: Auto-restart polling after background kill
     // If baseline restored + market open → start watching without manual Lock & Scan
-    if (STATE.baseline && API.isMarketHours() && !STATE.isWatching) {
-        console.log(`[b97] Auto-restart: baseline exists, market open, ${STATE.pollHistory.length} polls restored`);
+    if ((JSON.parse(NativeBridge.getBaseline() || '{}')) && API.isMarketHours() && !(JSON.parse(NativeBridge.getServiceStatus() || '{}').running)) {
+        console.log(`[b97] Auto-restart: baseline exists, market open, ${(JSON.parse(NativeBridge.getPollHistory() || '[]')).length} polls restored`);
         // Collapse morning section (already locked)
         const morningEl = document.getElementById('morning-inputs');
         if (morningEl) morningEl.style.display = 'none';
@@ -10288,19 +5984,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Global Direction inputs — live update on change + auto-save + recompute boost
     document.addEventListener('change', (e) => {
         if (e.target.id === 'in-dow-now') {
-            STATE.globalDirection.dowNow = e.target.value ? parseFloat(e.target.value) : null;
+            (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-crude-now') {
-            STATE.globalDirection.crudeNow = e.target.value ? parseFloat(e.target.value) : null;
+            (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-gift-now') {
-            STATE.globalDirection.giftNow = e.target.value ? parseFloat(e.target.value) : null;
+            (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).giftNow = e.target.value ? parseFloat(e.target.value) : null;
         } else { return; }
         // Auto-save to localStorage + Supabase with date stamp
-        const saveData = { ...STATE.globalDirection, _date: API.todayIST() };
+        const saveData = { ...(JSON.parse(NativeBridge.getGlobalDirection() || '{}')), _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
 
         // Recompute globalBoost with new direction data
-        computeGlobalBoost(STATE.tomorrowSignal, STATE.positioningResult);
+        computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
         renderAll();
     });
 
@@ -10310,13 +6006,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const dowEl = document.getElementById('in-dow-now');
         const crudeEl = document.getElementById('in-crude-now');
         const giftEl = document.getElementById('in-gift-now');
-        if (dowEl) STATE.globalDirection.dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
-        if (crudeEl) STATE.globalDirection.crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
-        if (giftEl) STATE.globalDirection.giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
-        const saveData = { ...STATE.globalDirection, _date: API.todayIST() };
+        if (dowEl) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
+        if (crudeEl) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
+        if (giftEl) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
+        const saveData = { ...(JSON.parse(NativeBridge.getGlobalDirection() || '{}')), _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
-        computeGlobalBoost(STATE.tomorrowSignal, STATE.positioningResult);
+        computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
         // Show saved feedback
         const badge = document.getElementById('global-dir-saved');
         if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 2000); }
@@ -10338,7 +6034,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // This ensures immediate poll + brain run instead of waiting for next 5-min interval.
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
-        if (!STATE.baseline || !STATE.isWatching) return;
+        if (!(JSON.parse(NativeBridge.getBaseline() || '{}')) || !(JSON.parse(NativeBridge.getServiceStatus() || '{}').running)) return;
 
         // Phase 4: NATIVE MODE — full pull from Kotlin, no lightFetch
         if (STATE._nativeMode && window.NativeBridge) {
@@ -10349,7 +6045,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const rawPolls = window.NativeBridge.getPollHistory();
                     if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
                         const nativePolls = JSON.parse(rawPolls);
-                        if (Array.isArray(nativePolls) && nativePolls.length > STATE.pollHistory.length) {
+                        if (Array.isArray(nativePolls) && nativePolls.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
                             // b121: Only update if Kotlin has MORE polls — its history IS the running total
                             STATE.pollHistory = nativePolls;
                             STATE.pollCount = nativePolls.length;
@@ -10381,11 +6077,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (Array.isArray(cands) && cands.length > 0) {
                             STATE.candidates = cands;
                             STATE.watchlist = cands.slice(0, 6);
-                            const seenIds = new Set(STATE.watchlist.map(c => c.id));
+                            const seenIds = new Set((bd.watchlist || []).map(c => c.id));
                             for (const idx of ['BNF', 'NF']) {
                                 const seen = new Set();
                                 for (const c of cands.filter(c => c.index === idx && !c.capitalBlocked)) {
-                                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); STATE.watchlist.push(c); }
+                                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
                                     if (seen.size >= 5) break;
                                 }
                             }
@@ -10409,7 +6105,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // BROWSER MODE — existing recovery logic
-        const sinceLastPoll = STATE.lastPollTime ? (Date.now() - STATE.lastPollTime) / 60000 : 999;
+        const sinceLastPoll = (JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll) ? (Date.now() - (JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll)) / 60000 : 999;
         if (sinceLastPoll >= 4) {
             console.log(`[b108] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
