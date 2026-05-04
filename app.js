@@ -2685,6 +2685,23 @@ function safeParseNB(rawValue, fallback) {
     }
 }
 
+function callNativeJson(methodName, ...args) {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge[methodName] !== 'function') {
+        throw new Error(`NativeBridge.${methodName} unavailable. Install latest APK.`);
+    }
+    const response = safeParseNB(NativeBridge[methodName](...args), { ok: true });
+    if (response.ok === false) throw new Error(response.error || `${methodName} failed`);
+    return response;
+}
+
+function requireFilledInputs(fields) {
+    const missing = fields.filter(({ id }) => {
+        const el = document.getElementById(id);
+        return !el || !String(el.value || '').trim();
+    }).map(({ label }) => label);
+    if (missing.length) throw new Error(`Missing required input: ${missing.join(', ')}`);
+}
+
 function getBrainData() {
     try {
         const raw = NativeBridge.getBrainResult();
@@ -2739,6 +2756,7 @@ function collectBaselineFromForm() {
         diiCash: num('in-dii-cash'),
         dowClose: num('in-dow-close'),
         crudeSettle: num('in-crude-settle'),
+        giftSpot: num('in-gift-spot'),
         upstoxBias: get('in-upstox-bias'),
         eveningClose: eveningClose || undefined,
     };
@@ -5715,6 +5733,16 @@ function lockMorningData() {
         initAudio();
         requestNotificationPermission();
         const triggerScan = () => startWatchLoop();
+        requireFilledInputs([
+            { id: 'in-fii-cash', label: 'FII Cash' },
+            { id: 'in-fii-short', label: 'FII Short %' },
+            { id: 'in-dii-cash', label: 'DII Cash' },
+            { id: 'in-fii-idx-fut', label: 'FII Idx Fut' },
+            { id: 'in-fii-stk-fut', label: 'FII Stk Fut' },
+            { id: 'in-dow-close', label: 'Dow Close' },
+            { id: 'in-crude-settle', label: 'Crude Settle' },
+            { id: 'in-gift-spot', label: 'GIFT Spot' }
+        ]);
 
         const rawInputs = {
             date: API.todayIST(),
@@ -5725,12 +5753,15 @@ function lockMorningData() {
             fiiStkFut: parseFloat(document.getElementById('in-fii-stk-fut')?.value || 0) || 0,
             dowClose: parseFloat(document.getElementById('in-dow-close')?.value || 0) || 0,
             crudeSettle: parseFloat(document.getElementById('in-crude-settle')?.value || 0) || 0,
+            giftSpot: parseFloat(document.getElementById('in-gift-spot')?.value || 0) || 0,
             upstoxBias: document.getElementById('in-upstox-bias')?.value || ''
         };
+        const baseline = collectBaselineFromForm();
+        callNativeJson('setMorningInput', JSON.stringify(baseline));
+
         localStorage.setItem('mr2_morning_inputs', JSON.stringify(rawInputs));
         localStorage.setItem('mr2_morning', JSON.stringify(rawInputs));
 
-        const baseline = collectBaselineFromForm();
         localStorage.setItem('mr2_morning_baseline', JSON.stringify(baseline));
 
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
@@ -5774,6 +5805,7 @@ function restoreMorningData(cloudConfig) {
     if (data.diiCash) { const el = document.getElementById('in-dii-cash'); if (el) el.value = data.diiCash; }
     if (data.fiiIdxFut) { const el = document.getElementById('in-fii-idx-fut'); if (el) el.value = data.fiiIdxFut; }
     if (data.fiiStkFut) { const el = document.getElementById('in-fii-stk-fut'); if (el) el.value = data.fiiStkFut; }
+    if (data.giftSpot) { const el = document.getElementById('in-gift-spot'); if (el) el.value = data.giftSpot; }
     if (data.upstoxBias) {
         const el = document.getElementById('in-upstox-bias');
         if (el) el.value = data.upstoxBias;
@@ -5936,6 +5968,7 @@ function saveEveningClose() {
             saved_at: new Date().toISOString()
         };
 
+        callNativeJson('setEveningClose', JSON.stringify(payload));
         STATE.eveningClose = payload;
         localStorage.setItem('mr2_evening_close', JSON.stringify(payload));
         if (statusEl) {

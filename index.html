@@ -44,7 +44,7 @@
     <header class="app-header">
         <div class="header-left">
             <h1>Market Radar</h1>
-            <span class="version">v2.1 · b130</span>
+            <span class="version">v2.1 · b131</span>
         </div>
         <div class="header-right">
             <label class="theme-toggle" title="Toggle theme">
@@ -135,6 +135,12 @@
                             </div>
                         </div>
                     </details>
+                    <div class="input-grid" style="margin-top:6px">
+                        <div class="input-group">
+                            <label>GIFT Spot <span class="label-hint">(before scan)</span></label>
+                            <input type="text" inputmode="text" id="in-gift-spot" class="input-field morning-input" placeholder="24147">
+                        </div>
+                    </div>
                     <div class="morning-actions">
                         <button id="btn-lock" class="btn-primary">🔒 Lock & Scan</button>
                         <button id="btn-rescan" class="btn-ghost">↻ Reset</button>
@@ -201,9 +207,9 @@
 
     <footer class="app-footer"><span id="footer-status">Ready</span></footer>
 
-    <script src="api.js?v=1107"></script>
-    <script src="app.js?v=1107"></script>
-    <script src="log-viewer.js?v=1107"></script>
+    <script src="api.js?v=1108"></script>
+    <script src="app.js?v=1108"></script>
+    <script src="log-viewer.js?v=1108"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
