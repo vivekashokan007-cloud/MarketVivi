@@ -2698,20 +2698,34 @@ function collectBaselineFromForm() {
         const v = parseFloat(get(id));
         return isNaN(v) ? dflt : v;
     };
+    let latestPoll = {};
+    try {
+        latestPoll = JSON.parse((NativeBridge && NativeBridge.getLatestPoll && NativeBridge.getLatestPoll()) || '{}');
+    } catch (e) {
+        latestPoll = {};
+    }
+    let eveningClose = null;
+    try {
+        eveningClose = JSON.parse(localStorage.getItem('mr2_evening_close') || 'null');
+    } catch (e) {
+        eveningClose = null;
+    }
     return {
         date: API.todayIST(),
-        bnfSpot: num('bnfSpot'),
-        nfSpot: num('nfSpot'),
-        vix: num('vix'),
-        fiiCash: num('fiiCash'),
-        fiiShortPct: num('fiiShortPct'),
-        fiiIdxFut: num('fiiIdxFut'),
-        fiiStkFut: num('fiiStkFut'),
-        diiCash: num('diiCash'),
-        upstoxBias: get('upstoxBias'),
-        giftSpot: num('giftSpot'),
-        bnfCallWall: num('bnfCallWall'),
-        bnfPutWall: num('bnfPutWall'),
+        bnfSpot: parseFloat(latestPoll.bnfSpot ?? latestPoll.bnf ?? 0) || 0,
+        nfSpot: parseFloat(latestPoll.nfSpot ?? latestPoll.nf ?? 0) || 0,
+        vix: parseFloat(latestPoll.vix ?? 0) || 0,
+        bnfCallWall: parseFloat(latestPoll.bnfCallWall ?? latestPoll.cw ?? 0) || 0,
+        bnfPutWall: parseFloat(latestPoll.bnfPutWall ?? latestPoll.pw ?? 0) || 0,
+        fiiCash: num('in-fii-cash'),
+        fiiShortPct: num('in-fii-short'),
+        fiiIdxFut: num('in-fii-idx-fut'),
+        fiiStkFut: num('in-fii-stk-fut'),
+        diiCash: num('in-dii-cash'),
+        dowClose: num('in-dow-close'),
+        crudeSettle: num('in-crude-settle'),
+        upstoxBias: get('in-upstox-bias'),
+        eveningClose: eveningClose || undefined,
     };
 }
 
@@ -5682,15 +5696,47 @@ function renderFooter() {
 // ═══════════════════════════════════════════════════════════════
 
 function lockMorningData() {
-    // F.2 reduced: capture form values, push baseline to Kotlin, render.
     try {
+        initAudio();
+        requestNotificationPermission();
+        const triggerScan = () => startWatchLoop();
+
+        const rawInputs = {
+            date: API.todayIST(),
+            fiiCash: parseFloat(document.getElementById('in-fii-cash')?.value || 0) || 0,
+            fiiShortPct: parseFloat(document.getElementById('in-fii-short')?.value || 0) || 0,
+            diiCash: parseFloat(document.getElementById('in-dii-cash')?.value || 0) || 0,
+            fiiIdxFut: parseFloat(document.getElementById('in-fii-idx-fut')?.value || 0) || 0,
+            fiiStkFut: parseFloat(document.getElementById('in-fii-stk-fut')?.value || 0) || 0,
+            dowClose: parseFloat(document.getElementById('in-dow-close')?.value || 0) || 0,
+            crudeSettle: parseFloat(document.getElementById('in-crude-settle')?.value || 0) || 0,
+            upstoxBias: document.getElementById('in-upstox-bias')?.value || ''
+        };
+        localStorage.setItem('mr2_morning_inputs', JSON.stringify(rawInputs));
+        localStorage.setItem('mr2_morning', JSON.stringify(rawInputs));
+
         const baseline = collectBaselineFromForm();
+        localStorage.setItem('mr2_morning_baseline', JSON.stringify(baseline));
+
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
             NativeBridge.setBaseline(JSON.stringify(baseline));
         }
+
+        document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
+        const btnLock = document.getElementById('btn-lock');
+        if (btnLock) {
+            btnLock.disabled = true;
+            btnLock.textContent = 'Scanning...';
+        }
+        const statusEl = document.getElementById('status');
+        if (statusEl) statusEl.textContent = '✅ Morning data locked. Starting scan...';
+
+        triggerScan();
         renderAll();
     } catch (e) {
         console.error('lockMorningData failed:', e);
+        const statusEl = document.getElementById('status');
+        if (statusEl) statusEl.textContent = `Lock failed: ${e.message}`;
     }
 }
 
