@@ -2673,6 +2673,18 @@ const STATE = {
 // having to call getBrainData() repeatedly per render.
 let bd = {};
 
+// F.2.7 — Safe parser for NativeBridge JSON returns. Handles the literal
+// "null" string from Kotlin prefs defaults and JSON null payloads.
+function safeParseNB(rawValue, fallback) {
+    try {
+        if (!rawValue || rawValue === 'null') return fallback;
+        const parsed = JSON.parse(rawValue);
+        return (parsed === null || parsed === undefined) ? fallback : parsed;
+    } catch (e) {
+        return fallback;
+    }
+}
+
 function getBrainData() {
     try {
         const raw = NativeBridge.getBrainResult();
@@ -5992,11 +6004,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (todayPolls && Array.isArray(todayPolls)) {
         // b95: MERGE — keep whichever is longer (Supabase vs in-memory)
         // Prevents background kill from overwriting morning data
-        if (todayPolls.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
+        if (todayPolls.length > safeParseNB(NativeBridge.getPollHistory(), []).length) {
             STATE.pollHistory = todayPolls;
         }
         // Sync pollCount so UI shows correct number
-        STATE.pollCount = (JSON.parse(NativeBridge.getPollHistory() || '[]')).length;
+        STATE.pollCount = safeParseNB(NativeBridge.getPollHistory(), []).length;
         // b121: Lock in the restored base NOW — before any Kotlin broadcast arrives
         // syncFromNative adds Kotlin's fresh count on top: total = base + kotlin count
         STATE._restoredPollBase = STATE.pollCount;
@@ -6005,9 +6017,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // b97: Restore baseline from Supabase — enables polling after background kill
     const savedBaseline = cloudConfig?.morning_baseline;
     if (savedBaseline && savedBaseline._date === API.todayIST() && savedBaseline.baseline) {
-        if (!(JSON.parse(NativeBridge.getBaseline() || '{}'))) {
+        if (!safeParseNB(NativeBridge.getBaseline(), {})) {
             STATE.baseline = savedBaseline.baseline;
-            STATE.live = { ...(JSON.parse(NativeBridge.getBaseline() || '{}')) };
+            STATE.live = { ...safeParseNB(NativeBridge.getBaseline(), {}) };
             if (savedBaseline.bnfExpiry) STATE.bnfExpiry = savedBaseline.bnfExpiry;
             if (savedBaseline.nfExpiry) STATE.nfExpiry = savedBaseline.nfExpiry;
             console.log('[b97] Baseline restored from Supabase');
@@ -6018,12 +6030,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { if (typeof DB !== 'undefined' && DB.cleanOldPolls) DB.cleanOldPolls(7).catch(() => {}); } catch (e) {}
 
     initTheme(cloudConfig);
-    await loadOpenTrade();
+    try { await loadOpenTrade(); } catch (e) { console.warn('[boot] loadOpenTrade failed:', e); }
     try {
         if (typeof DB !== 'undefined' && DB.getSignalAccuracyStats) {
             STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
         } else {
-            STATE.signalAccuracyStats = JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}');
+            STATE.signalAccuracyStats = safeParseNB(NativeBridge.getSignalAccuracyStats(), {});
         }
     } catch (e) {
         console.warn('[boot] getSignalAccuracyStats skipped:', e.message);
@@ -6031,7 +6043,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // If open trades exist, show positions tab
-    if ((JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
+    if (safeParseNB(NativeBridge.getOpenTrades(), []).length > 0) {
         switchTab('positions');
     }
 
@@ -6039,8 +6051,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // b97: Auto-restart polling after background kill
     // If baseline restored + market open → start watching without manual Lock & Scan
-    if ((JSON.parse(NativeBridge.getBaseline() || '{}')) && API.isMarketHours() && !(JSON.parse(NativeBridge.getServiceStatus() || '{}').running)) {
-        console.log(`[b97] Auto-restart: baseline exists, market open, ${(JSON.parse(NativeBridge.getPollHistory() || '[]')).length} polls restored`);
+    if (safeParseNB(NativeBridge.getBaseline(), {}) && API.isMarketHours() && !safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
+        console.log(`[b97] Auto-restart: baseline exists, market open, ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
         // Collapse morning section (already locked)
         const morningEl = document.getElementById('morning-inputs');
         if (morningEl) morningEl.style.display = 'none';
@@ -6079,14 +6091,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Global Direction inputs — live update on change + auto-save + recompute boost
     document.addEventListener('change', (e) => {
         if (e.target.id === 'in-dow-now') {
-            (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowNow = e.target.value ? parseFloat(e.target.value) : null;
+            safeParseNB(NativeBridge.getGlobalDirection(), {}).dowNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-crude-now') {
-            (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeNow = e.target.value ? parseFloat(e.target.value) : null;
+            safeParseNB(NativeBridge.getGlobalDirection(), {}).crudeNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-gift-now') {
-            (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).giftNow = e.target.value ? parseFloat(e.target.value) : null;
+            safeParseNB(NativeBridge.getGlobalDirection(), {}).giftNow = e.target.value ? parseFloat(e.target.value) : null;
         } else { return; }
         // Auto-save to localStorage + Supabase with date stamp
-        const saveData = { ...(JSON.parse(NativeBridge.getGlobalDirection() || '{}')), _date: API.todayIST() };
+        const saveData = { ...safeParseNB(NativeBridge.getGlobalDirection(), {}), _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
 
@@ -6101,10 +6113,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const dowEl = document.getElementById('in-dow-now');
         const crudeEl = document.getElementById('in-crude-now');
         const giftEl = document.getElementById('in-gift-now');
-        if (dowEl) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
-        if (crudeEl) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
-        if (giftEl) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
-        const saveData = { ...(JSON.parse(NativeBridge.getGlobalDirection() || '{}')), _date: API.todayIST() };
+        if (dowEl) safeParseNB(NativeBridge.getGlobalDirection(), {}).dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
+        if (crudeEl) safeParseNB(NativeBridge.getGlobalDirection(), {}).crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
+        if (giftEl) safeParseNB(NativeBridge.getGlobalDirection(), {}).giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
+        const saveData = { ...safeParseNB(NativeBridge.getGlobalDirection(), {}), _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
         computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
@@ -6129,7 +6141,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // This ensures immediate poll + brain run instead of waiting for next 5-min interval.
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
-        if (!(JSON.parse(NativeBridge.getBaseline() || '{}')) || !(JSON.parse(NativeBridge.getServiceStatus() || '{}').running)) return;
+        if (!safeParseNB(NativeBridge.getBaseline(), {}) || !safeParseNB(NativeBridge.getServiceStatus(), {}).running) return;
 
         // Phase 4: NATIVE MODE — full pull from Kotlin, no lightFetch
         if (STATE._nativeMode && window.NativeBridge) {
@@ -6140,7 +6152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const rawPolls = window.NativeBridge.getPollHistory();
                     if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
                         const nativePolls = JSON.parse(rawPolls);
-                        if (Array.isArray(nativePolls) && nativePolls.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
+                        if (Array.isArray(nativePolls) && nativePolls.length > safeParseNB(NativeBridge.getPollHistory(), []).length) {
                             // b121: Only update if Kotlin has MORE polls — its history IS the running total
                             STATE.pollHistory = nativePolls;
                             STATE.pollCount = nativePolls.length;
@@ -6200,7 +6212,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // BROWSER MODE — existing recovery logic
-        const sinceLastPoll = (JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll) ? (Date.now() - (JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll)) / 60000 : 999;
+        const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+        const sinceLastPoll = (serviceStatus.lastPoll) ? (Date.now() - serviceStatus.lastPoll) / 60000 : 999;
         if (sinceLastPoll >= 4) {
             console.log(`[b108] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
