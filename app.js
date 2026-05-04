@@ -2675,7 +2675,10 @@ let bd = {};
 
 function getBrainData() {
     try {
-        return JSON.parse(NativeBridge.getBrainResult() || '{}');
+        const raw = NativeBridge.getBrainResult();
+        if (!raw || raw === 'null') return {};
+        const parsed = JSON.parse(raw);
+        return parsed || {};
     } catch (e) {
         console.error('getBrainData failed:', e);
         return {};
