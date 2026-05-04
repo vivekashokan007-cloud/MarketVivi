@@ -2690,22 +2690,6 @@ function refreshBrainData() {
 // collectBaselineFromForm — lifted from former initialFetch.
 // Reads morning input fields and assembles the baseline JSON for Kotlin.
 function collectBaselineFromForm() {
-    let live = {};
-    try {
-        live = JSON.parse((typeof NativeBridge !== 'undefined' && NativeBridge.getLatestPoll)
-            ? (NativeBridge.getLatestPoll() || '{}')
-            : '{}') || {};
-    } catch (e) {
-        live = {};
-    }
-    let eveningClose = null;
-    try {
-        const rawEvening = localStorage.getItem('mr2_evening_close');
-        eveningClose = rawEvening ? JSON.parse(rawEvening) : null;
-    } catch (e) {
-        eveningClose = null;
-    }
-
     const get = (id) => {
         const el = document.getElementById(id);
         return el ? el.value : '';
@@ -2716,31 +2700,18 @@ function collectBaselineFromForm() {
     };
     return {
         date: API.todayIST(),
-        bnfSpot: live.bnfSpot ?? live.bnf ?? 0,
-        nfSpot: live.nfSpot ?? live.nf ?? 0,
-        vix: live.vix ?? 0,
-        fiiCash: num('in-fii-cash'),
-        fiiShortPct: num('in-fii-short'),
-        fiiIdxFut: num('in-fii-idx-fut'),
-        fiiStkFut: num('in-fii-stk-fut'),
-        diiCash: num('in-dii-cash'),
-        dowClose: num('in-dow-close'),
-        crudeSettle: num('in-crude-settle'),
-        upstoxBias: get('in-upstox-bias'),
-        giftSpot: live.giftSpot ?? live.gift ?? 0,
-        bnfCallWall: live.bnfCallWall ?? live.cw ?? live.callWallStrike ?? 0,
-        bnfPutWall: live.bnfPutWall ?? live.pw ?? live.putWallStrike ?? 0,
-        bnfTotalCallOi: live.bnfTotalCallOI ?? live.bnfCOI ?? 0,
-        bnfTotalPutOi: live.bnfTotalPutOI ?? live.bnfPOI ?? 0,
-        nfCallWall: live.nfCallWall ?? live.nfCW ?? 0,
-        nfPutWall: live.nfPutWall ?? live.nfPW ?? 0,
-        nfTotalCallOi: live.nfTotalCallOI ?? 0,
-        nfTotalPutOi: live.nfTotalPutOI ?? 0,
-        eveningClose: eveningClose ? {
-            dow: eveningClose.dow ?? null,
-            crude: eveningClose.crude ?? null,
-            gift: eveningClose.gift ?? null
-        } : null
+        bnfSpot: num('bnfSpot'),
+        nfSpot: num('nfSpot'),
+        vix: num('vix'),
+        fiiCash: num('fiiCash'),
+        fiiShortPct: num('fiiShortPct'),
+        fiiIdxFut: num('fiiIdxFut'),
+        fiiStkFut: num('fiiStkFut'),
+        diiCash: num('diiCash'),
+        upstoxBias: get('upstoxBias'),
+        giftSpot: num('giftSpot'),
+        bnfCallWall: num('bnfCallWall'),
+        bnfPutWall: num('bnfPutWall'),
     };
 }
 
@@ -5711,45 +5682,15 @@ function renderFooter() {
 // ═══════════════════════════════════════════════════════════════
 
 function lockMorningData() {
+    // F.2 reduced: capture form values, push baseline to Kotlin, render.
     try {
-        initAudio();
-        if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission();
-        }
-
         const baseline = collectBaselineFromForm();
-        const morningPayload = {
-            fiiCash: baseline.fiiCash,
-            fiiShortPct: baseline.fiiShortPct,
-            diiCash: baseline.diiCash,
-            fiiIdxFut: baseline.fiiIdxFut,
-            fiiStkFut: baseline.fiiStkFut,
-            dowClose: baseline.dowClose,
-            crudeSettle: baseline.crudeSettle,
-            upstoxBias: baseline.upstoxBias,
-            date: baseline.date
-        };
-
-        localStorage.setItem('mr2_morning_inputs', JSON.stringify(morningPayload));
-        localStorage.setItem('mr2_morning', JSON.stringify(morningPayload));
-        localStorage.setItem('mr2_morning_baseline', JSON.stringify(baseline));
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
             NativeBridge.setBaseline(JSON.stringify(baseline));
         }
-        document.querySelectorAll('.morning-input').forEach(el => { el.disabled = true; });
-        const lockBtn = document.getElementById('btn-lock');
-        if (lockBtn) {
-            lockBtn.disabled = true;
-            lockBtn.textContent = '⏳ Scanning...';
-        }
-        const statusEl = document.getElementById('status');
-        if (statusEl) statusEl.textContent = '✅ Morning data locked. Starting scan...';
-        startWatchLoop();
         renderAll();
     } catch (e) {
         console.error('lockMorningData failed:', e);
-        const statusEl = document.getElementById('status');
-        if (statusEl) statusEl.textContent = `❌ Lock & Scan failed: ${e.message}`;
     }
 }
 
@@ -5758,7 +5699,7 @@ function restoreMorningData(cloudConfig) {
     // Priority: Supabase → localStorage
     let data = cloudConfig?.morning_inputs || null;
     if (!data) {
-        const saved = localStorage.getItem('mr2_morning_inputs') || localStorage.getItem('mr2_morning');
+        const saved = localStorage.getItem('mr2_morning');
         if (!saved) return;
         try { data = JSON.parse(saved); } catch { return; }
     }
@@ -5905,35 +5846,16 @@ function switchTab(tabName) {
 // ═══════════════════════════════════════════════════════════════
 
 function saveEveningClose() {
+    // F.2 reduced: capture form values. Persistence to Supabase will be F.3.
+    // For now, keep in-memory until proper NativeBridge.setConfig setter exists.
     try {
-        const dowValue = document.getElementById('in-eve-dow')?.value?.trim() || '';
-        const crudeValue = document.getElementById('in-eve-crude')?.value?.trim() || '';
-        const giftValue = document.getElementById('in-eve-gift')?.value?.trim() || '';
-        const statusEl = document.getElementById('evening-status');
-
-        if (!dowValue && !crudeValue && !giftValue) {
-            if (statusEl) statusEl.textContent = '⚠️ Enter at least one value before saving.';
-            return;
-        }
-
-        const payload = {
-            dow: dowValue ? parseFloat(dowValue) : null,
-            crude: crudeValue ? parseFloat(crudeValue) : null,
-            gift: giftValue ? parseFloat(giftValue) : null,
-            date: API.todayIST(),
-            saved_at: new Date().toISOString()
-        };
-
-        STATE.eveningClose = payload;
-        localStorage.setItem('mr2_evening_close', JSON.stringify(payload));
-        if (statusEl) {
-            statusEl.textContent = `✅ Saved: Dow ${dowValue || '--'}, Crude ${crudeValue || '--'}, GIFT ${giftValue || '--'} (${payload.date})`;
-        }
+        const dow = parseFloat(document.getElementById('eveningDow')?.value || 0);
+        const crude = parseFloat(document.getElementById('eveningCrude')?.value || 0);
+        const gift = parseFloat(document.getElementById('eveningGift')?.value || 0);
+        STATE._eveningCloseTemp = { dow, crude, gift, captured: new Date().toISOString() };
         renderAll();
     } catch (e) {
         console.error('saveEveningClose failed:', e);
-        const statusEl = document.getElementById('evening-status');
-        if (statusEl) statusEl.textContent = `❌ Save failed: ${e.message}`;
     }
 }
 
@@ -5965,10 +5887,13 @@ function restoreEveningClose(cloudConfig) {
 
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', async () => {
-    DB.init();
+    // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
+    // and button event listeners get attached. Restores rely on localStorage fallback.
+    try { if (typeof DB !== 'undefined' && DB.init) DB.init(); } catch (e) { console.warn('[boot] DB.init skipped:', e.message); }
 
     // Fetch all config from Supabase (single query) — localStorage fallback if offline
-    const cloudConfig = await DB.getAllConfig();
+    let cloudConfig = null;
+    try { if (typeof DB !== 'undefined' && DB.getAllConfig) cloudConfig = await DB.getAllConfig(); } catch (e) { console.warn('[boot] DB.getAllConfig skipped:', e.message); }
 
     restoreMorningData(cloudConfig);
     restoreGlobalContext(cloudConfig);
@@ -5977,7 +5902,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Phase 11: Restore today's poll history (survives refresh + background kill)
     // Fetched separately because getAllConfig now excludes poll_history_* for performance
     const todayKey = 'poll_history_' + API.todayIST();
-    const todayPolls = await DB.getConfig(todayKey);
+    let todayPolls = null;
+    try { if (typeof DB !== 'undefined' && DB.getConfig) todayPolls = await DB.getConfig(todayKey); } catch (e) { console.warn('[boot] DB.getConfig(poll_history) skipped:', e.message); }
     if (todayPolls && Array.isArray(todayPolls)) {
         // b95: MERGE — keep whichever is longer (Supabase vs in-memory)
         // Prevents background kill from overwriting morning data
@@ -6004,11 +5930,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Cleanup poll_history keys older than 7 days (fire-and-forget)
-    DB.cleanOldPolls(7).catch(() => {});
+    try { if (typeof DB !== 'undefined' && DB.cleanOldPolls) DB.cleanOldPolls(7).catch(() => {}); } catch (e) {}
 
     initTheme(cloudConfig);
     await loadOpenTrade();
-    STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
+    try {
+        if (typeof DB !== 'undefined' && DB.getSignalAccuracyStats) {
+            STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
+        } else {
+            STATE.signalAccuracyStats = JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}');
+        }
+    } catch (e) {
+        console.warn('[boot] getSignalAccuracyStats skipped:', e.message);
+        STATE.signalAccuracyStats = {};
+    }
 
     // If open trades exist, show positions tab
     if ((JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
