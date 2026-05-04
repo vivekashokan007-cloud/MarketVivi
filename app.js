@@ -5979,10 +5979,54 @@ function restoreEveningClose(cloudConfig) {
 // DATA EXPORT — One-click Excel download of all Supabase data
 // ═══════════════════════════════════════════════════════════════
 
+function bindCriticalUiHandlers() {
+    const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
+    tabButtons.forEach(btn => {
+        btn.onclick = () => switchTab(btn.dataset.tab);
+    });
+
+    const firstTab = tabButtons[0];
+    if (!(firstTab && typeof firstTab.onclick === 'function')) {
+        throw new Error('tab-btn listeners failed to attach');
+    }
+
+    document.getElementById('btn-save-evening').onclick = saveEveningClose;
+    document.getElementById('btn-lock').onclick = lockMorningData;
+    document.getElementById('btn-stop').onclick = stopWatchLoop;
+    document.getElementById('btn-rescan').onclick = () => {
+        stopWatchLoop();
+        expandMorning();
+        document.getElementById('btn-lock').disabled = false;
+        document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
+        document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
+    };
+
+    const themeSwitch = document.getElementById('theme-switch');
+    if (themeSwitch) {
+        themeSwitch.onchange = (e) => {
+            const isDark = e.target.checked;
+            document.body.classList.toggle('dark', isDark);
+            localStorage.setItem('mr2_theme', isDark ? 'dark' : 'light');
+            if (typeof DB !== 'undefined' && DB.setConfig) {
+                DB.setConfig('settings', { theme: isDark ? 'dark' : 'light', tradeMode: STATE.tradeMode });
+            }
+            document.querySelector('.toggle-icon').textContent = isDark ? '🌙' : '☀️';
+            document.querySelector('meta[name="theme-color"]').content = isDark ? '#121218' : '#FFFFFF';
+        };
+    }
+}
 
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', async () => {
-    document.getElementById('btn-save-evening')?.addEventListener('click', saveEveningClose);
+    try {
+        bindCriticalUiHandlers();
+        console.info('[boot] tab handlers attached:', typeof document.querySelectorAll('.tab-btn')[0]?.onclick === 'function');
+    } catch (e) {
+        console.error('[boot] Critical UI handler bind failed:', e);
+        const statusEl = document.getElementById('status');
+        if (statusEl) statusEl.textContent = `Boot error: ${e.message}`;
+        return;
+    }
 
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
@@ -5992,9 +6036,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let cloudConfig = null;
     try { if (typeof DB !== 'undefined' && DB.getAllConfig) cloudConfig = await DB.getAllConfig(); } catch (e) { console.warn('[boot] DB.getAllConfig skipped:', e.message); }
 
-    restoreMorningData(cloudConfig);
-    restoreGlobalContext(cloudConfig);
-    restoreEveningClose(cloudConfig);
+    try { restoreMorningData(cloudConfig); } catch (e) { console.warn('[boot] restoreMorningData failed:', e.message); }
+    try { restoreGlobalContext(cloudConfig); } catch (e) { console.warn('[boot] restoreGlobalContext failed:', e.message); }
+    try { restoreEveningClose(cloudConfig); } catch (e) { console.warn('[boot] restoreEveningClose failed:', e.message); }
 
     // Phase 11: Restore today's poll history (survives refresh + background kill)
     // Fetched separately because getAllConfig now excludes poll_history_* for performance
@@ -6047,7 +6091,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         switchTab('positions');
     }
 
-    renderAll();
+    try { renderAll(); } catch (e) { console.warn('[boot] renderAll failed:', e.message); }
 
     // b97: Auto-restart polling after background kill
     // If baseline restored + market open → start watching without manual Lock & Scan
@@ -6071,22 +6115,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Phase 12: Load Pyodide brain in background (non-blocking — app works without it)
     // Deferred by 2s so initial render + first poll aren't delayed
     setTimeout(() => { initBrain().catch(e => console.warn('[Brain] Deferred init failed:', e)); }, 2000);
-
-    // Tab switching
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-    });
-
-    // Event listeners
-    document.getElementById('btn-lock')?.addEventListener('click', lockMorningData);
-    document.getElementById('btn-stop')?.addEventListener('click', stopWatchLoop);
-    document.getElementById('btn-rescan')?.addEventListener('click', () => {
-        stopWatchLoop();
-        expandMorning();
-        document.getElementById('btn-lock').disabled = false;
-        document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
-        document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
-    });
 
     // Global Direction inputs — live update on change + auto-save + recompute boost
     document.addEventListener('change', (e) => {
@@ -6124,16 +6152,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const badge = document.getElementById('global-dir-saved');
         if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 2000); }
         renderAll();
-    });
-
-    // Theme toggle — light is default, dark is toggled
-    document.getElementById('theme-switch')?.addEventListener('change', (e) => {
-        const isDark = e.target.checked;
-        document.body.classList.toggle('dark', isDark);
-        localStorage.setItem('mr2_theme', isDark ? 'dark' : 'light');
-        DB.setConfig('settings', { theme: isDark ? 'dark' : 'light', tradeMode: STATE.tradeMode });
-        document.querySelector('.toggle-icon').textContent = isDark ? '🌙' : '☀️';
-        document.querySelector('meta[name="theme-color"]').content = isDark ? '#121218' : '#FFFFFF';
     });
 
     // b99: VISIBILITY CHANGE — instant recovery when app returns from background
