@@ -5772,7 +5772,17 @@ function restoreGlobalContext(cloudConfig) {
 }
 
 async function loadOpenTrade() {
-    const trades = await DB.getOpenTrades();
+    let trades = [];
+    try {
+        if (typeof DB !== 'undefined' && DB.getOpenTrades) {
+            trades = await DB.getOpenTrades();
+        } else if (typeof NativeBridge !== 'undefined' && NativeBridge.getOpenTrades) {
+            trades = JSON.parse(NativeBridge.getOpenTrades() || '[]');
+        }
+    } catch (e) {
+        console.warn('[boot] loadOpenTrade skipped:', e.message);
+        trades = [];
+    }
     STATE.openTrades = (trades || []).map(t => {
         // Restore in-memory journey from Supabase journey_stats (survives refresh)
         if (t.journey_stats) {
@@ -5846,24 +5856,48 @@ function switchTab(tabName) {
 // ═══════════════════════════════════════════════════════════════
 
 function saveEveningClose() {
-    // F.2 reduced: capture form values. Persistence to Supabase will be F.3.
-    // For now, keep in-memory until proper NativeBridge.setConfig setter exists.
     try {
-        const dow = parseFloat(document.getElementById('eveningDow')?.value || 0);
-        const crude = parseFloat(document.getElementById('eveningCrude')?.value || 0);
-        const gift = parseFloat(document.getElementById('eveningGift')?.value || 0);
-        STATE._eveningCloseTemp = { dow, crude, gift, captured: new Date().toISOString() };
+        const dowValue = document.getElementById('in-eve-dow')?.value?.trim() || '';
+        const crudeValue = document.getElementById('in-eve-crude')?.value?.trim() || '';
+        const giftValue = document.getElementById('in-eve-gift')?.value?.trim() || '';
+        const statusEl = document.getElementById('evening-status');
+
+        if (!dowValue && !crudeValue && !giftValue) {
+            if (statusEl) statusEl.textContent = 'Enter at least one value before saving.';
+            return;
+        }
+
+        const payload = {
+            dow: dowValue ? parseFloat(dowValue) : null,
+            crude: crudeValue ? parseFloat(crudeValue) : null,
+            gift: giftValue ? parseFloat(giftValue) : null,
+            date: API.todayIST(),
+            saved_at: new Date().toISOString()
+        };
+
+        STATE.eveningClose = payload;
+        localStorage.setItem('mr2_evening_close', JSON.stringify(payload));
+        if (statusEl) {
+            statusEl.textContent = `Saved: ${payload.date} · Dow ${dowValue || '--'}, Crude ${crudeValue || '--'}, GIFT ${giftValue || '--'}`;
+        }
         renderAll();
     } catch (e) {
         console.error('saveEveningClose failed:', e);
+        const statusEl = document.getElementById('evening-status');
+        if (statusEl) statusEl.textContent = `Save failed: ${e.message}`;
     }
 }
 
 
 function restoreEveningClose(cloudConfig) {
-    let data = cloudConfig?.evening_close || null;
-    if (!data) {
-        try { data = JSON.parse(localStorage.getItem('mr2_evening_close')); } catch (e) {}
+    let localData = null;
+    try { localData = JSON.parse(localStorage.getItem('mr2_evening_close') || 'null'); } catch (e) {}
+    const cloudData = cloudConfig?.evening_close || null;
+    let data = localData || cloudData;
+    if (localData && cloudData) {
+        const localTime = Date.parse(localData.saved_at || localData.date || '') || 0;
+        const cloudTime = Date.parse(cloudData.saved_at || cloudData.date || '') || 0;
+        data = localTime >= cloudTime ? localData : cloudData;
     }
     if (!data) return;
 
@@ -5887,6 +5921,8 @@ function restoreEveningClose(cloudConfig) {
 
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', async () => {
+    document.getElementById('btn-save-evening')?.addEventListener('click', saveEveningClose);
+
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
     try { if (typeof DB !== 'undefined' && DB.init) DB.init(); } catch (e) { console.warn('[boot] DB.init skipped:', e.message); }
@@ -5990,9 +6026,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = false);
     });
-
-    // Evening close save button
-    document.getElementById('btn-save-evening')?.addEventListener('click', saveEveningClose);
 
     // Global Direction inputs — live update on change + auto-save + recompute boost
     document.addEventListener('change', (e) => {
