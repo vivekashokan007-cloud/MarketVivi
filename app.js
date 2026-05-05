@@ -2694,6 +2694,19 @@ function callNativeJson(methodName, ...args) {
     return response;
 }
 
+function syncUpstoxTokenToNative({ promptIfMissing = false } = {}) {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.setApiToken !== 'function') return false;
+    let token = localStorage.getItem('mr2_upstox_token') || '';
+    token = token.trim();
+    if (!token && promptIfMissing) {
+        token = (window.prompt('Paste Upstox access token for live market data') || '').trim();
+        if (token) localStorage.setItem('mr2_upstox_token', token);
+    }
+    if (!token) return false;
+    NativeBridge.setApiToken(token);
+    return true;
+}
+
 function requireFilledInputs(fields) {
     const missing = fields.filter(({ id }) => {
         const el = document.getElementById(id);
@@ -5800,6 +5813,10 @@ function lockMorningData() {
             { id: 'in-gift-spot', label: 'GIFT Spot' }
         ]);
 
+        if (!syncUpstoxTokenToNative({ promptIfMissing: true })) {
+            throw new Error('Upstox token missing. Paste token to start live polling.');
+        }
+
         const rawInputs = {
             date: API.todayIST(),
             fiiCash: parseFloat(document.getElementById('in-fii-cash')?.value || 0) || 0,
@@ -5837,6 +5854,11 @@ function lockMorningData() {
         renderAll();
     } catch (e) {
         console.error('lockMorningData failed:', e);
+        const btnLock = document.getElementById('btn-lock');
+        if (btnLock) {
+            btnLock.disabled = false;
+            btnLock.textContent = '🔒 Lock & Scan';
+        }
         const statusEl = document.getElementById('status');
         if (statusEl) statusEl.textContent = `Lock failed: ${e.message}`;
     }
@@ -6120,6 +6142,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
     try { if (typeof DB !== 'undefined' && DB.init) DB.init(); } catch (e) { console.warn('[boot] DB.init skipped:', e.message); }
+    try { syncUpstoxTokenToNative(); } catch (e) { console.warn('[boot] token sync skipped:', e.message); }
 
     // Fetch all config from Supabase (single query) — localStorage fallback if offline
     let cloudConfig = null;
