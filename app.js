@@ -30,7 +30,7 @@ const C = {
 
     // Polling intervals
     POLL_INTERVAL_MS: 5 * 60 * 1000,
-    ROUTINE_NOTIFY_MS: 30 * 60 * 1000,
+    ROUTINE_NOTIFY_MS: 60 * 60 * 1000,
 
     // σ thresholds
     SIGMA_ENTRY_THRESHOLD: 1.5,
@@ -2685,6 +2685,23 @@ function safeParseNB(rawValue, fallback) {
     }
 }
 
+function latestPollData() {
+    if (typeof NativeBridge === 'undefined') return {};
+    const l = safeParseNB(NativeBridge.getLatestPoll?.(), {});
+    if (l.bnfSpot == null && l.bnf != null) l.bnfSpot = l.bnf;
+    if (l.nfSpot == null && l.nf != null) l.nfSpot = l.nf;
+    return l;
+}
+
+function validDateOrBlank(value) {
+    if (!value || typeof value !== 'string') return '';
+    return value >= API.todayIST() ? value : '';
+}
+
+function firstCandidateFor(index) {
+    return (bd.generated_candidates || []).find(c => c.index === index) || {};
+}
+
 function callNativeJson(methodName, ...args) {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge[methodName] !== 'function') {
         throw new Error(`NativeBridge.${methodName} unavailable. Install latest APK.`);
@@ -3229,26 +3246,34 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
         }
 
         // Very large σ move = immediate alert regardless
-        if (absSpotSigma > C.SIGMA_IMPORTANT_THRESHOLD || absVixSigma > C.SIGMA_IMPORTANT_THRESHOLD) {
+        const lp = latestPollData();
+        const absNfSpotSigma = Math.abs(lp.nfSpotSigma || 0);
+        if (absSpotSigma > C.SIGMA_IMPORTANT_THRESHOLD ||
+            absNfSpotSigma > C.SIGMA_IMPORTANT_THRESHOLD ||
+            absVixSigma > C.SIGMA_IMPORTANT_THRESHOLD) {
             sendNotification(
                 '📊 Significant Move',
-                `BNF ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot?.toFixed(0)} (${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).spotSigma}σ) VIX ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix?.toFixed(1)} (${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).vixSigma}σ)`,
+                `BNF ${lp.bnfSpot?.toFixed(0) || 'N/A'} (${lp.spotSigma || 0}σ) | NF ${lp.nfSpot?.toFixed(0) || 'N/A'} (${lp.nfSpotSigma || 0}σ) | VIX ${lp.vix?.toFixed(1) || 'N/A'} (${lp.vixSigma || 0}σ)`,
                 'important'
             );
         }
     }
 
-    // ═══ ROUTINE NOTIFICATIONS (every 30 min) ═══
+    // ═══ ROUTINE NOTIFICATIONS (every 60 min) ═══
     if (now - STATE.lastRoutineNotify >= C.ROUTINE_NOTIFY_MS) {
         STATE.lastRoutineNotify = now;
 
-        let body = `BNF ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).bnfSpot?.toFixed(0)} | VIX ${(JSON.parse(NativeBridge.getLatestPoll() || '{}')).vix?.toFixed(1)}`;
-        if ((JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
-            const totalPnL = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).reduce((s, t) => s + (t.current_pnl || 0), 0);
-            body += ` | ${(JSON.parse(NativeBridge.getOpenTrades() || '[]')).length} pos P&L ₹${totalPnL}`;
+        const routinePoll = latestPollData();
+        const openTrades = typeof NativeBridge !== 'undefined'
+            ? safeParseNB(NativeBridge.getOpenTrades?.(), [])
+            : [];
+        let body = `BNF ${routinePoll.bnfSpot?.toFixed(0) || 'N/A'} | NF ${routinePoll.nfSpot?.toFixed(0) || 'N/A'} | VIX ${routinePoll.vix?.toFixed(1) || 'N/A'}`;
+        if (openTrades.length > 0) {
+            const totalPnL = openTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+            body += ` | ${openTrades.length} pos P&L ₹${totalPnL}`;
         }
         const top = (bd.watchlist || [])[0];
-        if (top && (JSON.parse(NativeBridge.getOpenTrades() || '[]')).length === 0) {
+        if (top && openTrades.length === 0) {
             body += ` | Top: ${top.forces.aligned}/3 ${friendlyType(top.type)}`;
         }
 
@@ -4274,9 +4299,10 @@ function renderBrainInsights() {
         const vColor = verdict.action === 'WAIT' || verdict.action === 'STOP' ? 'var(--warn)' :
             verdict.direction === 'BULL' ? 'var(--green)' : verdict.direction === 'BEAR' ? 'var(--danger)' : 'var(--accent)';
         const confBar = verdict.confidence > 0 ? `<div style="height:3px;background:var(--border);border-radius:2px;margin-top:4px"><div style="height:100%;width:${verdict.confidence}%;background:${vColor};border-radius:2px"></div></div>` : '';
+        const urgencyText = verdict.action === 'WAIT' && verdict.urgency === 'ENTER NOW' ? '' : (verdict.urgency || '');
         verdictHtml = `<div class="brain-card" style="border-left-color:${vColor};border-left-width:4px;padding:10px 12px">
             <div style="font-size:14px;font-weight:700;color:${vColor}">${verdict.action}${verdict.strategy ? ' — ' + verdict.strategy.replace('_', ' ') : ''}</div>
-            <div style="font-size:12px;font-weight:600;margin-top:2px">${verdict.urgency || ''} ${verdict.confidence > 0 ? '· Confidence: ' + verdict.confidence + '%' : ''}</div>
+            <div style="font-size:12px;font-weight:600;margin-top:2px">${urgencyText} ${verdict.confidence > 0 ? '· Confidence: ' + verdict.confidence + '%' : ''}</div>
             ${confBar}
             <div class="brain-detail" style="margin-top:4px">${verdict.reasoning || ''}</div>
             ${verdict.conflicts?.length ? `<div style="font-size:10px;color:var(--warn);margin-top:3px">⚠️ ${verdict.conflicts.join(' · ')}</div>` : ''}
@@ -4327,7 +4353,7 @@ function renderTicker() {
     const ticker = document.getElementById('live-ticker');
     if (!ticker) return;
 
-    const l = (JSON.parse(NativeBridge.getLatestPoll() || '{}')) || (JSON.parse(NativeBridge.getBaseline() || '{}'));
+    const l = latestPollData();
     if (!l) { ticker.style.display = 'none'; return; }
 
     ticker.style.display = 'flex';
@@ -4441,9 +4467,14 @@ function renderDebug() {
             </div>
             ${mlReady ? (() => {
                 try {
-                    const s = JSON.parse(window.NativeBridge.getMLModelStatus());
+                    let s = safeParseNB(window.NativeBridge.getMLModelStatus(), {});
+                    if (typeof s === 'string') s = safeParseNB(s, {});
+                    const version = s.version || s.ver || 'unknown';
+                    const nTrain = s.n_train ?? s.nTrain ?? 0;
+                    const thrTake = s.thr_take ?? s.thrTake ?? 0;
+                    const baseWr = s.base_wr ?? s.baseWr ?? 0;
                     return `<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">
-                        v${s.version} · n=${s.n_train} · TAKE≥${s.thr_take} · base WR=${(s.base_wr*100).toFixed(1)}%
+                        v${version} · n=${nTrain} · TAKE≥${thrTake} · base WR=${(baseWr * 100).toFixed(1)}%
                     </div>`;
                 } catch(e) { return ''; }
             })() : '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Install APK and open fresh to load model</div>'}
@@ -4645,10 +4676,25 @@ function renderIntradayChart(index = 'NF') {
 
 function renderMarket() {
     const el = document.getElementById('market-content');
-    if (!el || !(JSON.parse(NativeBridge.getLatestPoll() || '{}'))) return;
+    if (!el) return;
 
-    const l = (JSON.parse(NativeBridge.getLatestPoll() || '{}'));
+    const l = latestPollData();
+    if (!Object.keys(l).length) return;
     const b = (JSON.parse(NativeBridge.getBaseline() || '{}'));
+    const bnfChain = safeParseNB(NativeBridge.getBnfChain?.(), {});
+    const nfChain = safeParseNB(NativeBridge.getNfChain?.(), {});
+    const bnfCand = firstCandidateFor('BNF');
+    const nfCand = firstCandidateFor('NF');
+    const bnfDte = bnfCand.tDTE ?? null;
+    const nfDte = nfCand.tDTE ?? null;
+    const bnfExpiry = validDateOrBlank(bnfChain.expiry || bnfCand.expiry || '');
+    const nfExpiry = validDateOrBlank(nfChain.expiry || nfCand.expiry || '');
+    const bnfAtm = bnfChain.atm || bd.bnfProfile?.atm || 0;
+    const nfAtm = nfChain.atm || bd.nfProfile?.atm || 0;
+    const bnfAtmIv = bnfChain.atmIv || b.bnfAtmIv || 0;
+    const nfAtmIv = nfChain.atmIv || b.nfAtmIv || 0;
+    const bnfTheta = bd.bnfProfile?.avgTheta ?? b.bnfAtmTheta ?? 0;
+    const nfTheta = bd.nfProfile?.avgTheta ?? b.nfAtmTheta ?? 0;
     const bias = l.bias;
 
     if (!b) {
@@ -4656,8 +4702,10 @@ function renderMarket() {
         return;
     }
 
-    const daily1s = b.dailySigmaBnf || 0;
-    const trade1s = b.tradeSigmaBnf || 0;
+    const daily1s = b.dailySigmaBnf || Math.round(((l.bnfSpot || 0) * ((l.vix || 0) / 100)) / Math.sqrt(252));
+    const daily1sNf = b.dailySigmaNf || Math.round(((l.nfSpot || 0) * ((l.vix || 0) / 100)) / Math.sqrt(252));
+    const trade1s = b.tradeSigmaBnf || (bnfDte != null ? Math.round(daily1s * Math.sqrt(Math.max(1, bnfDte))) : 0);
+    const trade1sNf = b.tradeSigmaNf || (nfDte != null ? Math.round(daily1sNf * Math.sqrt(Math.max(1, nfDte))) : 0);
 
     // VIX regime
     let ivRegime = 'NORMAL';
@@ -4779,7 +4827,7 @@ function renderMarket() {
             <div class="env-item">
                 <div class="env-label">BNF</div>
                 <div class="env-value">${l.bnfSpot?.toFixed(0) || '--'}</div>
-                <div class="env-sub">ATM: ${b.bnfAtm || '--'}</div>
+                <div class="env-sub">ATM: ${bnfAtm || '--'}</div>
             </div>
             <div class="env-item">
                 <div class="env-label">NF</div>
@@ -4798,26 +4846,26 @@ function renderMarket() {
         <table class="oi-table">
             <thead><tr><th></th><th class="oi-th">BNF</th><th class="oi-th">NF</th></tr></thead>
             <tbody>
-                <tr>
-                    <td class="oi-td-label">ATM IV</td>
-                    <td class="oi-td-val">${b.bnfAtmIv ? (b.bnfAtmIv > 1 ? b.bnfAtmIv.toFixed(1) + '%' : (b.bnfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
-                    <td class="oi-td-val">${b.nfAtmIv ? (b.nfAtmIv > 1 ? b.nfAtmIv.toFixed(1) + '%' : (b.nfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
-                </tr>
-                <tr>
-                    <td class="oi-td-label">Θ ₹/day</td>
-                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(b.bnfAtmTheta || 0)}</td>
-                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(b.nfAtmTheta || 0)}</td>
-                </tr>
-                <tr>
-                    <td class="oi-td-label">DTE</td>
-                    <td class="oi-td-val">${b.bnfTDTE || '--'}T (${b.bnfCalendarDTE || '--'}c)</td>
-                    <td class="oi-td-val">${b.nfTDTE || '--'}T (${b.nfCalendarDTE || '--'}c)</td>
-                </tr>
-                <tr>
-                    <td class="oi-td-label">Expiry</td>
-                    <td class="oi-td-val">${b.bnfExpiry || '--'}</td>
-                    <td class="oi-td-val">${b.nfExpiry || '--'}</td>
-                </tr>
+	                <tr>
+	                    <td class="oi-td-label">ATM IV</td>
+	                    <td class="oi-td-val">${bnfAtmIv ? (bnfAtmIv > 1 ? bnfAtmIv.toFixed(1) + '%' : (bnfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
+	                    <td class="oi-td-val">${nfAtmIv ? (nfAtmIv > 1 ? nfAtmIv.toFixed(1) + '%' : (nfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
+	                </tr>
+	                <tr>
+	                    <td class="oi-td-label">Θ ₹/day</td>
+	                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(bnfTheta || 0)}</td>
+	                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(nfTheta || 0)}</td>
+	                </tr>
+	                <tr>
+	                    <td class="oi-td-label">DTE</td>
+	                    <td class="oi-td-val">${bnfDte ?? '--'}T</td>
+	                    <td class="oi-td-val">${nfDte ?? '--'}T</td>
+	                </tr>
+	                <tr>
+	                    <td class="oi-td-label">Expiry</td>
+	                    <td class="oi-td-val">${bnfExpiry || '--'}</td>
+	                    <td class="oi-td-val">${nfExpiry || '--'}</td>
+	                </tr>
             </tbody>
         </table>
         </details>
@@ -4844,21 +4892,21 @@ function renderMarket() {
         <table class="oi-table">
             <thead><tr><th></th><th class="oi-th">BNF</th><th class="oi-th">NF</th></tr></thead>
             <tbody>
-                <tr>
-                    <td class="oi-td-label">Daily 1σ</td>
-                    <td class="oi-td-val">±${daily1s}</td>
-                    <td class="oi-td-val">±${b.dailySigmaNf || 0}</td>
-                </tr>
-                <tr>
-                    <td class="oi-td-label">Daily 2σ</td>
-                    <td class="oi-td-val">±${daily1s * 2}</td>
-                    <td class="oi-td-val">±${(b.dailySigmaNf || 0) * 2}</td>
-                </tr>
-                <tr>
-                    <td class="oi-td-label">Trade 1σ</td>
-                    <td class="oi-td-val" style="color:var(--accent)">±${trade1s} (${b.bnfTDTE}T)</td>
-                    <td class="oi-td-val" style="color:var(--accent)">±${b.tradeSigmaNf || 0} (${b.nfTDTE || b.bnfTDTE}T)</td>
-                </tr>
+	                <tr>
+	                    <td class="oi-td-label">Daily 1σ</td>
+	                    <td class="oi-td-val">±${daily1s}</td>
+	                    <td class="oi-td-val">±${daily1sNf || 0}</td>
+	                </tr>
+	                <tr>
+	                    <td class="oi-td-label">Daily 2σ</td>
+	                    <td class="oi-td-val">±${daily1s * 2}</td>
+	                    <td class="oi-td-val">±${(daily1sNf || 0) * 2}</td>
+	                </tr>
+	                <tr>
+	                    <td class="oi-td-label">Trade 1σ</td>
+	                    <td class="oi-td-val" style="color:var(--accent)">±${trade1s} (${bnfDte ?? '--'}T)</td>
+	                    <td class="oi-td-val" style="color:var(--accent)">±${trade1sNf || 0} (${nfDte ?? '--'}T)</td>
+	                </tr>
             </tbody>
         </table>
         </details>
