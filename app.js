@@ -2719,6 +2719,55 @@ function refreshBrainData() {
     return bd;
 }
 
+function pullNativeState() {
+    if (typeof NativeBridge === 'undefined') return {};
+    const status = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+    const pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
+    const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
+    const brainResult = safeParseNB(NativeBridge.getBrainResult?.(), {});
+
+    if (Array.isArray(pollHistory)) {
+        STATE.pollHistory = pollHistory;
+        STATE.pollCount = Math.max(STATE.pollCount || 0, pollHistory.length, status.polls || 0);
+    } else if (status.polls) {
+        STATE.pollCount = Math.max(STATE.pollCount || 0, status.polls);
+    }
+    if (latestPoll && Object.keys(latestPoll).length) {
+        STATE.live = latestPoll;
+    }
+    if (brainResult && Object.keys(brainResult).length) {
+        STATE.brainInsights = brainResult;
+        STATE.brainLastRun = Date.now();
+    }
+    return { status, pollHistory, latestPoll, brainResult };
+}
+
+function startNativePollWatchdog() {
+    if (STATE._nativePollWatchdog) clearInterval(STATE._nativePollWatchdog);
+    STATE._nativePollStartedAt = Date.now();
+    STATE._nativePollWatchdog = setInterval(() => {
+        try {
+            const snapshot = pullNativeState();
+            renderFooter();
+            const hasPoll = snapshot.latestPoll && Object.keys(snapshot.latestPoll).length;
+            if (hasPoll || STATE.pollCount > 0) {
+                renderAll();
+                return;
+            }
+            const elapsedSec = Math.floor((Date.now() - (STATE._nativePollStartedAt || Date.now())) / 1000);
+            if (elapsedSec >= 90) {
+                const statusEl = document.getElementById('status');
+                const nativeStatus = snapshot.status || {};
+                if (statusEl) {
+                    statusEl.textContent = `Service running, waiting for first poll (${elapsedSec}s). Check Logs if this continues. Polls: ${nativeStatus.polls || 0}`;
+                }
+            }
+        } catch (e) {
+            console.warn('[watchdog] native poll pull failed:', e.message);
+        }
+    }, 10000);
+}
+
 // collectBaselineFromForm — lifted from former initialFetch.
 // Reads morning input fields and assembles the baseline JSON for Kotlin.
 function collectBaselineFromForm() {
@@ -3356,6 +3405,9 @@ function startWatchLoop() {
     if (typeof NativeBridge !== 'undefined' && NativeBridge.startMarketService) {
         NativeBridge.startMarketService();
     }
+    STATE.isWatching = true;
+    pullNativeState();
+    startNativePollWatchdog();
     renderAll();
 }
 
@@ -5715,8 +5767,9 @@ function renderFooter() {
     const el = document.getElementById('footer-status');
     if (!el) return;
     const time = API.istNow();
-    const watching = (JSON.parse(NativeBridge.getServiceStatus() || '{}').running) ? '🟢' : '⏹';
-    const polls = STATE.pollCount;
+    const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+    const watching = serviceStatus.running ? '🟢' : '⏹';
+    const polls = Math.max(STATE.pollCount || 0, serviceStatus.polls || 0);
     const bi = bd || {};
     const verdict = bi.verdict;
     const brain = STATE.brainReady ?
