@@ -2732,7 +2732,10 @@ function collectBaselineFromForm() {
     };
     let latestPoll = {};
     try {
-        latestPoll = JSON.parse((NativeBridge && NativeBridge.getLatestPoll && NativeBridge.getLatestPoll()) || '{}');
+        latestPoll = safeParseNB(
+            (typeof NativeBridge !== 'undefined' && NativeBridge.getLatestPoll) ? NativeBridge.getLatestPoll() : null,
+            {}
+        );
     } catch (e) {
         latestPoll = {};
     }
