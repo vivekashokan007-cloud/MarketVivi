@@ -63,6 +63,12 @@
         margin-bottom: 6px;
       }
       .lv-actions-row { margin-bottom: 0; }
+      .lv-export-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-top: 6px;
+      }
       .lv-mode-badge {
         font-size: 10px;
         font-weight: 700;
@@ -219,6 +225,10 @@
           <button class="lv-btn" id="lvShare">⇪ Share</button>
           <button class="lv-btn lv-btn-danger" id="lvClear">🗑 Clear</button>
         </div>
+        <div class="lv-export-row">
+          <button class="lv-btn" id="lvExportTxt">TXT file</button>
+          <button class="lv-btn" id="lvExportCsv">CSV file</button>
+        </div>
       </div>
       <div class="lv-pull-indicator" id="lvPullIndicator">Pull to refresh</div>
       <div class="lv-list" id="lvList">
@@ -291,6 +301,8 @@
 
       onClick('lvRefresh', () => this.refresh());
       onClick('lvShare',   () => this.share());
+      onClick('lvExportTxt', () => this.exportFile('txt'));
+      onClick('lvExportCsv', () => this.exportFile('csv'));
       onClick('lvClear',   () => this.clearWithConfirm());
 
       const filter = $('lvFilter');
@@ -417,22 +429,8 @@
     async share() {
       if (!bridgeAvailable()) return;
       try {
-        const filterArg = this.state.filter === 'ALL'
-          ? null
-          : JSON.stringify({ filter: this.state.filter });
-        const json = getBridge().getLogBuffer(filterArg);
-        const entries = JSON.parse(json || '[]');
-        let mode = '?';
-        try { mode = getBridge().getLogCaptureMode(); } catch (e) { /* ignore */ }
-
-        const sep = '─'.repeat(60);
-        const header = `Marketapp logs — ${new Date().toISOString()}\n` +
-                       `capture=${mode} filter=${this.state.filter} count=${entries.length}\n` +
-                       `${sep}\n`;
-        const body = entries.map((e) =>
-          `${this.formatTimestamp(e.ts)} ${e.level}/${e.tag}: ${e.msg}`
-        ).join('\n');
-        const text = header + body;
+        const snapshot = this.buildExportSnapshot();
+        const text = snapshot.txt;
 
         // 1. Web Share API (preferred — opens Android share intent picker)
         if (navigator.share) {
@@ -468,6 +466,89 @@
         document.body.removeChild(ta);
       } catch (e) {
         this.flashMessage('Share failed: ' + (e.message || e));
+      }
+    },
+
+    buildExportSnapshot() {
+      const filterArg = this.state.filter === 'ALL'
+        ? null
+        : JSON.stringify({ filter: this.state.filter });
+      const json = getBridge().getLogBuffer(filterArg);
+      const entries = JSON.parse(json || '[]');
+      let mode = '?';
+      try { mode = getBridge().getLogCaptureMode(); } catch (e) { /* ignore */ }
+
+      const sep = '─'.repeat(60);
+      const capturedAt = new Date().toISOString();
+      const header = `Marketapp logs — ${capturedAt}\n` +
+                     `capture=${mode} filter=${this.state.filter} count=${entries.length}\n` +
+                     `${sep}\n`;
+      const body = entries.map((e) =>
+        `${this.formatTimestamp(e.ts)} ${e.level}/${e.tag}: ${e.msg}`
+      ).join('\n');
+      const txt = header + body;
+
+      const csvRows = [
+        ['captured_at', 'capture_mode', 'filter', 'ts_epoch_ms', 'time', 'level', 'tag', 'message'],
+        ...entries.map((e) => [
+          capturedAt,
+          mode,
+          this.state.filter,
+          e.ts,
+          this.formatTimestamp(e.ts),
+          e.level,
+          e.tag,
+          e.msg
+        ])
+      ];
+      const csv = csvRows.map((row) =>
+        row.map((value) => {
+          const s = value == null ? '' : String(value);
+          return `"${s.replace(/"/g, '""')}"`;
+        }).join(',')
+      ).join('\n');
+
+      const stamp = capturedAt.replace(/[:.]/g, '-');
+      return { entries, txt, csv, txtName: `marketapp-logs-${stamp}.txt`, csvName: `marketapp-logs-${stamp}.csv` };
+    },
+
+    async exportFile(format) {
+      if (!bridgeAvailable()) return;
+      try {
+        const snapshot = this.buildExportSnapshot();
+        const isCsv = format === 'csv';
+        const content = isCsv ? snapshot.csv : snapshot.txt;
+        const name = isCsv ? snapshot.csvName : snapshot.txtName;
+        const type = isCsv ? 'text/csv' : 'text/plain';
+        const file = new File([content], name, { type });
+
+        if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+          await navigator.share({
+            title: 'Marketapp logs',
+            text: `${snapshot.entries.length} Marketapp log entries`,
+            files: [file]
+          });
+          return;
+        }
+
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        this.flashMessage(`${isCsv ? 'CSV' : 'TXT'} export started`);
+      } catch (e) {
+        try {
+          const snapshot = this.buildExportSnapshot();
+          await navigator.clipboard.writeText(format === 'csv' ? snapshot.csv : snapshot.txt);
+          this.flashMessage(`${format.toUpperCase()} copied to clipboard`);
+        } catch (_) {
+          this.flashMessage(`${format.toUpperCase()} export failed: ${e.message || e}`);
+        }
       }
     },
 
