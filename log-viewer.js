@@ -519,28 +519,32 @@
         const isCsv = format === 'csv';
         const content = isCsv ? snapshot.csv : snapshot.txt;
         const name = isCsv ? snapshot.csvName : snapshot.txtName;
-        const type = isCsv ? 'text/csv' : 'text/plain';
-        const file = new File([content], name, { type });
 
-        if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+        // Android WebView download manager rejects blob: URLs. Prefer sharing
+        // the text payload directly, then clipboard fallback.
+        if (navigator.share) {
           await navigator.share({
-            title: 'Marketapp logs',
-            text: `${snapshot.entries.length} Marketapp log entries`,
-            files: [file]
+            title: name,
+            text: content
           });
           return;
         }
 
-        const blob = new Blob([content], { type });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        this.flashMessage(`${isCsv ? 'CSV' : 'TXT'} export started`);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(content);
+          this.flashMessage(`${isCsv ? 'CSV' : 'TXT'} copied to clipboard`);
+          return;
+        }
+
+        const ta = document.createElement('textarea');
+        ta.value = content;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        this.flashMessage(`${isCsv ? 'CSV' : 'TXT'} copied to clipboard`);
       } catch (e) {
         try {
           const snapshot = this.buildExportSnapshot();

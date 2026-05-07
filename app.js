@@ -2698,6 +2698,22 @@ function validDateOrBlank(value) {
     return value >= API.todayIST() ? value : '';
 }
 
+function isTodayRecord(record) {
+    return !!record && record.date === API.todayIST();
+}
+
+function getTodayNativeBaseline() {
+    if (typeof NativeBridge === 'undefined') return null;
+    const baseline = safeParseNB(NativeBridge.getBaseline?.(), {});
+    return isTodayRecord(baseline) ? baseline : null;
+}
+
+function clearMorningStorage() {
+    localStorage.removeItem('mr2_morning_inputs');
+    localStorage.removeItem('mr2_morning');
+    localStorage.removeItem('mr2_morning_baseline');
+}
+
 function firstCandidateFor(index) {
     return (bd.generated_candidates || []).find(c => c.index === index) || {};
 }
@@ -5929,7 +5945,10 @@ function restoreMorningData(cloudConfig) {
 
     // Only restore if saved today
     const today = API.todayIST();
-    if (data.date && data.date !== today) return;
+    if (!data.date || data.date !== today) {
+        clearMorningStorage();
+        return;
+    }
 
     if (data.fiiCash) document.getElementById('in-fii-cash').value = data.fiiCash;
     if (data.fiiShortPct) document.getElementById('in-fii-short').value = data.fiiShortPct;
@@ -6260,7 +6279,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // b97: Auto-restart polling after background kill
     // If baseline restored + market open → start watching without manual Lock & Scan
-    if (safeParseNB(NativeBridge.getBaseline(), {}) && API.isMarketHours() && !safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
+    const todayBaseline = getTodayNativeBaseline();
+    if (todayBaseline && API.isMarketHours() && !safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
         console.log(`[b97] Auto-restart: baseline exists, market open, ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
         // Collapse morning section (already locked)
         const morningEl = document.getElementById('morning-inputs');
