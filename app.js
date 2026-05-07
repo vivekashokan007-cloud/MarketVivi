@@ -2774,9 +2774,9 @@ function pullNativeState() {
 
     if (Array.isArray(pollHistory)) {
         STATE.pollHistory = pollHistory;
-        STATE.pollCount = Math.max(STATE.pollCount || 0, pollHistory.length, status.polls || 0);
+        STATE.pollCount = Number.isFinite(status.polls) ? status.polls : pollHistory.length;
     } else if (status.polls) {
-        STATE.pollCount = Math.max(STATE.pollCount || 0, status.polls);
+        STATE.pollCount = status.polls;
     }
     if (latestPoll && Object.keys(latestPoll).length) {
         STATE.live = latestPoll;
@@ -3487,20 +3487,14 @@ window.syncFromNative = function(dataJson) {
         // b106 null-guard: Kotlin may push empty/null before first poll runs
         if (!data || typeof data !== 'object') return;
 
-        // Poll history — only update if Kotlin has more polls than we do
+        // Poll history — Kotlin is the source of truth for today's session.
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
-            if (data.pollHistory.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
-                STATE.pollHistory = data.pollHistory;
-                // b121: Use pollHistory length directly — it's the true running total
-                STATE.pollCount = data.pollHistory.length;
-            }
+            STATE.pollHistory = data.pollHistory;
+            STATE.pollCount = data.pollHistory.length;
         }
-        // b121: Kotlin may send a separate pollCount (its service counter, starts fresh each restart)
-        // Only use it if pollHistory wasn't already set above
-        if (data.pollCount && data.pollCount > 0 && !data.pollHistory) {
-            const base = STATE._restoredPollBase || 0;
-            const totalCount = base + data.pollCount;
-            if (totalCount > STATE.pollCount) STATE.pollCount = totalCount;
+        // Kotlin may send a separate pollCount; never add a restored base across days.
+        if (Object.prototype.hasOwnProperty.call(data, 'pollCount') && !data.pollHistory) {
+            STATE.pollCount = data.pollCount;
         }
         
         // Phase 4: Full brain result from Kotlin
@@ -5851,7 +5845,7 @@ function renderFooter() {
     const time = API.istNow();
     const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
     const watching = serviceStatus.running ? '🟢' : '⏹';
-    const polls = Math.max(STATE.pollCount || 0, serviceStatus.polls || 0);
+    const polls = Number.isFinite(serviceStatus.polls) ? serviceStatus.polls : (STATE.pollCount || 0);
     const bi = bd || {};
     const verdict = bi.verdict;
     const brain = STATE.brainReady ?
@@ -6230,16 +6224,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let todayPolls = null;
     try { if (typeof DB !== 'undefined' && DB.getConfig) todayPolls = await DB.getConfig(todayKey); } catch (e) { console.warn('[boot] DB.getConfig(poll_history) skipped:', e.message); }
     if (todayPolls && Array.isArray(todayPolls)) {
-        // b95: MERGE — keep whichever is longer (Supabase vs in-memory)
-        // Prevents background kill from overwriting morning data
-        if (todayPolls.length > safeParseNB(NativeBridge.getPollHistory(), []).length) {
-            STATE.pollHistory = todayPolls;
-        }
-        // Sync pollCount so UI shows correct number
-        STATE.pollCount = safeParseNB(NativeBridge.getPollHistory(), []).length;
-        // b121: Lock in the restored base NOW — before any Kotlin broadcast arrives
-        // syncFromNative adds Kotlin's fresh count on top: total = base + kotlin count
-        STATE._restoredPollBase = STATE.pollCount;
+        STATE.pollHistory = todayPolls;
+        STATE.pollCount = todayPolls.length;
     }
 
     // b97: Restore baseline from Supabase — enables polling after background kill
@@ -6351,13 +6337,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Pull polls
                 if (window.NativeBridge.getPollHistory) {
                     const rawPolls = window.NativeBridge.getPollHistory();
-                    if (rawPolls && rawPolls !== '[]' && rawPolls !== 'null' && rawPolls !== '') {
-                        const nativePolls = JSON.parse(rawPolls);
-                        if (Array.isArray(nativePolls) && nativePolls.length > safeParseNB(NativeBridge.getPollHistory(), []).length) {
-                            // b121: Only update if Kotlin has MORE polls — its history IS the running total
-                            STATE.pollHistory = nativePolls;
-                            STATE.pollCount = nativePolls.length;
-                        }
+                    const nativePolls = safeParseNB(rawPolls, []);
+                    if (Array.isArray(nativePolls)) {
+                        STATE.pollHistory = nativePolls;
+                        STATE.pollCount = nativePolls.length;
                     }
                 }
                 // Pull brain result (verdict, market, positions, effective bias)
