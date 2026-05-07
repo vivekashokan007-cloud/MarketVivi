@@ -4345,7 +4345,31 @@ function renderBrainForCandidate(candId) {
     return `<div class="brain-section" style="margin:4px 0 2px">${insights.map(renderBrainCard).join('')}</div>`;
 }
 
+function detailsStateKey(detail) {
+    const container = detail.closest('.tab-content')?.id || 'root';
+    const directSummary = Array.from(detail.children).find(el => el.tagName === 'SUMMARY');
+    const summaryText = (directSummary?.textContent || '').replace(/\s+/g, ' ').trim();
+    const classes = (detail.className || '').replace(/\s+/g, '.');
+    return `${container}|${classes}|${summaryText}`;
+}
+
+function captureOpenDetailsState() {
+    const state = new Set();
+    document.querySelectorAll('.tab-content details[open]').forEach(detail => {
+        state.add(detailsStateKey(detail));
+    });
+    return state;
+}
+
+function restoreOpenDetailsState(state) {
+    if (!state || state.size === 0) return;
+    document.querySelectorAll('.tab-content details').forEach(detail => {
+        if (state.has(detailsStateKey(detail))) detail.open = true;
+    });
+}
+
 function renderAll() {
+    const openDetailsState = captureOpenDetailsState();
     refreshBrainData();  // F.2: keep bd fresh for all render functions
     renderTicker();
     renderMarket();
@@ -4354,6 +4378,7 @@ function renderAll() {
     renderPosition();
     renderDebug();
     renderFooter();
+    restoreOpenDetailsState(openDetailsState);
 }
 
 function renderTicker() {
