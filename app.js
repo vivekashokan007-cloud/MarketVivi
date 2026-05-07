@@ -6156,6 +6156,251 @@ function restoreEveningClose(cloudConfig) {
 // DATA EXPORT — One-click Excel download of all Supabase data
 // ═══════════════════════════════════════════════════════════════
 
+const EXPORT_SUPABASE_URL = 'https://fdynxkfxohbnlvayouje.supabase.co';
+const EXPORT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE';
+const EXPORT_TABLES = [
+    'daily_data',
+    'app_config',
+    'trades_v2',
+    'premium_history',
+    'chain_snapshots',
+    'ml_decisions',
+    'ml_models',
+    'ml_performance',
+    'ml_poll_sequences',
+    'trade_log',
+    'trades',
+    'radar_inputs',
+    'bhav_options',
+    'straddle_ratios',
+];
+
+function jsonCell(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') return JSON.stringify(value);
+    return value;
+}
+
+function flattenRow(row) {
+    const out = {};
+    for (const [key, value] of Object.entries(row || {})) out[key] = jsonCell(value);
+    return out;
+}
+
+function safeSheetName(name, used) {
+    const base = String(name || 'Sheet').replace(/[:\\/?*[\]]/g, '_').slice(0, 31) || 'Sheet';
+    let sheet = base;
+    let suffix = 1;
+    while (used.has(sheet)) {
+        const tail = `_${suffix++}`;
+        sheet = `${base.slice(0, 31 - tail.length)}${tail}`;
+    }
+    used.add(sheet);
+    return sheet;
+}
+
+async function fetchAllExportRows(sb, table) {
+    const pageSize = 1000;
+    const rows = [];
+    for (let from = 0; ; from += pageSize) {
+        const to = from + pageSize - 1;
+        const { data, error } = await sb.from(table).select('*').range(from, to);
+        if (error) throw new Error(`${table}: ${error.message}`);
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+    }
+    return rows;
+}
+
+function buildPollAuditRows(appConfigRows) {
+    const pollRows = [];
+    for (const row of appConfigRows || []) {
+        if (!String(row.key || '').startsWith('poll_history_')) continue;
+        const tradeDate = String(row.key).replace('poll_history_', '');
+        const polls = Array.isArray(row.value) ? row.value : [];
+        polls.forEach((p, idx) => {
+            pollRows.push({
+                trade_date: tradeDate,
+                poll_no: idx + 1,
+                poll_date: p.date || '',
+                time: p.t || '',
+                bnf: p.bnf,
+                nf: p.nf,
+                vix: p.vix,
+                bnf_pcr: p.pcr,
+                nf_pcr: p.nfPcr,
+                bnf_call_wall: p.cw,
+                bnf_call_wall_oi: p.cwOI,
+                bnf_put_wall: p.pw,
+                bnf_put_wall_oi: p.pwOI,
+                nf_call_wall: p.nfCW,
+                nf_call_wall_oi: p.nfCWOI,
+                nf_put_wall: p.nfPW,
+                nf_put_wall_oi: p.nfPWOI,
+                bnf_max_pain: p.mp,
+                nf_max_pain: p.nfMP,
+                bnf_total_call_oi: p.bnfCOI,
+                bnf_total_put_oi: p.bnfPOI,
+                nf_total_call_oi: p.nfCOI,
+                nf_total_put_oi: p.nfPOI,
+                futures_prem: p.fp,
+                breadth_pct: p.brd,
+                nf50_advancing: p.nfAdv,
+                bias_net: p.bias,
+            });
+        });
+    }
+    return pollRows;
+}
+
+function buildStrikeAuditRows(appConfigRows) {
+    const strikeRows = [];
+    for (const row of appConfigRows || []) {
+        if (!String(row.key || '').startsWith('poll_history_')) continue;
+        const tradeDate = String(row.key).replace('poll_history_', '');
+        const polls = Array.isArray(row.value) ? row.value : [];
+        polls.forEach((p, pollIdx) => {
+            for (const [idx, strikes] of [['BNF', p.bnfS || []], ['NF', p.nfS || []]]) {
+                for (const s of strikes) {
+                    if (s.c) {
+                        strikeRows.push({
+                            trade_date: tradeDate, poll_no: pollIdx + 1, time: p.t || '',
+                            index: idx, strike: s.k, side: 'CE',
+                            oi: s.c.o, volume: s.c.v, ltp: s.c.l, iv: s.c.i, delta: s.c.d, pop: s.c.p
+                        });
+                    }
+                    if (s.p) {
+                        strikeRows.push({
+                            trade_date: tradeDate, poll_no: pollIdx + 1, time: p.t || '',
+                            index: idx, strike: s.k, side: 'PE',
+                            oi: s.p.o, volume: s.p.v, ltp: s.p.l, iv: s.p.i, delta: s.p.d, pop: s.p.p
+                        });
+                    }
+                }
+            }
+        });
+    }
+    return strikeRows;
+}
+
+function buildAppConfigAuditRows(appConfigRows) {
+    return (appConfigRows || []).map(row => ({
+        key: row.key,
+        updated_at: row.updated_at || '',
+        value_type: Array.isArray(row.value) ? 'array' : typeof row.value,
+        array_count: Array.isArray(row.value) ? row.value.length : '',
+        value_json: jsonCell(row.value),
+    }));
+}
+
+async function exportAllData() {
+    const statusEl = document.getElementById('export-status');
+    const btn = document.getElementById('btn-export');
+    if (!statusEl || !btn) return;
+    if (!window.supabase?.createClient) {
+        statusEl.textContent = '❌ Supabase export library not loaded. Refresh and retry.';
+        return;
+    }
+    if (!window.XLSX) {
+        statusEl.textContent = '❌ SheetJS Excel library not loaded. Refresh and retry.';
+        return;
+    }
+
+    btn.disabled = true;
+    const sb = window.supabase.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
+    const rowsByTable = {};
+    const errors = [];
+
+    try {
+        for (const table of EXPORT_TABLES) {
+            statusEl.textContent = `⏳ Fetching ${table}...`;
+            try {
+                rowsByTable[table] = await fetchAllExportRows(sb, table);
+            } catch (e) {
+                rowsByTable[table] = [];
+                errors.push(e.message);
+            }
+        }
+
+        statusEl.textContent = '⏳ Building Excel workbook...';
+        const appConfigRows = rowsByTable.app_config || [];
+        const pollRows = buildPollAuditRows(appConfigRows);
+        const strikeRows = buildStrikeAuditRows(appConfigRows);
+        const configAuditRows = buildAppConfigAuditRows(appConfigRows);
+        const usedNames = new Set();
+        const wb = XLSX.utils.book_new();
+
+        const summaryRows = [
+            { metric: 'Export timestamp', value: new Date().toISOString() },
+            { metric: 'PWA version', value: 'v2.1 b140' },
+            { metric: 'Tables requested', value: EXPORT_TABLES.length },
+            { metric: 'Tables with fetch errors', value: errors.length },
+            { metric: 'Poll history rows', value: pollRows.length },
+            { metric: 'Strike rows', value: strikeRows.length },
+            ...EXPORT_TABLES.map(table => ({ metric: `${table} rows`, value: rowsByTable[table]?.length || 0 })),
+            ...errors.map((error, idx) => ({ metric: `Error ${idx + 1}`, value: error })),
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), safeSheetName('Summary', usedNames));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pollRows.length ? pollRows : [{ note: 'No poll_history_* rows found in app_config' }]), safeSheetName('Poll History Flat', usedNames));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(strikeRows.length ? strikeRows : [{ note: 'No per-strike rows found in poll history' }]), safeSheetName('Strike Data Flat', usedNames));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(configAuditRows.length ? configAuditRows : [{ note: 'No app_config rows found' }]), safeSheetName('App Config Audit', usedNames));
+
+        for (const table of EXPORT_TABLES) {
+            const rows = rowsByTable[table] || [];
+            const sheetRows = rows.length ? rows.map(flattenRow) : [{ note: `No rows exported from ${table}` }];
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), safeSheetName(table, usedNames));
+        }
+
+        const today = API.todayIST();
+        const filename = `MarketRadar_Export_${today}.xlsx`;
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const storagePath = `export_${today}_${Date.now()}.xlsx`;
+
+        statusEl.textContent = '⏳ Uploading Excel to Supabase Storage...';
+        const { error: uploadErr } = await sb.storage.from('EXPORTS').upload(storagePath, blob, {
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            upsert: true,
+        });
+        if (uploadErr) throw new Error(`Storage upload failed: ${uploadErr.message}`);
+
+        const { data: urlData } = sb.storage.from('EXPORTS').getPublicUrl(storagePath, { download: filename });
+        const publicUrl = urlData?.publicUrl;
+        if (!publicUrl) throw new Error('Storage upload succeeded but public URL was empty');
+
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = publicUrl;
+        document.body.appendChild(iframe);
+        setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) { /* ignore cleanup */ } }, 30000);
+
+        const totalRows = Object.values(rowsByTable).reduce((sum, rows) => sum + (rows?.length || 0), 0);
+        statusEl.textContent = '';
+        statusEl.appendChild(document.createTextNode(`✅ Export ready: ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes`));
+        if (errors.length) {
+            statusEl.appendChild(document.createElement('br'));
+            const errSpan = document.createElement('span');
+            errSpan.style.color = '#b45309';
+            errSpan.textContent = `⚠ ${errors.length} table fetch issue(s); see Summary sheet.`;
+            statusEl.appendChild(errSpan);
+        }
+        statusEl.appendChild(document.createElement('br'));
+        const link = document.createElement('a');
+        link.href = publicUrl;
+        link.download = filename;
+        link.textContent = '📥 Download Excel';
+        link.style.cssText = 'display:inline-block;margin-top:6px;padding:10px 16px;background:var(--accent);color:white;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none';
+        statusEl.appendChild(link);
+    } catch (err) {
+        console.error('Export error:', err);
+        statusEl.textContent = `❌ Export failed: ${err.message}`;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+window.exportAllData = exportAllData;
+
 function bindCriticalUiHandlers() {
     const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
     tabButtons.forEach(btn => {
