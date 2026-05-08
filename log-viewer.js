@@ -30,6 +30,13 @@
     return !!(b && typeof b.getLogBuffer === 'function');
   }
 
+  const LOG_EXPORT_SUPABASE_URL = 'https://fdynxkfxohbnlvayouje.supabase.co';
+  const LOG_EXPORT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE';
+
+  function safeStorageName(name) {
+    return String(name || 'marketapp-logs.txt').replace(/[^A-Za-z0-9._-]/g, '_');
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Style injection — runs at script-eval time
   // ─────────────────────────────────────────────────────────────────────────
@@ -519,32 +526,7 @@
         const isCsv = format === 'csv';
         const content = isCsv ? snapshot.csv : snapshot.txt;
         const name = isCsv ? snapshot.csvName : snapshot.txtName;
-
-        // Android WebView download manager rejects blob: URLs. Prefer sharing
-        // the text payload directly, then clipboard fallback.
-        if (navigator.share) {
-          await navigator.share({
-            title: name,
-            text: content
-          });
-          return;
-        }
-
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(content);
-          this.flashMessage(`${isCsv ? 'CSV' : 'TXT'} copied to clipboard`);
-          return;
-        }
-
-        const ta = document.createElement('textarea');
-        ta.value = content;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        this.flashMessage(`${isCsv ? 'CSV' : 'TXT'} copied to clipboard`);
+        await this.downloadViaSupabaseStorage(name, content, isCsv ? 'text/csv' : 'text/plain');
       } catch (e) {
         try {
           const snapshot = this.buildExportSnapshot();
@@ -554,6 +536,52 @@
           this.flashMessage(`${format.toUpperCase()} export failed: ${e.message || e}`);
         }
       }
+    },
+
+    async downloadViaSupabaseStorage(name, content, contentType) {
+      if (!window.supabase?.createClient) {
+        throw new Error('Supabase export library not loaded');
+      }
+
+      const sb = window.supabase.createClient(LOG_EXPORT_SUPABASE_URL, LOG_EXPORT_SUPABASE_ANON_KEY);
+      const safeName = safeStorageName(name);
+      const storagePath = `logs/${Date.now()}_${safeName}`;
+      const blob = new Blob([content], { type: `${contentType};charset=utf-8` });
+
+      this.flashMessage(`Preparing ${safeName}...`);
+      const { error } = await sb.storage.from('EXPORTS').upload(storagePath, blob, {
+        contentType: `${contentType};charset=utf-8`,
+        upsert: true
+      });
+      if (error) throw new Error(`Storage upload failed: ${error.message}`);
+
+      const { data } = sb.storage.from('EXPORTS').getPublicUrl(storagePath, { download: safeName });
+      const publicUrl = data?.publicUrl;
+      if (!publicUrl) throw new Error('Storage upload succeeded but public URL was empty');
+
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = publicUrl;
+      document.body.appendChild(iframe);
+      setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) { /* ignore cleanup */ } }, 30000);
+
+      this.flashDownloadLink(`Download ready: ${safeName}`, publicUrl, safeName);
+    },
+
+    flashDownloadLink(msg, url, filename) {
+      const list = document.getElementById('lvList');
+      if (!list || !list.parentNode) return;
+      const flash = document.createElement('div');
+      flash.className = 'lv-flash';
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.textContent = msg;
+      link.style.color = 'white';
+      link.style.textDecoration = 'underline';
+      flash.appendChild(link);
+      list.parentNode.insertBefore(flash, list);
+      setTimeout(() => { if (flash.parentNode) flash.remove(); }, 12000);
     },
 
     clearWithConfirm() {
