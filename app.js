@@ -4348,15 +4348,28 @@ function renderBrainForCandidate(candId) {
 function detailsStateKey(detail) {
     const container = detail.closest('.tab-content')?.id || 'root';
     const directSummary = Array.from(detail.children).find(el => el.tagName === 'SUMMARY');
-    const summaryText = (directSummary?.textContent || '').replace(/\s+/g, ' ').trim();
+    const summaryText = (directSummary?.textContent || '')
+        .replace(/\b\d+s ago\b/g, '')
+        .replace(/\bPoll #\d+\b/g, 'Poll #')
+        .replace(/\b\d{1,2}:\d{2}\s*(am|pm)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
     const classes = (detail.className || '').replace(/\s+/g, '.');
     return `${container}|${classes}|${summaryText}`;
+}
+
+function detailsIndexKey(detail) {
+    const container = detail.closest('.tab-content') || document.body;
+    const containerId = container.id || 'root';
+    const details = Array.from(container.querySelectorAll('details'));
+    return `${containerId}|idx:${details.indexOf(detail)}`;
 }
 
 function captureOpenDetailsState() {
     const state = new Set();
     document.querySelectorAll('.tab-content details[open]').forEach(detail => {
         state.add(detailsStateKey(detail));
+        state.add(detailsIndexKey(detail));
     });
     return state;
 }
@@ -4364,8 +4377,32 @@ function captureOpenDetailsState() {
 function restoreOpenDetailsState(state) {
     if (!state || state.size === 0) return;
     document.querySelectorAll('.tab-content details').forEach(detail => {
-        if (state.has(detailsStateKey(detail))) detail.open = true;
+        if (state.has(detailsStateKey(detail)) || state.has(detailsIndexKey(detail))) detail.open = true;
     });
+}
+
+function updateLockScanUi() {
+    const btnLock = document.getElementById('btn-lock');
+    const statusEl = document.getElementById('status');
+    if (!btnLock && !statusEl) return;
+
+    const baseline = getTodayNativeBaseline();
+    if (!baseline) return;
+
+    const serviceStatus = callNativeJson('getServiceStatus', {}, {});
+    const pollCount = STATE.pollCount || safeParseNB(NativeBridge.getPollHistory?.(), []).length || 0;
+    const isRunning = serviceStatus.running || STATE.isWatching || pollCount > 0;
+
+    document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
+    if (btnLock) {
+        btnLock.disabled = true;
+        btnLock.textContent = isRunning ? 'Watching...' : 'Scanning...';
+    }
+    if (statusEl && !statusEl.textContent.startsWith('Lock failed')) {
+        statusEl.textContent = isRunning
+            ? `✅ Watching market${pollCount ? ` · Poll #${pollCount}` : ''}`
+            : '✅ Morning data locked. Waiting for first poll...';
+    }
 }
 
 function renderAll() {
@@ -4378,6 +4415,7 @@ function renderAll() {
     renderPosition();
     renderDebug();
     renderFooter();
+    updateLockScanUi();
     restoreOpenDetailsState(openDetailsState);
 }
 
@@ -4971,8 +5009,10 @@ function renderOI() {
     const el = document.getElementById('oi-content');
     if (!el || !(safeParseNB(NativeBridge.getLatestPoll(), {}))) return;
 
-    const l = (safeParseNB(NativeBridge.getLatestPoll(), {}));
-    const b = (JSON.parse(NativeBridge.getBaseline() || '{}'));
+    const l = safeParseNB(NativeBridge.getLatestPoll(), {});
+    const b = safeParseNB(NativeBridge.getBaseline(), {});
+    const bnfChain = safeParseNB(NativeBridge.getBnfChain(), {});
+    const nfc = safeParseNB(NativeBridge.getNfChain(), {});
 
     if (!b) {
         el.innerHTML = '<div class="empty-state">Scan to see OI structure & institutional positioning</div>';
@@ -4988,33 +5028,32 @@ function renderOI() {
     };
 
     // BNF
-    const bnfPCR = l.nearAtmPCR;
-    const bnfMP = l.maxPainBnf || b.maxPainBnf;
+    const bnfPCR = bnfChain.nearAtmPCR || l.nearAtmPCR || bnfChain.pcr;
+    const bnfMP = bnfChain.maxPain || l.maxPainBnf || b.maxPainBnf;
     const bnfMPDist = bnfMP ? Math.round(l.bnfSpot - bnfMP) : 0;
-    const bnfCW = l.bnfCallWall || b.bnfCallWall;
-    const bnfCWOI = l.bnfCallWallOI || b.bnfCallWallOI;
-    const bnfPW = l.bnfPutWall || b.bnfPutWall;
-    const bnfPWOI = l.bnfPutWallOI || b.bnfPutWallOI;
-    const bnfCallOI = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.nearTotalCallOI || l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
-    const bnfPutOI = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.nearTotalPutOI || l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
+    const bnfCW = bnfChain.callWallStrike || l.bnfCallWall || b.bnfCallWall;
+    const bnfCWOI = bnfChain.callWallOI || l.bnfCallWallOI || b.bnfCallWallOI;
+    const bnfPW = bnfChain.putWallStrike || l.bnfPutWall || b.bnfPutWall;
+    const bnfPWOI = bnfChain.putWallOI || l.bnfPutWallOI || b.bnfPutWallOI;
+    const bnfCallOI = bnfChain.nearTotalCallOI || bnfChain.totalCallOI || l.bnfTotalCallOI || b.bnfTotalCallOI || 0;
+    const bnfPutOI = bnfChain.nearTotalPutOI || bnfChain.totalPutOI || l.bnfTotalPutOI || b.bnfTotalPutOI || 0;
     const bnfTotal = bnfCallOI + bnfPutOI;
     const bnfCPct = bnfTotal > 0 ? Math.round(bnfCallOI / bnfTotal * 100) : 50;
-    const bnfFP = l.futuresPremBnf;
+    const bnfFP = l.futuresPremBnf ?? l.fp;
 
     // NF
-    const nfc = (JSON.parse(NativeBridge.getNfChain() || '{}'));
-    const nfPCR = nfc?.nearAtmPCR;
-    const nfMP = nfc?.maxPain || b.maxPainNf;
+    const nfPCR = nfc.nearAtmPCR || nfc.pcr;
+    const nfMP = nfc.maxPain || b.maxPainNf;
     const nfMPDist = nfMP && l.nfSpot ? Math.round(l.nfSpot - nfMP) : 0;
-    const nfCW = nfc?.callWallStrike;
-    const nfCWOI = nfc?.callWallOI;
-    const nfPW = nfc?.putWallStrike;
-    const nfPWOI = nfc?.putWallOI;
-    const nfCallOI = nfc?.nearTotalCallOI || nfc?.totalCallOI || 0;
-    const nfPutOI = nfc?.nearTotalPutOI || nfc?.totalPutOI || 0;
+    const nfCW = nfc.callWallStrike;
+    const nfCWOI = nfc.callWallOI;
+    const nfPW = nfc.putWallStrike;
+    const nfPWOI = nfc.putWallOI;
+    const nfCallOI = nfc.nearTotalCallOI || nfc.totalCallOI || 0;
+    const nfPutOI = nfc.nearTotalPutOI || nfc.totalPutOI || 0;
     const nfTotal = nfCallOI + nfPutOI;
     const nfCPct = nfTotal > 0 ? Math.round(nfCallOI / nfTotal * 100) : 50;
-    const nfFP = nfc?.futuresPremium;
+    const nfFP = nfc.futuresPremium;
 
     const pc = (v) => !v ? 'var(--text-muted)' : v > 1.2 ? 'var(--green)' : v < 0.9 ? 'var(--danger)' : 'var(--text-primary)';
     const pl = (v) => !v ? '--' : v > 1.2 ? 'Bull' : v < 0.9 ? 'Bear' : 'Neut';
@@ -6357,7 +6396,7 @@ async function exportAllData() {
 
         const summaryRows = [
             { metric: 'Export timestamp', value: new Date().toISOString() },
-            { metric: 'PWA version', value: 'v2.1 b140' },
+            { metric: 'PWA version', value: document.querySelector('.version')?.textContent?.trim() || 'unknown' },
             { metric: 'Tables requested', value: EXPORT_TABLES.length },
             { metric: 'Tables with fetch errors', value: errors.length },
             { metric: 'Poll history rows', value: pollRows.length },
@@ -6413,6 +6452,8 @@ async function exportAllData() {
         const link = document.createElement('a');
         link.href = publicUrl;
         link.download = filename;
+        link.target = '_blank';
+        link.rel = 'noopener';
         link.textContent = '📥 Download Excel';
         link.style.cssText = 'display:inline-block;margin-top:6px;padding:10px 16px;background:var(--accent);color:white;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none';
         statusEl.appendChild(link);
@@ -6543,14 +6584,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (morningEl) morningEl.style.display = 'none';
         const lockBtn = document.getElementById('btn-lock');
         if (lockBtn) {
-            lockBtn.textContent = '🔓 Re-scan';
-            lockBtn.disabled = false;
+            lockBtn.textContent = 'Watching...';
+            lockBtn.disabled = true;
         }
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
         // Start watch loop
         startWatchLoop();
         const watchEl = document.getElementById('watch-status');
         if (watchEl) watchEl.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
+        updateLockScanUi();
     }
 
     // Pyodide init removed in unified Kotlin+Chaquopy runtime.

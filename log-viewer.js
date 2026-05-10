@@ -528,13 +528,8 @@
         const name = isCsv ? snapshot.csvName : snapshot.txtName;
         await this.downloadViaSupabaseStorage(name, content, isCsv ? 'text/csv' : 'text/plain');
       } catch (e) {
-        try {
-          const snapshot = this.buildExportSnapshot();
-          await navigator.clipboard.writeText(format === 'csv' ? snapshot.csv : snapshot.txt);
-          this.flashMessage(`${format.toUpperCase()} copied to clipboard`);
-        } catch (_) {
-          this.flashMessage(`${format.toUpperCase()} export failed: ${e.message || e}`);
-        }
+        console.error(`${format.toUpperCase()} export failed:`, e);
+        this.flashMessage(`${format.toUpperCase()} export failed: ${e.message || e}`);
       }
     },
 
@@ -576,6 +571,8 @@
       const link = document.createElement('a');
       link.href = url;
       link.download = filename;
+      link.target = '_blank';
+      link.rel = 'noopener';
       link.textContent = msg;
       link.style.color = 'white';
       link.style.textDecoration = 'underline';
