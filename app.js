@@ -6620,15 +6620,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Global Direction inputs — live update on change + auto-save + recompute boost
     document.addEventListener('change', (e) => {
+        const gd = safeParseNB(NativeBridge.getGlobalDirection(), {});
         if (e.target.id === 'in-dow-now') {
-            safeParseNB(NativeBridge.getGlobalDirection(), {}).dowNow = e.target.value ? parseFloat(e.target.value) : null;
+            gd.dowNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-crude-now') {
-            safeParseNB(NativeBridge.getGlobalDirection(), {}).crudeNow = e.target.value ? parseFloat(e.target.value) : null;
+            gd.crudeNow = e.target.value ? parseFloat(e.target.value) : null;
         } else if (e.target.id === 'in-gift-now') {
-            safeParseNB(NativeBridge.getGlobalDirection(), {}).giftNow = e.target.value ? parseFloat(e.target.value) : null;
+            gd.giftNow = e.target.value ? parseFloat(e.target.value) : null;
         } else { return; }
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
+            NativeBridge.setGlobalDirection(JSON.stringify(gd));
+        }
         // Auto-save to localStorage + Supabase with date stamp
-        const saveData = { ...safeParseNB(NativeBridge.getGlobalDirection(), {}), _date: API.todayIST() };
+        const saveData = { ...gd, _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
 
@@ -6640,13 +6644,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Global Direction explicit save button (mobile-friendly — change event may not fire)
     document.addEventListener('click', (e) => {
         if (e.target.id !== 'btn-save-global-dir') return;
+        const gd = safeParseNB(NativeBridge.getGlobalDirection(), {});
         const dowEl = document.getElementById('in-dow-now');
         const crudeEl = document.getElementById('in-crude-now');
         const giftEl = document.getElementById('in-gift-now');
-        if (dowEl) safeParseNB(NativeBridge.getGlobalDirection(), {}).dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
-        if (crudeEl) safeParseNB(NativeBridge.getGlobalDirection(), {}).crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
-        if (giftEl) safeParseNB(NativeBridge.getGlobalDirection(), {}).giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
-        const saveData = { ...safeParseNB(NativeBridge.getGlobalDirection(), {}), _date: API.todayIST() };
+        if (dowEl) gd.dowNow = dowEl.value ? parseFloat(dowEl.value) : null;
+        if (crudeEl) gd.crudeNow = crudeEl.value ? parseFloat(crudeEl.value) : null;
+        if (giftEl) gd.giftNow = giftEl.value ? parseFloat(giftEl.value) : null;
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
+            NativeBridge.setGlobalDirection(JSON.stringify(gd));
+        }
+        const saveData = { ...gd, _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
         computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
