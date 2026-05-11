@@ -4387,21 +4387,30 @@ function updateLockScanUi() {
     if (!btnLock && !statusEl) return;
 
     const baseline = getTodayNativeBaseline();
-    if (!baseline) return;
+    let localBaseline = null;
+    try {
+        localBaseline = safeParseNB(localStorage.getItem('mr2_morning_baseline'), null);
+    } catch (e) {
+        localBaseline = null;
+    }
+    const lockedToday = !!baseline || isTodayRecord(localBaseline);
+    if (!lockedToday) return;
 
     const serviceStatus = callNativeJson('getServiceStatus', {}, {});
-    const pollCount = STATE.pollCount || safeParseNB(NativeBridge.getPollHistory?.(), []).length || 0;
-    const isRunning = serviceStatus.running || STATE.isWatching || pollCount > 0;
+    const pollCount = Number.isFinite(serviceStatus.polls)
+        ? serviceStatus.polls
+        : (STATE.pollCount || safeParseNB(NativeBridge.getPollHistory?.(), []).length || 0);
+    const isRunning = !!serviceStatus.running || !!STATE.isWatching;
 
     document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
     if (btnLock) {
         btnLock.disabled = true;
-        btnLock.textContent = isRunning ? 'Watching...' : 'Scanning...';
+        btnLock.textContent = isRunning ? 'Watching...' : 'Locked';
     }
     if (statusEl && !statusEl.textContent.startsWith('Lock failed')) {
         statusEl.textContent = isRunning
             ? `✅ Watching market${pollCount ? ` · Poll #${pollCount}` : ''}`
-            : '✅ Morning data locked. Waiting for first poll...';
+            : '✅ Morning data locked. Waiting for service...';
     }
 }
 
@@ -6022,12 +6031,20 @@ function restoreMorningData(cloudConfig) {
     if (data.dowClose) {
         const el = document.getElementById('in-dow-close');
         if (el) el.value = data.dowClose;
-        (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowClose = parseFloat(data.dowClose);
+        const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
+        gd.dowClose = parseFloat(data.dowClose);
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
+            NativeBridge.setGlobalDirection(JSON.stringify(gd));
+        }
     }
     if (data.crudeSettle) {
         const el = document.getElementById('in-crude-settle');
         if (el) el.value = data.crudeSettle;
-        (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeSettle = parseFloat(data.crudeSettle);
+        const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
+        gd.crudeSettle = parseFloat(data.crudeSettle);
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
+            NativeBridge.setGlobalDirection(JSON.stringify(gd));
+        }
     }
     // Restore morning bias (the plan — survives device change via Supabase)
     const biasCloud = cloudConfig?.morning_bias;
@@ -6066,10 +6083,14 @@ function restoreGlobalContext(cloudConfig) {
         localStorage.removeItem('mr2_global_context');
         return;
     }
-    if (parsed.dowNow) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).dowNow = parsed.dowNow;
-    if (parsed.crudeNow) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).crudeNow = parsed.crudeNow;
-    if (parsed.giftNow) (JSON.parse(NativeBridge.getGlobalDirection() || '{}')).giftNow = parsed.giftNow;
-    if (parsed._date) (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))._date = parsed._date;
+    const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
+    if (parsed.dowNow) gd.dowNow = parsed.dowNow;
+    if (parsed.crudeNow) gd.crudeNow = parsed.crudeNow;
+    if (parsed.giftNow) gd.giftNow = parsed.giftNow;
+    if (parsed._date) gd._date = parsed._date;
+    if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
+        NativeBridge.setGlobalDirection(JSON.stringify(gd));
+    }
 }
 
 async function loadOpenTrade() {
