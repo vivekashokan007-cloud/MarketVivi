@@ -4249,6 +4249,54 @@ function friendlyType(type) {
     }[type] || type;
 }
 
+function getVarsityFilter(biasObj, vix) {
+    const bias = String(biasObj?.bias || '').toUpperCase();
+    const ivHigh = Number(vix || 0) >= C.IV_HIGH;
+    const rangeDetected = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
+
+    if (rangeDetected) {
+        return {
+            primary: ['IRON_BUTTERFLY', 'IRON_CONDOR'],
+            allowed: ['IRON_BUTTERFLY', 'IRON_CONDOR', 'BULL_PUT', 'BEAR_CALL'],
+            rangeDetected: true
+        };
+    }
+
+    if (bias.includes('BULL')) {
+        return ivHigh
+            ? {
+                primary: ['BULL_PUT', 'BULL_CALL'],
+                allowed: ['BULL_PUT', 'BULL_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
+                rangeDetected: false
+            }
+            : {
+                primary: ['BULL_CALL', 'BULL_PUT'],
+                allowed: ['BULL_CALL', 'BULL_PUT', 'IRON_BUTTERFLY', 'IRON_CONDOR'],
+                rangeDetected: false
+            };
+    }
+
+    if (bias.includes('BEAR')) {
+        return ivHigh
+            ? {
+                primary: ['BEAR_CALL', 'BEAR_PUT'],
+                allowed: ['BEAR_CALL', 'BEAR_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
+                rangeDetected: false
+            }
+            : {
+                primary: ['BEAR_PUT', 'BEAR_CALL'],
+                allowed: ['BEAR_PUT', 'BEAR_CALL', 'IRON_BUTTERFLY', 'IRON_CONDOR'],
+                rangeDetected: false
+            };
+    }
+
+    return {
+        primary: ['IRON_BUTTERFLY', 'IRON_CONDOR'],
+        allowed: ['IRON_BUTTERFLY', 'IRON_CONDOR', 'BULL_PUT', 'BEAR_CALL'],
+        rangeDetected: false
+    };
+}
+
 function forceIcon(val) {
     if (val === 1) return '<span class="force-pos">✅</span>';
     if (val === -1) return '<span class="force-neg">❌</span>';

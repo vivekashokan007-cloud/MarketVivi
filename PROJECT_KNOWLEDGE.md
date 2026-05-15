@@ -424,3 +424,25 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Watch: Sigma sweet spot indicator on credit cards
 - Watch: EXIT TODAY tags on IB/IC
 - Continue paper trading to 50 trades (~11 more needed)
+
+---
+
+## Latest Fix Log
+
+### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
+- Symptom:
+  - On Market tab, after entering evening values and tapping **Save**, UI showed:
+    - `Save failed: getVarsityFilter is not defined`
+- Root cause:
+  - `renderAll()` path used `getVarsityFilter(...)` in watchlist/positioning rendering.
+  - Function definition was missing in `app.js`.
+  - `saveEveningClose()` executes `renderAll()` post-save, so render exception appeared as save failure.
+- Fix applied:
+  - Added `getVarsityFilter(biasObj, vix)` helper in `/root/MarketVivi/app.js`.
+  - Returns stable object with:
+    - `primary` strategy order,
+    - `allowed` strategies,
+    - `rangeDetected` flag.
+  - Includes range-aware fallback when `STATE.rangeSigma < 0.3`, plus bull/bear/neutral handling.
+- Status:
+  - Fixed locally, pending your confirmation before push.
