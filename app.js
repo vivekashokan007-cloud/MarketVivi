@@ -3587,6 +3587,9 @@ window.syncFromNative = function(dataJson) {
 // ═══ TRADE MODE TOGGLE — Intraday vs Swing ═══
 function toggleTradeMode() {
     STATE.tradeMode = STATE.tradeMode === 'swing' ? 'intraday' : 'swing';
+    if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) {
+        NativeBridge.setTradeMode(STATE.tradeMode);
+    }
     // Persist mode
     const currentTheme = document.body.classList.contains('dark') ? 'dark' : 'light';
     DB.setConfig('settings', { theme: currentTheme, tradeMode: STATE.tradeMode });
@@ -5188,10 +5191,13 @@ function renderOI() {
         ${(() => {
             const nf50 = safeParseNB(NativeBridge.getNf50Breadth(), {});
             if (typeof nf50.scaled !== 'number') return '';
+            const adv = Number.isFinite(nf50.advancing) ? nf50.advancing : 0;
+            const considered = Number.isFinite(nf50.considered) && nf50.considered > 0 ? nf50.considered : 50;
+            const pct = Number.isFinite(nf50.pct) ? nf50.pct : null;
             return `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>
-            <span class="env-row-value">${nf50.scaled}/50 advancing</span>
+            <span class="env-row-value">${adv}/${considered} advancing${pct !== null ? ` · ${pct}%` : ''}</span>
         </div>
         `;
         })()}
@@ -5331,7 +5337,8 @@ function renderWatchlist() {
             const eb = bd.effective_bias;
             const mw = Math.round(eb.morning_weight * 100);
             const reasons = eb.drift_reasons?.length ? eb.drift_reasons.join(', ') : '';
-            return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${bd.morningBias.label} → ${eb.label} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
+            const ebLabel = eb.label || `${eb.strength ? eb.strength + ' ' : ''}${eb.bias || 'NEUTRAL'}`;
+            return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${bd.morningBias.label} → ${ebLabel} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
         })() : ''}
         ${varsityInfo?.rangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — IB/IC prioritized over directional</div>` : ((JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Trending (${STATE.rangeSigma}σ) — directional strategies active</div>` : '')}
         ${bd.marketPhase && bd.marketPhase.id !== 'PRE_MARKET' && bd.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${bd.marketPhase.label}: ${bd.marketPhase.hint}</div>
@@ -6052,6 +6059,9 @@ function lockMorningData() {
 function restoreMorningData(cloudConfig) {
     // Priority: Supabase → localStorage
     let data = cloudConfig?.morning_inputs || null;
+    if (!data && cloudConfig?.morning_baseline) {
+        data = cloudConfig.morning_baseline;
+    }
     if (!data) {
         const saved = localStorage.getItem('mr2_morning');
         if (!saved) return;
@@ -6065,31 +6075,41 @@ function restoreMorningData(cloudConfig) {
         return;
     }
 
-    if (data.fiiCash) document.getElementById('in-fii-cash').value = data.fiiCash;
-    if (data.fiiShortPct) document.getElementById('in-fii-short').value = data.fiiShortPct;
-    if (data.diiCash) { const el = document.getElementById('in-dii-cash'); if (el) el.value = data.diiCash; }
-    if (data.fiiIdxFut) { const el = document.getElementById('in-fii-idx-fut'); if (el) el.value = data.fiiIdxFut; }
-    if (data.fiiStkFut) { const el = document.getElementById('in-fii-stk-fut'); if (el) el.value = data.fiiStkFut; }
-    if (data.giftSpot) { const el = document.getElementById('in-gift-spot'); if (el) el.value = data.giftSpot; }
+    const firstNonNull = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '');
+    const fiiCash = firstNonNull(data.fiiCash, data.fii_cash);
+    const fiiShortPct = firstNonNull(data.fiiShortPct, data.fii_short_pct);
+    const diiCash = firstNonNull(data.diiCash, data.dii_cash);
+    const fiiIdxFut = firstNonNull(data.fiiIdxFut, data.fii_idx_fut);
+    const fiiStkFut = firstNonNull(data.fiiStkFut, data.fii_stk_fut);
+    const giftSpot = firstNonNull(data.giftSpot, data.gift_spot);
+    const dowClose = firstNonNull(data.dowClose, data.dow_close, data.dow);
+    const crudeSettle = firstNonNull(data.crudeSettle, data.crude_settle, data.crude);
+
+    if (fiiCash !== undefined) document.getElementById('in-fii-cash').value = fiiCash;
+    if (fiiShortPct !== undefined) document.getElementById('in-fii-short').value = fiiShortPct;
+    if (diiCash !== undefined) { const el = document.getElementById('in-dii-cash'); if (el) el.value = diiCash; }
+    if (fiiIdxFut !== undefined) { const el = document.getElementById('in-fii-idx-fut'); if (el) el.value = fiiIdxFut; }
+    if (fiiStkFut !== undefined) { const el = document.getElementById('in-fii-stk-fut'); if (el) el.value = fiiStkFut; }
+    if (giftSpot !== undefined) { const el = document.getElementById('in-gift-spot'); if (el) el.value = giftSpot; }
     if (data.upstoxBias) {
         const el = document.getElementById('in-upstox-bias');
         if (el) el.value = data.upstoxBias;
     }
     // Restore Dow/Crude morning reference
-    if (data.dowClose) {
+    if (dowClose !== undefined) {
         const el = document.getElementById('in-dow-close');
-        if (el) el.value = data.dowClose;
+        if (el) el.value = dowClose;
         const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
-        gd.dowClose = parseFloat(data.dowClose);
+        gd.dowClose = parseFloat(dowClose);
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
             NativeBridge.setGlobalDirection(JSON.stringify(gd));
         }
     }
-    if (data.crudeSettle) {
+    if (crudeSettle !== undefined) {
         const el = document.getElementById('in-crude-settle');
-        if (el) el.value = data.crudeSettle;
+        if (el) el.value = crudeSettle;
         const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
-        gd.crudeSettle = parseFloat(data.crudeSettle);
+        gd.crudeSettle = parseFloat(crudeSettle);
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
             NativeBridge.setGlobalDirection(JSON.stringify(gd));
         }
@@ -6807,6 +6827,14 @@ function initTheme(cloudConfig) {
     const savedTheme = settings?.theme || localStorage.getItem('mr2_theme');
     // Restore trade mode from cloud
     if (settings?.tradeMode) STATE.tradeMode = settings.tradeMode;
+    try {
+        const nativeMode = (typeof NativeBridge !== 'undefined' && NativeBridge.getTradeMode) ? NativeBridge.getTradeMode() : '';
+        if (nativeMode === 'intraday' || nativeMode === 'swing') {
+            STATE.tradeMode = nativeMode;
+        } else if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) {
+            NativeBridge.setTradeMode(STATE.tradeMode);
+        }
+    } catch {}
     if (savedTheme === 'dark') {
         document.body.classList.add('dark');
         const toggle = document.getElementById('theme-switch');
