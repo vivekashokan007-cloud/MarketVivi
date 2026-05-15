@@ -3590,8 +3590,12 @@ function toggleTradeMode() {
     if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) {
         NativeBridge.setTradeMode(STATE.tradeMode);
     }
+    if (typeof NativeBridge !== 'undefined' && NativeBridge.requestImmediatePoll) {
+        NativeBridge.requestImmediatePoll();
+    }
     // Persist mode
     const currentTheme = document.body.classList.contains('dark') ? 'dark' : 'light';
+    localStorage.setItem('mr2_trade_mode', STATE.tradeMode);
     DB.setConfig('settings', { theme: currentTheme, tradeMode: STATE.tradeMode });
     // Regenerate candidates with new mode (contextScore + gamma block change)
     if ((JSON.parse(NativeBridge.getBnfChain() || '{}')) && (JSON.parse(NativeBridge.getNfChain() || '{}')) && (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias) {
@@ -3615,8 +3619,11 @@ function toggleTradeMode() {
 // ═══ RESCAN STRATEGIES — fetch fresh chains + regenerate candidates ═══
 async function rescanStrategies() {
     // F.2 reduced: brain.py generates candidates inside analyze().
-    // PWA only triggers a refresh and re-renders.
+    // Ask Kotlin for a fresh poll/brain cycle, then re-render current state.
     try {
+        if (typeof NativeBridge !== 'undefined' && NativeBridge.requestImmediatePoll) {
+            NativeBridge.requestImmediatePoll();
+        }
         renderAll();
     } catch (e) {
         console.error('rescanStrategies render failed:', e);
@@ -6825,11 +6832,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 function initTheme(cloudConfig) {
     const settings = cloudConfig?.settings || null;
     const savedTheme = settings?.theme || localStorage.getItem('mr2_theme');
-    // Restore trade mode from cloud
-    if (settings?.tradeMode) STATE.tradeMode = settings.tradeMode;
+    // Restore trade mode from saved UI settings first; native is a fallback only.
+    const savedMode = settings?.tradeMode || localStorage.getItem('mr2_trade_mode');
+    if (savedMode === 'intraday' || savedMode === 'swing') STATE.tradeMode = savedMode;
     try {
         const nativeMode = (typeof NativeBridge !== 'undefined' && NativeBridge.getTradeMode) ? NativeBridge.getTradeMode() : '';
-        if (nativeMode === 'intraday' || nativeMode === 'swing') {
+        if (savedMode === 'intraday' || savedMode === 'swing') {
+            if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) NativeBridge.setTradeMode(STATE.tradeMode);
+        } else if (nativeMode === 'intraday' || nativeMode === 'swing') {
             STATE.tradeMode = nativeMode;
         } else if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) {
             NativeBridge.setTradeMode(STATE.tradeMode);
