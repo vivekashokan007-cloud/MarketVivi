@@ -1450,9 +1450,12 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     # ═══ FIRST 15 MINUTES SUPPRESSION ═══
     # Opening noise — gap repricing, market maker activity. Signals unreliable.
     if poll_count < 3:
+        early_bias = 'BULL' if morning_net >= 1 else 'BEAR' if morning_net <= -1 else 'NEUTRAL'
+        early_strength = 'STRONG' if abs(morning_net) >= 2 else 'MILD' if abs(morning_net) >= 1 else ''
         return {
-            'bias': 'BULL' if morning_net >= 1 else 'BEAR' if morning_net <= -1 else 'NEUTRAL',
-            'strength': 'STRONG' if abs(morning_net) >= 2 else 'MILD' if abs(morning_net) >= 1 else '',
+            'bias': early_bias,
+            'strength': early_strength,
+            'label': f"{early_strength} {early_bias}".strip(),
             'net': morning_net,
             'morning_weight': 1.0,
             'signals': [0] * TOTAL_SIGNALS,
@@ -1582,6 +1585,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     return {
         'bias': bias,
         'strength': strength,
+        'label': f"{strength} {bias}".strip(),
         'net': round(effective_net, 2),
         'morning_weight': round(morning_weight, 2),
         'signals': signals,
@@ -2727,6 +2731,36 @@ function callNativeJson(methodName, ...args) {
     return response;
 }
 
+function currentOpenTrades() {
+    if (Array.isArray(STATE.openTrades) && STATE.openTrades.length) return STATE.openTrades;
+    if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.getOpenTrades === 'function') {
+        return safeParseNB(NativeBridge.getOpenTrades(), []);
+    }
+    return [];
+}
+
+function syncToNative() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.setOpenTrades !== 'function') return;
+    try {
+        const openTrades = Array.isArray(STATE.openTrades) ? STATE.openTrades : [];
+        NativeBridge.setOpenTrades(JSON.stringify(openTrades));
+    } catch (e) {
+        console.warn('[syncToNative] failed:', e.message);
+    }
+}
+
+function addOpenTradeToState(trade) {
+    const tradeId = String(trade?.id ?? '');
+    const openTrades = currentOpenTrades().filter(t => String(t.id) !== tradeId);
+    STATE.openTrades = tradeId ? [...openTrades, trade] : [...openTrades, trade];
+    syncToNative();
+}
+
+function removeOpenTradeFromState(tradeId) {
+    STATE.openTrades = currentOpenTrades().filter(t => String(t.id) !== String(tradeId));
+    syncToNative();
+}
+
 function syncUpstoxTokenToNative({ promptIfMissing = false } = {}) {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.setApiToken !== 'function') return false;
     let token = localStorage.getItem('mr2_upstox_token') || '';
@@ -2762,7 +2796,14 @@ function getBrainData() {
 
 function refreshBrainData() {
     bd = getBrainData();
+    applyBrainRangeSigma(bd);
     return bd;
+}
+
+function applyBrainRangeSigma(brainResult) {
+    const sigma = brainResult?.regime?.sigma ?? brainResult?.marketPhase?.sigma ?? null;
+    const n = Number(sigma);
+    if (Number.isFinite(n)) STATE.rangeSigma = Number(n.toFixed(2));
 }
 
 function pullNativeState() {
@@ -2840,11 +2881,14 @@ function collectBaselineFromForm() {
     } catch (e) {
         eveningClose = null;
     }
+    const ecBnf = eveningClose && eveningClose.bnfSpot ? eveningClose.bnfSpot : 0;
+    const ecNf = eveningClose && eveningClose.nfSpot ? eveningClose.nfSpot : 0;
+    const ecVix = eveningClose && eveningClose.vix ? eveningClose.vix : 0;
     return {
         date: API.todayIST(),
-        bnfSpot: parseFloat(latestPoll.bnfSpot ?? latestPoll.bnf ?? 0) || 0,
-        nfSpot: parseFloat(latestPoll.nfSpot ?? latestPoll.nf ?? 0) || 0,
-        vix: parseFloat(latestPoll.vix ?? 0) || 0,
+        bnfSpot: parseFloat(latestPoll.bnfSpot ?? latestPoll.bnf ?? ecBnf ?? 0) || 0,
+        nfSpot: parseFloat(latestPoll.nfSpot ?? latestPoll.nf ?? ecNf ?? 0) || 0,
+        vix: parseFloat(latestPoll.vix ?? ecVix ?? 0) || 0,
         bnfCallWall: parseFloat(latestPoll.bnfCallWall ?? latestPoll.cw ?? 0) || 0,
         bnfPutWall: parseFloat(latestPoll.bnfPutWall ?? latestPoll.pw ?? 0) || 0,
         fiiCash: num('in-fii-cash'),
@@ -3139,6 +3183,7 @@ function estimateCost(cand) {
 // IB/IC are exempt (non-directional, F1 doesn't apply)
 // This prevents: STRONG BULL bias → Bear Call #1 (the Trade #5 trap)
 function isDirectionSafe(candidate) {
+    if (!candidate || !candidate.forces) return false;
     if (candidate.legs === 4) return true; // IB/IC are non-directional
     return candidate.forces.f1 >= 0; // F1 must be aligned or neutral
 }
@@ -3499,6 +3544,8 @@ window.syncFromNative = function(dataJson) {
         
         // Phase 4: Full brain result from Kotlin
         if (data.brainResult) {
+            bd = data.brainResult;
+            applyBrainRangeSigma(bd);
             STATE.brainInsights = data.brainResult;
             STATE.brainLastRun = Date.now();
             STATE.brainError = null;
@@ -3519,12 +3566,15 @@ window.syncFromNative = function(dataJson) {
         // Phase 3: Use brain-generated candidates if available (b114)
         if (data.brainResult?.generated_candidates?.length > 0) {
             const brainCands = data.brainResult.generated_candidates;
-            STATE.candidates = rankCandidates(brainCands);
-            STATE.watchlist = (bd.generated_candidates || []).slice(0, 6);
+            const rankedBrain = rankCandidates(brainCands);
+            const curatedWatchlist = Array.isArray(data.brainResult.watchlist) ? data.brainResult.watchlist : [];
+            STATE.candidates = rankedBrain;
+            bd.watchlist = curatedWatchlist.length ? curatedWatchlist.slice() : rankedBrain.slice(0, 6);
+            STATE.watchlist = bd.watchlist.slice(0, 6);
             const seenIds = new Set((bd.watchlist || []).map(c => c.id));
             for (const idx of ['BNF', 'NF']) {
                 const seen = new Set();
-                for (const c of (bd.generated_candidates || []).filter(c => c.index === idx && !c.capitalBlocked)) {
+                for (const c of rankedBrain.filter(c => c.index === idx && !c.capitalBlocked)) {
                     if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
                     if (seen.size >= 5) break;
                 }
@@ -3559,13 +3609,20 @@ window.syncFromNative = function(dataJson) {
         
         // Phase 4: Updated trade P&L from Kotlin
         if (data.openTrades && Array.isArray(data.openTrades)) {
+            const openTrades = currentOpenTrades();
+            let changed = false;
             for (const nt of data.openTrades) {
-                const existing = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).find(t => String(t.id) === String(nt.id));
+                const existing = openTrades.find(t => String(t.id) === String(nt.id));
                 if (existing) {
                     if (nt.current_pnl !== undefined) existing.current_pnl = nt.current_pnl;
                     if (nt.current_spot !== undefined) existing.current_spot = nt.current_spot;
                     if (nt.peak_pnl !== undefined) existing.peak_pnl = Math.max(existing.peak_pnl || 0, nt.peak_pnl);
+                    changed = true;
                 }
+            }
+            if (changed) {
+                STATE.openTrades = openTrades;
+                syncToNative();
             }
         }
         
@@ -3609,8 +3666,11 @@ function toggleTradeMode() {
         const nfCands = (JSON.parse(NativeBridge.getNfChain() || '{}')) ? generateCandidates((JSON.parse(NativeBridge.getNfChain() || '{}')), (safeParseNB(NativeBridge.getLatestPoll(), {})).nfSpot, 'NF', STATE.nfExpiry, vix, biasForCands, ivPctl) : [];
         STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
         STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
-        STATE.watchlist = (bd.generated_candidates || []).filter(c => c.forces.aligned >= 2 && !c.capitalBlocked);
-        addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. ${(bd.generated_candidates || []).filter(c => !c.capitalBlocked).length} candidates.`, 'info');
+        const curated = (bd.watchlist || []).filter(c => (c.forces?.aligned ?? 0) >= 2 && !c.capitalBlocked);
+        STATE.watchlist = curated.length
+            ? curated
+            : (STATE.candidates || []).filter(c => (c.forces?.aligned ?? 0) >= 2 && !c.capitalBlocked);
+        addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. ${(STATE.candidates || []).filter(c => !c.capitalBlocked).length} candidates.`, 'info');
     }
     renderWatchlist();
     renderFooter();
@@ -3684,7 +3744,7 @@ async function takeTrade(candidateId, isPaper = false) {
     }
 
     // Determine candidate rank
-    const rankList = (bd.generated_candidates || []).filter(c => c.index === cand.index && !c.capitalBlocked && c.forces.aligned >= 2);
+    const rankList = (bd.generated_candidates || []).filter(c => c.index === cand.index && !c.capitalBlocked && (c.forces?.aligned ?? 0) >= 2);
     const candRank = rankList.findIndex(c => c.id === cand.id) + 1;
 
     const isBNF = cand.index === 'BNF';
@@ -3826,9 +3886,8 @@ async function takeTrade(candidateId, isPaper = false) {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
+        addOpenTradeToState(trade);
         playSound('entry');
-        syncToNative(); // b99: sync new trade to Kotlin
         switchTab('positions');
         renderAll();
 
@@ -3942,7 +4001,7 @@ async function takeTrade(candidateId, isPaper = false) {
         const retry = await DB.insertTrade(essentialTrade);
         if (retry) {
             trade.id = retry.id;
-            (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
+            addOpenTradeToState(trade);
             playSound('entry');
             switchTab('positions');
             renderAll();
@@ -4069,7 +4128,7 @@ async function logManualTrade() {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
+        addOpenTradeToState(trade);
         playSound('entry');
         switchTab('positions');
         renderAll();
@@ -4106,7 +4165,7 @@ async function logManualTrade() {
         const retry = await DB.insertTrade(essentialTrade);
         if (retry) {
             trade.id = retry.id;
-            (JSON.parse(NativeBridge.getOpenTrades() || '[]')).push(trade);
+            addOpenTradeToState(trade);
             playSound('entry');
             switchTab('positions');
             renderAll();
@@ -4149,8 +4208,7 @@ async function closeTrade(tradeId, exitReason) {
 
         // b108: Remove from STATE and re-render IMMEDIATELY — don't wait for Supabase
         // Trade disappears from Position tab right away regardless of network
-        STATE.openTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => String(t.id) !== String(tradeId));
-        syncToNative(); // push removal to Kotlin now
+        removeOpenTradeFromState(tradeId); // push removal to Kotlin now
         renderAll();    // re-render immediately — card gone from UI
 
         // Now update Supabase in background (non-blocking)
@@ -4235,8 +4293,7 @@ async function closeTrade(tradeId, exitReason) {
     } catch (err) {
         console.error('closeTrade error:', err);
         // Even if something fails, ensure trade is removed from UI
-        STATE.openTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => String(t.id) !== String(tradeId));
-        syncToNative();
+        removeOpenTradeFromState(tradeId);
         renderAll();
         alert(`Exit logged locally. Supabase sync may have failed: ${err.message}`);
     }
@@ -5293,7 +5350,7 @@ function renderWatchlist() {
     // Range-detected: 4-leg strategies exempt from ev>0 (range detection IS the edge)
     const rangeActive = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
     const executable = (bd.generated_candidates || []).filter(c =>
-        !c.capitalBlocked && c.forces.aligned >= 2 && (c.contextScore || 0) >= -0.3
+        !c.capitalBlocked && (c.forces?.aligned ?? 0) >= 2 && (c.contextScore || 0) >= -0.3
         && (c.ev > 0 || (rangeActive && c.legs === 4))
         && isDirectionSafe(c)
     ).length;
@@ -5478,7 +5535,7 @@ function renderWatchlist() {
         const filtered = candidates.filter(c =>
             c.index === index &&
             !c.capitalBlocked &&
-            c.forces.aligned >= 2 &&          // at least 2/3 forces aligned
+            (c.forces?.aligned ?? 0) >= 2 &&  // at least 2/3 forces aligned
             isDirectionSafe(c) &&             // NEVER show direction-against as recommendation
             (c.contextScore || 0) >= -0.3 &&   // not fighting market condition
             (c.ev > 0 || (rangeOK && c.legs === 4))  // range: 4-leg exempt from ev>0
@@ -6028,7 +6085,10 @@ function lockMorningData() {
             upstoxBias: document.getElementById('in-upstox-bias')?.value || ''
         };
         const baseline = collectBaselineFromForm();
-        callNativeJson('setMorningInput', JSON.stringify(baseline));
+        const morningResult = callNativeJson('setMorningInput', JSON.stringify(baseline));
+        if (morningResult && morningResult.error) {
+            throw new Error(`Morning input error: ${morningResult.error}`);
+        }
 
         localStorage.setItem('mr2_morning_inputs', JSON.stringify(rawInputs));
         localStorage.setItem('mr2_morning', JSON.stringify(rawInputs));
@@ -6106,7 +6166,9 @@ function restoreMorningData(cloudConfig) {
     if (dowClose !== undefined) {
         const el = document.getElementById('in-dow-close');
         if (el) el.value = dowClose;
-        const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
+        const gd = (typeof NativeBridge !== 'undefined' && NativeBridge.getGlobalDirection)
+            ? safeParseNB(NativeBridge.getGlobalDirection(), {})
+            : {};
         gd.dowClose = parseFloat(dowClose);
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
             NativeBridge.setGlobalDirection(JSON.stringify(gd));
@@ -6115,7 +6177,9 @@ function restoreMorningData(cloudConfig) {
     if (crudeSettle !== undefined) {
         const el = document.getElementById('in-crude-settle');
         if (el) el.value = crudeSettle;
-        const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
+        const gd = (typeof NativeBridge !== 'undefined' && NativeBridge.getGlobalDirection)
+            ? safeParseNB(NativeBridge.getGlobalDirection(), {})
+            : {};
         gd.crudeSettle = parseFloat(crudeSettle);
         if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
             NativeBridge.setGlobalDirection(JSON.stringify(gd));
@@ -6158,7 +6222,9 @@ function restoreGlobalContext(cloudConfig) {
         localStorage.removeItem('mr2_global_context');
         return;
     }
-    const gd = safeParseNB(NativeBridge.getGlobalDirection?.(), {});
+    const gd = (typeof NativeBridge !== 'undefined' && NativeBridge.getGlobalDirection)
+        ? safeParseNB(NativeBridge.getGlobalDirection(), {})
+        : {};
     if (parsed.dowNow) gd.dowNow = parsed.dowNow;
     if (parsed.crudeNow) gd.crudeNow = parsed.crudeNow;
     if (parsed.giftNow) gd.giftNow = parsed.giftNow;
@@ -6195,6 +6261,7 @@ async function loadOpenTrade() {
         }
         return t;
     });
+    syncToNative();
 }
 
 function requestNotificationPermission() {
