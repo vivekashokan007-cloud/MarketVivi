@@ -2458,6 +2458,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     build_calibration(closed_trades)
     regime = detect_regime(polls, baseline)
+    result["regime"] = regime
+    result["rangeSigma"] = regime.get("sigma", 0)
 
     # Market (existing 8 + new 7)
     for fn in [pcr_velocity, oi_wall_shift, vix_momentum, spot_exhaustion,
