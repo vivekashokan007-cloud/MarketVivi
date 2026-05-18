@@ -2799,6 +2799,15 @@ function getBrainData() {
 function refreshBrainData() {
     bd = getBrainData();
     applyBrainRangeSigma(bd);
+    if (bd && Object.keys(bd).length) {
+        STATE.brainReady = true;
+        STATE.brainInsights = bd;
+        STATE.brainLastRun = Date.now();
+        STATE.candidates = Array.isArray(bd.generated_candidates) ? bd.generated_candidates.slice() : [];
+        STATE.watchlist = Array.isArray(bd.watchlist) ? bd.watchlist.slice() : [];
+        STATE.positioningCandidates = Array.isArray(bd.positioning_candidates) ? bd.positioning_candidates.slice() : [];
+        STATE.positioningBias = bd.positioning_bias || null;
+    }
     return bd;
 }
 
@@ -2825,8 +2834,15 @@ function pullNativeState() {
         STATE.live = latestPoll;
     }
     if (brainResult && Object.keys(brainResult).length) {
+        bd = brainResult;
+        applyBrainRangeSigma(bd);
+        STATE.brainReady = true;
         STATE.brainInsights = brainResult;
         STATE.brainLastRun = Date.now();
+        STATE.candidates = Array.isArray(brainResult.generated_candidates) ? brainResult.generated_candidates.slice() : [];
+        STATE.watchlist = Array.isArray(brainResult.watchlist) ? brainResult.watchlist.slice() : [];
+        STATE.positioningCandidates = Array.isArray(brainResult.positioning_candidates) ? brainResult.positioning_candidates.slice() : [];
+        STATE.positioningBias = brainResult.positioning_bias || null;
     }
     return { status, pollHistory, latestPoll, brainResult };
 }
@@ -3423,30 +3439,10 @@ async function handleNotifications(absSpotSigma, absVixSigma, significantMove) {
             STATE._captured315pm = true;  // Flag AFTER success
             addNotificationLog('✅ 3:15 PM Scan Complete', `Tomorrow Signal: ${bd.tomorrow_signal?.signal || 'NEUTRAL'} (${bd.tomorrow_signal?.strength || 0}/5)`, 'urgent');
 
-            // ═══ GENERATE POSITIONING TRADES ═══
-            const tSignal = bd.tomorrow_signal?.signal || 'NEUTRAL';
-            const positioningBias = {
-                bias: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL',
-                strength: bd.tomorrow_signal?.strength >= 3 ? 'STRONG' : 'MILD',
-                net: tSignal === 'BEARISH' ? -3 : tSignal === 'BULLISH' ? 3 : 0,
-                votes: { bull: tSignal === 'BULLISH' ? 3 : 0, bear: tSignal === 'BEARISH' ? 3 : 0 },
-                signals: [{ name: 'Tomorrow Signal', value: `${tSignal} (${bd.tomorrow_signal?.strength}/5)`, dir: tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL' }],
-                label: `${bd.tomorrow_signal?.strength >= 3 ? 'STRONG' : 'MILD'} ${tSignal === 'BEARISH' ? 'BEAR' : tSignal === 'BULLISH' ? 'BULL' : 'NEUTRAL'}`.trim()
-            };
-
-            const vixHistory = (JSON.parse(NativeBridge.getPremiumHistory(7) || '[]')).map(p => p.vix).filter(Boolean);
-            const ivPctl = (vixHistory && vixHistory.length >= 5) ? BS.ivPercentile((safeParseNB(NativeBridge.getLatestPoll(), {})).vix, vixHistory) : 50; // Gemini fix
-            const spots = { bnfSpot: (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfSpot, nfSpot: (safeParseNB(NativeBridge.getLatestPoll(), {})).nfSpot, vix: (safeParseNB(NativeBridge.getLatestPoll(), {})).vix };
-
-            const posBnfCands = generateCandidates((JSON.parse(NativeBridge.getBnfChain() || '{}')), spots.bnfSpot, 'BNF', STATE.bnfExpiry, spots.vix, positioningBias, ivPctl);
-            const posNfCands = generateCandidates((JSON.parse(NativeBridge.getNfChain() || '{}')), spots.nfSpot, 'NF', STATE.nfExpiry, spots.vix, positioningBias, ivPctl);
-            const allPosCands = rankCandidates([...posBnfCands, ...posNfCands]);
-
-            STATE.positioningCandidates = applyFreeCapitalFilter(allPosCands).slice(0, 10);
-            STATE.positioningBias = positioningBias;
-
-            addNotificationLog('🎯 Positioning Trades Ready',
-                `${STATE.positioningCandidates.length} trades aligned with ${tSignal} signal. Check Trade tab.`, 'entry');
+            // Display-only: positioning signal/candidates must come from Kotlin/Python brain.
+            // Do not run generateCandidates()/rankCandidates() in the PWA.
+            STATE.positioningCandidates = [];
+            STATE.positioningBias = null;
 
         } catch (e) {
             // DON'T set flag — will retry next 5-min poll
@@ -3550,8 +3546,13 @@ window.syncFromNative = function(dataJson) {
             applyBrainRangeSigma(bd);
             STATE.brainInsights = data.brainResult;
             STATE.brainLastRun = Date.now();
+            STATE.brainReady = true;
             STATE.brainError = null;
             STATE._nativeBrainAlerts = data.brainResult.alerts || [];
+            STATE.positioningCandidates = Array.isArray(data.brainResult.positioning_candidates)
+                ? data.brainResult.positioning_candidates.slice()
+                : [];
+            STATE.positioningBias = data.brainResult.positioning_bias || null;
             
             // Effective bias from Kotlin brain
             const eb = data.brainResult.effective_bias;
@@ -3568,34 +3569,18 @@ window.syncFromNative = function(dataJson) {
         // Phase 3: Use brain-generated candidates if available (b114)
         if (data.brainResult?.generated_candidates?.length > 0) {
             const brainCands = data.brainResult.generated_candidates;
-            const rankedBrain = rankCandidates(brainCands);
             const curatedWatchlist = Array.isArray(data.brainResult.watchlist) ? data.brainResult.watchlist : [];
-            STATE.candidates = rankedBrain;
-            bd.watchlist = curatedWatchlist.length ? curatedWatchlist.slice() : rankedBrain.slice(0, 6);
-            STATE.watchlist = bd.watchlist.slice(0, 6);
-            const seenIds = new Set((bd.watchlist || []).map(c => c.id));
-            for (const idx of ['BNF', 'NF']) {
-                const seen = new Set();
-                for (const c of rankedBrain.filter(c => c.index === idx && !c.capitalBlocked)) {
-                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
-                    if (seen.size >= 5) break;
-                }
-            }
+            STATE.candidates = brainCands.slice();
+            bd.generated_candidates = brainCands.slice();
+            bd.watchlist = curatedWatchlist.slice();
+            STATE.watchlist = curatedWatchlist.slice();
             STATE._lastCandidateBias = bd.effective_bias?.bias || bd.morningBias?.bias;
         }
 
-        // Phase 4: Candidates from Kotlin
-        if (data.candidates && Array.isArray(data.candidates) && data.candidates.length > 0) {
+        // Legacy fallback only. In normal native mode, brainResult.watchlist is authoritative.
+        if (!data.brainResult && data.candidates && Array.isArray(data.candidates) && data.candidates.length > 0) {
             STATE.candidates = data.candidates;
             STATE.watchlist = data.candidates.slice(0, 6);
-            const seenIds = new Set((bd.watchlist || []).map(c => c.id));
-            for (const idx of ['BNF', 'NF']) {
-                const seen = new Set();
-                for (const c of data.candidates.filter(c => c.index === idx && !c.capitalBlocked)) {
-                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
-                    if (seen.size >= 5) break;
-                }
-            }
             STATE._lastCandidateBias = bd.effective_bias?.bias || bd.morningBias?.bias;
         }
         
@@ -3656,24 +3641,7 @@ function toggleTradeMode() {
     const currentTheme = document.body.classList.contains('dark') ? 'dark' : 'light';
     localStorage.setItem('mr2_trade_mode', STATE.tradeMode);
     DB.setConfig('settings', { theme: currentTheme, tradeMode: STATE.tradeMode });
-    // Regenerate candidates with new mode (contextScore + gamma block change)
-    if ((JSON.parse(NativeBridge.getBnfChain() || '{}')) && (JSON.parse(NativeBridge.getNfChain() || '{}')) && (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias) {
-        const vix = (safeParseNB(NativeBridge.getLatestPoll(), {})).vix;
-        const ivPctl = (safeParseNB(NativeBridge.getLatestPoll(), {})).ivPercentile;
-        // b99: Use effective bias if brain has computed one
-        const biasForCands = bd.effective_bias
-            ? { bias: bd.effective_bias.bias, strength: bd.effective_bias.strength, net: bd.effective_bias.net, label: bd.effective_bias.label, votes: bd.morningBias?.votes || {bull:0, bear:0} }
-            : (safeParseNB(NativeBridge.getLatestPoll(), {})).bias;
-        const bnfCands = generateCandidates((JSON.parse(NativeBridge.getBnfChain() || '{}')), (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfSpot, 'BNF', STATE.bnfExpiry, vix, biasForCands, ivPctl);
-        const nfCands = (JSON.parse(NativeBridge.getNfChain() || '{}')) ? generateCandidates((JSON.parse(NativeBridge.getNfChain() || '{}')), (safeParseNB(NativeBridge.getLatestPoll(), {})).nfSpot, 'NF', STATE.nfExpiry, vix, biasForCands, ivPctl) : [];
-        STATE.candidates = rankCandidates([...bnfCands, ...nfCands]);
-        STATE.lastScanTime = Date.now(); // Track when candidates were rescanned
-        const curated = (bd.watchlist || []).filter(c => (c.forces?.aligned ?? 0) >= 2 && !c.capitalBlocked);
-        STATE.watchlist = curated.length
-            ? curated
-            : (STATE.candidates || []).filter(c => (c.forces?.aligned ?? 0) >= 2 && !c.capitalBlocked);
-        addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. ${(STATE.candidates || []).filter(c => !c.capitalBlocked).length} candidates.`, 'info');
-    }
+    addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. Waiting for native brain refresh.`, 'info');
     renderWatchlist();
     renderFooter();
 }
@@ -3746,7 +3714,7 @@ async function takeTrade(candidateId, isPaper = false) {
     }
 
     // Determine candidate rank
-    const rankList = (bd.generated_candidates || []).filter(c => c.index === cand.index && !c.capitalBlocked && (c.forces?.aligned ?? 0) >= 2);
+    const rankList = (bd.watchlist || []).filter(c => c.index === cand.index);
     const candRank = rankList.findIndex(c => c.id === cand.id) + 1;
 
     const isBNF = cand.index === 'BNF';
@@ -5347,39 +5315,29 @@ function renderWatchlist() {
     const bnfAtm = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.atm || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bnfAtm || 0;
     const nfAtm = (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atm || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.nfAtm || 0;
 
-    // Count candidates that ACTUALLY fit market conditions
-    // isDirectionSafe: directional strategies with F1 against are NOT executable
-    // Range-detected: 4-leg strategies exempt from ev>0 (range detection IS the edge)
-    const rangeActive = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
-    const executable = (bd.generated_candidates || []).filter(c =>
-        !c.capitalBlocked && (c.forces?.aligned ?? 0) >= 2 && (c.contextScore || 0) >= -0.3
-        && (c.ev > 0 || (rangeActive && c.legs === 4))
-        && isDirectionSafe(c)
-    ).length;
+    // Display-only: Python/Kotlin brain owns candidate generation, ranking, and watchlist selection.
+    const brainWatchlist = Array.isArray(bd.watchlist) ? bd.watchlist : [];
+    const executable = brainWatchlist.length;
     const total = (bd.generated_candidates || []).length;
 
     // ═══ GO VERDICT BANNER ═══
-    // b101: Use effective bias (brain-computed) when available — matches actual candidates
-    const activeBiasObj = bd.effective_bias
-        ? { bias: bd.effective_bias.bias, strength: bd.effective_bias.strength, net: bd.effective_bias.net, label: bd.effective_bias.label, votes: bd.morningBias?.votes || {bull:0, bear:0} }
-        : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias);
     const biasLabel = bd.effective_bias?.label || (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.label || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.label || 'NEUTRAL';
     const vix = (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.vix || 0;
     const modeLabel = STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING';
     const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
     const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
 
-    // Varsity recommendation — use effective bias to match actual candidates
-    const biasObj = activeBiasObj;
-    const varsityInfo = biasObj ? getVarsityFilter(biasObj, vix) : null;
-    // Show first PRIMARY that actually has candidates, not just primary[0]
-    const actualPrimary = varsityInfo?.primary?.find(p => (bd.generated_candidates || []).some(c => c.type === p)) || varsityInfo?.primary?.[0];
-    const varsityLabel = actualPrimary ? friendlyType(actualPrimary) : '';
-    const varsityAction = vix >= C.IV_HIGH ? 'SELL premium' : 'BUY premium';
+    const brainVerdict = bd.verdict || {};
+    const brainStrategyLabel = brainVerdict.strategy ? friendlyType(brainVerdict.strategy) : '';
+    const brainActionLabel = brainVerdict.action ? String(brainVerdict.action).replace('_', ' ') : '';
+    const brainRegimeType = bd.regime?.type || bd.marketPhase?.type || '';
+    const brainRangeDetected = brainRegimeType === 'range'
+        || brainVerdict.strategy === 'IRON_CONDOR'
+        || brainVerdict.strategy === 'IRON_BUTTERFLY';
 
     let html = `<div class="${goClass}">
         <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'} · ${modeLabel}</div>
-        <div class="go-detail">${executable} fit market (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        <div class="go-detail">${brainWatchlist.length} brain watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
         ${(() => {
             if (!STATE.lastScanTime) return '';
             const ageMin = Math.floor((Date.now() - STATE.lastScanTime) / 60000);
@@ -5398,7 +5356,7 @@ function renderWatchlist() {
                 ? `<div class="go-detail" style="font-size:11px; color:${driftColor}">${driftIcon} Morning: ${morningL} · Now: ${liveL} · Drift: ${drift > 0 ? '+' : ''}${drift}${STATE.driftOverridden ? ' · OVERRIDDEN' : ''}</div>`
                 : `<div class="go-detail" style="font-size:11px; color:var(--green)">✅ Plan holding: ${morningL}</div>`;
         })() : ''}
-        ${varsityLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">📖 Varsity: ${varsityLabel} · ${varsityAction}</div>` : ''}
+        ${brainStrategyLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">🧠 Brain strategy: ${brainStrategyLabel}${brainActionLabel ? ' · ' + brainActionLabel : ''}</div>` : ''}
         ${bd.effective_bias && bd.morningBias && bd.effective_bias.bias !== bd.morningBias.bias ? (() => {
             const eb = bd.effective_bias;
             const mw = Math.round(eb.morning_weight * 100);
@@ -5406,7 +5364,7 @@ function renderWatchlist() {
             const ebLabel = eb.label || `${eb.strength ? eb.strength + ' ' : ''}${eb.bias || 'NEUTRAL'}`;
             return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${bd.morningBias.label} → ${ebLabel} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
         })() : ''}
-        ${varsityInfo?.rangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — IB/IC prioritized over directional</div>` : ((JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Trending (${STATE.rangeSigma}σ) — directional strategies active</div>` : '')}
+        ${brainRangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — brain prioritized IB/IC</div>` : ((JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Brain regime: ${brainRegimeType || 'active'} (${STATE.rangeSigma}σ)</div>` : '')}
         ${bd.marketPhase && bd.marketPhase.id !== 'PRE_MARKET' && bd.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${bd.marketPhase.label}: ${bd.marketPhase.hint}</div>
         <div class="go-detail" style="font-size:10px; color:var(--text-muted);">${bd.marketPhase.detail}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
@@ -5488,16 +5446,10 @@ function renderWatchlist() {
         if (!gcFilled) {
             html += `<div class="positioning-gate">🔒 Enter Dow Futures Now & Crude Now above to unlock positioning strategies.</div>`;
         } else {
-            // Positioning Varsity label
-            const posVarsity = STATE.positioningBias ? getVarsityFilter(STATE.positioningBias, vix) : null;
-            const posVarsityLabel = posVarsity?.primary?.[0] ? friendlyType(posVarsity.primary[0]) : '';
-            const posVarsityAction = vix >= C.IV_HIGH ? 'SELL premium' : 'BUY premium';
-
             html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin:12px 0">
                 <div class="signal-label">⚡ POSITION FOR TOMORROW</div>
                 <div class="signal-value" style="color:${sigColor}">${sig.signal} (${sig.strength}/5)</div>
                 ${sig.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global boost: ${sig.globalBoost > 0 ? '+' : ''}${sig.globalBoost}</div>` : ''}
-                ${posVarsityLabel ? `<div class="signal-detail" style="font-weight:700">📖 Varsity: ${posVarsityLabel} · ${posVarsityAction}</div>` : ''}
             </div>`;
 
             // Free capital check for positioning
@@ -5512,8 +5464,8 @@ function renderWatchlist() {
                 html += `<div class="positioning-gate" style="color:var(--warn)">⚠️ Free capital ₹${(freeCapital/1000).toFixed(1)}K — may not cover buy leg ₹${(minPeakNeeded/1000).toFixed(1)}K.</div>`;
             }
 
-            // b91: Positioning candidates merged into regular NF/BNF sections below (Option C)
-            const posMergeCount = STATE.positioningCandidates.filter(c => isDirectionSafe(c) && !c.capitalBlocked).length;
+            // Display-only: any positioning candidates must already be selected by native brain.
+            const posMergeCount = STATE.positioningCandidates.length;
             if (posMergeCount > 0) {
                 html += `<div style="font-size:11px;color:var(--accent);padding:4px 0">⚡ ${posMergeCount} positioning candidates merged into strategy sections below</div>`;
             }
@@ -5528,68 +5480,8 @@ function renderWatchlist() {
     html += `</div></details>`;
     // ═══ END POSITIONING SECTION ═══
 
-    // ═══ TOP 3 DIVERSE — Best of each strategy type per index ═══
-    // Engine picks optimal: 8-step waterfall + contextScore eliminates bad setups
-    // Max 3 per index: one per strategy type, truly different risk profiles
-
-    function diverseTop(candidates, index) {
-        const rangeOK = STATE.rangeSigma != null && STATE.rangeSigma < 0.3;
-        const filtered = candidates.filter(c =>
-            c.index === index &&
-            !c.capitalBlocked &&
-            (c.forces?.aligned ?? 0) >= 2 &&  // at least 2/3 forces aligned
-            isDirectionSafe(c) &&             // NEVER show direction-against as recommendation
-            (c.contextScore || 0) >= -0.3 &&   // not fighting market condition
-            (c.ev > 0 || (rangeOK && c.legs === 4))  // range: 4-leg exempt from ev>0
-        );
-        // Engine already ranked by 8-step waterfall. First of each type IS the best.
-        // Max 3: truly different strategies, not 3 Bear Calls at different strikes.
-        const seen = new Set();
-        const diverse = [];
-        for (const c of filtered) {
-            if (!seen.has(c.type)) {
-                seen.add(c.type);
-                diverse.push(c);
-            }
-            if (diverse.length >= 3) break;
-        }
-        return diverse;
-    }
-
-    // ═══ b91: MERGE positioning candidates into regular sections (Option C) ═══
-    // Clear stale positioning flags from previous renders
-    for (const c of (bd.generated_candidates || [])) { delete c._posMatch; delete c._posOnly; }
-    if (STATE.positioningCandidates) {
-        for (const c of STATE.positioningCandidates) { delete c._posMatch; delete c._posOnly; }
-    }
-
-    const nfCands = diverseTop((bd.generated_candidates || []), 'NF');
-    const bnfCands = diverseTop((bd.generated_candidates || []), 'BNF');
-
-    // Build set of positioning candidate IDs (only if 315pm captured + global direction filled)
-    const posIds = new Set();
-    const gd315 = (JSON.parse(NativeBridge.getGlobalDirection() || '{}'));
-    const gcFilled315 = has315 && gd315.dowNow !== null && gd315.crudeNow !== null;
-    if (gcFilled315 && STATE.positioningCandidates?.length > 0) {
-        for (const pc of STATE.positioningCandidates) posIds.add(pc.id);
-    }
-
-    if (posIds.size > 0) {
-        // Tag regular candidates that also appear in positioning
-        for (const c of nfCands) { c._posMatch = posIds.has(c.id); }
-        for (const c of bnfCands) { c._posMatch = posIds.has(c.id); }
-
-        // Append positioning-only candidates (not already in regular list)
-        const regularIds = new Set([...nfCands, ...bnfCands].map(c => c.id));
-        const posOnlyNf = STATE.positioningCandidates.filter(c =>
-            c.index === 'NF' && !regularIds.has(c.id) && isDirectionSafe(c) && !c.capitalBlocked
-        ).slice(0, 2);
-        const posOnlyBnf = STATE.positioningCandidates.filter(c =>
-            c.index === 'BNF' && !regularIds.has(c.id) && isDirectionSafe(c) && !c.capitalBlocked
-        ).slice(0, 2);
-        for (const c of posOnlyNf) { c._posOnly = true; nfCands.push(c); }
-        for (const c of posOnlyBnf) { c._posOnly = true; bnfCands.push(c); }
-    }
+    const nfCands = brainWatchlist.filter(c => c.index === 'NF');
+    const bnfCands = brainWatchlist.filter(c => c.index === 'BNF');
     const nfTotal = (bd.generated_candidates || []).filter(c => c.index === 'NF').length;
     if (nfCands.length) {
         html += renderCandidateCard(nfCands[0], nfAtm, 1);
@@ -5599,10 +5491,7 @@ function renderWatchlist() {
             html += '</details>';
         }
     } else if (nfTotal > 0) {
-        const nfAgainst = (bd.generated_candidates || []).filter(c => c.index === 'NF' && !isDirectionSafe(c)).length;
-        const reason = nfAgainst > 0 ? `${nfAgainst} strategies exist but go AGAINST your bias. WAIT for aligned setup.` :
-            STATE.tradeMode === 'swing' ? 'None fit conditions. Try INTRADAY mode?' : 'WAIT for better setup.';
-        html += `<div class="empty-state">NF: ${nfTotal} generated — ${reason}</div>`;
+        html += `<div class="empty-state">NF: ${nfTotal} generated — brain returned no NF watchlist candidate.</div>`;
     } else {
         html += '<div class="empty-state">No NF candidates</div>';
     }
@@ -5614,9 +5503,7 @@ function renderWatchlist() {
         bnfCands.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
         html += '</details>';
     } else if (bnfTotal > 0) {
-        const bnfAgainst = (bd.generated_candidates || []).filter(c => c.index === 'BNF' && !isDirectionSafe(c)).length;
-        const reason = bnfAgainst > 0 ? `${bnfAgainst} strategies exist but go AGAINST your bias. WAIT.` : 'None fit current conditions.';
-        html += `<div class="empty-state">BNF: ${bnfTotal} generated — ${reason}</div>`;
+        html += `<div class="empty-state">BNF: ${bnfTotal} generated — brain returned no BNF watchlist candidate.</div>`;
     } else {
         html += '<div class="empty-state">No BNF candidates</div>';
     }
@@ -6918,8 +6805,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const brJson = window.NativeBridge.getBrainResult();
                     if (brJson && brJson !== '{}' && brJson !== 'null' && brJson !== '') {
                         const br = JSON.parse(brJson);
+                        bd = br;
                         STATE.brainInsights = br;
                         STATE.brainLastRun = Date.now();
+                        STATE.brainReady = true;
+                        STATE.candidates = Array.isArray(br.generated_candidates) ? br.generated_candidates.slice() : [];
+                        STATE.watchlist = Array.isArray(br.watchlist) ? br.watchlist.slice() : [];
+                        STATE.positioningCandidates = Array.isArray(br.positioning_candidates) ? br.positioning_candidates.slice() : [];
+                        STATE.positioningBias = br.positioning_bias || null;
                         if (br.effective_bias && br.effective_bias.bias) {
                             STATE.effectiveBias = {
                                 bias: br.effective_bias.bias, strength: br.effective_bias.strength || '',
@@ -6930,22 +6823,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                 }
-                // Pull candidates
-                if (window.NativeBridge.getCandidates) {
+                // Legacy fallback only. In normal native mode, brain result owns watchlist/candidates.
+                if ((!bd.watchlist || !bd.watchlist.length) && window.NativeBridge.getCandidates) {
                     const candJson = window.NativeBridge.getCandidates();
                     if (candJson && candJson !== '[]' && candJson !== 'null') {
                         const cands = JSON.parse(candJson);
                         if (Array.isArray(cands) && cands.length > 0) {
                             STATE.candidates = cands;
                             STATE.watchlist = cands.slice(0, 6);
-                            const seenIds = new Set((bd.watchlist || []).map(c => c.id));
-                            for (const idx of ['BNF', 'NF']) {
-                                const seen = new Set();
-                                for (const c of cands.filter(c => c.index === idx && !c.capitalBlocked)) {
-                                    if (!seen.has(c.type) && !seenIds.has(c.id)) { seen.add(c.type); seenIds.add(c.id); (bd.watchlist || []).push(c); }
-                                    if (seen.size >= 5) break;
-                                }
-                            }
                         }
                     }
                 }
