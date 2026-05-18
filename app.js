@@ -6522,6 +6522,65 @@ function buildAppConfigAuditRows(appConfigRows) {
     }));
 }
 
+async function blobToBase64Payload(blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+}
+
+async function saveExportBlobNative(filename, blob) {
+    if (!window.AndroidBridge?.saveExportFile && !window.AndroidBridge?.beginExportFile) return null;
+    const mimeType = blob.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const base64Data = await blobToBase64Payload(blob);
+
+    if (window.AndroidBridge?.beginExportFile && window.AndroidBridge?.appendExportFileChunk && window.AndroidBridge?.finishExportFile) {
+        const beginRaw = window.AndroidBridge.beginExportFile(filename, mimeType);
+        let begin = null;
+        try {
+            begin = JSON.parse(beginRaw || '{}');
+        } catch (e) {
+            throw new Error(`Native export begin returned invalid response: ${beginRaw || 'empty'}`);
+        }
+        if (!begin.ok || !begin.sessionId) throw new Error(begin.error || 'Native export begin failed');
+
+        const chunkSize = 256 * 1024;
+        for (let i = 0; i < base64Data.length; i += chunkSize) {
+            const chunkRaw = window.AndroidBridge.appendExportFileChunk(begin.sessionId, base64Data.slice(i, i + chunkSize));
+            let chunkResult = null;
+            try {
+                chunkResult = JSON.parse(chunkRaw || '{}');
+            } catch (e) {
+                throw new Error(`Native export chunk returned invalid response: ${chunkRaw || 'empty'}`);
+            }
+            if (!chunkResult.ok) throw new Error(chunkResult.error || 'Native export chunk failed');
+        }
+
+        const finishRaw = window.AndroidBridge.finishExportFile(begin.sessionId);
+        let finish = null;
+        try {
+            finish = JSON.parse(finishRaw || '{}');
+        } catch (e) {
+            throw new Error(`Native export finish returned invalid response: ${finishRaw || 'empty'}`);
+        }
+        if (!finish.ok) throw new Error(finish.error || 'Native export finish failed');
+        return finish;
+    }
+
+    const raw = window.AndroidBridge.saveExportFile(filename, mimeType, base64Data);
+    let result = null;
+    try {
+        result = JSON.parse(raw || '{}');
+    } catch (e) {
+        throw new Error(`Native export returned invalid response: ${raw || 'empty'}`);
+    }
+    if (!result.ok) throw new Error(result.error || 'Native export failed');
+    return result;
+}
+
 async function exportAllData() {
     const statusEl = document.getElementById('export-status');
     const btn = document.getElementById('btn-export');
@@ -6585,13 +6644,40 @@ async function exportAllData() {
         const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
         const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
         const storagePath = `export_${today}_${Date.now()}.xlsx`;
+        const totalRows = Object.values(rowsByTable).reduce((sum, rows) => sum + (rows?.length || 0), 0);
+        let nativeSaveWarning = '';
+
+        try {
+            statusEl.textContent = '⏳ Saving Excel to Downloads...';
+            const nativeResult = await saveExportBlobNative(filename, blob);
+            if (nativeResult?.ok) {
+                statusEl.textContent = '';
+                statusEl.appendChild(document.createTextNode(`✅ Export saved to Downloads: ${nativeResult.fileName || filename} · ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes`));
+                if (errors.length) {
+                    statusEl.appendChild(document.createElement('br'));
+                    const errSpan = document.createElement('span');
+                    errSpan.style.color = '#b45309';
+                    errSpan.textContent = `⚠ ${errors.length} table fetch issue(s); see Summary sheet.`;
+                    statusEl.appendChild(errSpan);
+                }
+                return;
+            }
+        } catch (nativeErr) {
+            nativeSaveWarning = nativeErr.message || String(nativeErr);
+            console.warn('Native export save failed; falling back to Supabase Storage:', nativeErr);
+        }
 
         statusEl.textContent = '⏳ Uploading Excel to Supabase Storage...';
         const { error: uploadErr } = await sb.storage.from('EXPORTS').upload(storagePath, blob, {
             contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             upsert: true,
         });
-        if (uploadErr) throw new Error(`Storage upload failed: ${uploadErr.message}`);
+        if (uploadErr) {
+            const detail = nativeSaveWarning
+                ? `Native save failed: ${nativeSaveWarning}; Storage upload failed: ${uploadErr.message}`
+                : `Storage upload failed: ${uploadErr.message}`;
+            throw new Error(detail);
+        }
 
         const { data: urlData } = sb.storage.from('EXPORTS').getPublicUrl(storagePath, { download: filename });
         const publicUrl = urlData?.publicUrl;
@@ -6603,7 +6689,6 @@ async function exportAllData() {
         document.body.appendChild(iframe);
         setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) { /* ignore cleanup */ } }, 30000);
 
-        const totalRows = Object.values(rowsByTable).reduce((sum, rows) => sum + (rows?.length || 0), 0);
         statusEl.textContent = '';
         statusEl.appendChild(document.createTextNode(`✅ Export ready: ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes`));
         if (errors.length) {
