@@ -331,6 +331,19 @@ function removeOpenTradeFromState(tradeId) {
     syncToNative();
 }
 
+function formatServiceLastPoll(raw) {
+    if (raw === null || raw === undefined || raw === '' || raw === 'Never') return '';
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+        return new Date(raw).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+    }
+    const text = String(raw).trim();
+    const parsed = new Date(text);
+    if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+    }
+    return text;
+}
+
 // Storage-only Supabase adapter. Strategy analysis remains native-only.
 const DB = {
     _client: null,
@@ -3107,7 +3120,8 @@ function renderPosition() {
     if (!el) return;
 
     let html = '';
-    const lastUpdate = (JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll) ? new Date((JSON.parse(NativeBridge.getServiceStatus() || '{}').lastPoll)).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+    const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+    const lastUpdate = formatServiceLastPoll(serviceStatus.lastPoll);
 
     // ═══ SIGNAL ACCURACY — compact, collapsible ═══
     if (bd.signalValidation) {
