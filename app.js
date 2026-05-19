@@ -959,17 +959,22 @@ window.syncFromNative = function(dataJson) {
             const openTrades = currentOpenTrades();
             let changed = false;
             for (const nt of data.openTrades) {
-                const existing = openTrades.find(t => String(t.id) === String(nt.id));
-                if (existing) {
-                    if (nt.current_pnl !== undefined) existing.current_pnl = nt.current_pnl;
-                    if (nt.current_spot !== undefined) existing.current_spot = nt.current_spot;
-                    if (nt.peak_pnl !== undefined) existing.peak_pnl = Math.max(existing.peak_pnl || 0, nt.peak_pnl);
+                const idx = openTrades.findIndex(t => String(t.id) === String(nt.id));
+                if (idx >= 0) {
+                    openTrades[idx] = {
+                        ...openTrades[idx],
+                        ...nt,
+                        // Preserve best local peak if UI already saw a higher one.
+                        peak_pnl: Math.max(openTrades[idx].peak_pnl || 0, nt.peak_pnl || 0)
+                    };
+                    changed = true;
+                } else {
+                    openTrades.push(nt);
                     changed = true;
                 }
             }
             if (changed) {
                 STATE.openTrades = openTrades;
-                syncToNative();
             }
         }
         
@@ -2178,8 +2183,8 @@ function renderMarket() {
     const nfExpiry = validDateOrBlank(nfChain.expiry || nfCand.expiry || '');
     const bnfAtm = bnfChain.atm || bd.bnfProfile?.atm || 0;
     const nfAtm = nfChain.atm || bd.nfProfile?.atm || 0;
-    const bnfAtmIv = bnfChain.atmIv || b.bnfAtmIv || 0;
-    const nfAtmIv = nfChain.atmIv || b.nfAtmIv || 0;
+    const bnfAtmIv = bnfChain.atmIv || l.bnfAtmIv || b.bnfAtmIv || 0;
+    const nfAtmIv = nfChain.atmIv || l.nfAtmIv || b.nfAtmIv || 0;
     const bnfTheta = bd.bnfProfile?.avgTheta ?? b.bnfAtmTheta ?? 0;
     const nfTheta = bd.nfProfile?.avgTheta ?? b.nfAtmTheta ?? 0;
     const bias = l.bias;
@@ -2242,6 +2247,8 @@ function renderMarket() {
         }
         ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
     }
+
+    const fmtIv = (iv) => iv ? (iv > 1 ? iv.toFixed(1) + '%' : (iv * 100).toFixed(1) + '%') : '--';
 
     const scanTime = STATE.lastScanTime
         ? new Date(STATE.lastScanTime).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})
@@ -2314,12 +2321,12 @@ function renderMarket() {
             <div class="env-item">
                 <div class="env-label">BNF</div>
                 <div class="env-value">${l.bnfSpot?.toFixed(0) || '--'}</div>
-                <div class="env-sub">ATM: ${bnfAtm || '--'}</div>
+                <div class="env-sub">ATM: ${bnfAtm || '--'} · IV: ${fmtIv(bnfAtmIv)}</div>
             </div>
             <div class="env-item">
                 <div class="env-label">NF</div>
                 <div class="env-value">${l.nfSpot?.toFixed(0) || '--'}</div>
-                <div class="env-sub">IV: ${l.ivPercentile != null ? l.ivPercentile + 'th %ile' : '--'}</div>
+                <div class="env-sub">ATM: ${nfAtm || '--'} · IV: ${fmtIv(nfAtmIv)}</div>
             </div>
         </div>
 
@@ -2335,8 +2342,8 @@ function renderMarket() {
             <tbody>
 	                <tr>
 	                    <td class="oi-td-label">ATM IV</td>
-	                    <td class="oi-td-val">${bnfAtmIv ? (bnfAtmIv > 1 ? bnfAtmIv.toFixed(1) + '%' : (bnfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
-	                    <td class="oi-td-val">${nfAtmIv ? (nfAtmIv > 1 ? nfAtmIv.toFixed(1) + '%' : (nfAtmIv * 100).toFixed(1) + '%') : '--'}</td>
+	                    <td class="oi-td-val">${fmtIv(bnfAtmIv)}</td>
+	                    <td class="oi-td-val">${fmtIv(nfAtmIv)}</td>
 	                </tr>
 	                <tr>
 	                    <td class="oi-td-label">Θ ₹/day</td>
@@ -2549,12 +2556,14 @@ function renderOI() {
             const nf50 = safeParseNB(NativeBridge.getNf50Breadth(), {});
             if (typeof nf50.scaled !== 'number') return '';
             const adv = Number.isFinite(nf50.advancing) ? nf50.advancing : 0;
-            const considered = Number.isFinite(nf50.considered) && nf50.considered > 0 ? nf50.considered : 50;
-            const pct = Number.isFinite(nf50.pct) ? nf50.pct : null;
+            const total = Number.isFinite(nf50.total) && nf50.total > 0 ? nf50.total : 50;
+            const considered = Number.isFinite(nf50.considered) && nf50.considered > 0 ? nf50.considered : total;
+            const pct = Number.isFinite(nf50.advPct) ? nf50.advPct : (Number.isFinite(nf50.pct) ? nf50.pct : null);
+            const coverageNote = considered < total ? ` · coverage ${considered}/${total}` : '';
             return `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>
-            <span class="env-row-value">${adv}/${considered} advancing${pct !== null ? ` · ${pct}%` : ''}</span>
+            <span class="env-row-value">${adv}/${total} advancing${pct !== null ? ` · ${pct}%` : ''}${coverageNote}</span>
         </div>
         `;
         })()}
@@ -4013,12 +4022,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try { renderAll(); } catch (e) { console.warn('[boot] renderAll failed:', e.message); }
 
-    // b97: Auto-restart polling after background kill
-    // If baseline restored + market open → start watching without manual Lock & Scan
+    // Polling is intentionally user-gated. Restored same-day data may render, but
+    // Lock & Scan must be tapped before the native market service starts.
     const todayBaseline = getTodayNativeBaseline();
-    if (todayBaseline && API.isMarketHours() && !safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
-        console.log(`[b97] Auto-restart: baseline exists, market open, ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
-        // Collapse morning section (already locked)
+    if (todayBaseline && safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
+        console.log(`[b162] Restored active service: ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
         const morningEl = document.getElementById('morning-inputs');
         if (morningEl) morningEl.style.display = 'none';
         const lockBtn = document.getElementById('btn-lock');
@@ -4027,10 +4035,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             lockBtn.disabled = true;
         }
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
-        // Start watch loop
-        startWatchLoop();
         const watchEl = document.getElementById('watch-status');
-        if (watchEl) watchEl.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
+        if (watchEl) watchEl.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
         updateLockScanUi();
     }
 
