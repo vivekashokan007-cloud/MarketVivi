@@ -1088,6 +1088,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const strikeLeg = (strike, type) => chain?.strikes?.[strike]?.[type] || {};
     const spot = isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {})).nfSpot;
     const daily1Sigma = spot * ((safeParseNB(NativeBridge.getLatestPoll(), {})).vix / 100) / 15.8745  /* √252 */;
+    const entryLotSize = cand.lotSize || (isBNF ? C.BNF_LOT : C.NF_LOT);
 
     const trade = {
         strategy_type: cand.type,
@@ -1160,6 +1161,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             app_top_strategy: rankList[0]?.type || null,
             app_top_strike: rankList[0]?.sellStrike || null,
             followed_app: candRank === 1,
+            lot_size: entryLotSize,
             context_score: cand.contextScore ?? 0,
             ev: cand.ev ?? null,
             net_theta: cand.netTheta ?? null,
@@ -1484,6 +1486,7 @@ async function logManualTrade() {
             crude_settle: (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))?.crudeSettle ?? null,
             gap_sigma: bd.gapInfo?.sigma ?? null,
             minutes_since_open: API.minutesSinceOpen() ?? null,
+            lot_size: lotSize,
             // Cost & calibration
             event_driven: document.getElementById('mt-event')?.checked || false
         }
@@ -3030,8 +3033,9 @@ function renderTradeCard(t, isPaper) {
         ${(() => {
             const legs = (t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY') ? 4 : 2;
             const lotSize = t.index_key === 'NF' ? C.NF_LOT : C.BNF_LOT;
-            // For 4-leg trades, sell_ltp2 isn't stored separately — estimate both sell legs
-            const sellPrem = (t.sell_ltp || 0) * lotSize * (legs === 4 ? 2 : 1);
+            const sellPrem = (legs === 4)
+                ? ((t.sell_ltp || 0) + (t.sell_ltp2 || 0)) * lotSize
+                : (t.sell_ltp || 0) * lotSize;
             const slipPU = legs === 4 ? (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_4LEG : C.SLIPPAGE.NF_4LEG) : (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_2LEG : C.SLIPPAGE.NF_2LEG);
             const estCost = Math.round(sellPrem * C.STT_OPTIONS * 2 + C.BROKERAGE_PER_ORDER * legs * 2 + C.EXCHANGE_PER_LEG * legs * 2 * 1.18 + slipPU * lotSize * legs * 2 + 3);
             const netPnl = (t.current_pnl || 0) - estCost;
@@ -3167,7 +3171,9 @@ function renderPosition() {
         const totalEstCost = paperTrades.reduce((s, t) => {
             const legs = (t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY') ? 4 : 2;
             const lotSize = t.index_key === 'NF' ? C.NF_LOT : C.BNF_LOT;
-            const sellPrem = (t.sell_ltp || 0) * lotSize * (legs === 4 ? 2 : 1);
+            const sellPrem = (legs === 4)
+                ? ((t.sell_ltp || 0) + (t.sell_ltp2 || 0)) * lotSize
+                : (t.sell_ltp || 0) * lotSize;
             const slipPU = legs === 4 ? (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_4LEG : C.SLIPPAGE.NF_4LEG) : (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_2LEG : C.SLIPPAGE.NF_2LEG);
             return s + Math.round(sellPrem * C.STT_OPTIONS * 2 + C.BROKERAGE_PER_ORDER * legs * 2 + C.EXCHANGE_PER_LEG * legs * 2 * 1.18 + slipPU * lotSize * legs * 2 + 3);
         }, 0);
