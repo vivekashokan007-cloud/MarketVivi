@@ -1855,6 +1855,29 @@ function renderAll() {
     renderFooter();
     updateLockScanUi();
     restoreOpenDetailsState(openDetailsState);
+    updateStickyLayout();
+}
+
+function updateStickyLayout() {
+    if (updateStickyLayout._pending) return;
+    updateStickyLayout._pending = true;
+    requestAnimationFrame(() => {
+        updateStickyLayout._pending = false;
+        const root = document.documentElement;
+        const header = document.querySelector('.app-header');
+        const ticker = document.getElementById('live-ticker');
+        const headerHeight = header ? Math.ceil(header.getBoundingClientRect().height) : 0;
+        const tickerVisible = ticker && getComputedStyle(ticker).display !== 'none';
+        const tickerHeight = tickerVisible ? Math.ceil(ticker.getBoundingClientRect().height) : 0;
+        const nextHeader = `${headerHeight}px`;
+        const nextTicker = `${tickerHeight}px`;
+        if (root.style.getPropertyValue('--app-header-h') !== nextHeader) {
+            root.style.setProperty('--app-header-h', nextHeader);
+        }
+        if (root.style.getPropertyValue('--live-ticker-h') !== nextTicker) {
+            root.style.setProperty('--live-ticker-h', nextTicker);
+        }
+    });
 }
 
 function renderTicker() {
@@ -1862,7 +1885,11 @@ function renderTicker() {
     if (!ticker) return;
 
     const l = latestPollData();
-    if (!l) { ticker.style.display = 'none'; return; }
+    if (!l) {
+        ticker.style.display = 'none';
+        updateStickyLayout();
+        return;
+    }
 
     ticker.style.display = 'flex';
 
@@ -1909,6 +1936,7 @@ function renderTicker() {
     } else if (pnlEl) {
         pnlEl.textContent = '';
     }
+    updateStickyLayout();
 }
 
 // ── b105: ML manual retrain + calibration helpers ────────────────────────
@@ -3974,6 +4002,7 @@ function bindCriticalUiHandlers() {
 
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', async () => {
+    initStickyLayoutObserver();
     try {
         bindCriticalUiHandlers();
         console.info('[boot] tab handlers attached:', typeof document.querySelectorAll('.tab-btn')[0]?.onclick === 'function');
@@ -4195,6 +4224,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 });
+
+function initStickyLayoutObserver() {
+    updateStickyLayout();
+    window.addEventListener('resize', updateStickyLayout);
+    window.addEventListener('orientationchange', updateStickyLayout);
+    if (window.ResizeObserver) {
+        const observer = new ResizeObserver(updateStickyLayout);
+        const header = document.querySelector('.app-header');
+        const ticker = document.getElementById('live-ticker');
+        if (header) observer.observe(header);
+        if (ticker) observer.observe(ticker);
+    }
+}
 
 function initTheme(cloudConfig) {
     const settings = cloudConfig?.settings || null;
