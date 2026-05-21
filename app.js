@@ -229,6 +229,7 @@ const STATE = {
     effectiveBias: null,
     brainLastRun: 0,          // timestamp of last brain run
     brainError: null,         // last error (for debug)
+    morningExpandedAfterLock: false,
 
     // Active tab
     activeTab: 'market'
@@ -261,6 +262,7 @@ function safeParseNB(rawValue, fallback) {
 
 function latestPollData() {
     if (typeof NativeBridge === 'undefined') return {};
+    if (!getTodayNativeBaseline()) return {};
     const l = safeParseNB(NativeBridge.getLatestPoll?.(), {});
     if (l.bnfSpot == null && l.bnf != null) l.bnfSpot = l.bnf;
     if (l.nfSpot == null && l.nf != null) l.nfSpot = l.nf;
@@ -282,6 +284,25 @@ function getTodayNativeBaseline() {
     return isTodayRecord(baseline) ? baseline : null;
 }
 
+function clearSessionDerivedState() {
+    bd = {};
+    STATE.brainReady = false;
+    STATE.brainInsights = { verdict: null, market: [], positions: {}, candidates: {}, timing: [], risk: [] };
+    STATE.brainLastRun = null;
+    STATE.brainError = null;
+    STATE._nativeBrainAlerts = [];
+    STATE.candidates = [];
+    STATE.watchlist = [];
+    STATE.positioningCandidates = [];
+    STATE.positioningBias = null;
+    STATE.effectiveBias = null;
+    STATE.pollHistory = [];
+    STATE.pollCount = 0;
+    STATE.live = null;
+    STATE.rangeSigma = 0;
+    STATE.lastScanTime = null;
+}
+
 function clearMorningStorage() {
     localStorage.removeItem('mr2_morning_inputs');
     localStorage.removeItem('mr2_morning');
@@ -289,6 +310,7 @@ function clearMorningStorage() {
 }
 
 function firstCandidateFor(index) {
+    if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) return {};
     return (bd.generated_candidates || []).find(c => c.index === index) || {};
 }
 
@@ -427,6 +449,7 @@ function requireFilledInputs(fields) {
 
 function getBrainData() {
     try {
+        if (typeof NativeBridge === 'undefined' || !getTodayNativeBaseline()) return {};
         const raw = NativeBridge.getBrainResult();
         if (!raw || raw === 'null') return {};
         const parsed = JSON.parse(raw);
@@ -438,6 +461,10 @@ function getBrainData() {
 }
 
 function refreshBrainData() {
+    if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
+        clearSessionDerivedState();
+        return bd;
+    }
     bd = getBrainData();
     applyBrainRangeSigma(bd);
     if (bd && Object.keys(bd).length) {
@@ -461,6 +488,10 @@ function applyBrainRangeSigma(brainResult) {
 function pullNativeState() {
     if (typeof NativeBridge === 'undefined') return {};
     const status = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+    if (!getTodayNativeBaseline()) {
+        clearSessionDerivedState();
+        return { status, pollHistory: [], latestPoll: {}, brainResult: {} };
+    }
     const pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
     const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
     const brainResult = safeParseNB(NativeBridge.getBrainResult?.(), {});
@@ -902,6 +933,11 @@ window.syncFromNative = function(dataJson) {
 
         // b106 null-guard: Kotlin may push empty/null before first poll runs
         if (!data || typeof data !== 'object') return;
+        if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
+            clearSessionDerivedState();
+            renderAll();
+            return;
+        }
 
         // Poll history — Kotlin is the source of truth for today's session.
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
@@ -1841,6 +1877,7 @@ function updateLockScanUi() {
             ? `✅ Watching market${pollCount ? ` · Poll #${pollCount}` : ''}`
             : '✅ Morning data locked. Waiting for service...';
     }
+    collapseMorning();
 }
 
 function renderAll() {
@@ -2683,6 +2720,11 @@ function renderWatchlist() {
     const el = document.getElementById('watchlist');
     if (!el) return;
 
+    if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
+        el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
+        return;
+    }
+
     if (!(bd.watchlist || []).length && !(bd.generated_candidates || []).length) {
         el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
@@ -3377,6 +3419,8 @@ function lockMorningData() {
         const statusEl = document.getElementById('status');
         if (statusEl) statusEl.textContent = '✅ Morning data locked. Starting scan...';
 
+        STATE.morningExpandedAfterLock = false;
+        collapseMorning({ force: true });
         triggerScan();
         renderAll();
     } catch (e) {
@@ -3386,6 +3430,7 @@ function lockMorningData() {
             btnLock.disabled = false;
             btnLock.textContent = '🔒 Lock & Scan';
         }
+        expandMorning();
         const statusEl = document.getElementById('status');
         if (statusEl) statusEl.textContent = `Lock failed: ${e.message}`;
     }
@@ -3541,12 +3586,70 @@ function requestNotificationPermission() {
 
 // ═══ MORNING COLLAPSE ═══
 
-function expandMorning() {
+function morningFieldValue(id, fallback = '--') {
+    const el = document.getElementById(id);
+    const value = String(el?.value || '').trim();
+    return value || fallback;
+}
+
+function buildMorningSummaryHtml() {
+    const upstox = morningFieldValue('in-upstox-bias', 'Not entered');
+    const rows = [
+        ['FII Cash', morningFieldValue('in-fii-cash')],
+        ['FII Short%', morningFieldValue('in-fii-short')],
+        ['DII Cash', morningFieldValue('in-dii-cash')],
+        ['Idx Fut', morningFieldValue('in-fii-idx-fut')],
+        ['Stk Fut', morningFieldValue('in-fii-stk-fut')],
+        ['Dow', morningFieldValue('in-dow-close')],
+        ['Crude', morningFieldValue('in-crude-settle')],
+        ['GIFT', morningFieldValue('in-gift-spot')],
+        ['Upstox', upstox]
+    ];
+    return `
+        <div class="morning-collapsed-bar" role="button" tabindex="0" aria-label="Show locked morning inputs">
+            <div>
+                <strong>🔒 Morning data locked</strong>
+                <span class="morning-summary-hint">Tap to review full inputs</span>
+                <div class="morning-summary-grid">
+                    ${rows.map(([label, value]) => `
+                        <span class="morning-summary-item">
+                            <span>${label}</span><b>${value}</b>
+                        </span>
+                    `).join('')}
+                </div>
+            </div>
+            <span class="morning-summary-arrow">▾</span>
+        </div>
+    `;
+}
+
+function collapseMorning(options = {}) {
+    if (STATE.morningExpandedAfterLock && !options.force) return;
     const section = document.getElementById('morning-section');
     const full = document.getElementById('morning-full');
     const collapsed = document.getElementById('morning-collapsed');
     if (!section || !full || !collapsed) return;
 
+    collapsed.innerHTML = buildMorningSummaryHtml();
+    collapsed.onclick = () => expandMorning({ lockedReview: true });
+    collapsed.onkeydown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            expandMorning({ lockedReview: true });
+        }
+    };
+    full.style.display = 'none';
+    collapsed.style.display = 'block';
+    section.classList.add('collapsed');
+}
+
+function expandMorning(options = {}) {
+    const section = document.getElementById('morning-section');
+    const full = document.getElementById('morning-full');
+    const collapsed = document.getElementById('morning-collapsed');
+    if (!section || !full || !collapsed) return;
+
+    if (options.lockedReview) STATE.morningExpandedAfterLock = true;
     full.style.display = 'block';
     collapsed.style.display = 'none';
     section.classList.remove('collapsed');
@@ -3793,7 +3896,8 @@ async function saveExportBlobNative(filename, blob) {
         }
         if (!begin.ok || !begin.sessionId) throw new Error(begin.error || 'Native export begin failed');
 
-        const chunkSize = 256 * 1024;
+        // Android WebView's JavaScript bridge rejects string args above ~32767 chars.
+        const chunkSize = 24 * 1024;
         for (let i = 0; i < base64Data.length; i += chunkSize) {
             const chunkRaw = window.AndroidBridge.appendExportFileChunk(begin.sessionId, base64Data.slice(i, i + chunkSize));
             let chunkResult = null;
@@ -3979,6 +4083,7 @@ function bindCriticalUiHandlers() {
     document.getElementById('btn-stop').onclick = stopWatchLoop;
     document.getElementById('btn-rescan').onclick = () => {
         stopWatchLoop();
+        STATE.morningExpandedAfterLock = false;
         expandMorning();
         document.getElementById('btn-lock').disabled = false;
         document.getElementById('btn-lock').textContent = '🔒 Lock & Scan';
@@ -4076,8 +4181,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const todayBaseline = getTodayNativeBaseline();
     if (todayBaseline && safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
         console.log(`[b162] Restored active service: ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
-        const morningEl = document.getElementById('morning-inputs');
-        if (morningEl) morningEl.style.display = 'none';
+        STATE.morningExpandedAfterLock = false;
+        collapseMorning({ force: true });
         const lockBtn = document.getElementById('btn-lock');
         if (lockBtn) {
             lockBtn.textContent = 'Watching...';
@@ -4142,7 +4247,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // This ensures immediate poll + brain run instead of waiting for next 5-min interval.
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
-        if (!safeParseNB(NativeBridge.getBaseline(), {}) || !safeParseNB(NativeBridge.getServiceStatus(), {}).running) return;
+        if (!getTodayNativeBaseline() || !safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
+            clearSessionDerivedState();
+            renderAll();
+            return;
+        }
 
         // Phase 4: NATIVE MODE — full pull from Kotlin, no lightFetch
         if (STATE._nativeMode && window.NativeBridge) {

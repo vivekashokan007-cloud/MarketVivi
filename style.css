@@ -247,6 +247,7 @@ main {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 10px;
     padding: 8px 12px;
     background: var(--bg-card);
     border: 1px solid var(--border);
@@ -258,6 +259,40 @@ main {
 
 .morning-collapsed-bar:active {
     background: var(--bg-card-hover);
+}
+
+.morning-summary-hint {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.morning-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 10px;
+    margin-top: 8px;
+}
+
+.morning-summary-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 4px 6px;
+    background: var(--bg-deep);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+}
+
+.morning-summary-item b {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.morning-summary-arrow {
+    color: var(--accent);
+    font-weight: 700;
 }
 
 /* ═══ INPUTS — Upstox style ═══ */
