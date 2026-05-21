@@ -30,11 +30,18 @@
     return !!(b && typeof b.getLogBuffer === 'function');
   }
 
-  const LOG_EXPORT_SUPABASE_URL = 'https://fdynxkfxohbnlvayouje.supabase.co';
-  const LOG_EXPORT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE';
+  function toSafeFileName(name) {
+    return String(name || 'marketapp-logs.txt').replace(/[^\w.\-]/g, '_');
+  }
 
-  function safeStorageName(name) {
-    return String(name || 'marketapp-logs.txt').replace(/[^A-Za-z0-9._-]/g, '_');
+  async function blobToBase64Payload(blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -525,60 +532,77 @@
         const snapshot = this.buildExportSnapshot();
         const isCsv = format === 'csv';
         const content = isCsv ? snapshot.csv : snapshot.txt;
-        const name = isCsv ? snapshot.csvName : snapshot.txtName;
-        await this.downloadViaSupabaseStorage(name, content, isCsv ? 'text/csv' : 'text/plain');
+        const fileName = toSafeFileName(isCsv ? snapshot.csvName : snapshot.txtName);
+        const mimeType = isCsv ? 'text/csv' : 'text/plain';
+
+        const saveResult = await this.saveViaNativeBridge(fileName, content, mimeType);
+        if (saveResult?.ok) {
+          this.flashMessage(`Saved: ${fileName}`);
+          return;
+        }
+
+        const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+          try { document.body.removeChild(a); } catch (_) { /* ignore */ }
+        }, 1000);
+        this.flashMessage(`Downloaded: ${fileName}`);
       } catch (e) {
         console.error(`${format.toUpperCase()} export failed:`, e);
         this.flashMessage(`${format.toUpperCase()} export failed: ${e.message || e}`);
       }
     },
 
-    async downloadViaSupabaseStorage(name, content, contentType) {
-      if (!window.supabase?.createClient) {
-        throw new Error('Supabase export library not loaded');
+    async saveViaNativeBridge(fileName, content, mimeType) {
+      const bridge = getBridge();
+      if (!bridge) return null;
+
+      const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+      const base64Data = await blobToBase64Payload(blob);
+
+      if (typeof bridge.beginExportFile === 'function' &&
+          typeof bridge.appendExportFileChunk === 'function' &&
+          typeof bridge.finishExportFile === 'function') {
+        const beginRaw = bridge.beginExportFile(fileName, mimeType);
+        const begin = JSON.parse(beginRaw || '{}');
+        if (!begin.ok || !begin.sessionId) {
+          throw new Error(begin.error || 'Native export begin failed');
+        }
+
+        const maxChunk = 24 * 1024;
+        for (let i = 0; i < base64Data.length; i += maxChunk) {
+          const chunkRaw = bridge.appendExportFileChunk(begin.sessionId, base64Data.slice(i, i + maxChunk));
+          const chunkRes = JSON.parse(chunkRaw || '{}');
+          if (!chunkRes.ok) {
+            throw new Error(chunkRes.error || 'Native export chunk failed');
+          }
+        }
+
+        const finishRaw = bridge.finishExportFile(begin.sessionId);
+        const finish = JSON.parse(finishRaw || '{}');
+        if (!finish.ok) {
+          throw new Error(finish.error || 'Native export finish failed');
+        }
+        return finish;
       }
 
-      const sb = window.supabase.createClient(LOG_EXPORT_SUPABASE_URL, LOG_EXPORT_SUPABASE_ANON_KEY);
-      const safeName = safeStorageName(name);
-      const storagePath = `logs/${Date.now()}_${safeName}`;
-      const blob = new Blob([content], { type: `${contentType};charset=utf-8` });
+      if (typeof bridge.saveExportFile === 'function') {
+        const raw = bridge.saveExportFile(fileName, mimeType, base64Data);
+        const result = JSON.parse(raw || '{}');
+        if (!result.ok) {
+          throw new Error(result.error || 'Native export failed');
+        }
+        return result;
+      }
 
-      this.flashMessage(`Preparing ${safeName}...`);
-      const { error } = await sb.storage.from('EXPORTS').upload(storagePath, blob, {
-        contentType: `${contentType};charset=utf-8`,
-        upsert: true
-      });
-      if (error) throw new Error(`Storage upload failed: ${error.message}`);
-
-      const { data } = sb.storage.from('EXPORTS').getPublicUrl(storagePath, { download: safeName });
-      const publicUrl = data?.publicUrl;
-      if (!publicUrl) throw new Error('Storage upload succeeded but public URL was empty');
-
-      const iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      iframe.src = publicUrl;
-      document.body.appendChild(iframe);
-      setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) { /* ignore cleanup */ } }, 30000);
-
-      this.flashDownloadLink(`Download ready: ${safeName}`, publicUrl, safeName);
-    },
-
-    flashDownloadLink(msg, url, filename) {
-      const list = document.getElementById('lvList');
-      if (!list || !list.parentNode) return;
-      const flash = document.createElement('div');
-      flash.className = 'lv-flash';
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      link.textContent = msg;
-      link.style.color = 'white';
-      link.style.textDecoration = 'underline';
-      flash.appendChild(link);
-      list.parentNode.insertBefore(flash, list);
-      setTimeout(() => { if (flash.parentNode) flash.remove(); }, 12000);
+      return null;
     },
 
     clearWithConfirm() {
