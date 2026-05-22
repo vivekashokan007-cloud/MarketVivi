@@ -250,6 +250,38 @@
   - triggers retrain-readiness check/notification when gate is hit
 - Current implementation is H2-primary based because `evening_evaluator` currently labels H2 outcomes.
 
+## Update Note (May 22 2026) — Push & Signed Release Procedure
+
+- Mandatory for every `Marketapp` push:
+  - bump `versionCode` and `versionName` in `app/build.gradle.kts`
+  - commit bump before push
+- Release workflow trigger:
+  - `.github/workflows/release.yml` runs on push to `main` only when `app/build.gradle.kts` changed
+- Update detection behavior:
+  - app checks GitHub `releases/latest`, not raw commits
+  - if signed release publish fails, app will still show “up to date”
+- Failure triage sequence:
+  1. Open failed Actions run
+  2. Expand `Build Signed APK`
+  3. Fix compile/signing issue
+  4. Bump version again and push
+- Known regression fixed:
+  - `NativeBridge.kt` unresolved reference to `selectAppConfigLite`
+  - fixed by restoring `selectAppConfigLite()` in `SupabaseClient.kt`
+  - then version bumped and workflow re-triggered.
+
+## Update Note (May 22 2026) — ML Tab Visibility Fix
+
+- Problem: UI build `v2.1 · b169` had no visible ML tab even though ML render logic existed.
+- Root cause: `index.html` tab bar/container did not include ML tab nodes.
+- Fix:
+  - Added `🧠 ML` tab button (`data-tab="ml"`)
+  - Added `tab-ml` with `ml-content` container
+  - Bumped visible web build label to `b170`
+- Functional verification:
+  - Tab reads real native bridge data (`getMLModelStatus`, `getMLDecisions`, `getSignalAccuracyStats`, `getBrainResult`, `getPollHistory`, `getServiceStatus`)
+  - Retrain control triggers native ML retrain readiness flow.
+
 ### Findings That DON'T Matter (no edge found)
 
 | Factor | Result |
