@@ -537,6 +537,33 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 
 ## Latest Fix Log
 
+### 2026-05-22 — ML V2 Supabase and Directive Fixes
+- Supabase schema gate confirmed complete:
+  - `chain_slices`
+  - `ml_brain_snapshots`
+  - `ml_decisions`
+  - `ml_evaluation_outcomes`
+  - `ml_recommendation_outcomes`
+  - `ml_option_chain_snapshots`
+  - `ml_daily_accuracy`
+  - `ml_weekly_accuracy`
+  - `ml_monthly_summary`
+- `ml_decisions.outcome_pct_of_max` confirmed present as `double precision`.
+- Important Supabase compatibility note:
+  - `chain_slices` is a BASE TABLE in this project, not a view.
+  - `ml_evaluation_outcomes` is also a BASE TABLE in this project, not a view.
+  - Do not run `CREATE OR REPLACE VIEW` against either name.
+- PWA `app.js`:
+  - `closeTrade()` now writes `outcome_pct_of_max` for future ML training quality.
+  - old manual `Retrain ML` behavior is retired; the UI now shows `ML Status` and does not call `NativeBridge.triggerMLRetrain()`.
+  - visible web build label bumped to `v2.1 · b171`.
+- Android `MarketMLService.kt`:
+  - retrain readiness filter fixed from `outcome=not.is.null` to `won=not.is.null`.
+  - Android version target for this directive is `versionName = "2.3.54"`, `versionCode = 185`.
+- `brain.py` remains unchanged:
+  - MD5 `4d3605e65eb1a279d6086a1a5dfb741b`
+  - required functions still present: `_is_labelable`, `_bridge_json_obj`, `take_poll_snapshot`, `evening_evaluator`.
+
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
   - On Market tab, after entering evening values and tapping **Save**, UI showed:

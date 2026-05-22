@@ -1728,17 +1728,20 @@ async function closeTrade(tradeId, exitReason) {
         // b105: Fill ML outcome for calibration tracking
         if (trade.id && DB.supabase) {
             DB.supabase.from('ml_decisions').update({
-                won:          (trade.current_pnl ?? 0) > 0,
-                actual_pnl:   trade.current_pnl ?? 0,
-                peak_pnl:     trade.peak_pnl ?? null,
-                trough_pnl:   trade.trough_pnl ?? null,
-                hold_minutes: trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
-                exit_reason:  exitReason || 'Manual',
-                exit_vix:     (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? null,
-                exit_pcr:     (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr ?? null,
-                ci_min:       trade._journey?.min_ci ?? null,
-                ci_max:       trade._journey?.max_ci ?? null,
-                closed_at:    new Date().toISOString(),
+                won:                (trade.current_pnl ?? 0) > 0,
+                outcome_pct_of_max: (trade.max_profit > 0)
+                    ? Math.round(((trade.current_pnl ?? 0) / trade.max_profit) * 10000) / 10000
+                    : null,
+                actual_pnl:         trade.current_pnl ?? 0,
+                peak_pnl:           trade.peak_pnl ?? null,
+                trough_pnl:         trade.trough_pnl ?? null,
+                hold_minutes:       trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
+                exit_reason:        exitReason || 'Manual',
+                exit_vix:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? null,
+                exit_pcr:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr ?? null,
+                ci_min:             trade._journey?.min_ci ?? null,
+                ci_max:             trade._journey?.max_ci ?? null,
+                closed_at:          new Date().toISOString(),
             }).eq('trade_id', trade.id)
               .then(({error}) => { if (error) console.warn('[ML] ml_decisions outcome fill failed:', error.message); });
         }
@@ -2033,20 +2036,12 @@ async function triggerMLRetrain() {
         alert('Native bridge not available. Use APK version.');
         return;
     }
-    // Check trade count first
-    try {
-        const { data, error } = await DB.supabase
-            .from('ml_decisions')
-            .select('id', { count: 'exact', head: true })
-            .not('won', 'is', null);
-        const n = data?.length ?? 0;
-        const msg = n < 20
-            ? `Only ${n} closed trades recorded.\nML retraining needs 20+ for meaningful improvement.\n\nTrain anyway? (will use backtest data only)`
-            : `${n} closed trades ready.\nRetraining will mix backtest + live data.\n\nProceed?`;
-        if (!confirm(msg)) return;
-    } catch(e) {}
-    window.NativeBridge.triggerMLRetrain();
-    alert('ML retraining started. Check Logcat for progress. Takes 4-6 minutes.');
+    alert(
+        'Manual retrain disabled.\n\n' +
+        'ML model retrains automatically when 500 labeled recommendations\n' +
+        'accumulate through the monthly evaluation cadence.\n\n' +
+        'Check the ML status panel for current progress.'
+    );
 }
 
 async function checkMLDecisions() {
@@ -2102,7 +2097,7 @@ function renderDebug() {
                 } catch(e) { return ''; }
             })() : '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Install APK and open fresh to load model</div>'}
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-                ${mlReady ? `<button onclick="triggerMLRetrain()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">🔄 Retrain ML</button>` : ''}
+                ${mlReady ? `<button onclick="triggerMLRetrain()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">📊 ML Status</button>` : ''}
                 ${mlReady ? `<button onclick="checkMLDecisions()" style="background:transparent;color:var(--accent);border:1.5px solid var(--accent);border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">📊 Calibration</button>` : ''}
             </div>
         </div>`;
@@ -3457,7 +3452,7 @@ function renderML() {
             <h2>⚙️ ML Controls</h2>
             <div class="v1-trade-btns" style="margin-top:0">
                 <button onclick="getMLModelStatusCached(true);renderAll()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
-                <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">🔄 Retrain ML</button>
+                <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">📊 ML Status</button>
             </div>
             <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
                 ML is downstream-only. It records snapshots and evaluates outcomes, but it does not change live trade selection.
