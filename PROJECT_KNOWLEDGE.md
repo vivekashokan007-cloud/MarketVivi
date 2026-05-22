@@ -570,6 +570,12 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - `brain.py` remains unchanged:
   - MD5 `4d3605e65eb1a279d6086a1a5dfb741b`
   - required functions still present: `_is_labelable`, `_bridge_json_obj`, `take_poll_snapshot`, `evening_evaluator`.
+- Push / release result:
+  - `MarketVivi` pushed to `main` through commit `7bf5231`.
+  - `Marketapp` pushed to `main` through commit `b630b94`.
+  - GitHub Actions signed release and debug validation both completed successfully.
+  - Latest release is `v2.3.54` / `Market Radar v2.3.54`.
+  - Release asset present: `app-release.apk`.
 
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
