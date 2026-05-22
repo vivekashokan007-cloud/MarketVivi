@@ -577,6 +577,27 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Latest release is `v2.3.54` / `Market Radar v2.3.54`.
   - Release asset present: `app-release.apk`.
 
+### 2026-05-22 — ML Model Status Regression Found After v2.3.54
+- User observed ML tab showing:
+  - `Model NOT READY`
+  - `Error: too many values to unpack (expected 2)`
+- Impact:
+  - Affects ML model status / validation.
+  - Does not affect live trading decisions because ML is downstream-only.
+- Root cause:
+  - `RegimeDetector.predict(...)` returns `(label, probs, confidence)`.
+  - `MLEngine.predict(...)` still unpacked only `(regime, reg_probs)`.
+  - `MLEngine.predict(...)` also referenced `strat` and `ddir` before defining them.
+- Fix prepared in `Marketapp`:
+  - unpack 3 regime values
+  - define `strat` and `ddir` from candidate
+  - include `regime_conf` in prediction detail
+  - update `ml_engine.self_test()` unpack
+  - bump Android version to `2.3.55 (186)`
+- Verification:
+  - Python compile check passed for `ml_engine.py`, `ml_train.py`, and `brain.py`.
+  - `ml_engine.py` self-test passed.
+
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
   - On Market tab, after entering evening values and tapping **Save**, UI showed:
