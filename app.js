@@ -3753,10 +3753,16 @@ const EXPORT_TABLES = [
     'straddle_ratios',
 ];
 
+const EXCEL_MAX_CELL_CHARS = 32767;
+const EXPORT_TRUNCATION_STATS = { count: 0 };
+
 function jsonCell(value) {
     if (value === null || value === undefined) return '';
-    if (typeof value === 'object') return JSON.stringify(value);
-    return value;
+    const raw = (typeof value === 'object') ? JSON.stringify(value) : String(value);
+    if (raw.length <= EXCEL_MAX_CELL_CHARS) return raw;
+    EXPORT_TRUNCATION_STATS.count += 1;
+    const suffix = ' …[truncated]';
+    return raw.slice(0, EXCEL_MAX_CELL_CHARS - suffix.length) + suffix;
 }
 
 function flattenRow(row) {
@@ -3882,12 +3888,13 @@ async function blobToBase64Payload(blob) {
 }
 
 async function saveExportBlobNative(filename, blob) {
-    if (!window.AndroidBridge?.saveExportFile && !window.AndroidBridge?.beginExportFile) return null;
+    const bridge = window.NativeBridge || window.AndroidBridge;
+    if (!bridge?.saveExportFile && !bridge?.beginExportFile) return null;
     const mimeType = blob.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const base64Data = await blobToBase64Payload(blob);
 
-    if (window.AndroidBridge?.beginExportFile && window.AndroidBridge?.appendExportFileChunk && window.AndroidBridge?.finishExportFile) {
-        const beginRaw = window.AndroidBridge.beginExportFile(filename, mimeType);
+    if (bridge?.beginExportFile && bridge?.appendExportFileChunk && bridge?.finishExportFile) {
+        const beginRaw = bridge.beginExportFile(filename, mimeType);
         let begin = null;
         try {
             begin = JSON.parse(beginRaw || '{}');
@@ -3899,7 +3906,7 @@ async function saveExportBlobNative(filename, blob) {
         // Android WebView's JavaScript bridge rejects string args above ~32767 chars.
         const chunkSize = 24 * 1024;
         for (let i = 0; i < base64Data.length; i += chunkSize) {
-            const chunkRaw = window.AndroidBridge.appendExportFileChunk(begin.sessionId, base64Data.slice(i, i + chunkSize));
+            const chunkRaw = bridge.appendExportFileChunk(begin.sessionId, base64Data.slice(i, i + chunkSize));
             let chunkResult = null;
             try {
                 chunkResult = JSON.parse(chunkRaw || '{}');
@@ -3909,7 +3916,7 @@ async function saveExportBlobNative(filename, blob) {
             if (!chunkResult.ok) throw new Error(chunkResult.error || 'Native export chunk failed');
         }
 
-        const finishRaw = window.AndroidBridge.finishExportFile(begin.sessionId);
+        const finishRaw = bridge.finishExportFile(begin.sessionId);
         let finish = null;
         try {
             finish = JSON.parse(finishRaw || '{}');
@@ -3920,7 +3927,7 @@ async function saveExportBlobNative(filename, blob) {
         return finish;
     }
 
-    const raw = window.AndroidBridge.saveExportFile(filename, mimeType, base64Data);
+    const raw = bridge.saveExportFile(filename, mimeType, base64Data);
     let result = null;
     try {
         result = JSON.parse(raw || '{}');
@@ -3945,6 +3952,7 @@ async function exportAllData() {
     }
 
     btn.disabled = true;
+    EXPORT_TRUNCATION_STATS.count = 0;
     const sb = window.supabase.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
     const rowsByTable = {};
     const errors = [];
@@ -3975,6 +3983,7 @@ async function exportAllData() {
             { metric: 'Tables with fetch errors', value: errors.length },
             { metric: 'Poll history rows', value: pollRows.length },
             { metric: 'Strike rows', value: strikeRows.length },
+            { metric: 'Oversized cells truncated', value: EXPORT_TRUNCATION_STATS.count },
             ...EXPORT_TABLES.map(table => ({ metric: `${table} rows`, value: rowsByTable[table]?.length || 0 })),
             ...errors.map((error, idx) => ({ metric: `Error ${idx + 1}`, value: error })),
         ];
@@ -4009,6 +4018,13 @@ async function exportAllData() {
                     errSpan.style.color = '#b45309';
                     errSpan.textContent = `⚠ ${errors.length} table fetch issue(s); see Summary sheet.`;
                     statusEl.appendChild(errSpan);
+                }
+                if (EXPORT_TRUNCATION_STATS.count > 0) {
+                    statusEl.appendChild(document.createElement('br'));
+                    const truncSpan = document.createElement('span');
+                    truncSpan.style.color = '#b45309';
+                    truncSpan.textContent = `⚠ ${EXPORT_TRUNCATION_STATS.count} oversized cell(s) truncated for Excel compatibility.`;
+                    statusEl.appendChild(truncSpan);
                 }
                 return;
             }
@@ -4047,6 +4063,13 @@ async function exportAllData() {
             errSpan.style.color = '#b45309';
             errSpan.textContent = `⚠ ${errors.length} table fetch issue(s); see Summary sheet.`;
             statusEl.appendChild(errSpan);
+        }
+        if (EXPORT_TRUNCATION_STATS.count > 0) {
+            statusEl.appendChild(document.createElement('br'));
+            const truncSpan = document.createElement('span');
+            truncSpan.style.color = '#b45309';
+            truncSpan.textContent = `⚠ ${EXPORT_TRUNCATION_STATS.count} oversized cell(s) truncated for Excel compatibility.`;
+            statusEl.appendChild(truncSpan);
         }
         statusEl.appendChild(document.createElement('br'));
         const link = document.createElement('a');
@@ -4144,11 +4167,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     // b97: Restore baseline from Supabase — enables polling after background kill
     const savedBaseline = cloudConfig?.morning_baseline;
     if (savedBaseline && savedBaseline._date === API.todayIST() && savedBaseline.baseline) {
-        if (!safeParseNB(NativeBridge.getBaseline(), {})) {
+        const nativeBaselineToday = getTodayNativeBaseline();
+        if (!nativeBaselineToday) {
             STATE.baseline = savedBaseline.baseline;
-            STATE.live = { ...safeParseNB(NativeBridge.getBaseline(), {}) };
+            STATE.live = { ...savedBaseline.baseline };
             if (savedBaseline.bnfExpiry) STATE.bnfExpiry = savedBaseline.bnfExpiry;
             if (savedBaseline.nfExpiry) STATE.nfExpiry = savedBaseline.nfExpiry;
+            try {
+                if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
+                    NativeBridge.setBaseline(JSON.stringify(savedBaseline.baseline));
+                }
+            } catch (e) {
+                console.warn('[b97] Native baseline restore skipped:', e.message);
+            }
             console.log('[b97] Baseline restored from Supabase');
         }
     }

@@ -3,3 +3,12 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local/editor and generated artifacts
+.claude/
+.vscode/
+dist/
+build/
+*.apk
+*.aab
+*.apks
