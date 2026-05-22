@@ -549,6 +549,13 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `ml_weekly_accuracy`
   - `ml_monthly_summary`
 - `ml_decisions.outcome_pct_of_max` confirmed present as `double precision`.
+- RLS policies confirmed for the five new ML V2 tables:
+  - `ml_daily_accuracy.allow_anon_ml_daily_accuracy`
+  - `ml_monthly_summary.allow_anon_ml_monthly_summary`
+  - `ml_option_chain_snapshots.allow_anon_ml_option_chain_snapshots`
+  - `ml_recommendation_outcomes.allow_anon_ml_recommendation_outcomes`
+  - `ml_weekly_accuracy.allow_anon_ml_weekly_accuracy`
+- Each policy grants `ALL` to `{anon,authenticated}`.
 - Important Supabase compatibility note:
   - `chain_slices` is a BASE TABLE in this project, not a view.
   - `ml_evaluation_outcomes` is also a BASE TABLE in this project, not a view.
