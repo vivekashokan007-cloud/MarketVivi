@@ -44,7 +44,7 @@
     <header class="app-header">
         <div class="header-left">
             <h1>Market Radar</h1>
-            <span class="version">v2.1 · b169</span>
+            <span class="version">v2.1 · b170</span>
         </div>
         <div class="header-right">
             <label class="theme-toggle" title="Toggle theme">
@@ -75,6 +75,7 @@
             <button class="tab-btn" data-tab="oi">🔍 OI</button>
             <button class="tab-btn" data-tab="strategies">🎯 Trade</button>
             <button class="tab-btn" data-tab="positions">📌 Position</button>
+            <button class="tab-btn" data-tab="ml">🧠 ML</button>
             <button class="tab-btn" data-tab="logs">📋 Logs</button>
         </nav>
 
@@ -202,6 +203,11 @@
         </div>
 
         <!-- TAB 5: LOGS — populated by log-viewer.js (LV.1) -->
+        <div class="tab-content" id="tab-ml">
+            <div id="ml-content"><div class="empty-state">ML data loads after scan</div></div>
+        </div>
+
+        <!-- TAB 6: LOGS — populated by log-viewer.js (LV.1) -->
         <div class="tab-content" id="tab-logs"></div>
     </main>
 
