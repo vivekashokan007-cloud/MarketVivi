@@ -174,6 +174,82 @@
 - After DOWN day → Bear Put swing 70% (momentum continues)
 - IB/IC 0% → NEVER hold overnight
 
+---
+
+## Update Note (May 22 2026) — Batch 2 IV Edge Calibration
+
+- `brain.py` now applies bounded IV Edge calibration by blending internal `probProfit` toward Upstox POP.
+- Added constants:
+  - `IV_EDGE_MIN_POP = 35`
+  - `IV_EDGE_MAX_POP = 95`
+  - `IV_EDGE_BLEND = 0.35`
+  - `IV_EDGE_MAX_SHIFT = 0.08`
+- Added helpers:
+  - `_normalize_pop_pct(pop_value)`
+  - `_apply_iv_edge_boost(prob, upstox_pop)`
+- Applied in:
+  - `_build_candidate(...)` (2-leg spreads)
+  - Iron Condor candidate generation
+  - Iron Butterfly candidate generation
+- Candidate payload now includes:
+  - `probProfit` (calibrated)
+  - `rawProbProfit` (original model value)
+  - `ivEdgeBoost` (applied signed shift)
+- UI can now consistently show `P(Range)` vs `P(Profit)` divergence using real calibrated values.
+- Pending follow-up: live-day tuning of blend/clamp values and threshold validation against outcome labels.
+
+## Update Note (May 22 2026) — Batch 3 OI Velocity Wiring
+
+- Live poll payload now carries total OI fields required by `brain.py` OI velocity logic:
+  - `bnfCOI`, `bnfPOI`
+  - `nfCOI`, `nfPOI`
+- ML poll snapshot persistence now records OI velocity telemetry inside `market_forces_json`:
+  - BNF/NF total call and put OI
+  - rolling poll-window OI velocity %
+  - profile-level `oiVelocity` values
+- This closes the end-to-end OI velocity data gap from Kotlin poll capture to Python brain to ML snapshot storage.
+
+## Update Note (May 22 2026) — Batch 4 Export Retention Cleanup
+
+- Added automatic retention cleanup for Supabase Storage bucket `EXPORTS` in `app.js` export workflow.
+- Cleanup executes after successful upload and does not fail the export if cleanup encounters errors.
+- Retention policy:
+  - keep at most 30 recent export files
+  - keep files not older than 14 days
+  - never delete the file uploaded in the current export run
+- Export success text now includes cleanup deletion count when applicable.
+
+## Update Note (May 22 2026) — Batch 5 Timeout Hardening
+
+- Added timeout protections on high-impact Python bridge paths:
+  - `MarketWatchService.kt`
+    - `take_poll_snapshot` guarded (4s)
+    - `notification_agent_process` guarded (3s)
+  - `MarketMLService.kt`
+    - `evening_evaluator` guarded (45s)
+  - `NativeBridge.kt`
+    - `validate_model` guarded (8s)
+    - `ml_score_bridge` guarded (2.5s)
+- Added explicit timeout log markers for easier production diagnostics.
+- Behavior now degrades safely on slow Python calls (timeouts + warning logs), reducing risk of service thread blockage.
+
+## Update Note (May 22 2026) — Batch 6 ML Aggregation Loop
+
+- Added post-evaluation aggregation pipeline in Android `MarketMLService`:
+  - daily rollup from evaluator outcomes (primary + labelable)
+  - weekly rollup on Saturday
+  - monthly rollup on last Friday
+- Daily summary writes to:
+  - `ml_daily_accuracy` (fallback `ml_accuracy_daily`)
+- Weekly summary writes to:
+  - `ml_weekly_accuracy` (fallback `ml_accuracy_weekly`)
+- Monthly summary writes to:
+  - `ml_monthly_summary` (fallback `ml_accuracy_monthly`)
+- Month-end hard gate:
+  - sets `hard_gate_triggered` when labeled rows >= 500
+  - triggers retrain-readiness check/notification when gate is hit
+- Current implementation is H2-primary based because `evening_evaluator` currently labels H2 outcomes.
+
 ### Findings That DON'T Matter (no edge found)
 
 | Factor | Result |

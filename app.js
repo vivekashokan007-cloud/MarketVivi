@@ -230,6 +230,10 @@ const STATE = {
     brainLastRun: 0,          // timestamp of last brain run
     brainError: null,         // last error (for debug)
     morningExpandedAfterLock: false,
+    mlModelStatus: null,
+    mlModelStatusAt: 0,
+    mlDecisions: null,
+    mlDecisionsAt: 0,
 
     // Active tab
     activeTab: 'market'
@@ -458,6 +462,51 @@ function getBrainData() {
         console.error('getBrainData failed:', e);
         return {};
     }
+}
+
+function parseMLStatus(raw) {
+    const fallback = { ok: false, version: 'unknown', nTrain: 0, thrTake: 0, thrWatch: 0, baseWr: 0, sampleP: 0, error: '' };
+    const status = safeParseNB(raw, fallback);
+    return {
+        ok: !!status.ok,
+        version: status.version || 'unknown',
+        nTrain: Number.isFinite(status.nTrain) ? status.nTrain : (Number.isFinite(status.n_train) ? status.n_train : 0),
+        thrTake: Number.isFinite(status.thrTake) ? status.thrTake : (Number.isFinite(status.thr_take) ? status.thr_take : 0),
+        thrWatch: Number.isFinite(status.thrWatch) ? status.thrWatch : (Number.isFinite(status.thr_watch) ? status.thr_watch : 0),
+        baseWr: Number.isFinite(status.baseWr) ? status.baseWr : (Number.isFinite(status.base_wr) ? status.base_wr : 0),
+        sampleP: Number.isFinite(status.sampleP) ? status.sampleP : (Number.isFinite(status.sample_p) ? status.sample_p : 0),
+        error: status.error || ''
+    };
+}
+
+function getMLModelStatusCached(force = false) {
+    const ttlMs = 5 * 60 * 1000;
+    const now = Date.now();
+    if (!force && STATE.mlModelStatus && (now - STATE.mlModelStatusAt) < ttlMs) {
+        return STATE.mlModelStatus;
+    }
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLModelStatus === 'function'
+        ? NativeBridge.getMLModelStatus()
+        : '{}';
+    const parsed = parseMLStatus(raw);
+    STATE.mlModelStatus = parsed;
+    STATE.mlModelStatusAt = now;
+    return parsed;
+}
+
+function getMLDecisionsCached(force = false) {
+    const ttlMs = 90 * 1000;
+    const now = Date.now();
+    if (!force && Array.isArray(STATE.mlDecisions) && (now - STATE.mlDecisionsAt) < ttlMs) {
+        return STATE.mlDecisions;
+    }
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLDecisions === 'function'
+        ? NativeBridge.getMLDecisions(8)
+        : '[]';
+    const parsed = safeParseNB(raw, []);
+    STATE.mlDecisions = Array.isArray(parsed) ? parsed : [];
+    STATE.mlDecisionsAt = now;
+    return STATE.mlDecisions;
 }
 
 function refreshBrainData() {
@@ -1888,6 +1937,7 @@ function renderAll() {
     renderOI();
     renderWatchlist();
     renderPosition();
+    renderML();
     renderDebug();
     renderFooter();
     updateLockScanUi();
@@ -3342,6 +3392,104 @@ function renderPosition() {
     el.innerHTML = html;
 }
 
+function renderML() {
+    const el = document.getElementById('ml-content');
+    if (!el) return;
+
+    const status = getMLModelStatusCached();
+    const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});
+    const brain = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getBrainResult?.() : null, {});
+    const pollHistory = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getPollHistory?.() : null, []);
+    const signalStats = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getSignalAccuracyStats?.() : null, {});
+    const decisions = getMLDecisionsCached();
+
+    const verdict = brain?.verdict || {};
+    const action = verdict.action || brain.action || 'WAIT';
+    const strategy = verdict.strategy || brain.strategy || '--';
+    const confidence = Number.isFinite(verdict.confidence) ? verdict.confidence : (Number.isFinite(brain.confidence) ? brain.confidence : 0);
+    const watchlistCount = Array.isArray(brain.watchlist) ? brain.watchlist.length : 0;
+    const candidateCount = Array.isArray(brain.generated_candidates) ? brain.generated_candidates.length : 0;
+    const pollsToday = Array.isArray(pollHistory) ? pollHistory.length : 0;
+    const accuracyPct = Number.isFinite(signalStats.pct) ? signalStats.pct.toFixed(1) : '--';
+    const recent = decisions.slice(0, 5);
+
+    let html = '';
+    html += `
+        <section class="section">
+            <h2>🧠 ML Stack</h2>
+            <div class="brain-card" style="border-left-color:${status.ok ? 'var(--green)' : 'var(--warn)'}">
+                <div class="brain-card-header">
+                    <span class="brain-icon">●</span>
+                    <span class="brain-label">${status.ok ? 'Model READY' : 'Model NOT READY'}</span>
+                    <span class="brain-strength" style="color:${status.ok ? 'var(--green)' : 'var(--warn)'}">${status.version || 'unknown'}</span>
+                </div>
+                <div class="brain-detail">
+                    Train rows: <b>${status.nTrain || 0}</b> · Thresholds: <b>${((status.thrTake || 0) * 100).toFixed(0)} / ${((status.thrWatch || 0) * 100).toFixed(0)}</b><br>
+                    Base win rate: <b>${((status.baseWr || 0) * 100).toFixed(1)}%</b> · Sample probability: <b>${((status.sampleP || 0) * 100).toFixed(1)}%</b>
+                    ${status.error ? `<br><span style="color:var(--danger)">Error: ${status.error}</span>` : ''}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">📡</span>
+                    <span class="brain-label">Live Brain Output</span>
+                </div>
+                <div class="brain-detail">
+                    Action: <b>${action}</b> · Strategy: <b>${strategy}</b> · Confidence: <b>${confidence.toFixed(0)}%</b><br>
+                    Watchlist: <b>${watchlistCount}</b> · Candidates: <b>${candidateCount}</b> · Polls today: <b>${pollsToday}</b>
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--warn)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">📈</span>
+                    <span class="brain-label">Evaluation Signals</span>
+                </div>
+                <div class="brain-detail">
+                    Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
+                    Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}
+                </div>
+            </div>
+        </section>
+    `;
+
+    html += `
+        <section class="section">
+            <h2>⚙️ ML Controls</h2>
+            <div class="v1-trade-btns" style="margin-top:0">
+                <button onclick="getMLModelStatusCached(true);renderAll()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
+                <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">🔄 Retrain ML</button>
+            </div>
+            <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
+                ML is downstream-only. It records snapshots and evaluates outcomes, but it does not change live trade selection.
+            </div>
+        </section>
+    `;
+
+    html += `
+        <section class="section">
+            <h2>🗂 Recent ML Decisions</h2>
+            ${recent.length ? recent.map(row => {
+                const rowAction = row.action || row.recommendation_action || row.verdict_action || '--';
+                const rowStrategy = row.strategy || row.recommendation_strategy || '--';
+                const rowOutcome = row.outcome || row.result || row.label_quality || '--';
+                const rowTs = row.created_at || row.updated_at || row.poll_ts || '--';
+                return `
+                    <div class="brain-card">
+                        <div class="brain-card-header">
+                            <span class="brain-icon">•</span>
+                            <span class="brain-label">${rowAction} · ${rowStrategy}</span>
+                            <span class="brain-strength">${rowOutcome}</span>
+                        </div>
+                        <div class="brain-detail">${rowTs}</div>
+                    </div>
+                `;
+            }).join('') : '<div class="empty-state">No ML decisions loaded yet</div>'}
+        </section>
+    `;
+
+    el.innerHTML = html;
+}
+
 function renderFooter() {
     const el = document.getElementById('footer-status');
     if (!el) return;
@@ -3755,6 +3903,9 @@ const EXPORT_TABLES = [
 
 const EXCEL_MAX_CELL_CHARS = 32767;
 const EXPORT_TRUNCATION_STATS = { count: 0 };
+const EXPORT_STORAGE_BUCKET = 'EXPORTS';
+const EXPORT_RETENTION_DAYS = 14;
+const EXPORT_MAX_FILES_TO_KEEP = 30;
 
 function jsonCell(value) {
     if (value === null || value === undefined) return '';
@@ -3794,6 +3945,53 @@ async function fetchAllExportRows(sb, table) {
         if (!data || data.length < pageSize) break;
     }
     return rows;
+}
+
+async function cleanupOldExportFiles(sb, opts = {}) {
+    const keepDays = Number.isFinite(opts.keepDays) ? opts.keepDays : EXPORT_RETENTION_DAYS;
+    const keepCount = Number.isFinite(opts.keepCount) ? opts.keepCount : EXPORT_MAX_FILES_TO_KEEP;
+    const cutoffMs = Date.now() - (keepDays * 24 * 60 * 60 * 1000);
+    const keepSet = new Set(opts.keepPaths || []);
+
+    const allFiles = [];
+    const pageSize = 100;
+    for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await sb.storage.from(EXPORT_STORAGE_BUCKET).list('', {
+            limit: pageSize,
+            offset,
+            sortBy: { column: 'created_at', order: 'desc' },
+        });
+        if (error) throw new Error(`EXPORTS list failed: ${error.message}`);
+        const page = Array.isArray(data) ? data.filter(f => f && f.name) : [];
+        allFiles.push(...page);
+        if (page.length < pageSize) break;
+    }
+
+    const sorted = allFiles.sort((a, b) => {
+        const at = Date.parse(a.created_at || '') || 0;
+        const bt = Date.parse(b.created_at || '') || 0;
+        return bt - at;
+    });
+
+    const toDelete = [];
+    sorted.forEach((file, idx) => {
+        const name = file.name;
+        if (!name || keepSet.has(name)) return;
+        const createdAtMs = Date.parse(file.created_at || '') || 0;
+        const tooOld = createdAtMs > 0 && createdAtMs < cutoffMs;
+        const overCount = idx >= keepCount;
+        if (tooOld || overCount) toDelete.push(name);
+    });
+
+    if (!toDelete.length) return { scanned: sorted.length, deleted: 0 };
+
+    let deleted = 0;
+    for (let i = 0; i < toDelete.length; i += 100) {
+        const chunk = toDelete.slice(i, i + 100);
+        const { error: rmErr } = await sb.storage.from(EXPORT_STORAGE_BUCKET).remove(chunk);
+        if (!rmErr) deleted += chunk.length;
+    }
+    return { scanned: sorted.length, deleted };
 }
 
 function buildPollAuditRows(appConfigRows) {
@@ -4034,7 +4232,7 @@ async function exportAllData() {
         }
 
         statusEl.textContent = '⏳ Uploading Excel to Supabase Storage...';
-        const { error: uploadErr } = await sb.storage.from('EXPORTS').upload(storagePath, blob, {
+        const { error: uploadErr } = await sb.storage.from(EXPORT_STORAGE_BUCKET).upload(storagePath, blob, {
             contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             upsert: true,
         });
@@ -4045,7 +4243,21 @@ async function exportAllData() {
             throw new Error(detail);
         }
 
-        const { data: urlData } = sb.storage.from('EXPORTS').getPublicUrl(storagePath, { download: filename });
+        let cleanupNote = '';
+        try {
+            const cleanup = await cleanupOldExportFiles(sb, {
+                keepDays: EXPORT_RETENTION_DAYS,
+                keepCount: EXPORT_MAX_FILES_TO_KEEP,
+                keepPaths: [storagePath],
+            });
+            if (cleanup?.deleted) {
+                cleanupNote = ` · cleanup: deleted ${cleanup.deleted} old file(s)`;
+            }
+        } catch (cleanupErr) {
+            console.warn('EXPORTS cleanup warning:', cleanupErr);
+        }
+
+        const { data: urlData } = sb.storage.from(EXPORT_STORAGE_BUCKET).getPublicUrl(storagePath, { download: filename });
         const publicUrl = urlData?.publicUrl;
         if (!publicUrl) throw new Error('Storage upload succeeded but public URL was empty');
 
@@ -4056,7 +4268,7 @@ async function exportAllData() {
         setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) { /* ignore cleanup */ } }, 30000);
 
         statusEl.textContent = '';
-        statusEl.appendChild(document.createTextNode(`✅ Export ready: ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes`));
+        statusEl.appendChild(document.createTextNode(`✅ Export ready: ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes${cleanupNote}`));
         if (errors.length) {
             statusEl.appendChild(document.createElement('br'));
             const errSpan = document.createElement('span');

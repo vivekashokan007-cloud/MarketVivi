@@ -2158,7 +2158,39 @@ _CONST = {
     'NEUTRAL_TYPES': ['IRON_CONDOR', 'IRON_BUTTERFLY', 'DOUBLE_DEBIT'],
     'DIR_BULL': ['BULL_CALL', 'BULL_PUT'],
     'DIR_BEAR': ['BEAR_CALL', 'BEAR_PUT'],
+    # IV Edge Boost: blend model P(profit) toward broker POP in controlled bounds
+    'IV_EDGE_MIN_POP': 35.0,
+    'IV_EDGE_MAX_POP': 95.0,
+    'IV_EDGE_MAX_SHIFT': 0.08,
+    'IV_EDGE_BLEND': 0.35,
 }
+
+def _normalize_pop_pct(pop_value):
+    """Normalize POP input to 0-100 percentage."""
+    if pop_value is None:
+        return None
+    try:
+        pop = float(pop_value)
+    except (TypeError, ValueError):
+        return None
+    if pop <= 1.0:
+        pop *= 100.0
+    if pop < _CONST['IV_EDGE_MIN_POP'] or pop > _CONST['IV_EDGE_MAX_POP']:
+        return None
+    return pop
+
+def _apply_iv_edge_boost(prob, upstox_pop):
+    """Calibrate internal probability with bounded pull toward Upstox POP."""
+    pop = _normalize_pop_pct(upstox_pop)
+    if pop is None:
+        return round(prob, 6), round(prob, 6), 0.0
+
+    raw_prob = max(0.0, min(1.0, float(prob)))
+    pop_prob = pop / 100.0
+    pull = (pop_prob - raw_prob) * _CONST['IV_EDGE_BLEND']
+    shift = max(-_CONST['IV_EDGE_MAX_SHIFT'], min(_CONST['IV_EDGE_MAX_SHIFT'], pull))
+    calibrated = max(0.01, min(0.99, raw_prob + shift))
+    return round(calibrated, 6), round(raw_prob, 6), round(shift, 6)
 
 # ─── VARSITY FILTER ───
 
@@ -2494,6 +2526,8 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         be = pair['buy'] + net_prem if pair['buyType'] == 'CE' else pair['buy'] - net_prem
         prob = abs(_chain_delta(strikes, be, pair['buyType'], spot, T, vol))
 
+    raw_prob = prob
+    prob, raw_prob, iv_edge_boost = _apply_iv_edge_boost(raw_prob, sell_data.get('pop'))
     if prob < _CONST['MIN_PROB']: return None
     if is_credit and (net_prem / width) < _CONST['MIN_CREDIT_RATIO']: return None
 
@@ -2552,6 +2586,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'sellOI': sell_data.get('oi', 0), 'buyOI': buy_data.get('oi', 0),
         'netPremium': round(net_prem, 2), 'maxProfit': round(max_profit),
         'maxLoss': round(max_loss), 'probProfit': round(prob, 3),
+        'rawProbProfit': round(raw_prob, 3), 'ivEdgeBoost': round(iv_edge_boost, 4),
         'ev': ev, 'netTheta': net_theta, 'isCredit': is_credit,
         'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
         'sigmaOTM': sigma_otm,
@@ -2690,6 +2725,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 prob_above_put = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
                 prob_below_call = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
                 prob = max(0, prob_above_put + prob_below_call - 1)
+                raw_prob = prob
+                prob, raw_prob, iv_edge_boost = _apply_iv_edge_boost(raw_prob, ce_s.get('pop'))
                 if prob < _CONST['MIN_PROB']: continue
                 if total_credit / width < _CONST['MIN_CREDIT_RATIO']: continue
 
@@ -2723,7 +2760,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                     'sellLTP2': pe_s.get('bid', 0), 'buyLTP2': pe_b.get('ask', 0),
                     'netPremium': round(total_credit, 2),
                     'maxProfit': max_profit, 'maxLoss': max_loss,
-                    'probProfit': round(prob, 3), 'ev': ev, 'netTheta': net_theta,
+                    'probProfit': round(prob, 3), 'rawProbProfit': round(raw_prob, 3), 'ivEdgeBoost': round(iv_edge_boost, 4),
+                    'ev': ev, 'netTheta': net_theta,
                     'isCredit': True, 'lotSize': lot_size, 'index': idx,
                     'expiry': expiry, 'tDTE': tdte,
                     'sigmaOTM': ic_sigma_otm,
@@ -2776,6 +2814,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
             prob_above = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
             prob_below = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
             prob = max(0, prob_above + prob_below - 1)
+            raw_prob = prob
+            prob, raw_prob, iv_edge_boost = _apply_iv_edge_boost(raw_prob, ce_s.get('pop'))
             if prob < _CONST['MIN_PROB']: continue
 
             ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
@@ -2804,7 +2844,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 'sellLTP2': pe_s.get('bid', 0), 'buyLTP2': pe_b.get('ask', 0),
                 'netPremium': round(total_credit, 2),
                 'maxProfit': max_profit, 'maxLoss': max_loss,
-                'probProfit': round(prob, 3), 'ev': ev, 'netTheta': ib_net_theta,
+                'probProfit': round(prob, 3), 'rawProbProfit': round(raw_prob, 3), 'ivEdgeBoost': round(iv_edge_boost, 4),
+                'ev': ev, 'netTheta': ib_net_theta,
                 'isCredit': True, 'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
                 'sigmaOTM': 0,
                 'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
