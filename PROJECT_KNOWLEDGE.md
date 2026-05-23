@@ -628,7 +628,10 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Decision: keep `ml_decisions` active as execution-quality tracking, separate from the V2 brain-snapshot training pipeline.
   - Removed the `cand.p_ml != null` requirement for insert.
   - New behavior: write `ml_decisions` for every saved trade when Supabase is available; ML score fields remain nullable until a model exists.
-- Issue 4: `takeTrade()` NativeBridge caching — pending.
+- Issue 4: `takeTrade()` NativeBridge caching — DONE locally.
+  - `takeTradeImpl()` now caches `NativeBridge.getLatestPoll()` once as `latestPoll`.
+  - `takeTradeImpl()` now caches `NativeBridge.getPollHistory()` once as `pollHistory` and refreshes that local cache if Kotlin returns a newer history.
+  - Trade snapshot and `ml_decisions` insert path now use cached values for the audited hot path.
 - Issue 5: market-hours validation checklist/instrumentation — pending.
 
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)

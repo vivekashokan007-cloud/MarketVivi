@@ -1131,15 +1131,18 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         || STATE.positioningCandidates.find(c => String(c.id) === String(candidateId));
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
     const forces = cand.forces || { aligned: 0, f1: 0, f2: 0, f3: 0 };
+    const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
+    let pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
 
     // b105: Pull fresh poll history from Kotlin before snapshotting.
     // Covers the case where user returns from background and takes a trade
     // before the next poll fires — (JSON.parse(NativeBridge.getPollHistory() || '[]')) could otherwise be stale.
     if (window.NativeBridge?.getPollHistory) {
         try {
-            const fresh = JSON.parse(window.NativeBridge.getPollHistory());
-            if (Array.isArray(fresh) && fresh.length > (JSON.parse(NativeBridge.getPollHistory() || '[]')).length) {
+            const fresh = safeParseNB(window.NativeBridge.getPollHistory(), []);
+            if (Array.isArray(fresh) && fresh.length > pollHistory.length) {
                 STATE.pollHistory = fresh;
+                pollHistory = fresh;
             }
         } catch(e) {}
     }
@@ -1171,8 +1174,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const isBNF = cand.index === 'BNF';
     const chain = isBNF ? safeParseNB(NativeBridge.getBnfChain(), {}) : safeParseNB(NativeBridge.getNfChain(), {});
     const strikeLeg = (strike, type) => chain?.strikes?.[strike]?.[type] || {};
-    const spot = isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {})).nfSpot;
-    const daily1Sigma = spot * ((safeParseNB(NativeBridge.getLatestPoll(), {})).vix / 100) / 15.8745  /* √252 */;
+    const spot = isBNF ? latestPoll.bnfSpot : latestPoll.nfSpot;
+    const daily1Sigma = spot * ((latestPoll.vix || 0) / 100) / 15.8745  /* √252 */;
     const entryLotSize = cand.lotSize || (isBNF ? C.BNF_LOT : C.NF_LOT);
 
     const trade = {
@@ -1181,8 +1184,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         expiry: cand.expiry,
         entry_date: new Date().toISOString(),
         entry_spot: spot,
-        entry_vix: (safeParseNB(NativeBridge.getLatestPoll(), {})).vix,
-        entry_atm_iv: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfAtmIv : (safeParseNB(NativeBridge.getLatestPoll(), {})).nfAtmIv,
+        entry_vix: latestPoll.vix,
+        entry_atm_iv: isBNF ? latestPoll.bnfAtmIv : latestPoll.nfAtmIv,
         entry_premium: cand.netPremium,
         width: cand.width,
         sell_strike: cand.sellStrike,
@@ -1205,12 +1208,12 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         force_f1: forces.f1,
         force_f2: forces.f2,
         force_f3: forces.f3,
-        entry_pcr: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).pcr : ((safeParseNB(NativeBridge.getLatestPoll(), {})).nfPcr || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.pcr),
-        entry_futures_premium: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).futuresPremBnf : ((safeParseNB(NativeBridge.getLatestPoll(), {})).futuresPremNf || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.futuresPremium),
-        entry_max_pain: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {})).maxPainBnf ?? (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? (JSON.parse(NativeBridge.getBaseline() || '{}'))?.maxPainNf),
+        entry_pcr: isBNF ? latestPoll.pcr : (latestPoll.nfPcr || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.pcr),
+        entry_futures_premium: isBNF ? latestPoll.futuresPremBnf : (latestPoll.futuresPremNf || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.futuresPremium),
+        entry_max_pain: isBNF ? (latestPoll.maxPainBnf ?? (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? (JSON.parse(NativeBridge.getBaseline() || '{}'))?.maxPainNf),
         entry_sell_oi: strikeLeg(cand.sellStrike, cand.sellType).oi ?? null,
-        entry_bias: (safeParseNB(NativeBridge.getLatestPoll(), {})).bias?.label,
-        entry_bias_net: (safeParseNB(NativeBridge.getLatestPoll(), {})).bias?.net,
+        entry_bias: latestPoll.bias?.label,
+        entry_bias_net: latestPoll.bias?.net,
         entry_regime: bd.institutionalRegime?.regime || null,
         entry_credit_confidence: bd.institutionalRegime?.creditConfidence || null,
         entry_wall_score: cand.wallScore ?? null,
@@ -1259,22 +1262,22 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             buy_oi: strikeLeg(cand.buyStrike, cand.buyType).oi ?? null,
             sigma_from_atm: daily1Sigma > 0 ? +((Math.abs(cand.sellStrike - spot)) / daily1Sigma).toFixed(2) : null,
             // Market environment
-            near_atm_pcr: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).nearAtmPCR : ((safeParseNB(NativeBridge.getLatestPoll(), {})).nfNearAtmPCR || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR),
-            iv_percentile: (safeParseNB(NativeBridge.getLatestPoll(), {})).ivPercentile ?? null,
-            spot_sigma: (safeParseNB(NativeBridge.getLatestPoll(), {})).spotSigma ?? null,
-            vix_sigma: (safeParseNB(NativeBridge.getLatestPoll(), {})).vixSigma ?? null,
-            vix_direction: (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.[0]?.vix ? +((safeParseNB(NativeBridge.getLatestPoll(), {})).vix - (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0].vix).toFixed(2) : null,
+            near_atm_pcr: isBNF ? latestPoll.nearAtmPCR : (latestPoll.nfNearAtmPCR || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR),
+            iv_percentile: latestPoll.ivPercentile ?? null,
+            spot_sigma: latestPoll.spotSigma ?? null,
+            vix_sigma: latestPoll.vixSigma ?? null,
+            vix_direction: (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.[0]?.vix ? +(latestPoll.vix - (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0].vix).toFixed(2) : null,
             // OI structure
-            call_wall: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfCallWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
-            call_wall_oi: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfCallWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallOI ?? null),
-            put_wall: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfPutWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
-            put_wall_oi: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfPutWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallOI ?? null),
+            call_wall: isBNF ? latestPoll.bnfCallWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
+            call_wall_oi: isBNF ? latestPoll.bnfCallWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallOI ?? null),
+            put_wall: isBNF ? latestPoll.bnfPutWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
+            put_wall_oi: isBNF ? latestPoll.bnfPutWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallOI ?? null),
             max_pain_dist: (() => {
-                const mp = isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {})).maxPainBnf || (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain || null);
+                const mp = isBNF ? (latestPoll.maxPainBnf || (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain || null);
                 return mp ? Math.round(spot - mp) : null;
             })(),
-            total_call_oi: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfTotalCallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.totalCallOI ?? null),
-            total_put_oi: isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {})).bnfTotalPutOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.totalPutOI ?? null),
+            total_call_oi: isBNF ? latestPoll.bnfTotalCallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.totalCallOI ?? null),
+            total_put_oi: isBNF ? latestPoll.bnfTotalPutOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.totalPutOI ?? null),
             // Institutional
             regime: bd.institutionalRegime?.regime || null,
             regime_detail: bd.institutionalRegime?.regimeDetail || null,
@@ -1282,10 +1285,10 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
             contrarian_pcr: STATE.contrarianPCR?.signal || null,
             // Bias detail — all 7 signal votes
-            bias_signals: (safeParseNB(NativeBridge.getLatestPoll(), {})).bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
+            bias_signals: latestPoll.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
             morning_bias: bd.morningBias?.label || null,
             bias_drift: STATE.biasDrift ?? 0,
-            upstox_agrees: (safeParseNB(NativeBridge.getLatestPoll(), {})).bias?.upstoxAgrees ?? null,
+            upstox_agrees: latestPoll.bias?.upstoxAgrees ?? null,
             // Breadth
             bnf_breadth_pct: safeParseNB(NativeBridge.getBnfBreadth(), {})?.pct ?? null,
             nf50_advancing: safeParseNB(NativeBridge.getNf50Breadth(), {})?.advancing ?? null,
@@ -1318,7 +1321,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         // b105: Write full ML decision record for execution-quality tracking.
         // ML scores are nullable until a trained model exists.
         if (DB.supabase) {
-            const pollSeq = (JSON.parse(NativeBridge.getPollHistory() || '[]')).slice(-6).map(p => ({
+            const pollSeq = pollHistory.slice(-6).map(p => ({
                 vix:           p.vix ?? null,
                 pcr:           p.pcr ?? p.nearAtmPcr ?? null,
                 bias_net:      p.biasNet ?? p.bias_net ?? null,
@@ -1326,7 +1329,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
                 spot_move_pct: p.spotMovePct ?? null,
                 futures_prem:  p.futuresPremBnf ?? p.futuresPrem ?? null,
             }));
-            const last = (JSON.parse(NativeBridge.getPollHistory() || '[]'))[(JSON.parse(NativeBridge.getPollHistory() || '[]')).length - 1] || {};
+            const last = pollHistory[pollHistory.length - 1] || {};
             const mlDoc = {
                 trade_id:   saved.id,
                 date:       API.todayIST(),
@@ -1335,7 +1338,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
                 index_name: cand.index,
                 mode:       trade.trade_mode,
                 paper:      isPaper,
-                vix:        (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? null,
+                vix:        latestPoll.vix ?? null,
                 sigma_away: cand.sigmaOTM ?? null,
                 gap_sigma:  bd.gapInfo?.sigma ?? null,
                 entry_credit: cand.netPremium ?? null,
@@ -1343,18 +1346,18 @@ async function takeTradeImpl(candidateId, isPaper = false) {
                 dte:        cand.tDTE ?? null,
                 max_profit: cand.maxProfit ?? null,
                 max_loss:   cand.maxLoss ?? null,
-                vix_regime: ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix >= 20 ? 'HIGH (20-25)' : (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix < 15 ? 'LOW (<15)' : 'NORMAL (15-20)'),
+                vix_regime: (latestPoll.vix >= 20 ? 'HIGH (20-25)' : latestPoll.vix < 15 ? 'LOW (<15)' : 'NORMAL (15-20)'),
                 day_direction: last.dayDirection ?? null,
                 day_range:  last.dayRange ?? null,
                 market_snapshot: {
-                    vix:          (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix,
-                    pcr:          (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr,
-                    near_atm_pcr: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nearAtmPCR,
-                    breadth:      (safeParseNB(NativeBridge.getLatestPoll(), {}))?.breadth,
-                    futures_prem: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.futuresPremBnf,
-                    spot:         isBNF ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfSpot,
-                    iv_percentile:(safeParseNB(NativeBridge.getLatestPoll(), {}))?.ivPercentile,
-                    bias_net:     (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.net,
+                    vix:          latestPoll.vix,
+                    pcr:          latestPoll.pcr,
+                    near_atm_pcr: latestPoll.nearAtmPCR,
+                    breadth:      latestPoll.breadth,
+                    futures_prem: latestPoll.futuresPremBnf,
+                    spot:         isBNF ? latestPoll.bnfSpot : latestPoll.nfSpot,
+                    iv_percentile:latestPoll.ivPercentile,
+                    bias_net:     latestPoll.bias?.net,
                     gap_sigma:    bd.gapInfo?.sigma,
                     weekday:      new Date().getDay(),
                 },
