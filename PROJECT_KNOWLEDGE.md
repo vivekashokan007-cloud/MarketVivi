@@ -637,6 +637,9 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Script checks current IST session counts for `ml_brain_snapshots`, `ml_option_chain_snapshots`, `ml_decisions`, `ml_recommendation_outcomes`, and `ml_daily_accuracy`.
   - Script also lists recent brain snapshots, chain rows, and daily accuracy rows.
   - Expected use: run after/during the next market session to confirm V2 collection and evening evaluation.
+- Release bump for this batch — DONE locally.
+  - Android target version: `2.3.57 (188)`.
+  - PWA visible label target: `v2.3.57 · b188`.
 
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
