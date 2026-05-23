@@ -619,7 +619,11 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Added 15 weekday F&O trading holidays for calendar year 2026 to `brain.py`.
   - `evening_evaluator()` now skips those dates by returning `[]`.
   - Claude audit holiday list was not used because several dates did not match the official circular.
-- Issue 2: margin constants — pending.
+- Issue 2: margin constants — DONE locally.
+  - Mirrored existing PWA protected values into `brain.py`:
+    - `BNF_SHORT_MARGIN = 75000`
+    - `NF_SHORT_MARGIN = 50000`
+  - No candidate-selection behavior changed; existing max-loss/capital risk gates remain authoritative.
 - Issue 3: `ml_decisions` guard/architecture — pending.
 - Issue 4: `takeTrade()` NativeBridge caching — pending.
 - Issue 5: market-hours validation checklist/instrumentation — pending.
