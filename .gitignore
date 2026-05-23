@@ -6,6 +6,7 @@ Thumbs.db
 
 # Local/editor and generated artifacts
 .claude/
+.agents/
 .vscode/
 dist/
 build/

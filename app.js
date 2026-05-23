@@ -2170,7 +2170,7 @@ function renderDebug() {
 
 // ═══ INTRADAY CHART — SVG spot + VIX from poll history (b68) ═══
 function renderIntradayChart(index = 'NF') {
-    const polls = (JSON.parse(NativeBridge.getPollHistory() || '[]'));
+    const polls = STATE.pollHistory || [];
     if (!polls || polls.length < 2) return '<div style="text-align:center;font-size:11px;color:var(--text-muted);padding:8px">Chart appears after 2+ polls</div>';
 
     const spotKey = index === 'NF' ? 'nf' : 'bnf';
@@ -2831,7 +2831,7 @@ function renderWatchlist() {
             const ebLabel = eb.label || `${eb.strength ? eb.strength + ' ' : ''}${eb.bias || 'NEUTRAL'}`;
             return `<div class="go-detail" style="font-size:11px; color:var(--accent); font-weight:600; margin-top:2px;">🧠 Brain: ${bd.morningBias.label} → ${ebLabel} (MW:${mw}%${reasons ? ' · ' + reasons : ''})</div>`;
         })() : ''}
-        ${brainRangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — brain prioritized IB/IC</div>` : ((JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Brain regime: ${brainRegimeType || 'active'} (${STATE.rangeSigma}σ)</div>` : '')}
+        ${brainRangeDetected ? `<div class="go-detail" style="font-size:11px; color:var(--green); margin-top:2px;">📊 Range detected (${STATE.rangeSigma}σ) — brain prioritized IB/IC</div>` : (STATE.pollHistory?.length >= 3 ? `<div class="go-detail" style="font-size:10px; color:var(--text-muted); margin-top:2px;">📊 Brain regime: ${brainRegimeType || 'active'} (${STATE.rangeSigma}σ)</div>` : '')}
         ${bd.marketPhase && bd.marketPhase.id !== 'PRE_MARKET' && bd.marketPhase.id !== 'UNKNOWN' ? `<div class="go-detail" style="font-size:11px; color:var(--accent); margin-top:2px; font-weight:600;">${bd.marketPhase.label}: ${bd.marketPhase.hint}</div>
         <div class="go-detail" style="font-size:10px; color:var(--text-muted);">${bd.marketPhase.detail}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
@@ -3014,8 +3014,8 @@ function renderCandidateCard(cand, atm, rank) {
 
     // VIX trend badge for IC/IB candidates
     let vixTrendBadge = '';
-    if ((cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') && (JSON.parse(NativeBridge.getPollHistory() || '[]'))?.length >= 3) {
-        const recentPolls = (JSON.parse(NativeBridge.getPollHistory() || '[]')).slice(-3);
+    if ((cand.type === 'IRON_BUTTERFLY' || cand.type === 'IRON_CONDOR') && STATE.pollHistory?.length >= 3) {
+        const recentPolls = STATE.pollHistory.slice(-3);
         const vixTrend = (recentPolls[recentPolls.length-1]?.vix || 0) - (recentPolls[0]?.vix || 0);
         if (vixTrend >= 0.5) {
             vixTrendBadge = `<span style="background:var(--warn);color:#000;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px">🌡️ VIX↑${vixTrend.toFixed(1)}</span>`;
