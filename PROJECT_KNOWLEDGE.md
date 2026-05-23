@@ -655,6 +655,71 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - bumped Android target to `2.3.58 (189)`
   - bumped PWA visible label to `v2.3.58 · b189`
 
+### 2026-05-23 — Notification Agent Hardening
+- Applied Claude directive `DIRECTIVE_NOTIFICATION_AGENT_HARDENING_V2359.md`.
+- Android target bumped to `2.3.59 (190)`.
+- PWA visible label bumped to `v2.3.59 · b190`.
+- `NotificationAgent` now requires `confidence >= 55` before firing `New Setup Ready`.
+- Choppy-market alerts now carry the current poll timestamp instead of `0`.
+- Kotlin now maps `UPDATE` urgency to the important notification channel.
+- Added rationale comment documenting action-level choppy detection.
+- Full pytest suite could not run locally because `pytest` is not installed; Python compile and live smoke checks were used instead.
+
+## Notification Agent (brain.py — NotificationAgent class)
+
+### Two separate agent concepts
+
+1. **Explanation/Audit Agent** (`build_explanation_audit_agent`)
+   - Produces structured JSON inside the brain result for auditability.
+   - Does NOT fire Android notifications.
+
+2. **Live NotificationAgent** (`class NotificationAgent`)
+   - Rule-based state machine. Not LLM-based.
+   - Controls WHEN and WHETHER to send setup/market-state notifications.
+   - Position-risk alerts (SL/target/book-profit) BYPASS this agent entirely.
+   - Position-risk bypass is intentional because exits should not wait for setup-alert confirmation/cooldown logic.
+
+### State tracked per poll
+
+- `action`: last brain verdict action
+- `strategy`: last strategy type
+- `confidence`: last confidence value
+- `timestamp`: epoch ms of last state update
+- `cooldown_until`: epoch ms until alert suppression lifts
+- `verdict_history`: last 6 action strings
+
+### Alert types and conditions
+
+**New Setup Ready** (`HIGH` -> important channel)
+- Fires when:
+  1. `action != 'WAIT'`
+  2. `confidence >= 55`
+  3. `entry_window_active == True`
+  4. Same action appears in 2 consecutive polls
+- Two-poll confirmation prevents single-poll false alerts.
+
+**Conviction Update** (`UPDATE` -> important channel)
+- Fires when action + strategy are unchanged but confidence shifts by at least 15 points.
+- Example: Bear Call at 58% -> Bear Call at 73%.
+
+**Setup Invalidated** (`INFO` -> routine channel)
+- Fires when previous action was not WAIT and brain returns to WAIT.
+- Requires 2 consecutive WAIT polls before firing.
+
+**Market Whipsawing** (`WARNING` -> important channel)
+- Fires when 3+ action-level flips are detected in `verdict_history`.
+- Sets a 45-minute cooldown.
+- Tracks action-level flips only. Strategy flips within the same action are naturally suppressed by two-poll confirmation.
+
+### State persistence and Kotlin integration
+
+- State is persisted to SharedPreferences after every poll via `notification_agent_state_json()`.
+- State is restored on service restart via `reset_notification_agent(state_json)`.
+- `MarketWatchService.kt` calls `notification_agent_process(result, ctx)` after every brain analysis with a 3-second timeout guard.
+- Alerts are sent via `NotificationHelper.send()` when non-null.
+- `NotificationHelper` applies 30-second same-title throttling.
+- Channel mapping: `HIGH`/`UPDATE`/`WARNING` -> important, `INFO` -> routine, `ERROR` -> urgent.
+
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
   - On Market tab, after entering evening values and tapping **Save**, UI showed:
