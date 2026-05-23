@@ -733,6 +733,42 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Routine notifications are silent by default through `IMPORTANCE_LOW` and `setSound(null, null)`.
 - Live trading decision logic, two-poll confirmation, confidence floor, choppy cooldown, and position-risk bypass remain unchanged.
 
+### 2026-05-23 — Notification Sounds Release Status
+- Push completed after user confirmation.
+- Marketapp commit pushed:
+  - `1e8d4d5 Add versioned notification sounds`
+- MarketVivi commit pushed:
+  - `8331cc9 Document notification sounds release`
+- GitHub Actions validation for Marketapp commit `1e8d4d5`:
+  - `Market Radar Signed Release`: success
+  - run ID: `26325647308`
+  - `Market Radar Debug APK Validation`: success
+  - run ID: `26325647322`
+- Latest GitHub release after workflow completion:
+  - tag: `v2.3.60`
+  - name: `Market Radar v2.3.60`
+  - published: `2026-05-23T06:24:55Z`
+  - asset: `app-release.apk`
+- Expected app behavior after update:
+  - update checker should offer `v2.3.60`
+  - Android notification settings may show six new channels plus old legacy channels
+  - old legacy channels are harmless and are no longer the intended route for new notification sounds
+  - routine notifications are silent by default
+  - perfect alignment uses a distinct high-confidence sound path
+- Local validation performed before push:
+  - `python3 -m py_compile` passed for `brain.py`, `ml_engine.py`, `ml_train.py`
+  - six sound assets were present under `app/src/main/res/raw/`
+  - smoke tests passed:
+    - confidence `78` -> `sound_class = perfect`
+    - confidence `65` -> `sound_class = entry`
+    - confidence `32` -> no setup alert
+    - conviction shift -> `sound_class = update`
+    - choppy whipsaw -> `sound_class = warning` with non-zero timestamp
+    - setup invalidated -> `sound_class = routine`
+- Local Gradle build was not run because Java/JDK is not installed in this environment:
+  - blocker: `JAVA_HOME is not set`
+  - authoritative Android compile/sign validation came from GitHub Actions.
+
 ## Notification Agent (brain.py — NotificationAgent class)
 
 ### Two separate agent concepts
