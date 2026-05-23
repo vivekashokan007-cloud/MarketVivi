@@ -703,6 +703,36 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Keep old channel IDs as compatibility fallback.
   - Bump Android version before push.
 
+### 2026-05-23 — Notification Sounds Implementation
+- Applied Claude directive `DIRECTIVE_SOUNDS_IMPLEMENTATION_V2360.md`.
+- Android target bumped to `2.3.60 (191)`.
+- PWA visible label bumped to `v2.3.60 · b191`.
+- Added six OGG sound assets under `Marketapp/app/src/main/res/raw/`:
+  - `sound_perfect_alignment.ogg`
+  - `sound_entry_setup.ogg`
+  - `sound_conviction_update.ogg`
+  - `sound_market_warning.ogg`
+  - `sound_routine_tick.ogg`
+  - `sound_urgent_risk.ogg`
+- `NotificationAgent` now emits `sound_class` in alert JSON.
+- Sound-class routing:
+  - `perfect`: high-confidence setup, confidence `>= 75`
+  - `entry`: normal setup, confidence `55-74`
+  - `update`: conviction update
+  - `warning`: choppy/whipsaw alert
+  - `routine`: setup invalidated / low-priority info
+  - `urgent`: risk/error alerts
+- `NotificationHelper.kt` now creates six versioned Android notification channels:
+  - `trade_perfect_v1`
+  - `trade_entry_v1`
+  - `trade_update_v1`
+  - `trade_warning_v1`
+  - `trade_routine_v1`
+  - `trade_urgent_v1`
+- Old channel IDs are intentionally not reused because Android locks channel sound settings once created on-device.
+- Routine notifications are silent by default through `IMPORTANCE_LOW` and `setSound(null, null)`.
+- Live trading decision logic, two-poll confirmation, confidence floor, choppy cooldown, and position-risk bypass remain unchanged.
+
 ## Notification Agent (brain.py — NotificationAgent class)
 
 ### Two separate agent concepts
