@@ -665,6 +665,44 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Added rationale comment documenting action-level choppy detection.
 - Full pytest suite could not run locally because `pytest` is not installed; Python compile and live smoke checks were used instead.
 
+### 2026-05-23 — Notification Sound Architecture Decision
+- Separate professional notification sounds are feasible in the Android app.
+- Current implementation:
+  - `NotificationHelper.kt` has three channels: `trade_urgent`, `trade_important`, `trade_routine`.
+  - No custom sound assets exist under `app/src/main/res/raw`.
+  - Current behavior uses Android/default channel sounds.
+- Android constraint:
+  - Android 8+ notification sounds are tied to `NotificationChannel`.
+  - Once a channel ID is created on a user's phone, sound changes to that same channel ID may not apply.
+  - Use new/versioned channel IDs for custom sounds.
+- Recommended channel split:
+  - `trade_perfect_v1`: perfect/high-confidence alignment.
+  - `trade_entry_v1`: normal confirmed setup.
+  - `trade_update_v1`: conviction update.
+  - `trade_warning_v1`: choppy/important market warnings.
+  - `trade_routine_v1`: routine info.
+  - `trade_urgent_v1`: exit-risk, SL/target/book-profit/auth failure.
+- Recommended office-suitable sound language:
+  - Perfect alignment: short two-note soft chime.
+  - Entry setup: single clean bell/pluck.
+  - Conviction update: soft rising tick/chime.
+  - Warning/choppy: muted low double-tap.
+  - Routine: subtle tick or silent by default.
+  - Urgent/exit-risk: firm two-pulse tone, not harsh.
+- Routing policy:
+  - `HIGH` + very strong confidence/perfect alignment -> `trade_perfect_v1`.
+  - `HIGH` normal setup -> `trade_entry_v1`.
+  - `UPDATE` -> `trade_update_v1`.
+  - `WARNING` -> `trade_warning_v1`.
+  - `INFO` -> `trade_routine_v1`.
+  - `ERROR` and position-risk alerts -> `trade_urgent_v1`.
+- Future implementation batch:
+  - Add `res/raw/*.wav` or `*.ogg` assets.
+  - Update `NotificationHelper.createChannels()` with `AudioAttributes` and `setSound(...)`.
+  - Extend `NotificationHelper.send(...)` to route by richer alert type or optional sound class.
+  - Keep old channel IDs as compatibility fallback.
+  - Bump Android version before push.
+
 ## Notification Agent (brain.py — NotificationAgent class)
 
 ### Two separate agent concepts
