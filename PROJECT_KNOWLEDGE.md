@@ -769,6 +769,181 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - blocker: `JAVA_HOME is not set`
   - authoritative Android compile/sign validation came from GitHub Actions.
 
+## Future Phase: Upstox Order Execution (Phase 12)
+
+### Source Document And Verification
+- Research document read:
+  - `UPSTOX_API_ORDER_EXECUTION_RESEARCH_2026_05_21-1.md`
+- Purpose:
+  - future broker order execution architecture
+  - sandbox testing
+  - order placement
+  - margin checks
+  - position monitoring
+  - kill switch
+  - schema additions
+- Status:
+  - NOT implemented in current app.
+  - Current app remains decision/paper-tracking first; real trade button currently records a real-trade log in `trades_v2`, not broker execution.
+- Official Upstox docs were rechecked on 2026-05-23 before saving this roadmap.
+- Current official confirmations:
+  - Place Order V3 exists at `https://api-hft.upstox.com/v3/order/place`.
+  - Place Order V3 is sandbox-enabled.
+  - Static IP restriction can block order APIs with error `UDAPI1154`.
+  - Market orders may be blocked with `UDAPI1158`; limit order / market protection handling must be respected.
+  - Get Funds and Margin V3 exists at `https://api.upstox.com/v3/user/get-funds-and-margin`.
+  - Static IP management exists under `https://api.upstox.com/v2/user/ip`.
+  - Sandbox-enabled APIs include Place Order, Place Order V3, Place Multi Order, Modify Order, Modify Order V3, Cancel Order, and Cancel Order V3.
+- Correction recorded:
+  - Research document references kill switch as `/v2/trading/kill-switch`.
+  - Current Upstox docs show kill switch under `/v2/user/kill-switch`, with segment values such as `NSE_FO`.
+  - Reconfirm endpoint from official docs immediately before implementation.
+
+### Current App Gap
+- Current `NativeBridge.kt` stores a manually pasted Upstox access token in SharedPreferences as `auth_token`.
+- Current Kotlin polling uses Upstox for:
+  - index quotes
+  - VIX quote
+  - option chain
+  - option contracts / expiry discovery
+  - market quote snapshots
+- Current `MarketWatchService.kt` and `NativeBridge.kt` do not place, modify, cancel, or monitor broker orders.
+- Current PWA `takeTradeImpl()` builds a `trades_v2` row from a candidate and saves it to Supabase.
+- Current candidate/trade capture does not yet persist broker order fields:
+  - `instrument_token` / `instrument_key` per leg
+  - `order_id` per leg
+  - fill status
+  - average fill price
+  - margin used
+  - execution slippage
+
+### Phase 12 Must-Have Architecture
+- Broker execution must be opt-in and gated behind sandbox first.
+- Trading decision logic must remain separate from execution plumbing.
+- Required modes:
+  - paper-only
+  - sandbox execution
+  - live execution
+- Required hard gates before any live order:
+  - valid standard Upstox token
+  - static IP/proxy path confirmed
+  - fresh instrument keys for the current expiry/session
+  - margin check passes
+  - available funds check passes
+  - explicit user confirmation
+  - kill switch available
+  - order tag generated
+- For Phase 12, Kotlin/Android should own broker execution because it already owns Upstox token storage and network access.
+- PWA should request execution through `NativeBridge`, not call broker APIs directly.
+
+### Instrument Key Plan
+- Upstox order placement requires `instrument_token` such as `NSE_FO|XXXXX`.
+- This is not the strike price.
+- Preferred source for Market Radar:
+  - extract `instrument_key` from the live option-chain response for each leg.
+- Fallback sources:
+  - Upstox BOD instruments file
+  - official instrument search API if available/approved for the account
+- Do not cache F&O instrument keys across sessions because weekly expiries create new keys.
+- Candidate builder must eventually carry these fields:
+  - `sellInstrumentKey`
+  - `buyInstrumentKey`
+  - `sellInstrumentKey2`
+  - `buyInstrumentKey2`
+  - trading symbols if available
+  - lot size
+
+### Order Placement Strategy
+- Single/two-leg spreads:
+  - use limit orders only.
+  - prefer hedge BUY first, then SELL leg, unless using a safe multi-order flow.
+- Four-leg strategies such as Iron Condor / Iron Butterfly:
+  - use Place Multi Order where possible.
+  - all legs share one strategy tag.
+  - all legs must return order IDs.
+  - if any leg fails, cancel all successfully placed legs immediately.
+- Tag format:
+  - `MR_{STRATEGY}_{INDEX}_{YYYYMMDD}_{SEQ}`
+  - example: `MR_BC_BNF_20260521_01`
+- Limit order pricing policy must be explicitly designed:
+  - SELL legs should not blindly use stale bid.
+  - BUY legs should not blindly use stale ask.
+  - define acceptable slippage and retry rules before live execution.
+
+### Required NativeBridge / Kotlin Functions
+- Future functions needed:
+  - `getAvailableFunds()`
+  - `checkMargin(legs)`
+  - `placeOrder(...)`
+  - `placeMultiOrder(legs)`
+  - `getOrderStatus(orderId)`
+  - `getOrderFillPrice(orderId)`
+  - `cancelOrder(orderId)`
+  - `getPositions()`
+  - `killSwitchFO(...)`
+  - `updateStaticIP(...)`
+- These must not be mixed into the existing polling path without clear separation.
+- Recommended implementation class:
+  - `UpstoxOrderClient.kt`
+  - keep `MarketWatchService.kt` focused on polling/brain orchestration.
+
+### Execution State Machine
+- Future live execution should follow this sequence:
+  1. Brain/PWA surfaces candidate.
+  2. User taps execute.
+  3. NativeBridge receives candidate execution payload.
+  4. Validate fresh candidate age and current market hours.
+  5. Resolve instrument keys for all legs.
+  6. Check margin for the full spread.
+  7. Check available funds.
+  8. Generate strategy tag.
+  9. Place orders.
+  10. Poll order statuses every 3-5 seconds until terminal or timeout.
+  11. Capture average fill price and filled quantity.
+  12. Write execution details to Supabase `trades_v2`.
+  13. If any leg rejects/fails/partially fills unsafely, cancel remaining open legs and alert user.
+
+### Critical Risk Rules
+- Never allow naked short exposure from partial leg execution.
+- All spread legs must fill to matching quantity, or the app must cancel/alert.
+- Sandbox cannot prove real fill behavior; it mainly proves request/response and lifecycle plumbing.
+- Real fill testing must start with tiny controlled exposure only after sandbox passes.
+- Static IP requirement may force an Oracle VM/proxy execution path rather than direct phone-to-Upstox order placement.
+- Standard access token expires daily; execution flow needs reliable token readiness before market open.
+- Analytics/read-only token can be considered for market data later, but live order execution still needs standard access token.
+
+### Supabase Phase 12 Schema Additions
+- Future `trades_v2` fields needed:
+  - `order_id_sell`
+  - `order_id_buy`
+  - `order_id_sell2`
+  - `order_id_buy2`
+  - `actual_sell_price`
+  - `actual_buy_price`
+  - `actual_net_premium`
+  - `execution_slippage`
+  - `legs_filled`
+  - `all_legs_filled`
+  - `margin_used`
+  - `kill_switch_available`
+- Add explicit execution mode/status fields before coding live execution:
+  - `execution_mode`: `paper`, `sandbox`, `live`
+  - `execution_status`: `not_sent`, `sent`, `partial`, `filled`, `cancelled`, `rejected`, `unknown`
+  - `execution_error`
+  - `order_tag`
+
+### Open Questions Before Implementation
+- Does current Upstox option-chain payload in our Kotlin parser already preserve per-leg `instrument_key`?
+- Should all broker order calls go through a static-IP Oracle VM/proxy, or can the phone connection satisfy static IP restrictions?
+- What will be the production token-refresh flow:
+  - manual daily paste
+  - semi-automated OAuth
+  - webhook/Supabase function notifier
+- Should sandbox and live use fully separate app settings and tokens?
+- What is the exact kill-switch endpoint and payload from official docs at implementation time?
+- What is the retry policy for unfilled limit orders?
+- Should live execution initially be limited to one-lot defined-risk spreads only?
+
 ## Notification Agent (brain.py — NotificationAgent class)
 
 ### Two separate agent concepts
