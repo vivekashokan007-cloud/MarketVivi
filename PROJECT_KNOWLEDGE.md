@@ -598,6 +598,21 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Python compile check passed for `ml_engine.py`, `ml_train.py`, and `brain.py`.
   - `ml_engine.py` self-test passed.
 
+### 2026-05-23 — God Mode Audit Follow-Up
+- Reviewed `GOD_MODE_AUDIT_2026_05_21-1.md` against current source.
+- Stale/already resolved:
+  - candidate IDs exist in generated brain candidates
+  - Supabase ML tables and RLS policies are confirmed
+  - ML status unpack regression was fixed in `v2.3.55 (186)`
+- Safe patch prepared:
+  - `brain.py chain_profile()` now guards `step <= 0` to avoid division by zero from duplicate/malformed strike lists.
+  - Android version bumped to `2.3.56 (187)`.
+  - PWA visible version label updated to `v2.3.56 · b187`.
+- Deferred:
+  - NSE holiday/margin constants require official/source-confirmed values before changing.
+  - `ml_decisions` guard needs an explicit architecture decision.
+  - `takeTrade()` NativeBridge caching is performance cleanup.
+
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
   - On Market tab, after entering evening values and tapping **Save**, UI showed:
