@@ -632,7 +632,11 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `takeTradeImpl()` now caches `NativeBridge.getLatestPoll()` once as `latestPoll`.
   - `takeTradeImpl()` now caches `NativeBridge.getPollHistory()` once as `pollHistory` and refreshes that local cache if Kotlin returns a newer history.
   - Trade snapshot and `ml_decisions` insert path now use cached values for the audited hot path.
-- Issue 5: market-hours validation checklist/instrumentation — pending.
+- Issue 5: market-hours validation checklist/instrumentation — DONE locally.
+  - Added `supabase_ml_market_hours_validation.sql`.
+  - Script checks current IST session counts for `ml_brain_snapshots`, `ml_option_chain_snapshots`, `ml_decisions`, `ml_recommendation_outcomes`, and `ml_daily_accuracy`.
+  - Script also lists recent brain snapshots, chain rows, and daily accuracy rows.
+  - Expected use: run after/during the next market session to confirm V2 collection and evening evaluation.
 
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
