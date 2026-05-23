@@ -1315,8 +1315,9 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         switchTab('positions');
         renderAll();
 
-        // b105: Write full ML decision record for calibration tracking
-        if (cand.p_ml != null) {
+        // b105: Write full ML decision record for execution-quality tracking.
+        // ML scores are nullable until a trained model exists.
+        if (DB.supabase) {
             const pollSeq = (JSON.parse(NativeBridge.getPollHistory() || '[]')).slice(-6).map(p => ({
                 vix:           p.vix ?? null,
                 pcr:           p.pcr ?? p.nearAtmPcr ?? null,

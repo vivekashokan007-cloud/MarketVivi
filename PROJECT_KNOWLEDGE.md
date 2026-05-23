@@ -624,7 +624,10 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `BNF_SHORT_MARGIN = 75000`
     - `NF_SHORT_MARGIN = 50000`
   - No candidate-selection behavior changed; existing max-loss/capital risk gates remain authoritative.
-- Issue 3: `ml_decisions` guard/architecture — pending.
+- Issue 3: `ml_decisions` guard/architecture — DONE locally.
+  - Decision: keep `ml_decisions` active as execution-quality tracking, separate from the V2 brain-snapshot training pipeline.
+  - Removed the `cand.p_ml != null` requirement for insert.
+  - New behavior: write `ml_decisions` for every saved trade when Supabase is available; ML score fields remain nullable until a model exists.
 - Issue 4: `takeTrade()` NativeBridge caching — pending.
 - Issue 5: market-hours validation checklist/instrumentation — pending.
 
