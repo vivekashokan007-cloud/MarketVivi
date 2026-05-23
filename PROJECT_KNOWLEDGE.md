@@ -613,6 +613,17 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `ml_decisions` guard needs an explicit architecture decision.
   - `takeTrade()` NativeBridge caching is performance cleanup.
 
+### 2026-05-23 — Pending Issue Batch
+- Issue 1: NSE holiday guard — DONE locally.
+  - Official source checked: NSE F&O circular `NSE/FAOP/71777`, dated 2025-12-12.
+  - Added 15 weekday F&O trading holidays for calendar year 2026 to `brain.py`.
+  - `evening_evaluator()` now skips those dates by returning `[]`.
+  - Claude audit holiday list was not used because several dates did not match the official circular.
+- Issue 2: margin constants — pending.
+- Issue 3: `ml_decisions` guard/architecture — pending.
+- Issue 4: `takeTrade()` NativeBridge caching — pending.
+- Issue 5: market-hours validation checklist/instrumentation — pending.
+
 ### 2026-05-15 — Save Evening Close error (`getVarsityFilter is not defined`)
 - Symptom:
   - On Market tab, after entering evening values and tapping **Save**, UI showed:
