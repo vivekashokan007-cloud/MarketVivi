@@ -774,6 +774,9 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 ### Source Document And Verification
 - Research document read:
   - `UPSTOX_API_ORDER_EXECUTION_RESEARCH_2026_05_21-1.md`
+  - `UPSTOX_API_ORDER_EXECUTION_RESEARCH_2026_05_21-2.md`
+  - `PHASE12_ORDER_EXECUTION_AND_BRAIN_CORRECTION_BLUEPRINT.md`
+  - `DIRECTIVE_INFRASTRUCTURE_BUILD_PHASE12.md`
 - Purpose:
   - future broker order execution architecture
   - sandbox testing
@@ -782,6 +785,15 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - position monitoring
   - kill switch
   - schema additions
+- Claude's later blueprint splits the work into:
+  - Phase 12A: execution engine
+  - Phase 12B: brain calibration and correction
+  - Phase 12C: trades_v2 schema expansion
+- The infrastructure directive treats Phase 12 as a 5-sprint build:
+  - Sprint 1: verify ML pipeline and instrument_key flow
+  - Sprint 2: sandbox infra and order proxy settings
+  - Sprint 3: execution UI and Supabase execution fields
+  - later sprints: paper trading gate and live-readiness hardening
 - Status:
   - NOT implemented in current app.
   - Current app remains decision/paper-tracking first; real trade button currently records a real-trade log in `trades_v2`, not broker execution.
@@ -816,6 +828,7 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - average fill price
   - margin used
   - execution slippage
+- The live option-chain payload already carries `instrument_key` per strike, but our Kotlin parser / candidate builder still does not reliably flow it through to the brain candidate payload.
 
 ### Phase 12 Must-Have Architecture
 - Broker execution must be opt-in and gated behind sandbox first.
@@ -824,6 +837,10 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - paper-only
   - sandbox execution
   - live execution
+- Required build split from Claude's blueprint:
+  - 12A = execution engine
+  - 12B = brain calibration / correction loop after fills
+  - 12C = Supabase execution schema
 - Required hard gates before any live order:
   - valid standard Upstox token
   - static IP/proxy path confirmed
@@ -835,6 +852,16 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - order tag generated
 - For Phase 12, Kotlin/Android should own broker execution because it already owns Upstox token storage and network access.
 - PWA should request execution through `NativeBridge`, not call broker APIs directly.
+- The infrastructure directive adds a higher-confidence implementation order:
+  - first add `instrument_key` to strike objects
+  - then add `sellInstrumentKey` / `buyInstrumentKey` to `_build_candidate()`
+  - then add `check_execution_readiness()` in `brain.py`
+  - then add sandbox toggle, proxy URL, and order functions
+- The ML tab should stop pretending that the model is "ready" during infra work and instead show the actual collection / execution pipeline state:
+  - whether `instrument_key` is flowing
+  - whether sandbox is enabled
+  - whether execution proxy is configured
+  - whether paper/sandbox/live readiness checks pass
 
 ### Instrument Key Plan
 - Upstox order placement requires `instrument_token` such as `NSE_FO|XXXXX`.
@@ -852,6 +879,7 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `buyInstrumentKey2`
   - trading symbols if available
   - lot size
+- The upstream blueprint explicitly requires the Kotlin strike objects to expose the raw `instrument_key` from the live chain response before any execution work can proceed.
 
 ### Order Placement Strategy
 - Single/two-leg spreads:
@@ -886,6 +914,14 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Recommended implementation class:
   - `UpstoxOrderClient.kt`
   - keep `MarketWatchService.kt` focused on polling/brain orchestration.
+- Claude's phase directive also adds:
+  - `check_execution_readiness(candidate, current_result, ctx)`
+  - sandbox toggle storage in prefs
+  - order proxy URL storage in prefs
+  - explicit execution confirmation UI before sending any broker order
+- Sandbox/live transport should be different:
+  - sandbox can use direct Upstox API calls
+  - live orders may need an Oracle Cloud VM or other static-IP proxy path before Upstox will accept them
 
 ### Execution State Machine
 - Future live execution should follow this sequence:
@@ -902,6 +938,11 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   11. Capture average fill price and filled quantity.
   12. Write execution details to Supabase `trades_v2`.
   13. If any leg rejects/fails/partially fills unsafely, cancel remaining open legs and alert user.
+- The Claude infrastructure directive wants the user-facing flow to include:
+  - a readiness check before execution
+  - sandbox mode for request/response validation
+  - a paper-trading gate dashboard before live use
+  - explicit capture of execution mode on every trade row
 
 ### Critical Risk Rules
 - Never allow naked short exposure from partial leg execution.
@@ -926,6 +967,12 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `all_legs_filled`
   - `margin_used`
   - `kill_switch_available`
+- Infrastructure directive also calls for:
+  - `execution_mode`
+  - `execution_status`
+  - `execution_error`
+  - `order_tag`
+- The blueprint treats `trades_v2` as the long-term source of truth for fill quality, slippage, and calibration data.
 - Add explicit execution mode/status fields before coding live execution:
   - `execution_mode`: `paper`, `sandbox`, `live`
   - `execution_status`: `not_sent`, `sent`, `partial`, `filled`, `cancelled`, `rejected`, `unknown`
@@ -941,8 +988,187 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - webhook/Supabase function notifier
 - Should sandbox and live use fully separate app settings and tokens?
 - What is the exact kill-switch endpoint and payload from official docs at implementation time?
+
+### Future Research Notes: API Spectrum And Single-Leg
+- Source: `API_SPECTRUM_SINGLE_LEG_RESEARCH_20260525.md` from Claude.
+- Status: future-build research only; not an approved implementation plan.
+- Highest-value near-term API additions appear to be the new Market Information APIs:
+  - FII / DII data
+  - PCR data
+  - change-in-OI
+  - max-pain
+- Rationale:
+  - these can reduce or remove fragile manual morning Force 1 entry
+  - they may provide better institutional/context inputs than our current chain-derived approximations
+  - this is a cleaner near-term upgrade than jumping straight into strategy redesign
+- If implemented later, the likely first target is `MarketWatchService.kt`, with the goal of:
+  - auto-prefilling Force 1 style morning institutional inputs
+  - enriching 5-minute polls with official PCR / OI / max-pain data
+- Analytics token remains a candidate for read-only GET flows later, but it is not a substitute for the standard OAuth token used in live authenticated execution flow.
+- WebSocket V3 remains the long-term path for real-time option monitoring, but it is a later architecture upgrade and not part of the current app observation phase.
+- Portfolio stream feed is execution-phase infrastructure, not needed before live order plumbing exists.
+
+### Future Research Notes: Single-Leg Candidate Path
+- Single-leg options should be treated as a paper-research branch only.
+- Do not treat Claude's single-leg note as validated trading logic.
+- No approval exists yet for:
+  - `SHORT_CALL`
+  - `SHORT_PUT`
+  - `LONG_CALL`
+  - `LONG_PUT`
+  candidate generation in production use.
+- The useful part of the note is the implementation framing:
+  - candidate generation would need explicit new strategy types
+  - naked margin must use a separate estimation path
+  - per-leg monitoring logic is more important than combined P&L alone
+- The strongest reusable idea is per-leg breach monitoring before full trade stop triggers:
+  - sell-leg delta breach
+  - premium multiple breach
+  - intrinsic / ITM danger
+  - sigma-distance danger zone
+- If single-leg is explored later, keep this sequence:
+  1. current app / spread engine observation first
+  2. single-leg candidate generation in paper mode only
+  3. collect at least 30-50 paper trades
+  4. compare real paper outcomes vs assumptions
+  5. only then consider broader implementation
+- Important capital-risk note:
+  - single-leg naked options are a different risk class from spreads
+  - they must not be treated as a lightweight extension of the current engine
+
+### Current Decision Boundary
+- Nothing from the API spectrum / single-leg research should interrupt today's live app observation.
+- If post-observation implementation work starts, the likely priority order is:
+  1. Market Information API integration
+  2. continued safe relay / execution validation
+  3. single-leg paper-candidate research later
+
+## 2026-05-26 App Runtime Investigation
+
+### Observed app state from screenshots
+
+- Version on device: `v2.3.60 / b191`
+- Morning inputs were visible and saved.
+- OI tab showed partial derived values such as:
+  - PCR
+  - max pain
+  - call wall / put wall
+  - breadth
+- But the core live-monitoring state was inconsistent:
+  - header still showed `BNF --  NF --  VIX --`
+  - footer showed `Polls: 0`
+  - ML tab showed:
+    - `Service: STOPPED`
+    - `Poll #0`
+    - `Last poll Never`
+    - `Watchlist: 0`
+    - `Candidates: 0`
+  - Trade tab still showed `Lock & Scan to generate strategies`
+- Logs screen proved native activity was happening in the background:
+  - `LEASE_HEARTBEAT_WRITTEN`
+  - `EVALUATE_JS_CALLED`
+  - `[SYNC] Triggered UI sync from native background data`
+
+### Strongest confirmed bug
+
+- After a successful `NativeBridge.setMorningInput(...)` call, the web layer in `MarketVivi/app.js` immediately called `NativeBridge.setBaseline(...)` again with the result of `collectBaselineFromForm()`.
+- This second write could overwrite the richer native morning baseline that already contained:
+  - current date
+  - live BNF / NF / VIX quotes
+  - discovered expiries
+- This was a real session-state bug and has been fixed locally by removing that redundant overwrite.
+
+### Export diagnostics issue
+
+- TXT / CSV log export failure could not be diagnosed clearly before.
+- Added explicit native export lifecycle logging in `NativeBridge.kt` for:
+  - `beginExportFile`
+  - `appendExportFileChunk`
+  - `finishExportFile`
+- This does not guarantee export success by itself, but it makes the next failure observable in the in-app log buffer.
+
+### Files changed locally on 2026-05-26
+
+- `MarketVivi/app.js`
+  - removed post-lock baseline overwrite via `NativeBridge.setBaseline(...)`
+- `Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt`
+  - added export lifecycle success/failure logging
+
+### Current status after this investigation
+
+- One definite session-state bug is fixed locally.
+- There may still be a second issue in watch-loop / service-state reporting, but it was not proven enough yet to patch safely in the same step.
+- No push has been done.
 - What is the retry policy for unfilled limit orders?
 - Should live execution initially be limited to one-lot defined-risk spreads only?
+- Should the ML tab become an infrastructure/control dashboard during Phase 12 instead of a pure model-status page?
+- Should live order routing go through an Oracle VM proxy even if sandbox can run direct?
+- Which settings page will own sandbox mode and proxy URL controls?
+
+### Oracle Relay Progress (2026-05-24)
+
+- Execution-relay architecture is now the working assumption for future mobile-only Upstox live execution:
+  - phone stays the UI / brain / market-data client
+  - relay owns only the fixed egress path
+- Oracle Cloud Infrastructure setup was completed successfully for the relay proof-of-concept:
+  - region: `India West (Mumbai)`
+  - instance: `VM.Standard.E2.1.Micro`
+  - OS: `Oracle Linux 9`
+  - boot volume: default Always Free size
+  - shielded instance: `OFF`
+  - confidential computing: `OFF`
+  - new VCN + new public subnet created
+  - reserved public IPv4 attached to primary VNIC
+  - static IP: `144.24.117.114`
+  - estimated cost at creation: `$0.00`
+- Relay bring-up status:
+  - `mr-relay.service` is running as `opc`
+  - external health check is live at:
+    - `http://144.24.117.114:8080/health`
+  - confirmed response:
+    - `{"ok": true, "service": "market-radar-relay"}`
+- HTTPS relay status:
+  - self-signed certificate generated on the VM
+  - relay updated to listen with TLS on `8443`
+  - external HTTPS health check is live at:
+    - `https://144.24.117.114:8443/health`
+  - confirmed response via `curl -k`:
+    - `{"ok": true, "service": "market-radar-relay"}`
+- First protected upstream relay test status:
+  - initial `/live/static-ip` attempt returned Cloudflare `1010` because Python's default upstream client signature was blocked
+  - relay was updated to send a browser-style upstream `User-Agent`
+  - relay was also updated to log each forwarded request with status and latency
+  - retry result:
+    - endpoint: `/live/static-ip`
+    - transport: HTTPS via relay on `8443`
+    - HTTP status: `200`
+    - response body:
+      - `{"status":"success","data":{}}`
+  - this proves:
+    - HTTPS relay path works
+    - `X-Relay-Token` gate works
+    - Bearer token forwarding works
+    - Upstox accepts the authenticated request through the relay
+    - Cloudflare no longer blocks the relay after the user-agent fix
+- Current hard boundary:
+  - HTTP on `8080` was used only for initial `/health` bring-up
+  - HTTPS on `8443` is now the approved relay path for any future protected tests
+  - relay IP has NOT been registered with Upstox yet
+  - Android app has NOT been wired to the relay yet
+- Deployment bundle prepared locally:
+  - `oracle_relay_deploy_2026_05_24/`
+  - `oracle_relay_https_phase_bundle.zip`
+- Next approved step:
+  - continue protected upstream endpoint testing over HTTPS only
+  - next likely read-only endpoint: `/live/funds`
+  - still no order routes yet
+- Not approved yet:
+  - `/live/margin`
+  - `/live/order`
+  - `/live/multi-order`
+  - `/sandbox/order`
+  - Upstox IP registration
+  - app-side `order_proxy_url` integration
 
 ## Notification Agent (brain.py — NotificationAgent class)
 

@@ -3552,10 +3552,13 @@ function lockMorningData() {
         localStorage.setItem('mr2_morning', JSON.stringify(rawInputs));
 
         localStorage.setItem('mr2_morning_baseline', JSON.stringify(baseline));
-
-        if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
-            NativeBridge.setBaseline(JSON.stringify(baseline));
-        }
+        // Do not overwrite the richer native baseline after setMorningInput().
+        // NativeBridge.setMorningInput() already persisted:
+        // - date
+        // - fresh live BNF / NF / VIX quotes
+        // - discovered expiries
+        // Writing the form-collected baseline here can replace that with stale or
+        // partial values before the first poll has even completed.
 
         document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
         const btnLock = document.getElementById('btn-lock');
