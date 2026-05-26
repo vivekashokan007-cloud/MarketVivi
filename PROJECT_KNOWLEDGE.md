@@ -1242,3 +1242,35 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Includes range-aware fallback when `STATE.rangeSigma < 0.3`, plus bull/bear/neutral handling.
 - Status:
   - Fixed locally, pending your confirmation before push.
+
+### 2026-05-26 — Export fix not shipped + stale service status root cause
+
+- User updated to `v2.3.61 / b192` and reported:
+  - scanner clearly active (`BNF/NF/VIX` populated, `Scanned ... Poll #21`)
+  - Logs tab showed live native poll activity
+  - but:
+    - TXT / CSV log export still appeared non-working
+    - ML tab still showed `Service: STOPPED`
+    - footer still showed `Polls: 0`
+- Confirmed root cause #1:
+  - export fix never reached the phone because `index.html` still loaded the stale log viewer bundle
+  - release fix updates cache-busters to `app.js?v=1138` and `log-viewer.js?v=1139`
+- Confirmed root cause #2:
+  - native `getServiceStatus()` depends on `hasTodayBaseline()`
+  - some restored baselines were written without `date`
+  - `clearStaleSessionStateIfNeeded()` then treated the session as stale and cleared derived state while the service was still actively polling
+  - evidence: `DAILY_RESET_BRIDGE: cleared stale session state for 2026-05-26` appeared during active watch mode
+- Local fixes applied:
+  - `Marketapp/.../NativeBridge.kt`
+    - `setBaseline()` now injects `date=todayIstDate()` when missing
+    - export success now triggers Android toast: `Saved to Downloads: <file>`
+  - `app.js`
+    - Supabase baseline restore now sends `{ ...baseline, date: _date }` into `NativeBridge.setBaseline(...)`
+  - `log-viewer.js`
+    - save success flash now includes destination when native save returns `location`
+  - `index.html`
+    - bumped `log-viewer.js` cache-buster so the export fix actually ships
+- Release status:
+  - prepared for `v2.3.62 / b193`
+  - Android release bump: `versionName=2.3.62`, `versionCode=193`
+  - Web release label: `v2.3.62 · b193`

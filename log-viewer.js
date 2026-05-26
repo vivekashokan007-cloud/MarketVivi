@@ -537,7 +537,8 @@
 
         const saveResult = await this.saveViaNativeBridge(fileName, content, mimeType);
         if (saveResult?.ok) {
-          this.flashMessage(`Saved: ${fileName}`);
+          const location = saveResult.location ? ` to ${saveResult.location}` : '';
+          this.flashMessage(`Saved${location}: ${fileName}`);
           return;
         }
 

@@ -4383,13 +4383,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (savedBaseline && savedBaseline._date === API.todayIST() && savedBaseline.baseline) {
         const nativeBaselineToday = getTodayNativeBaseline();
         if (!nativeBaselineToday) {
-            STATE.baseline = savedBaseline.baseline;
-            STATE.live = { ...savedBaseline.baseline };
+            const restoredBaseline = { ...savedBaseline.baseline, date: savedBaseline._date };
+            STATE.baseline = restoredBaseline;
+            STATE.live = { ...restoredBaseline };
             if (savedBaseline.bnfExpiry) STATE.bnfExpiry = savedBaseline.bnfExpiry;
             if (savedBaseline.nfExpiry) STATE.nfExpiry = savedBaseline.nfExpiry;
             try {
                 if (typeof NativeBridge !== 'undefined' && NativeBridge.setBaseline) {
-                    NativeBridge.setBaseline(JSON.stringify(savedBaseline.baseline));
+                    NativeBridge.setBaseline(JSON.stringify(restoredBaseline));
                 }
             } catch (e) {
                 console.warn('[b97] Native baseline restore skipped:', e.message);
