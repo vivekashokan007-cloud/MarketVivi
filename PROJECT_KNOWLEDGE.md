@@ -1460,3 +1460,26 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `PYTHONPATH=app/src/main/python python app/src/main/python/tests/test_gate5_trace_smoke.py` passed.
   - `git diff --check` passed for both repos.
   - GitHub signed release completed successfully for `v2.3.69`; latest release asset is `app-release.apk`.
+
+### 2026-05-27 — Guardian audit follow-up (`v2.3.70 / b201`)
+
+- Source audit:
+  - Read `GUARDIAN_AUDIT_v2_3_69_20260527.md`.
+  - Guardian confirmed primary architecture is intact: brain remains master, ML remains observer/advisory.
+  - EV capture constant remains intentionally unchanged.
+- `Marketapp/app/src/main/java/com/marketradar/app/MarketWatchService.kt`:
+  - `formatChainForBrain()` now propagates Upstox option-leg `instrument_key` into each CE/PE leg as both `instrument_key` and `instrumentKey`.
+  - Also propagates `trading_symbol` as both `trading_symbol` and `symbol`.
+  - This closes the execution-readiness data-flow gap where `brain.py` expected instrument keys but Kotlin omitted them from formatted chain data.
+- `Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt`:
+  - `getExecutionInfraStatus()` now checks `brain_result` candidates/watchlist for `sellInstrumentKey` / `buyInstrumentKey` fields.
+  - Removed reliance on non-existent `latest_poll.bnfStrikes` / `latest_poll.nfStrikes` arrays for execution key stats.
+- `Marketapp/GIVE_TO_ANTIGRAVITY.md`:
+  - Replaced stale v2.2.11 handoff and old bug list with current `v2.3.70 / b201` architecture notes.
+- `Marketapp/compile_errors.txt`:
+  - Replaced stale UTF-16 `pollCount` compile failure with a clean UTF-8 current build-status note.
+- Version bump:
+  - Android: `versionName=2.3.70`, `versionCode=201`.
+  - Brain: `BRAIN_VERSION=2.3.70`.
+  - Web label: `v2.3.70 · b201`.
+  - cache-buster: `app.js?v=1145`, `log-viewer.js?v=1145`.
