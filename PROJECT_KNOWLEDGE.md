@@ -1560,3 +1560,9 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Brain: `BRAIN_VERSION=2.3.73`.
   - Web label: `v2.3.73 · b204`.
   - cache-buster: `app.js?v=1148`, `log-viewer.js?v=1148`.
+- Release verification:
+  - `Marketapp` commit pushed: `eb6548f Harden background service lifecycle paths`.
+  - `MarketVivi` commit pushed: `3f610a4 Document lifecycle remediation v2.3.73`.
+  - GitHub Debug APK Validation completed successfully.
+  - GitHub Signed Release completed successfully.
+  - Latest release confirmed: `v2.3.73` / `Market Radar v2.3.73` with `app-release.apk`.
