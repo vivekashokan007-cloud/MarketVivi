@@ -1367,3 +1367,32 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Improved chart toggle clarity + persistence:
     - explicit button text `View NF/BNF`.
     - persisted selection via `mr2_chart_index` in localStorage.
+
+### 2026-05-27 — Claude brain + ML audit Step 1 fixes (`v2.3.67 / b198`)
+
+- Scope applied:
+  - Brain audit Step 1 mechanical fixes only.
+  - ML architecture audit minimal safety fix only.
+  - No `ivSkew`, temporal blend, or dead-signal activation was shipped in this pass.
+- `Marketapp/app/src/main/python/brain.py`:
+  - module import now includes `time`, so trace timestamps no longer fall back to `0`.
+  - `_capital` default changed from `110000` to `250000`.
+  - `analyze()` capital fallback changed from `110000` to `250000`.
+  - `build_calibration()` now excludes paper trades.
+  - `_get_varsity_filter()` NEUTRAL + low-IV `blocked` list no longer contradicts `allowed`.
+  - `BRAIN_VERSION` updated to `2.3.67`.
+- `Marketapp/app/src/main/java/com/marketradar/app/MarketMLService.kt`:
+  - retrain readiness default threshold changed from `20` to `300`.
+  - manual/nightly training is blocked below `100` labeled trades.
+- `Marketapp/app/src/main/java/com/marketradar/app/MarketWatchService.kt`:
+  - poll payload now includes `moveSigma`, `move_sigma`, `dayRangeSigma`, `day_range_sigma`, `dayDirection`, `day_direction`, `consecDays`, and `consec_days`.
+  - `weekday` now uses ML convention `0=Mon ... 4=Fri` instead of Java `Calendar.DAY_OF_WEEK`.
+- Version bump:
+  - Android: `versionName=2.3.67`, `versionCode=198`.
+  - Web label: `v2.3.67 · b198`.
+  - cache-buster: `app.js?v=1142`, `log-viewer.js?v=1142`.
+- Local verification:
+  - `python -m py_compile` passed for `brain.py`, `ml_engine.py`, `ml_train.py`, `ml_temporal.py`.
+  - `git diff --check` passed for both repos.
+  - `pytest` could not run locally because this container has no `pytest` module installed.
+  - Local Gradle compile could not run because this container has no `java` binary and no `JAVA_HOME`.
