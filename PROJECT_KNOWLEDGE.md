@@ -1509,3 +1509,30 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Android: `versionName=2.3.71`, `versionCode=202`.
   - Web label: `v2.3.71 · b202`.
   - cache-buster: `app.js?v=1146`, `log-viewer.js?v=1146`.
+
+### 2026-05-27 — Idempotent day evaluation UI (`v2.3.72 / b203`)
+
+- User finding:
+  - Pressing `Evaluate Today` only showed a generic started toast.
+  - UI did not show whether today's evaluation was done.
+  - Repeated presses could start duplicate evaluation attempts.
+- `Marketapp/app/src/main/java/com/marketradar/app/MarketMLService.kt`:
+  - Day evaluation now records `evaluation_running_date`, `evaluation_done_date`, `last_evaluation_outcome_count`, and `last_evaluation_message`.
+  - Successful evaluator completion marks the day done even when zero outcomes are produced, so repeated manual taps do not keep retrying a completed evaluation.
+  - Timeout/failure clears running state and stores a retryable message.
+- `Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt`:
+  - `getServiceStatus()` now exposes evaluation done/running/message/outcome state to the PWA.
+  - `triggerDayEvaluation()` is idempotent and returns JSON:
+    - `done` when today's evaluation is already complete;
+    - `running` when already in progress;
+    - `started` when newly queued;
+    - `failed` when service start fails.
+- `MarketVivi/app.js`:
+  - ML Evaluation Signals card now shows day evaluation state: `PENDING`, `RUNNING`, or `DONE`.
+  - `Evaluate Today` button disables as `Evaluating...` while running and `Today Done` after completion.
+  - Trigger toast now uses the native response message.
+- Version bump:
+  - Android: `versionName=2.3.72`, `versionCode=203`.
+  - Brain: `BRAIN_VERSION=2.3.72`.
+  - Web label: `v2.3.72 · b203`.
+  - cache-buster: `app.js?v=1147`, `log-viewer.js?v=1147`.
