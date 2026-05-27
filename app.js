@@ -239,6 +239,18 @@ const STATE = {
     activeTab: 'market'
 };
 
+try {
+    const savedChartIndex = localStorage.getItem('mr2_chart_index');
+    if (savedChartIndex === 'NF' || savedChartIndex === 'BNF') STATE._chartIndex = savedChartIndex;
+} catch (e) {}
+
+function switchChartIndex(nextIndex) {
+    const idx = nextIndex === 'BNF' ? 'BNF' : 'NF';
+    STATE._chartIndex = idx;
+    try { localStorage.setItem('mr2_chart_index', idx); } catch (e) {}
+    renderMarket();
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 // SOUND ENGINE — Corporate-subtle Web Audio notifications
@@ -2301,13 +2313,22 @@ function renderIntradayChart(index = 'NF') {
     if (!polls || polls.length < 2) return '<div style="text-align:center;font-size:11px;color:var(--text-muted);padding:8px">Chart appears after 2+ polls</div>';
 
     const spotKey = index === 'NF' ? 'nf' : 'bnf';
+    const spotAlias = index === 'NF' ? 'nfSpot' : 'bnfSpot';
+    const getSpot = (p) => {
+        const n = Number(p?.[spotKey] ?? p?.[spotAlias] ?? 0);
+        return Number.isFinite(n) ? n : 0;
+    };
+    const getVix = (p) => {
+        const n = Number(p?.vix ?? 0);
+        return Number.isFinite(n) ? n : 0;
+    };
     // Use only polls where BOTH spot and vix are valid (consistent indices)
-    const validPolls = polls.filter(p => p[spotKey] > 0 && p.vix > 0);
+    const validPolls = polls.filter(p => getSpot(p) > 0 && getVix(p) > 0);
     if (validPolls.length < 2) return '';
 
-    const spots = validPolls.map(p => p[spotKey]);
-    const vixVals = validPolls.map(p => p.vix);
-    const times = validPolls.map(p => p.t);
+    const spots = validPolls.map(getSpot);
+    const vixVals = validPolls.map(getVix);
+    const times = validPolls.map(p => p.t || p.pollTime || p.time || '');
 
     // Chart dimensions — mobile-first
     const W = 340, H = 110, PAD_L = 42, PAD_R = 8, PAD_T = 12, PAD_B = 20;
@@ -2408,7 +2429,7 @@ function renderIntradayChart(index = 'NF') {
         <div style="display:flex;justify-content:space-between;align-items:center;padding:0 2px 4px">
             <span style="font-size:11px;font-weight:600;color:var(--text-primary)">${index} ${spots[spots.length - 1].toFixed(0)} <span style="color:${spotChange >= 0 ? 'var(--green)' : 'var(--danger)'}">${spotChange >= 0 ? '+' : ''}${spotChange.toFixed(0)} (${spotChangePct}%)</span></span>
             <span style="font-size:10px;color:orange">VIX ${vixNow} (${vixChange >= 0 ? '+' : ''}${vixChange})</span>
-            <button onclick="STATE._chartIndex='${otherIdx}';renderMarket()" style="font-size:9px;padding:2px 6px;border:1px solid var(--border);border-radius:3px;background:var(--bg-input);color:var(--text-muted);cursor:pointer">${otherIdx}</button>
+            <button onclick="switchChartIndex('${otherIdx}')" style="font-size:9px;padding:2px 6px;border:1px solid var(--border);border-radius:3px;background:var(--bg-input);color:var(--text-muted);cursor:pointer">View ${otherIdx}</button>
         </div>
         <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-height:130px">
             ${rangeIndicator}
@@ -2434,10 +2455,18 @@ function renderMarket() {
     const nfChain = safeParseNB(NativeBridge.getNfChain?.(), {});
     const bnfCand = firstCandidateFor('BNF');
     const nfCand = firstCandidateFor('NF');
-    const bnfDte = bnfCand.tDTE ?? null;
-    const nfDte = nfCand.tDTE ?? null;
+    const dteFromExpiry = (expiry) => {
+        if (!expiry || typeof expiry !== 'string') return null;
+        const todayStr = (typeof API?.todayIST === 'function') ? API.todayIST() : new Date().toISOString().slice(0, 10);
+        const today = new Date(`${todayStr}T00:00:00+05:30`);
+        const exp = new Date(`${expiry}T00:00:00+05:30`);
+        if (!Number.isFinite(today.getTime()) || !Number.isFinite(exp.getTime())) return null;
+        return Math.max(0, Math.ceil((exp - today) / 86400000));
+    };
     const bnfExpiry = validDateOrBlank(bnfChain.expiry || bnfCand.expiry || '');
     const nfExpiry = validDateOrBlank(nfChain.expiry || nfCand.expiry || '');
+    const bnfDte = bnfCand.tDTE ?? dteFromExpiry(bnfExpiry);
+    const nfDte = nfCand.tDTE ?? dteFromExpiry(nfExpiry);
     const bnfAtm = bnfChain.atm || bd.bnfProfile?.atm || 0;
     const nfAtm = nfChain.atm || bd.nfProfile?.atm || 0;
     const bnfAtmIv = bnfChain.atmIv || l.bnfAtmIv || b.bnfAtmIv || 0;
@@ -2455,6 +2484,17 @@ function renderMarket() {
     const daily1sNf = b.dailySigmaNf || Math.round(((l.nfSpot || 0) * ((l.vix || 0) / 100)) / Math.sqrt(252));
     const trade1s = b.tradeSigmaBnf || (bnfDte != null ? Math.round(daily1s * Math.sqrt(Math.max(1, bnfDte))) : 0);
     const trade1sNf = b.tradeSigmaNf || (nfDte != null ? Math.round(daily1sNf * Math.sqrt(Math.max(1, nfDte))) : 0);
+    const chosenSpot = Number(STATE._chartIndex === 'BNF' ? l.bnfSpot : l.nfSpot);
+    const chosenBaseSpot = Number(STATE._chartIndex === 'BNF' ? b.bnfSpot : b.nfSpot);
+    const chosenDailySigma = STATE._chartIndex === 'BNF' ? daily1s : daily1sNf;
+    const derivedSpotSigma = (Number.isFinite(chosenSpot) && Number.isFinite(chosenBaseSpot) && Number.isFinite(chosenDailySigma) && chosenDailySigma > 0)
+        ? +(((chosenSpot - chosenBaseSpot) / chosenDailySigma).toFixed(1))
+        : null;
+    const spotSigma = Number.isFinite(l.spotSigma) ? l.spotSigma : derivedSpotSigma;
+    const derivedVixSigma = (Number.isFinite(l.vix) && Number.isFinite(b.vix))
+        ? +(((l.vix - b.vix) / 0.5).toFixed(1))
+        : null;
+    const vixSigma = Number.isFinite(l.vixSigma) ? l.vixSigma : derivedVixSigma;
 
     // VIX regime
     let ivRegime = 'NORMAL';
@@ -2626,8 +2666,8 @@ function renderMarket() {
             <summary class="bias-summary">
                 <span class="bias-badge bias-${bias?.bias?.toLowerCase() || 'neutral'}">${bias?.label || 'N/A'}</span>
                 <span class="bias-net">${bias?.net > 0 ? '+' : ''}${bias?.net || 0} net</span>
-                ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
-                ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
+                ${spotSigma != null ? `<span class="sigma-badge">Spot: ${spotSigma}σ</span>` : ''}
+                ${vixSigma != null ? `<span class="sigma-badge">VIX: ${vixSigma}σ</span>` : ''}
             </summary>
             <div class="env-signals">${(bias?.signals || []).map(s =>
                 `<span class="signal-chip signal-${s.dir.toLowerCase()}">${s.name}: ${s.value}</span>`
@@ -2678,8 +2718,8 @@ function renderMarket() {
                 ${b.vix && l.vix ? `<span class="signal-chip signal-${Math.abs(l.vix - b.vix) > 0.5 ? (l.vix > b.vix ? 'bear' : 'bull') : 'neutral'}">VIX: ${b.vix.toFixed(1)}→${l.vix.toFixed(1)} (${(l.vix - b.vix) > 0 ? '+' : ''}${(l.vix - b.vix).toFixed(1)})</span>` : ''}
                 ${b.bnfSpot && l.bnfSpot ? `<span class="signal-chip signal-${Math.abs(l.bnfSpot - b.bnfSpot) > 100 ? (l.bnfSpot > b.bnfSpot ? 'bull' : 'bear') : 'neutral'}">BNF: ${b.bnfSpot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${(l.bnfSpot - b.bnfSpot) > 0 ? '+' : ''}${(l.bnfSpot - b.bnfSpot).toFixed(0)})</span>` : ''}
                 ${b.pcr && l.pcr ? `<span class="signal-chip signal-neutral">PCR: ${b.pcr.toFixed(2)}→${l.pcr.toFixed(2)}</span>` : ''}
-                ${l.spotSigma !== undefined ? `<span class="sigma-badge">Spot: ${l.spotSigma}σ</span>` : ''}
-                ${l.vixSigma !== undefined ? `<span class="sigma-badge">VIX: ${l.vixSigma}σ</span>` : ''}
+                ${spotSigma != null ? `<span class="sigma-badge">Spot: ${spotSigma}σ</span>` : ''}
+                ${vixSigma != null ? `<span class="sigma-badge">VIX: ${vixSigma}σ</span>` : ''}
             </div>
         </details>
         ` : ''}

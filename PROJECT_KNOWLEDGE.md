@@ -1348,3 +1348,22 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - name: `Market Radar v2.3.65`
   - asset: `app-release.apk`
   - published: `2026-05-27T07:35:30Z`
+
+### 2026-05-27 — Post-release UI data integrity fix (DTE / σ / chart index)
+
+- User observed on `v2.3.65 / b196`:
+  - `DTE` displayed as `--T` even while expiry was present.
+  - `Spotσ` / `VIXσ` chips were blank or unstable.
+  - Intraday chart behavior felt stuck/confusing around BNF/NF view.
+- Fixes applied in `MarketVivi/app.js`:
+  - Added `dteFromExpiry()` fallback in `renderMarket()`:
+    - if candidate `tDTE` is missing, DTE is derived from expiry date in IST.
+  - Added sigma fallbacks in `renderMarket()`:
+    - `spotSigma` falls back to derived `(spot - morningSpot) / daily1σ` for the current chart index.
+    - `vixSigma` falls back to derived `(vix - morningVix) / 0.5`.
+  - Hardened intraday chart poll parsing:
+    - accepts both `nf/bnf` and `nfSpot/bnfSpot` payload keys.
+    - accepts time from `t` / `pollTime` / `time`.
+  - Improved chart toggle clarity + persistence:
+    - explicit button text `View NF/BNF`.
+    - persisted selection via `mr2_chart_index` in localStorage.
