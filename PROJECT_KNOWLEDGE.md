@@ -1396,3 +1396,35 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `git diff --check` passed for both repos.
   - `pytest` could not run locally because this container has no `pytest` module installed.
   - Local Gradle compile could not run because this container has no `java` binary and no `JAVA_HOME`.
+
+### 2026-05-27 — Remaining Claude brain audit pass (`v2.3.68 / b199`)
+
+- Scope applied:
+  - Completed the remaining brain-audit items that can be shipped in one deterministic pass.
+  - ML temporal blending remains intentionally deferred.
+  - EV `0.65` capture ratio remains intentionally unchanged until enough paper-trade/live outcome data exists for calibration.
+- `Marketapp/app/src/main/python/brain.py`:
+  - `detect_regime()` now evaluates both BNF and NF poll series.
+  - Added `divergence` regime when BNF and NF direction votes separate strongly.
+  - `_synthesize_market_phase()` now exposes `DIVERGENCE` phase.
+  - Chain profiles are now computed before context-aware market insights and verdict synthesis.
+  - `ctx["bnfProfile"]` / `ctx["nfProfile"]` are available before:
+    - `nf_bnf_divergence()`
+    - `day_range_position()`
+    - `wall_freshness()`
+    - `synthesize_verdict()` ivSkew / wall freshness contributions
+  - `ctx["institutionalRegime"]` is now computed before `synthesize_verdict()`.
+  - `ctx["marketPhase"]` is now wired before position verdict checks.
+  - Position phase mismatch now treats `TREND_UP` / `TREND_DOWN` as trending phases.
+  - IC generation is blocked after `mins_since_open >= 300` (2:15 PM IST) in both primary and fallback candidate generators.
+  - Removed stale `DEAD UNTIL v2.2.9` comments after wiring was confirmed or corrected.
+  - `BRAIN_VERSION` updated to `2.3.68`.
+- Version bump:
+  - Android: `versionName=2.3.68`, `versionCode=199`.
+  - Web label: `v2.3.68 · b199`.
+  - cache-buster: `app.js?v=1143`, `log-viewer.js?v=1143`.
+- Local verification:
+  - `python -m py_compile app/src/main/python/brain.py` passed.
+  - `git diff --check` passed for both repos.
+  - `pytest` still cannot run locally because this container has no `pytest` module installed.
+  - Local Gradle compile still cannot run because this container has no `java` binary and no `JAVA_HOME`.
