@@ -1536,3 +1536,27 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Brain: `BRAIN_VERSION=2.3.72`.
   - Web label: `v2.3.72 · b203`.
   - cache-buster: `app.js?v=1147`, `log-viewer.js?v=1147`.
+
+### 2026-05-27 — Android lifecycle remediation (`v2.3.73 / b204`)
+
+- Source audit:
+  - Read `ML_INTEGRATION_REVIEW.md` and `OPEN_CLAW_REMEDIATION_PLAN.md`.
+  - Classified stale finding: 11 PM daily retraining is already disabled by `MainActivity` startup cancellation and remains intentionally disabled.
+  - Classified real findings: foreground-service starts from notification/alarm paths still needed Android API 26+/31+ hardening.
+- `Marketapp/app/src/main/java/com/marketradar/app/MarketMLService.kt`:
+  - `MLAlarmReceiver` now ignores and cancels stale 11 PM alarms instead of starting nightly training.
+  - `scheduleNightlyTraining()` is now a no-op that cancels any stale alarm and logs manual/monthly-gated retraining only.
+  - Day evaluation notification uses `PendingIntent.getForegroundService()`.
+  - ML retrain-ready notification uses `PendingIntent.getForegroundService()`.
+- `Marketapp/app/src/main/java/com/marketradar/app/MarketWatchService.kt`:
+  - Automatic day-evaluation launch now uses `startForegroundService()`.
+  - Poll alarm PendingIntent now uses `PendingIntent.getForegroundService()`.
+  - Poll alarm scheduling uses `setExactAndAllowWhileIdle()` when exact alarms are permitted, with logged inexact fallback when unavailable.
+  - Empty poll-alarm cancel catch now logs a debug buffer message instead of swallowing silently.
+- `Marketapp/app/src/main/AndroidManifest.xml`:
+  - Added `SCHEDULE_EXACT_ALARM` permission for poll-resurrection exact alarm support.
+- Version bump:
+  - Android: `versionName=2.3.73`, `versionCode=204`.
+  - Brain: `BRAIN_VERSION=2.3.73`.
+  - Web label: `v2.3.73 · b204`.
+  - cache-buster: `app.js?v=1148`, `log-viewer.js?v=1148`.
