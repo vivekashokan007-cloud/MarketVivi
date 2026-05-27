@@ -1428,3 +1428,31 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `git diff --check` passed for both repos.
   - `pytest` still cannot run locally because this container has no `pytest` module installed.
   - Local Gradle compile still cannot run because this container has no `java` binary and no `JAVA_HOME`.
+
+### 2026-05-27 — Remaining non-EV ML audit fixes (`v2.3.69 / b200`)
+
+- Scope applied:
+  - Completed remaining ML architecture findings except EV capture-ratio calibration.
+  - EV `0.65` remains unchanged by design.
+- `Marketapp/app/src/main/python/brain.py`:
+  - Removed first-pass ML scoring from `_build_candidate()`.
+  - Candidate build now leaves ML fields empty until SPLICE 4 has full live context.
+  - Added temporal model loader for `temporal_model.json`.
+  - Temporal blend is gated behind `trained == true` and `val_acc >= 0.60`.
+  - Current temporal model (`~0.595` validation accuracy from audit) remains inactive automatically.
+  - Temporal loader caches inactive/missing state so it does not check the filesystem once per candidate.
+  - SPLICE 4 annotates candidates with `mlTemporalActive` and `mlTemporalValAcc` when the temporal gate is active.
+  - `BRAIN_VERSION` updated to `2.3.69`.
+- `Marketapp/.github/workflows/debug-apk.yml`:
+  - Installs `pytest`.
+  - Runs the three Python gate tests requested by Claude audit:
+    - `test_gate1_fixture_baselines.py`
+    - `test_gate3_structural_counts.py`
+    - `test_gate5_trace_smoke.py`
+- Version bump:
+  - Android: `versionName=2.3.69`, `versionCode=200`.
+  - Web label: `v2.3.69 · b200`.
+  - cache-buster: `app.js?v=1144`, `log-viewer.js?v=1144`.
+- Local verification:
+  - `python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_temporal.py` passed.
+  - `git diff --check` passed for both repos.
