@@ -1274,3 +1274,27 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - prepared for `v2.3.62 / b193`
   - Android release bump: `versionName=2.3.62`, `versionCode=193`
   - Web release label: `v2.3.62 · b193`
+
+### 2026-05-26 — Duplicate chain/ML data investigation
+
+- User asked whether the app can create duplicate chain data and requested a code error check.
+- Confirmed duplicate risk:
+  - `Marketapp/SupabaseClient.kt::saveChainSnapshot()` used a plain `POST` to `chain_snapshots`.
+  - Without a database-level unique constraint on `(date, session)`, repeated 2 PM / 3:15 PM captures can create duplicate rows.
+  - `saveBrainSnapshot()` and `saveChainSlice()` also use insert-style writes; duplicate ML rows are possible if the same poll is re-dispatched after service restart or retry.
+- Android hardening applied for release `v2.3.63 / b194`:
+  - `saveChainSnapshot()` now checks for an existing `chain_snapshots` row by `date + session` and patches it before falling back to insert.
+  - `MarketWatchService` now records a stable per-poll ML persistence key: `date | poll_count | poll_time | bnf | nf`.
+  - If the same key appears again, ML brain snapshot + option-chain slice persistence is skipped.
+  - 2 PM / 3:15 PM snapshot flags are now set before async persistence starts, and cleared only if persistence fails, reducing duplicate launches inside the capture window.
+- Verification:
+  - `git diff --check` passed.
+  - Local Gradle compile could not run because this Codex container has no `java` binary and no `JAVA_HOME`.
+- Remaining hardening recommended:
+  - Add Supabase unique indexes for durable DB-level protection:
+    - `chain_snapshots(date, session)`
+    - ML option-chain rows need an agreed deterministic key or uniqueness policy before enforcing DB constraints.
+- Release status:
+  - prepared for push as `v2.3.63 / b194`.
+  - Android release bump: `versionName=2.3.63`, `versionCode=194`.
+  - Web release label: `v2.3.63 · b194`.
