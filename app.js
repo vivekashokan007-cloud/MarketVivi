@@ -1177,6 +1177,9 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const spot = isBNF ? latestPoll.bnfSpot : latestPoll.nfSpot;
     const daily1Sigma = spot * ((latestPoll.vix || 0) / 100) / 15.8745  /* √252 */;
     const entryLotSize = cand.lotSize || (isBNF ? C.BNF_LOT : C.NF_LOT);
+    const executionMode = isPaper
+        ? 'paper'
+        : (String(cand.executionReadiness?.mode || 'paper').toLowerCase());
 
     const trade = {
         strategy_type: cand.type,
@@ -1194,6 +1197,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         buy_strike: cand.buyStrike,
         buy_type: cand.buyType,
         buy_ltp: cand.buyLTP,
+        sell_instrument_key: cand.sellInstrumentKey ?? null,
+        buy_instrument_key: cand.buyInstrumentKey ?? null,
         // 4-leg second side (IC/IB put side)
         sell_strike2: cand.sellStrike2 ?? null,
         sell_type2: cand.sellType2 ?? null,
@@ -1201,6 +1206,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         buy_strike2: cand.buyStrike2 ?? null,
         buy_type2: cand.buyType2 ?? null,
         buy_ltp2: cand.buyLTP2 ?? null,
+        sell_instrument_key2: cand.sellInstrumentKey2 ?? null,
+        buy_instrument_key2: cand.buyInstrumentKey2 ?? null,
         max_profit: cand.maxProfit,
         max_loss: cand.maxLoss,
         is_credit: cand.isCredit,
@@ -1232,6 +1239,10 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         ml_regime: cand.mlRegime ?? null,
         ml_edge:   cand.mlEdge ?? null,
         ml_ood:    cand.mlOod ?? false,
+        execution_mode: executionMode,
+        execution_status: 'not_sent',
+        execution_error: null,
+        order_tag: null,
         status: 'OPEN',
         current_pnl: 0,
         peak_pnl: 0,
@@ -1649,6 +1660,12 @@ async function closeTrade(tradeId, exitReason) {
     if (!confirm(confirmMsg)) return;
 
     try {
+        let paperChecklist = null;
+        if (isPaper) {
+            paperChecklist = collectPaperCloseChecklist(exitReason);
+            if (!paperChecklist) return;
+        }
+
         // Calculate hold duration
         let holdDuration = '';
         if (trade.entry_date) {
@@ -1674,6 +1691,10 @@ async function closeTrade(tradeId, exitReason) {
             actual_pnl: trade.current_pnl ?? 0,
             exit_premium: trade.current_premium ?? null,
             exit_reason: exitReason || 'Manual',
+            paper_close_reason_quality: isPaper ? paperChecklist.reasonQuality : null,
+            paper_thesis_break_type: isPaper ? paperChecklist.thesisBreakType : null,
+            paper_rule_followed: isPaper ? paperChecklist.ruleFollowed : null,
+            paper_close_note: isPaper ? paperChecklist.note : null,
             exit_vix: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? trade.current_vix ?? null,
             exit_atm_iv: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfAtmIv ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfAtmIv ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atmIv ?? null),
             exit_force_alignment: trade.forces?.aligned ?? trade.force_alignment ?? null,
@@ -1708,6 +1729,12 @@ async function closeTrade(tradeId, exitReason) {
                 premium: trade.current_premium ?? null,
                 drift_from_morning: STATE.biasDrift ?? 0
             },
+            paper_discipline: isPaper ? {
+                reason_quality: paperChecklist.reasonQuality,
+                thesis_break_type: paperChecklist.thesisBreakType,
+                rule_followed: paperChecklist.ruleFollowed,
+                note: paperChecklist.note
+            } : null,
 
             // ═══ JOURNEY STATS — aggregated metrics during holding (JSONB) ═══
             journey_stats: {
@@ -1741,6 +1768,9 @@ async function closeTrade(tradeId, exitReason) {
                 trough_pnl:         trade.trough_pnl ?? null,
                 hold_minutes:       trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
                 exit_reason:        exitReason || 'Manual',
+                paper_reason_quality: isPaper ? paperChecklist.reasonQuality : null,
+                paper_thesis_break_type: isPaper ? paperChecklist.thesisBreakType : null,
+                paper_rule_followed: isPaper ? paperChecklist.ruleFollowed : null,
                 exit_vix:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? null,
                 exit_pcr:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr ?? null,
                 ci_min:             trade._journey?.min_ci ?? null,
@@ -1756,6 +1786,66 @@ async function closeTrade(tradeId, exitReason) {
         renderAll();
         alert(`Exit logged locally. Supabase sync may have failed: ${err.message}`);
     }
+}
+
+function collectPaperCloseChecklist(exitReason) {
+    const qualityRaw = prompt(
+        `Paper Close Checklist\n` +
+        `Exit: ${exitReason || 'Manual'}\n\n` +
+        `Reason quality? Enter one:\n` +
+        `A = rule-based\nB = partial rule\nC = emotional/manual`,
+        'A'
+    );
+    if (qualityRaw == null) return null;
+    const quality = String(qualityRaw).trim().toUpperCase();
+    if (!['A', 'B', 'C'].includes(quality)) {
+        alert('Paper close cancelled: reason quality must be A, B, or C.');
+        return null;
+    }
+
+    const thesisRaw = prompt(
+        `Thesis break type? Enter one:\n` +
+        `none | direction | volatility | timing | risk | target_hit | stop_hit | manual`,
+        'none'
+    );
+    if (thesisRaw == null) return null;
+    const thesisBreakType = String(thesisRaw).trim().toLowerCase();
+    const allowedThesis = ['none', 'direction', 'volatility', 'timing', 'risk', 'target_hit', 'stop_hit', 'manual'];
+    if (!allowedThesis.includes(thesisBreakType)) {
+        alert('Paper close cancelled: thesis break type is invalid.');
+        return null;
+    }
+
+    const ruleRaw = prompt(
+        `Rule followed? Enter one:\n` +
+        `yes | no | partial`,
+        'yes'
+    );
+    if (ruleRaw == null) return null;
+    const ruleFollowed = String(ruleRaw).trim().toLowerCase();
+    if (!['yes', 'no', 'partial'].includes(ruleFollowed)) {
+        alert('Paper close cancelled: rule followed must be yes, no, or partial.');
+        return null;
+    }
+
+    const noteRaw = prompt(
+        `One-line note (required, min 8 chars):\n` +
+        `What did this paper trade teach you?`,
+        ''
+    );
+    if (noteRaw == null) return null;
+    const note = String(noteRaw).trim();
+    if (note.length < 8) {
+        alert('Paper close cancelled: note must be at least 8 characters.');
+        return null;
+    }
+
+    return {
+        reasonQuality: quality,
+        thesisBreakType,
+        ruleFollowed,
+        note
+    };
 }
 
 
@@ -2046,6 +2136,42 @@ async function triggerMLRetrain() {
         'accumulate through the monthly evaluation cadence.\n\n' +
         'Check the ML status panel for current progress.'
     );
+}
+
+function setExecutionSandboxFromUI(enabled) {
+    try {
+        if (!window.NativeBridge?.setExecutionSandboxEnabled) {
+            alert('Native bridge not available.');
+            return;
+        }
+        const ok = window.NativeBridge.setExecutionSandboxEnabled(!!enabled);
+        if (!ok) {
+            alert('Could not update sandbox mode.');
+            return;
+        }
+        renderAll();
+    } catch (e) {
+        alert('Could not update sandbox mode: ' + e.message);
+    }
+}
+
+function saveOrderProxyUrlFromUI() {
+    try {
+        if (!window.NativeBridge?.setOrderProxyUrl) {
+            alert('Native bridge not available.');
+            return;
+        }
+        const input = document.getElementById('execution-proxy-url');
+        const value = (input?.value || '').trim();
+        const ok = window.NativeBridge.setOrderProxyUrl(value);
+        if (!ok) {
+            alert('Could not save proxy URL.');
+            return;
+        }
+        renderAll();
+    } catch (e) {
+        alert('Could not save proxy URL: ' + e.message);
+    }
 }
 
 async function checkMLDecisions() {
@@ -2573,18 +2699,26 @@ function renderOI() {
         return;
     }
 
+    const toFiniteNum = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    };
+
     const fmtOI = (oi) => {
-        if (!oi) return '--';
-        if (oi >= 1e7) return (oi / 1e7).toFixed(1) + 'Cr';
-        if (oi >= 1e5) return (oi / 1e5).toFixed(1) + 'L';
-        if (oi >= 1e3) return (oi / 1e3).toFixed(1) + 'K';
-        return oi.toString();
+        const n = toFiniteNum(oi);
+        if (n == null || n === 0) return '--';
+        if (n >= 1e7) return (n / 1e7).toFixed(1) + 'Cr';
+        if (n >= 1e5) return (n / 1e5).toFixed(1) + 'L';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        return n.toString();
     };
 
     // BNF
     const bnfPCR = bnfChain.nearAtmPCR || l.nearAtmPCR || bnfChain.pcr;
     const bnfMP = bnfChain.maxPain || l.maxPainBnf || b.maxPainBnf;
-    const bnfMPDist = bnfMP ? Math.round(l.bnfSpot - bnfMP) : 0;
+    const bnfSpotNum = toFiniteNum(l.bnfSpot);
+    const bnfMPNum = toFiniteNum(bnfMP);
+    const bnfMPDist = (bnfSpotNum != null && bnfMPNum != null) ? Math.round(bnfSpotNum - bnfMPNum) : null;
     const bnfCW = bnfChain.callWallStrike || l.bnfCallWall || b.bnfCallWall;
     const bnfCWOI = bnfChain.callWallOI || l.bnfCallWallOI || b.bnfCallWallOI;
     const bnfPW = bnfChain.putWallStrike || l.bnfPutWall || b.bnfPutWall;
@@ -2598,7 +2732,9 @@ function renderOI() {
     // NF
     const nfPCR = nfc.nearAtmPCR || nfc.pcr;
     const nfMP = nfc.maxPain || b.maxPainNf;
-    const nfMPDist = nfMP && l.nfSpot ? Math.round(l.nfSpot - nfMP) : 0;
+    const nfSpotNum = toFiniteNum(l.nfSpot);
+    const nfMPNum = toFiniteNum(nfMP);
+    const nfMPDist = (nfSpotNum != null && nfMPNum != null) ? Math.round(nfSpotNum - nfMPNum) : null;
     const nfCW = nfc.callWallStrike;
     const nfCWOI = nfc.callWallOI;
     const nfPW = nfc.putWallStrike;
@@ -2611,7 +2747,10 @@ function renderOI() {
 
     const pc = (v) => !v ? 'var(--text-muted)' : v > 1.2 ? 'var(--green)' : v < 0.9 ? 'var(--danger)' : 'var(--text-primary)';
     const pl = (v) => !v ? '--' : v > 1.2 ? 'Bull' : v < 0.9 ? 'Bear' : 'Neut';
-    const md = (d) => d > 100 ? `↑${d}` : d < -100 ? `↓${Math.abs(d)}` : `→${Math.abs(d)}`;
+    const md = (d) => {
+        if (!Number.isFinite(d)) return '--';
+        return d > 100 ? `↑${d}` : d < -100 ? `↓${Math.abs(d)}` : `→${Math.abs(d)}`;
+    };
     const fpC = (v) => !v ? 'var(--text-muted)' : v > 0.05 ? 'var(--green)' : v < -0.05 ? 'var(--danger)' : 'var(--text-muted)';
 
     el.innerHTML = `
@@ -2993,6 +3132,13 @@ function renderCandidateCard(cand, atm, rank) {
     const otmDist = Math.abs(cand.sellStrike - atm);
     const otmLabel = otmDist < 50 ? 'ATM' : 'OTM';
     const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
+    const execReady = cand.executionReadiness || {};
+    const execGate = execReady.gate || cand.executionGate || 'WAIT';
+    const execOk = execReady.ready === true || cand.executionReady === true;
+    const execReasons = Array.isArray(execReady.reasons) ? execReady.reasons : [];
+    const execMode = execReady.mode || 'paper';
+    const execBadgeBg = execOk ? '#2E7D32' : '#B45309';
+    const execBadgeText = execOk ? 'READY' : 'WAIT';
 
     // Legs — execution order: BUY protection first, then SELL credit (Indian margin rule)
     let legsText = '';
@@ -3079,6 +3225,11 @@ function renderCandidateCard(cand, atm, rank) {
             💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${estimateBrokerMargin(cand).toLocaleString()}${cand.legs === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : ''}
             · EV/₹1K: ₹${(cand.ev / (peakCash(cand) / 1000 || 1)).toFixed(0)}
         </div>
+        <div style="font-size:10px;margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="background:${execBadgeBg};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">EXEC ${execBadgeText}</span>
+            <span style="color:var(--text-muted)">Mode: ${String(execMode).toUpperCase()} · Gate: ${execGate}</span>
+            ${execReasons.length ? `<span style="color:var(--warn)">(${execReasons.join(' | ')})</span>` : ''}
+        </div>
 
         <div class="v1-align ${alignClass}">${alignLabel}</div>
         <div class="v1-trade-btns">
@@ -3095,9 +3246,15 @@ function renderCandidateCard(cand, atm, rank) {
                        ${cand.mlOodWarn?.length ? `<div style="font-size:9px;color:var(--danger);margin-bottom:4px">⚠️ ${cand.mlOodWarn[0]}</div>` : ''}`
                     : '';
                 const isBlocked = cand.mlOodBlocked === true;
+                const execModeLower = String(execMode || 'paper').toLowerCase();
+                const execGateRequired = execModeLower === 'sandbox' || execModeLower === 'live';
+                const execBlocked = execGateRequired && !execOk;
+                const execReasonText = execReasons.length ? execReasons.join(' | ') : 'Execution readiness checks not passed';
                 const realBtn = isBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
-                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)">📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}</button>`;
+                    : execBlocked
+                        ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
+                        : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)">📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
@@ -3126,6 +3283,11 @@ function renderTradeCard(t, isPaper) {
     const icon = isPaper ? '📋' : '📌';
     const paperClass = isPaper ? ' paper-card' : '';
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
+    const paperDiscipline = t.paper_discipline || null;
+    const paperReasonQuality = paperDiscipline?.reason_quality || t.paper_close_reason_quality || null;
+    const paperThesisBreakType = paperDiscipline?.thesis_break_type || t.paper_thesis_break_type || null;
+    const paperRuleFollowed = paperDiscipline?.rule_followed || t.paper_rule_followed || null;
+    const paperCloseNote = paperDiscipline?.note || t.paper_close_note || null;
 
     // Entry time + elapsed
     const entryTime = t.entry_date ? new Date(t.entry_date).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '--';
@@ -3227,6 +3389,15 @@ function renderTradeCard(t, isPaper) {
                 · Now: ₹${t.current_premium || '--'}
                 · Spot: ${t.current_spot?.toFixed(0) || '--'}
             </div>
+            ${isPaper && (paperReasonQuality || paperThesisBreakType || paperRuleFollowed || paperCloseNote) ? `
+                <div class="pos-detail" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
+                    <span style="color:var(--accent);font-weight:600">Paper discipline:</span>
+                    Q=${paperReasonQuality || '--'} ·
+                    Thesis=${paperThesisBreakType || '--'} ·
+                    Rule=${paperRuleFollowed || '--'}
+                    ${paperCloseNote ? `<br><span style="color:var(--text-muted)">Note: ${paperCloseNote}</span>` : ''}
+                </div>
+            ` : ''}
             <div class="pos-forces">
                 ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
             </div>
@@ -3398,9 +3569,11 @@ function renderML() {
     const status = getMLModelStatusCached();
     const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});
     const brain = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getBrainResult?.() : null, {});
+    const infra = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getExecutionInfraStatus?.() : null, {});
     const pollHistory = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getPollHistory?.() : null, []);
     const signalStats = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getSignalAccuracyStats?.() : null, {});
     const decisions = getMLDecisionsCached();
+    const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
 
     const verdict = brain?.verdict || {};
     const action = verdict.action || brain.action || 'WAIT';
@@ -3411,6 +3584,27 @@ function renderML() {
     const pollsToday = Array.isArray(pollHistory) ? pollHistory.length : 0;
     const accuracyPct = Number.isFinite(signalStats.pct) ? signalStats.pct.toFixed(1) : '--';
     const recent = decisions.slice(0, 5);
+    const labeledRows = decisions.filter(d => d?.won === true || d?.won === false || d?.won === 0 || d?.won === 1);
+    const labeledCount = labeledRows.length;
+    const winCount = labeledRows.filter(d => d?.won === true || d?.won === 1).length;
+    const labeledWinRate = labeledCount > 0 ? ((winCount / labeledCount) * 100).toFixed(1) : '--';
+    const targetLabels = 500;
+    const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
+    const qualityCounts = { A: 0, B: 0, C: 0 };
+    const ruleCounts = { yes: 0, partial: 0, no: 0 };
+    decisions.forEach((d) => {
+        const q = String(d?.paper_reason_quality || d?.paper_close_reason_quality || '').toUpperCase();
+        if (q === 'A' || q === 'B' || q === 'C') qualityCounts[q]++;
+        const r = String(d?.paper_rule_followed || '').toLowerCase();
+        if (r === 'yes' || r === 'partial' || r === 'no') ruleCounts[r]++;
+    });
+    const qualityTotal = qualityCounts.A + qualityCounts.B + qualityCounts.C;
+    const ruleTotal = ruleCounts.yes + ruleCounts.partial + ruleCounts.no;
+    const aShare = qualityTotal > 0 ? (qualityCounts.A / qualityTotal) : 0;
+    const yesShare = ruleTotal > 0 ? (ruleCounts.yes / ruleTotal) : 0;
+    const qualityGateA = aShare >= 0.60;
+    const qualityGateYes = yesShare >= 0.75;
+    const qualityGatePass = qualityGateA && qualityGateYes;
 
     let html = '';
     html += `
@@ -3448,6 +3642,42 @@ function renderML() {
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}
                 </div>
             </div>
+            <div class="brain-card" style="border-left-color:var(--green)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🎯</span>
+                    <span class="brain-label">Paper Training Progress</span>
+                </div>
+                <div class="brain-detail">
+                    Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
+                    Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
+                    Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b>
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧭</span>
+                    <span class="brain-label">Paper Discipline Mix</span>
+                </div>
+                <div class="brain-detail">
+                    Quality: A <b>${qualityCounts.A}</b> · B <b>${qualityCounts.B}</b> · C <b>${qualityCounts.C}</b><br>
+                    Rule followed: Yes <b>${ruleCounts.yes}</b> · Partial <b>${ruleCounts.partial}</b> · No <b>${ruleCounts.no}</b><br>
+                    Gate: <b style="color:${qualityGatePass ? 'var(--green)' : 'var(--warn)'}">${qualityGatePass ? 'PASS' : 'WAIT'}</b>
+                    · A-share <b>${(aShare * 100).toFixed(0)}%</b> (target ≥60%)
+                    · Rule-Yes <b>${(yesShare * 100).toFixed(0)}%</b> (target ≥75%)
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧩</span>
+                    <span class="brain-label">Execution Infra State</span>
+                </div>
+                <div class="brain-detail">
+                    Instrument keys: <b>${infra.instrumentKeyPresentRows || 0}/${infra.instrumentKeyRows || 0}</b> · Flow: <b>${infra.instrumentKeyFlowOk ? 'OK' : 'MISSING'}</b><br>
+                    Token: <b>${infra.tokenReady ? 'READY' : 'MISSING'}</b> · Sandbox: <b>${infra.sandboxEnabled ? 'ON' : 'OFF'}</b> · Proxy: <b>${infra.proxyConfigured ? 'CONFIGURED' : 'NOT SET'}</b><br>
+                    Readiness: Paper <b>${infra.paperReady ? 'READY' : 'WAIT'}</b> · Sandbox <b>${infra.sandboxReady ? 'READY' : 'WAIT'}</b> · Live <b>${infra.liveReady ? 'READY' : 'WAIT'}</b>
+                    ${infra.error ? `<br><span style="color:var(--danger)">Error: ${infra.error}</span>` : ''}
+                </div>
+            </div>
         </section>
     `;
 
@@ -3457,6 +3687,24 @@ function renderML() {
             <div class="v1-trade-btns" style="margin-top:0">
                 <button onclick="getMLModelStatusCached(true);renderAll()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
                 <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">📊 ML Status</button>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent);margin-top:8px">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🛠</span>
+                    <span class="brain-label">Execution Settings</span>
+                </div>
+                <div class="brain-detail">
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+                        <button onclick="setExecutionSandboxFromUI(true)" class="btn-primary" style="padding:7px 10px;font-size:11px;${infra.sandboxEnabled ? '' : 'opacity:.75'}">Sandbox ON</button>
+                        <button onclick="setExecutionSandboxFromUI(false)" class="btn-paper" style="padding:7px 10px;font-size:11px;${infra.sandboxEnabled ? 'opacity:.75' : ''}">Sandbox OFF</button>
+                    </div>
+                    <div style="margin-top:8px">
+                        <input id="execution-proxy-url" type="text" class="input-field" placeholder="https://your-relay-host:8443" value="${String(proxyUrl).replace(/"/g, '&quot;')}">
+                        <div class="v1-trade-btns" style="margin-top:6px">
+                            <button onclick="saveOrderProxyUrlFromUI()" class="btn-primary" style="padding:7px 10px;font-size:11px">Save Proxy URL</button>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
                 ML is downstream-only. It records snapshots and evaluates outcomes, but it does not change live trade selection.
