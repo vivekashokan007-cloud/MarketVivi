@@ -1330,3 +1330,21 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
       - poll history length,
       - existing `STATE.pollCount`.
     - `renderFooter()` now shows max of native polls and `STATE.pollCount` to prevent regressions to zero during transient native status mismatch.
+
+### 2026-05-27 — Release push completed (`v2.3.65 / b196`)
+
+- Repositories pushed:
+  - `Marketapp` commit: `320f738`
+  - `MarketVivi` commit: `f62a1e9`
+- Version bump:
+  - Android: `versionName=2.3.65`, `versionCode=196`
+  - Web label: `v2.3.65 · b196`
+  - `index.html` cache-buster updated to `app.js?v=1140` and `log-viewer.js?v=1140`
+- GitHub Actions status for `Marketapp` (`320f738`):
+  - `Market Radar Signed Release`: success
+  - `Market Radar Debug APK Validation`: success
+- Latest published release confirmed:
+  - tag: `v2.3.65`
+  - name: `Market Radar v2.3.65`
+  - asset: `app-release.apk`
+  - published: `2026-05-27T07:35:30Z`
