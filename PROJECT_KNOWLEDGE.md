@@ -1298,3 +1298,35 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - prepared for push as `v2.3.63 / b194`.
   - Android release bump: `versionName=2.3.63`, `versionCode=194`.
   - Web release label: `v2.3.63 · b194`.
+
+### 2026-05-27 — God-mode audit: Poll counter mismatch + missing strategy/watchlist fields
+
+- User-reported symptoms on `v2.3.64 / b195`:
+  - Footer showed `Polls: 0`.
+  - ML status showed `STOPPED / Poll #0`.
+  - Other sections showed live values and `Scanned ... Poll #20`, creating contradictory UI state.
+  - Trade tab still showed `Lock & Scan to generate strategies` in the same session.
+- Root cause confirmed:
+  - `NativeBridge.getServiceStatus()` only treated the session as active when `hasTodayBaseline()` was true.
+  - If baseline date validation failed but polls already existed for today (`last_poll_date=today`, `poll_count>0`), status returned `polls=0`, `running=false`.
+  - JS footer trusted `serviceStatus.polls` first, so it displayed `0` even when `STATE.pollHistory` had real polls.
+  - `clearStaleSessionStateIfNeeded()` could clear derived fields too aggressively when baseline date was invalid, even with same-day polls.
+- Fixes applied:
+  - `Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt`
+    - Added `hasTodaySession()`:
+      - true when baseline is today, OR when `last_poll_date == today` and `poll_count > 0`.
+    - Updated gating for:
+      - `getLatestPoll()`
+      - `getPollHistory()`
+      - `getBrainResult()`
+      - `getCandidates()`
+      - `getServiceStatus()`
+      to use `hasTodaySession()` instead of strict baseline-only checks.
+    - Tightened stale-derived-state cleanup:
+      - now requires both `!baselineIsToday` and `last_poll_date != today`, preventing same-day active-session wipes.
+  - `MarketVivi/app.js`
+    - `pullNativeState()` now sets `STATE.pollCount` using max of:
+      - native service poll count,
+      - poll history length,
+      - existing `STATE.pollCount`.
+    - `renderFooter()` now shows max of native polls and `STATE.pollCount` to prevent regressions to zero during transient native status mismatch.

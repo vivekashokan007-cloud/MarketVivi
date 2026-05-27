@@ -547,9 +547,10 @@ function pullNativeState() {
 
     if (Array.isArray(pollHistory)) {
         STATE.pollHistory = pollHistory;
-        STATE.pollCount = Number.isFinite(status.polls) ? status.polls : pollHistory.length;
+        const nativePolls = Number.isFinite(status.polls) ? status.polls : 0;
+        STATE.pollCount = Math.max(nativePolls, pollHistory.length, STATE.pollCount || 0);
     } else if (status.polls) {
-        STATE.pollCount = status.polls;
+        STATE.pollCount = Math.max(status.polls, STATE.pollCount || 0);
     }
     if (latestPoll && Object.keys(latestPoll).length) {
         STATE.live = latestPoll;
@@ -3743,7 +3744,8 @@ function renderFooter() {
     const time = API.istNow();
     const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
     const watching = serviceStatus.running ? '🟢' : '⏹';
-    const polls = Number.isFinite(serviceStatus.polls) ? serviceStatus.polls : (STATE.pollCount || 0);
+    const nativePolls = Number.isFinite(serviceStatus.polls) ? serviceStatus.polls : 0;
+    const polls = Math.max(nativePolls, STATE.pollCount || 0);
     const bi = bd || {};
     const verdict = bi.verdict;
     const brain = STATE.brainReady ?
