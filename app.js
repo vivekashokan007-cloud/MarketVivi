@@ -2151,6 +2151,23 @@ async function triggerMLRetrain() {
     );
 }
 
+async function triggerDayEvaluation() {
+    if (!window.NativeBridge?.triggerDayEvaluation) {
+        alert('Native bridge not available. Use APK version.');
+        return;
+    }
+    try {
+        window.NativeBridge.triggerDayEvaluation();
+        setTimeout(() => {
+            getMLModelStatusCached(true);
+            renderAll();
+        }, 3000);
+        alert('Day evaluation started. Refresh ML status in a few seconds.');
+    } catch (e) {
+        alert('Day evaluation trigger failed: ' + e.message);
+    }
+}
+
 function setExecutionSandboxFromUI(enabled) {
     try {
         if (!window.NativeBridge?.setExecutionSandboxEnabled) {
@@ -3728,6 +3745,7 @@ function renderML() {
             <div class="v1-trade-btns" style="margin-top:0">
                 <button onclick="getMLModelStatusCached(true);renderAll()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
                 <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">📊 ML Status</button>
+                <button onclick="triggerDayEvaluation()" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px">📋 Evaluate Today</button>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent);margin-top:8px">
                 <div class="brain-card-header">

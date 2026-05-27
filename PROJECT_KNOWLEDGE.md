@@ -1483,3 +1483,29 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Brain: `BRAIN_VERSION=2.3.70`.
   - Web label: `v2.3.70 · b201`.
   - cache-buster: `app.js?v=1145`, `log-viewer.js?v=1145`.
+
+### 2026-05-27 — Labelable snapshot fix (`v2.3.71 / b202`)
+
+- Source audit:
+  - Read `OPEN_CLAW_LABELABLE_FIX_20260527.md`.
+  - Confirmed root cause: `_is_labelable()` used `entry_window_active`, so quiet premium-selling days could save `ml_brain_snapshots` with `is_labelable=false` even when the brain produced actionable recommendations.
+- `Marketapp/app/src/main/python/brain.py`:
+  - `_is_labelable()` no longer depends on `entry_window_active`.
+  - Labelable now means:
+    - verdict action is not `WAIT` / `STOP`;
+    - confidence is at least `35`;
+    - watchlist has at least one non-capital-blocked candidate with a type;
+    - poll time is between 15 and 360 minutes after NSE open (`09:30` to `15:15` IST).
+  - `entry_window_active` remains available for significant-move / alert logic and is not changed.
+  - `BRAIN_VERSION` updated to `2.3.71`.
+- `Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt`:
+  - Added `triggerDayEvaluation()` to start `MarketMLService` with `ACTION_DAY_EVALUATION`.
+- `Marketapp/app/src/main/java/com/marketradar/app/MainActivity.kt`:
+  - Exposed `NativeBridge.triggerDayEvaluation()` to the PWA bridge wrapper.
+- `MarketVivi/app.js`:
+  - Added `triggerDayEvaluation()` helper.
+  - Added `Evaluate Today` button in ML Controls beside refresh/status controls.
+- Version bump:
+  - Android: `versionName=2.3.71`, `versionCode=202`.
+  - Web label: `v2.3.71 · b202`.
+  - cache-buster: `app.js?v=1146`, `log-viewer.js?v=1146`.
