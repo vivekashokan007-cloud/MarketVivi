@@ -1602,6 +1602,12 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `python app/src/main/python/tests/test_gate5_trace_smoke.py`: pass.
   - Targeted ML smoke: missing critical field and weak/OOD paths return `UNSURE` with `ML_UNSURE_FALLBACK`.
   - `git diff --check`: pass in both repos.
+- Push/release verification:
+  - `Marketapp` commit pushed: `76ddc6b Add ML unsure fallback transparency`.
+  - `MarketVivi` commit pushed: `ae4806f Show ML decision source v2.3.74`.
+  - GitHub Debug APK Validation #51 completed successfully for `76ddc6b`.
+  - GitHub Signed Release #91 completed successfully for `76ddc6b`.
+  - Latest release confirmed: `v2.3.74` / `Market Radar v2.3.74` with `app-release.apk`.
 - Current limitation:
   - `pytest` is not installed in this Codex container.
   - Direct `test_gate6_replay.py` still fails fixture A baseline comparison (`BULL/69` expected vs current `NEUTRAL/14`) due existing replay-baseline drift with missing candidate chains; this is not introduced by the ML transparency patch.
