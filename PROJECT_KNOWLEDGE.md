@@ -1566,3 +1566,42 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - GitHub Debug APK Validation completed successfully.
   - GitHub Signed Release completed successfully.
   - Latest release confirmed: `v2.3.73` / `Market Radar v2.3.73` with `app-release.apk`.
+
+### 2026-05-28 — Safe ML transparency and fallback (`v2.3.74 / b205`)
+
+- Scope:
+  - User will investigate external AI integration separately.
+  - This app-side step intentionally avoids Oracle/Ollama/new AI dependencies.
+  - Brain remains deterministic owner; ML stays advisory.
+- `Marketapp/app/src/main/python/ml_engine.py`:
+  - Added explicit `UNSURE` action for weak ML conditions.
+  - `UNSURE` triggers when probability sits near TAKE/WATCH thresholds, critical inference fields are missing, or OOD confidence is weak.
+  - Strategy-blind scenarios still return `BLOCKED`.
+  - Returned metadata now includes `ml_unsure`, `unsure_reason`, and `decision_source`.
+- `Marketapp/app/src/main/python/brain.py`:
+  - Candidate defaults now include `decisionSource=DEFAULT_BRAIN_MATH`.
+  - SPLICE 4 sets `ML_ADVISORY` when ML annotates a candidate.
+  - SPLICE 4 sets `ML_UNSURE_FALLBACK` when ML returns `UNSURE`.
+  - ML `UNSURE` is neutralized in ranking, same as weak/OOD ML, so deterministic brain rules decide.
+  - Result-level `decisionSource` / `decisionReason` mirrors the top watchlist candidate for UI visibility.
+  - Early insufficient-history result emits `DEFAULT_BRAIN_MATH`.
+- `MarketVivi/app.js`:
+  - Candidate ML badge supports `UNSURE` with neutral grey styling.
+  - Candidate cards show `Source: brain fallback` or `Source: brain + ML advisory`.
+  - ML tab Live Brain Output shows result-level decision source and reason.
+  - No new Supabase columns were inserted from PWA, avoiding schema-break risk.
+- Version bump:
+  - Android: `versionName=2.3.74`, `versionCode=205`.
+  - Brain: `BRAIN_VERSION=2.3.74`.
+  - Web label: `v2.3.74 · b205`.
+  - cache-buster: `app.js?v=1149`, `log-viewer.js?v=1149`.
+- Local verification:
+  - `python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_engine.py app/src/main/python/ml_temporal.py`: pass.
+  - `node --check app.js`: pass.
+  - `python app/src/main/python/tests/test_gate3_structural_counts.py`: pass.
+  - `python app/src/main/python/tests/test_gate5_trace_smoke.py`: pass.
+  - Targeted ML smoke: missing critical field and weak/OOD paths return `UNSURE` with `ML_UNSURE_FALLBACK`.
+  - `git diff --check`: pass in both repos.
+- Current limitation:
+  - `pytest` is not installed in this Codex container.
+  - Direct `test_gate6_replay.py` still fails fixture A baseline comparison (`BULL/69` expected vs current `NEUTRAL/14`) due existing replay-baseline drift with missing candidate chains; this is not introduced by the ML transparency patch.

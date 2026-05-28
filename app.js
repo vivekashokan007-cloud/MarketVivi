@@ -3293,14 +3293,26 @@ function renderCandidateCard(cand, atm, rank) {
         <div class="v1-trade-btns">
             ${forces.aligned >= 2 ? (() => {
                 // b116: ML badge + REAL TRADE button (only when forces aligned >= 2)
+                const mlAction = cand.mlAction || '';
+                const mlColor = mlAction === 'TAKE' ? '#388E3C'
+                    : mlAction === 'WATCH' ? '#F57C00'
+                    : mlAction === 'BLOCKED' ? '#7B2FC4'
+                    : mlAction === 'UNSURE' ? '#607D8B'
+                    : '#D32F2F';
+                const decisionSource = cand.decisionSource || cand.decision_source || '';
+                const sourceLabel = decisionSource === 'ML_UNSURE_FALLBACK' ? 'Source: brain fallback'
+                    : decisionSource === 'ML_ADVISORY' ? 'Source: brain + ML advisory'
+                    : decisionSource ? `Source: ${decisionSource}` : '';
                 const mlBadge = cand.p_ml != null
                     ? `<div style="font-size:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
-                           <span style="background:${cand.mlAction==='TAKE'?'#388E3C':cand.mlAction==='WATCH'?'#F57C00':cand.mlAction==='BLOCKED'?'#7B2FC4':'#D32F2F'};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">
-                               ML ${Math.round((cand.p_ml||0)*100)}% ${cand.mlAction||''}${cand.mlOod?' ⚠️':''}
+                           <span style="background:${mlColor};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">
+                               ML ${Math.round((cand.p_ml||0)*100)}% ${mlAction}${cand.mlOod?' ⚠️':''}
                            </span>
                            ${cand.mlRegime ? `<span style="font-size:9px;color:var(--text-muted)">${cand.mlRegime}</span>` : ''}
                            ${cand.mlEdge != null ? `<span style="font-size:9px;color:${cand.mlEdge>=0?'var(--green)':'var(--danger)'}">${cand.mlEdge>=0?'+':''}${(cand.mlEdge*100).toFixed(0)}% edge</span>` : ''}
                        </div>
+                       ${sourceLabel ? `<div style="font-size:9px;color:var(--text-muted);margin-bottom:4px">${sourceLabel}</div>` : ''}
+                       ${cand.mlUnsureReason?.length ? `<div style="font-size:9px;color:var(--warn);margin-bottom:4px">ML unsure: ${cand.mlUnsureReason[0]}</div>` : ''}
                        ${cand.mlOodWarn?.length ? `<div style="font-size:9px;color:var(--danger);margin-bottom:4px">⚠️ ${cand.mlOodWarn[0]}</div>` : ''}`
                     : '';
                 const isBlocked = cand.mlOodBlocked === true;
@@ -3642,6 +3654,8 @@ function renderML() {
     const action = verdict.action || brain.action || 'WAIT';
     const strategy = verdict.strategy || brain.strategy || '--';
     const confidence = Number.isFinite(verdict.confidence) ? verdict.confidence : (Number.isFinite(brain.confidence) ? brain.confidence : 0);
+    const decisionSource = brain.decisionSource || brain.decision_source || verdict.decisionSource || verdict.decision_source || 'DEFAULT_BRAIN_MATH';
+    const decisionReason = brain.decisionReason || brain.decision_reason || verdict.decisionReason || verdict.decision_reason || '';
     const watchlistCount = Array.isArray(brain.watchlist) ? brain.watchlist.length : 0;
     const candidateCount = Array.isArray(brain.generated_candidates) ? brain.generated_candidates.length : 0;
     const pollsToday = Array.isArray(pollHistory) ? pollHistory.length : 0;
@@ -3692,7 +3706,8 @@ function renderML() {
                 </div>
                 <div class="brain-detail">
                     Action: <b>${action}</b> · Strategy: <b>${strategy}</b> · Confidence: <b>${confidence.toFixed(0)}%</b><br>
-                    Watchlist: <b>${watchlistCount}</b> · Candidates: <b>${candidateCount}</b> · Polls today: <b>${pollsToday}</b>
+                    Watchlist: <b>${watchlistCount}</b> · Candidates: <b>${candidateCount}</b> · Polls today: <b>${pollsToday}</b><br>
+                    Decision source: <b>${decisionSource}</b>${decisionReason ? ` · ${decisionReason}` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
