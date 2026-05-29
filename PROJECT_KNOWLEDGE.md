@@ -1707,3 +1707,18 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `node --check app.js`: pass
   - `python -m py_compile app/src/main/python/brain.py`: pass
   - `git diff --check`: pass
+- Push/release verification:
+  - `Marketapp` commits pushed:
+    - `7c77d8f Add auto polling coverage audit v2.3.75`
+    - `c0249b7 Fix missing Calendar import`
+    - `f02734f Retrigger signed release workflow`
+  - `MarketVivi` commit pushed:
+    - `d16c537 Show auto polling coverage status v2.3.75`
+  - first release attempt failed because `NativeBridge.kt` was missing `import java.util.Calendar`
+  - follow-up push fixed compile and retriggered release workflow
+  - GitHub Debug APK Validation `#54`: success
+  - GitHub Signed Release `#93`: success
+  - latest release confirmed:
+    - tag: `v2.3.75`
+    - name: `Market Radar v2.3.75`
+    - asset: `app-release.apk`
