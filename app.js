@@ -278,7 +278,6 @@ function safeParseNB(rawValue, fallback) {
 
 function latestPollData() {
     if (typeof NativeBridge === 'undefined') return {};
-    if (!getTodayNativeBaseline()) return {};
     const l = safeParseNB(NativeBridge.getLatestPoll?.(), {});
     if (l.bnfSpot == null && l.bnf != null) l.bnfSpot = l.bnf;
     if (l.nfSpot == null && l.nf != null) l.nfSpot = l.nf;
@@ -298,6 +297,90 @@ function getTodayNativeBaseline() {
     if (typeof NativeBridge === 'undefined') return null;
     const baseline = safeParseNB(NativeBridge.getBaseline?.(), {});
     return isTodayRecord(baseline) ? baseline : null;
+}
+
+function todayNativeSessionActive(serviceStatus = safeParseNB(NativeBridge?.getServiceStatus?.(), {}), latestPoll = latestPollData(), pollHistory = safeParseNB(NativeBridge?.getPollHistory?.(), [])) {
+    const latestPollToday = latestPoll && latestPoll.date === API.todayIST();
+    return !!(
+        serviceStatus?.sessionActive ||
+        serviceStatus?.polls > 0 ||
+        latestPollToday ||
+        (Array.isArray(pollHistory) && pollHistory.length > 0) ||
+        getTodayNativeBaseline()
+    );
+}
+
+function nextAutoStartText(serviceStatus) {
+    const ts = Number(serviceStatus?.autoStartAt || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return '';
+    try {
+        return new Date(ts).toLocaleString('en-IN', {
+            hour: 'numeric',
+            minute: '2-digit',
+            day: 'numeric',
+            month: 'short'
+        });
+    } catch (e) {
+        return '';
+    }
+}
+
+function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServiceStatus?.(), {})) {
+    const watchEl = document.getElementById('watch-status');
+    if (!watchEl) return;
+    const polls = Number.isFinite(serviceStatus?.polls) ? serviceStatus.polls : (STATE.pollCount || 0);
+    const expectedByNow = Number.isFinite(serviceStatus?.expectedPollsByNow) ? serviceStatus.expectedPollsByNow : 0;
+    const expectedFullDay = Number.isFinite(serviceStatus?.expectedPollsFullDay) ? serviceStatus.expectedPollsFullDay : 76;
+    const missed = Number.isFinite(serviceStatus?.missedPollsToday) ? serviceStatus.missedPollsToday : Math.max(expectedByNow - polls, 0);
+    const coverage = serviceStatus?.pollCoverageState || '';
+    const coverageLabel = expectedByNow > 0 ? ` · ${polls}/${expectedByNow}` : '';
+    if (serviceStatus?.running) {
+        const missLabel = missed > 0 ? ` · missed ${missed}` : '';
+        watchEl.textContent = `🟢 Auto polling${coverageLabel}${missLabel}`;
+        return;
+    }
+    if (!serviceStatus?.tokenReady) {
+        watchEl.textContent = '🟠 Paste Upstox token to enable 9:15 auto polling';
+        return;
+    }
+    const nextText = nextAutoStartText(serviceStatus);
+    const suffix = nextText ? ` · Next ${nextText}` : '';
+    switch (serviceStatus?.marketReason) {
+        case 'WEEKEND':
+            watchEl.textContent = `⏸ Weekend${suffix}`;
+            break;
+        case 'HOLIDAY':
+            watchEl.textContent = `⏸ NSE holiday${suffix}`;
+            break;
+        case 'OUT_OF_HOURS':
+            if (coverage === 'COMPLETE' && polls >= expectedFullDay) {
+                watchEl.textContent = `✅ Session complete · ${polls}/${expectedFullDay}${suffix}`;
+            } else if (expectedByNow > 0 && polls > 0) {
+                watchEl.textContent = `⏸ Session partial · ${polls}/${expectedByNow}${missed > 0 ? ` · missed ${missed}` : ''}${suffix}`;
+            } else {
+                watchEl.textContent = `⏸ Waiting for 9:15 auto polling${suffix}`;
+            }
+            break;
+        default:
+            watchEl.textContent = `⏸ Auto polling idle${coverageLabel}${suffix}`;
+            break;
+    }
+}
+
+function maybeAutoStartNativeIngestion(reason = 'ui') {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.getServiceStatus !== 'function') return false;
+    const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+    updateWatchStatusHint(serviceStatus);
+    if (serviceStatus.running) {
+        STATE.isWatching = true;
+        startNativePollWatchdog();
+        return true;
+    }
+    if (!serviceStatus.tokenReady || !serviceStatus.marketOpen) return false;
+    console.log(`[auto-ingestion] starting native service from ${reason}`);
+    startWatchLoop();
+    updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), serviceStatus));
+    return true;
 }
 
 function clearSessionDerivedState() {
@@ -465,7 +548,7 @@ function requireFilledInputs(fields) {
 
 function getBrainData() {
     try {
-        if (typeof NativeBridge === 'undefined' || !getTodayNativeBaseline()) return {};
+        if (typeof NativeBridge === 'undefined') return {};
         const raw = NativeBridge.getBrainResult();
         if (!raw || raw === 'null') return {};
         const parsed = JSON.parse(raw);
@@ -522,9 +605,13 @@ function getMLDecisionsCached(force = false) {
 }
 
 function refreshBrainData() {
-    if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
-        clearSessionDerivedState();
-        return bd;
+    if (typeof NativeBridge !== 'undefined') {
+        const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+        const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
+        if (!todayNativeSessionActive(serviceStatus, latestPoll) && !serviceStatus.running) {
+            clearSessionDerivedState();
+            return bd;
+        }
     }
     bd = getBrainData();
     applyBrainRangeSigma(bd);
@@ -549,12 +636,12 @@ function applyBrainRangeSigma(brainResult) {
 function pullNativeState() {
     if (typeof NativeBridge === 'undefined') return {};
     const status = safeParseNB(NativeBridge.getServiceStatus?.(), {});
-    if (!getTodayNativeBaseline()) {
+    const pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
+    const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
+    if (!todayNativeSessionActive(status, latestPoll, pollHistory) && !status.running) {
         clearSessionDerivedState();
         return { status, pollHistory: [], latestPoll: {}, brainResult: {} };
     }
-    const pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
-    const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
     const brainResult = safeParseNB(NativeBridge.getBrainResult?.(), {});
 
     if (Array.isArray(pollHistory)) {
@@ -995,11 +1082,6 @@ window.syncFromNative = function(dataJson) {
 
         // b106 null-guard: Kotlin may push empty/null before first poll runs
         if (!data || typeof data !== 'object') return;
-        if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
-            clearSessionDerivedState();
-            renderAll();
-            return;
-        }
 
         // Poll history — Kotlin is the source of truth for today's session.
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
@@ -3843,7 +3925,16 @@ function lockMorningData() {
     try {
         initAudio();
         requestNotificationPermission();
-        const triggerScan = () => startWatchLoop();
+        const triggerScan = () => {
+            startWatchLoop();
+            try {
+                if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.requestImmediatePoll === 'function') {
+                    NativeBridge.requestImmediatePoll();
+                }
+            } catch (e) {
+                console.warn('[lockMorningData] immediate poll request skipped:', e.message);
+            }
+        };
         requireFilledInputs([
             { id: 'in-fii-cash', label: 'FII Cash' },
             { id: 'in-fii-short', label: 'FII Short %' },
@@ -3856,7 +3947,7 @@ function lockMorningData() {
         ]);
 
         if (!syncUpstoxTokenToNative({ promptIfMissing: true })) {
-            throw new Error('Upstox token missing. Paste token to start live polling.');
+            throw new Error('Upstox token missing. Paste token to enable auto polling.');
         }
 
         const rawInputs = {
@@ -3896,7 +3987,7 @@ function lockMorningData() {
             btnLock.textContent = 'Scanning...';
         }
         const statusEl = document.getElementById('status');
-        if (statusEl) statusEl.textContent = '✅ Morning data locked. Starting scan...';
+        if (statusEl) statusEl.textContent = '✅ Morning data locked. Refreshing live scan...';
 
         STATE.morningExpandedAfterLock = false;
         collapseMorning({ force: true });
@@ -4751,8 +4842,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try { renderAll(); } catch (e) { console.warn('[boot] renderAll failed:', e.message); }
 
-    // Polling is intentionally user-gated. Restored same-day data may render, but
-    // Lock & Scan must be tapped before the native market service starts.
+    // Auto-ingestion is native-owned. The service should start on market open
+    // when token/schedule conditions are met, even if Lock & Scan is never pressed.
+    maybeAutoStartNativeIngestion('boot');
     const todayBaseline = getTodayNativeBaseline();
     if (todayBaseline && safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
         console.log(`[b162] Restored active service: ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
@@ -4767,6 +4859,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const watchEl = document.getElementById('watch-status');
         if (watchEl) watchEl.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
         updateLockScanUi();
+    } else {
+        updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), {}));
     }
 
     // Native Kotlin+Chaquopy runtime owns all analysis.
@@ -4822,8 +4916,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // This ensures immediate poll + brain run instead of waiting for next 5-min interval.
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
-        if (!getTodayNativeBaseline() || !safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
+        const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+        maybeAutoStartNativeIngestion('resume');
+        if (!todayNativeSessionActive(serviceStatus) && !serviceStatus.running) {
             clearSessionDerivedState();
+            updateWatchStatusHint(serviceStatus);
             renderAll();
             return;
         }
@@ -4885,25 +4982,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch(e) {
                 console.warn('[Phase 4] Kotlin pull failed:', e.message);
             }
-            const el = document.getElementById('watch-status');
-            if (el) el.textContent = `🟢 Native engine · Poll #${STATE.pollCount}`;
+            updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), serviceStatus));
             renderAll();
             return; // No lightFetch in native mode
         }
 
         // BROWSER MODE — existing recovery logic
-        const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
-        const sinceLastPoll = (serviceStatus.lastPoll) ? (Date.now() - serviceStatus.lastPoll) / 60000 : 999;
+        const resumeStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+        const sinceLastPoll = (resumeStatus.lastPoll) ? (Date.now() - resumeStatus.lastPoll) / 60000 : 999;
         if (sinceLastPoll >= 4) {
             console.log(`[b108] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
             const el = document.getElementById('watch-status');
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
-                if (el) el.textContent = `🟢 Resumed · Poll #${STATE.pollCount}`;
+                updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), resumeStatus));
             } catch(e) {
                 console.warn('[b108] Recovery poll failed:', e.message);
-                if (el) el.textContent = '🟢 Watching';
+                updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), resumeStatus));
             }
         }
     });

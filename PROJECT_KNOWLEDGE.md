@@ -1611,3 +1611,99 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Current limitation:
   - `pytest` is not installed in this Codex container.
   - Direct `test_gate6_replay.py` still fails fixture A baseline comparison (`BULL/69` expected vs current `NEUTRAL/14`) due existing replay-baseline drift with missing candidate chains; this is not introduced by the ML transparency patch.
+
+### 2026-05-28 — Live API vs Standalone Agent Choice
+
+- Reason for preferring a live API for the monthly Oracle evaluator:
+  - hosted models keep improving without us repackaging the whole agent;
+  - model quality and structured-output reliability are usually better than a tiny local model on a 1GB VM;
+  - one monthly call is cheap and operationally simple;
+  - the evaluator is batch-only, so network latency is not a blocker.
+- Reason a standalone agent is still valuable later:
+  - data stays on our own infrastructure;
+  - behavior is more reproducible once the model/prompt version is pinned;
+  - it avoids dependency on external quotas or API policy changes.
+- Practical conclusion:
+  - start with a live API for the evaluator;
+  - keep the trading brain deterministic;
+  - if privacy/control matters more later, migrate the evaluator to OCI A1 Flex or another pinned local runtime;
+  - do not let the evaluator place trades directly, only propose rule updates for review.
+
+### 2026-05-29 — Auto Polling Before Lock & Scan
+
+- Implemented direction:
+  - app-side data ingestion should begin from `09:15 IST` on trading days without waiting for `Lock & Scan`;
+  - `Lock & Scan` remains for morning baseline lock and strategy-generation workflow only.
+- Android/native changes:
+  - added `MarketOpenScheduler.kt` with daily market-open scheduling;
+  - added `MarketOpenAlarmReceiver` for market-open wake-up;
+  - added `MarketLifecycleReceiver` to reschedule after reboot/package replace/time changes;
+  - manifest now includes `RECEIVE_BOOT_COMPLETED`.
+- Native startup behavior:
+  - on app create, token update, or alarm/receiver trigger:
+    - next market open is scheduled;
+    - if market is already open and token exists, native ingestion can start immediately.
+- Service-status contract expanded:
+  - `getServiceStatus()` now returns:
+    - `running`,
+    - `sessionActive`,
+    - `tokenReady`,
+    - `marketDay`,
+    - `marketOpen`,
+    - `marketReason`,
+    - `autoStartAt`,
+    - existing evaluation fields.
+- WebView/UI changes:
+  - boot/resume now tries to auto-start ingestion when allowed by native status;
+  - UI no longer throws away same-day poll state just because a same-day morning baseline is absent;
+  - `watch-status` now surfaces:
+    - active auto polling;
+    - waiting for 9:15;
+    - weekend;
+    - NSE holiday;
+    - missing token.
+- Morning lock behavior:
+  - after `Lock & Scan`, app requests an immediate native poll so the fresh morning baseline is reflected quickly.
+- Notification-agent fix:
+  - entry/setup alerts are no longer keyed off sigma alone;
+  - they now require:
+    - morning input to exist;
+    - wall-clock trading window `11:00 IST` to `15:15 IST`.
+  - this keeps:
+    - data capture active from `09:15`;
+    - setup alerts aligned to the actual trading window.
+- Verification:
+  - `node --check app.js`: pass.
+  - `python -m py_compile app/src/main/python/brain.py`: pass.
+  - `git diff --check`: pass.
+- Remaining environment limitation:
+  - full Kotlin compile not run in Codex shell because no `JAVA_HOME` / JDK is configured here.
+
+### 2026-05-29 — Poll Coverage Audit + Auto-Ingestion Release (`v2.3.75 / b206`)
+
+- Follow-up requirement clarified:
+  - polling window is `09:15 AM` to `03:30 PM IST`;
+  - trade-decision window starts at `11:00 AM IST`;
+  - because full-day polling is automatic, app should be able to prove whether any 5-minute intervals were missed.
+- Implemented release changes:
+  - native service status now reports:
+    - `expectedPollsByNow`
+    - `expectedPollsFullDay`
+    - `actualPollsToday`
+    - `missedPollsToday`
+    - `pollCoverageState`
+  - full-day expected session count is treated as `76` polls for `09:15` to `15:30` inclusive.
+  - watch badge now shows:
+    - active auto polling with `actual/expected`;
+    - missed-poll count when coverage is partial;
+    - `Session complete` after market hours when full coverage exists;
+    - holiday/weekend/waiting states otherwise.
+- Version bump:
+  - Android: `versionName=2.3.75`, `versionCode=206`
+  - Brain: `BRAIN_VERSION=2.3.75`
+  - Web label: `v2.3.75 · b206`
+  - cache-buster: `app.js?v=1150`, `log-viewer.js?v=1150`
+- Local verification:
+  - `node --check app.js`: pass
+  - `python -m py_compile app/src/main/python/brain.py`: pass
+  - `git diff --check`: pass
