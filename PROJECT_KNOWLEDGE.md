@@ -1722,3 +1722,30 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - tag: `v2.3.75`
     - name: `Market Radar v2.3.75`
     - asset: `app-release.apk`
+
+## Update: Paper Discipline Removal (`v2.3.82`)
+
+- Decision:
+  - remove `Paper Discipline Mix` from active workflow;
+  - focus moves to:
+    - complete market data capture,
+    - complete candidate capture,
+    - ML evaluation capture,
+    - later constant calibration from real evidence.
+- Implemented in `MarketVivi/app.js`:
+  - `closeTrade()` no longer blocks paper exits with `collectPaperCloseChecklist()`;
+  - closed paper trades now write:
+    - `paper_close_reason_quality = null`
+    - `paper_thesis_break_type = null`
+    - `paper_rule_followed = null`
+    - `paper_close_note = null`
+    - `paper_discipline = null`
+  - ML tab removed the `Paper Discipline Mix` status card.
+  - open-position detail removed the paper-discipline summary block.
+- Compatibility:
+  - Supabase schema is not dropped; old columns stay for historic rows.
+- Version sync:
+  - Android: `versionName=2.3.82`, `versionCode=213`
+  - Brain: `BRAIN_VERSION=2.3.82`
+  - Web: `v2.3.82 · b213`
+  - cache-bust: `app.js?v=1157`, `log-viewer.js?v=1157`

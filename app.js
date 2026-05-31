@@ -1755,12 +1755,6 @@ async function closeTrade(tradeId, exitReason) {
     if (!confirm(confirmMsg)) return;
 
     try {
-        let paperChecklist = null;
-        if (isPaper) {
-            paperChecklist = collectPaperCloseChecklist(exitReason);
-            if (!paperChecklist) return;
-        }
-
         // Calculate hold duration
         let holdDuration = '';
         if (trade.entry_date) {
@@ -1786,10 +1780,10 @@ async function closeTrade(tradeId, exitReason) {
             actual_pnl: trade.current_pnl ?? 0,
             exit_premium: trade.current_premium ?? null,
             exit_reason: exitReason || 'Manual',
-            paper_close_reason_quality: isPaper ? paperChecklist.reasonQuality : null,
-            paper_thesis_break_type: isPaper ? paperChecklist.thesisBreakType : null,
-            paper_rule_followed: isPaper ? paperChecklist.ruleFollowed : null,
-            paper_close_note: isPaper ? paperChecklist.note : null,
+            paper_close_reason_quality: null,
+            paper_thesis_break_type: null,
+            paper_rule_followed: null,
+            paper_close_note: null,
             exit_vix: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? trade.current_vix ?? null,
             exit_atm_iv: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfAtmIv ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfAtmIv ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atmIv ?? null),
             exit_force_alignment: trade.forces?.aligned ?? trade.force_alignment ?? null,
@@ -1824,12 +1818,7 @@ async function closeTrade(tradeId, exitReason) {
                 premium: trade.current_premium ?? null,
                 drift_from_morning: STATE.biasDrift ?? 0
             },
-            paper_discipline: isPaper ? {
-                reason_quality: paperChecklist.reasonQuality,
-                thesis_break_type: paperChecklist.thesisBreakType,
-                rule_followed: paperChecklist.ruleFollowed,
-                note: paperChecklist.note
-            } : null,
+            paper_discipline: null,
 
             // ═══ JOURNEY STATS — aggregated metrics during holding (JSONB) ═══
             journey_stats: {
@@ -1863,9 +1852,9 @@ async function closeTrade(tradeId, exitReason) {
                 trough_pnl:         trade.trough_pnl ?? null,
                 hold_minutes:       trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
                 exit_reason:        exitReason || 'Manual',
-                paper_reason_quality: isPaper ? paperChecklist.reasonQuality : null,
-                paper_thesis_break_type: isPaper ? paperChecklist.thesisBreakType : null,
-                paper_rule_followed: isPaper ? paperChecklist.ruleFollowed : null,
+                paper_reason_quality: null,
+                paper_thesis_break_type: null,
+                paper_rule_followed: null,
                 exit_vix:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? null,
                 exit_pcr:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr ?? null,
                 ci_min:             trade._journey?.min_ci ?? null,
@@ -1881,66 +1870,6 @@ async function closeTrade(tradeId, exitReason) {
         renderAll();
         alert(`Exit logged locally. Supabase sync may have failed: ${err.message}`);
     }
-}
-
-function collectPaperCloseChecklist(exitReason) {
-    const qualityRaw = prompt(
-        `Paper Close Checklist\n` +
-        `Exit: ${exitReason || 'Manual'}\n\n` +
-        `Reason quality? Enter one:\n` +
-        `A = rule-based\nB = partial rule\nC = emotional/manual`,
-        'A'
-    );
-    if (qualityRaw == null) return null;
-    const quality = String(qualityRaw).trim().toUpperCase();
-    if (!['A', 'B', 'C'].includes(quality)) {
-        alert('Paper close cancelled: reason quality must be A, B, or C.');
-        return null;
-    }
-
-    const thesisRaw = prompt(
-        `Thesis break type? Enter one:\n` +
-        `none | direction | volatility | timing | risk | target_hit | stop_hit | manual`,
-        'none'
-    );
-    if (thesisRaw == null) return null;
-    const thesisBreakType = String(thesisRaw).trim().toLowerCase();
-    const allowedThesis = ['none', 'direction', 'volatility', 'timing', 'risk', 'target_hit', 'stop_hit', 'manual'];
-    if (!allowedThesis.includes(thesisBreakType)) {
-        alert('Paper close cancelled: thesis break type is invalid.');
-        return null;
-    }
-
-    const ruleRaw = prompt(
-        `Rule followed? Enter one:\n` +
-        `yes | no | partial`,
-        'yes'
-    );
-    if (ruleRaw == null) return null;
-    const ruleFollowed = String(ruleRaw).trim().toLowerCase();
-    if (!['yes', 'no', 'partial'].includes(ruleFollowed)) {
-        alert('Paper close cancelled: rule followed must be yes, no, or partial.');
-        return null;
-    }
-
-    const noteRaw = prompt(
-        `One-line note (required, min 8 chars):\n` +
-        `What did this paper trade teach you?`,
-        ''
-    );
-    if (noteRaw == null) return null;
-    const note = String(noteRaw).trim();
-    if (note.length < 8) {
-        alert('Paper close cancelled: note must be at least 8 characters.');
-        return null;
-    }
-
-    return {
-        reasonQuality: quality,
-        thesisBreakType,
-        ruleFollowed,
-        note
-    };
 }
 
 
@@ -3435,12 +3364,6 @@ function renderTradeCard(t, isPaper) {
     const icon = isPaper ? '📋' : '📌';
     const paperClass = isPaper ? ' paper-card' : '';
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
-    const paperDiscipline = t.paper_discipline || null;
-    const paperReasonQuality = paperDiscipline?.reason_quality || t.paper_close_reason_quality || null;
-    const paperThesisBreakType = paperDiscipline?.thesis_break_type || t.paper_thesis_break_type || null;
-    const paperRuleFollowed = paperDiscipline?.rule_followed || t.paper_rule_followed || null;
-    const paperCloseNote = paperDiscipline?.note || t.paper_close_note || null;
-
     // Entry time + elapsed
     const entryTime = t.entry_date ? new Date(t.entry_date).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '--';
     const entryDateShort = t.entry_date ? new Date(t.entry_date).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' }) : '';
@@ -3541,15 +3464,6 @@ function renderTradeCard(t, isPaper) {
                 · Now: ₹${t.current_premium || '--'}
                 · Spot: ${t.current_spot?.toFixed(0) || '--'}
             </div>
-            ${isPaper && (paperReasonQuality || paperThesisBreakType || paperRuleFollowed || paperCloseNote) ? `
-                <div class="pos-detail" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
-                    <span style="color:var(--accent);font-weight:600">Paper discipline:</span>
-                    Q=${paperReasonQuality || '--'} ·
-                    Thesis=${paperThesisBreakType || '--'} ·
-                    Rule=${paperRuleFollowed || '--'}
-                    ${paperCloseNote ? `<br><span style="color:var(--text-muted)">Note: ${paperCloseNote}</span>` : ''}
-                </div>
-            ` : ''}
             <div class="pos-forces">
                 ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
             </div>
@@ -3749,21 +3663,6 @@ function renderML() {
     const labeledWinRate = labeledCount > 0 ? ((winCount / labeledCount) * 100).toFixed(1) : '--';
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
-    const qualityCounts = { A: 0, B: 0, C: 0 };
-    const ruleCounts = { yes: 0, partial: 0, no: 0 };
-    decisions.forEach((d) => {
-        const q = String(d?.paper_reason_quality || d?.paper_close_reason_quality || '').toUpperCase();
-        if (q === 'A' || q === 'B' || q === 'C') qualityCounts[q]++;
-        const r = String(d?.paper_rule_followed || '').toLowerCase();
-        if (r === 'yes' || r === 'partial' || r === 'no') ruleCounts[r]++;
-    });
-    const qualityTotal = qualityCounts.A + qualityCounts.B + qualityCounts.C;
-    const ruleTotal = ruleCounts.yes + ruleCounts.partial + ruleCounts.no;
-    const aShare = qualityTotal > 0 ? (qualityCounts.A / qualityTotal) : 0;
-    const yesShare = ruleTotal > 0 ? (ruleCounts.yes / ruleTotal) : 0;
-    const qualityGateA = aShare >= 0.60;
-    const qualityGateYes = yesShare >= 0.75;
-    const qualityGatePass = qualityGateA && qualityGateYes;
 
     let html = '';
     html += `
@@ -3812,19 +3711,6 @@ function renderML() {
                     Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
                     Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
                     Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b>
-                </div>
-            </div>
-            <div class="brain-card" style="border-left-color:var(--accent)">
-                <div class="brain-card-header">
-                    <span class="brain-icon">🧭</span>
-                    <span class="brain-label">Paper Discipline Mix</span>
-                </div>
-                <div class="brain-detail">
-                    Quality: A <b>${qualityCounts.A}</b> · B <b>${qualityCounts.B}</b> · C <b>${qualityCounts.C}</b><br>
-                    Rule followed: Yes <b>${ruleCounts.yes}</b> · Partial <b>${ruleCounts.partial}</b> · No <b>${ruleCounts.no}</b><br>
-                    Gate: <b style="color:${qualityGatePass ? 'var(--green)' : 'var(--warn)'}">${qualityGatePass ? 'PASS' : 'WAIT'}</b>
-                    · A-share <b>${(aShare * 100).toFixed(0)}%</b> (target ≥60%)
-                    · Rule-Yes <b>${(yesShare * 100).toFixed(0)}%</b> (target ≥75%)
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
