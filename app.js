@@ -234,6 +234,13 @@ const STATE = {
     mlModelStatusAt: 0,
     mlDecisions: null,
     mlDecisionsAt: 0,
+    evaluatorJob: null,
+    evaluatorProposals: [],
+    evaluatorBusy: false,
+    evaluatorError: '',
+    evaluatorPollTimer: null,
+    approvedBranchProposals: [],
+    approvedBranchProposalsAt: 0,
 
     // Active tab
     activeTab: 'market'
@@ -524,6 +531,218 @@ const DB = {
         }
     }
 };
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function evaluatorStatusLabel(status) {
+    switch (String(status || '').toLowerCase()) {
+        case 'queued': return 'QUEUED';
+        case 'processing': return 'PROCESSING';
+        case 'completed': return 'COMPLETED';
+        case 'failed': return 'FAILED';
+        default: return 'IDLE';
+    }
+}
+
+function formatCompactTs(ts) {
+    if (!ts) return '--';
+    const date = typeof ts === 'number' ? new Date(ts) : new Date(String(ts));
+    if (Number.isNaN(date.getTime())) return String(ts);
+    return date.toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+    });
+}
+
+function restoreEvaluatorJob() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.getCachedEvaluationJob !== 'function') return;
+    const parsed = safeParseNB(NativeBridge.getCachedEvaluationJob(), {});
+    if (parsed && typeof parsed === 'object' && parsed.job_id) {
+        STATE.evaluatorJob = parsed;
+    }
+}
+
+function clearEvaluatorPollTimer() {
+    if (STATE.evaluatorPollTimer) {
+        clearTimeout(STATE.evaluatorPollTimer);
+        STATE.evaluatorPollTimer = null;
+    }
+}
+
+function scheduleEvaluatorPoll(jobId) {
+    clearEvaluatorPollTimer();
+    STATE.evaluatorPollTimer = setTimeout(() => {
+        refreshEvaluatorJobStatus(jobId).catch(err => {
+            STATE.evaluatorError = err.message || String(err);
+            STATE.evaluatorBusy = false;
+            renderAll();
+        });
+    }, 12000);
+}
+
+function normalizeProposalRow(row) {
+    const payload = typeof row?.proposal_json === 'string'
+        ? safeParseNB(row.proposal_json, {})
+        : (row?.proposal_json || {});
+    return {
+        rowId: row?.id || '',
+        proposalId: payload.proposal_id || row?.proposal_id || row?.id || '',
+        status: row?.status || payload?.status || '',
+        indexKey: payload?.index || row?.index_key || payload?.index_key || 'ALL',
+        category: row?.category || payload?.category || '',
+        priority: row?.priority || payload?.priority || '',
+        hypothesis: payload?.hypothesis || '',
+        explanation: payload?.explanation || '',
+        conditions: payload?.conditions || {},
+        action: payload?.action || {},
+        evidence: payload?.evidence || {},
+        validationNotes: row?.validation_notes || '',
+        approvedAt: row?.approved_at || '',
+        raw: row || {}
+    };
+}
+
+function proposalSummaryText(row) {
+    const p = normalizeProposalRow(row);
+    const parts = [];
+    const cond = p.conditions || {};
+    const action = p.action || {};
+    if (Array.isArray(cond.regime) && cond.regime.length) parts.push(`Regime ${cond.regime.join('/')}`);
+    if (cond.vix_min != null || cond.vix_max != null) parts.push(`VIX ${cond.vix_min ?? '-'} to ${cond.vix_max ?? '-'}`);
+    if (action.min_sigma_otm != null || action.max_sigma_otm != null) parts.push(`σ ${action.min_sigma_otm ?? '-'} to ${action.max_sigma_otm ?? '-'}`);
+    const allow = Array.isArray(action.strategy_allow) ? action.strategy_allow : [];
+    const block = Array.isArray(action.strategy_block) ? action.strategy_block : [];
+    if (allow.length) parts.push(`Allow ${allow.join(', ')}`);
+    if (block.length) parts.push(`Block ${block.join(', ')}`);
+    if (p.evidence?.sample_size != null) parts.push(`n=${p.evidence.sample_size}`);
+    return parts.join(' · ');
+}
+
+async function loadApprovedBranchProposals(force = false) {
+    const ttlMs = 2 * 60 * 1000;
+    const now = Date.now();
+    if (!force && Array.isArray(STATE.approvedBranchProposals) && (now - STATE.approvedBranchProposalsAt) < ttlMs) {
+        return STATE.approvedBranchProposals;
+    }
+    const nativeMethod = force ? 'refreshApprovedBranchProposals' : 'getApprovedBranchProposals';
+    const nativeRows = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge[nativeMethod]?.() : '[]', []);
+    if (Array.isArray(nativeRows)) {
+        STATE.approvedBranchProposals = nativeRows;
+        STATE.approvedBranchProposalsAt = now;
+        return nativeRows;
+    }
+    if (nativeRows && nativeRows.ok === false && nativeRows.error) {
+        console.warn('[evaluator] approved proposal load failed:', nativeRows.error);
+        STATE.evaluatorError = nativeRows.error;
+    }
+    STATE.approvedBranchProposals = [];
+    STATE.approvedBranchProposalsAt = now;
+    return STATE.approvedBranchProposals;
+}
+
+async function loadEvaluationProposals(jobId) {
+    const response = callNativeJson('getEvaluationJobProposals', jobId);
+    STATE.evaluatorProposals = Array.isArray(response.proposals) ? response.proposals : [];
+    if (STATE.evaluatorJob) {
+        STATE.evaluatorJob.proposal_count = STATE.evaluatorProposals.length;
+    }
+    return STATE.evaluatorProposals;
+}
+
+async function refreshEvaluatorJobStatus(jobId, { allowReschedule = true } = {}) {
+    const response = callNativeJson('getEvaluationJobStatus', jobId);
+    STATE.evaluatorJob = {
+        ...(STATE.evaluatorJob || {}),
+        ...response,
+        job_id: response.job_id || jobId,
+        updated_at: Date.now()
+    };
+    const status = String(STATE.evaluatorJob.status || '').toLowerCase();
+    if (status === 'completed') {
+        STATE.evaluatorBusy = false;
+        STATE.evaluatorError = '';
+        clearEvaluatorPollTimer();
+        await loadEvaluationProposals(jobId);
+    } else if (status === 'failed') {
+        STATE.evaluatorBusy = false;
+        STATE.evaluatorError = STATE.evaluatorJob.error || 'Evaluation failed';
+        clearEvaluatorPollTimer();
+    } else {
+        STATE.evaluatorBusy = true;
+        if (allowReschedule) scheduleEvaluatorPoll(jobId);
+    }
+    renderAll();
+    return STATE.evaluatorJob;
+}
+
+async function triggerGeminiEvaluation(indexScope = ['BNF', 'NF']) {
+    if (!window.NativeBridge?.triggerEvaluationJob) {
+        alert('Native bridge not available. Use APK version.');
+        return;
+    }
+    try {
+        STATE.evaluatorBusy = true;
+        STATE.evaluatorError = '';
+        STATE.evaluatorProposals = [];
+        renderAll();
+        const response = callNativeJson('triggerEvaluationJob', JSON.stringify({
+            index_scope: Array.isArray(indexScope) && indexScope.length ? indexScope : ['BNF', 'NF']
+        }));
+        if (!response.job_id) throw new Error('Oracle did not return job_id');
+        STATE.evaluatorJob = {
+            job_id: response.job_id || '',
+            status: response.status || 'queued',
+            proposal_count: 0,
+            started_at: response.requested_at || Date.now(),
+            index_scope: response.request_payload?.index_scope || indexScope,
+            request_payload: response.request_payload || {}
+        };
+        scheduleEvaluatorPoll(STATE.evaluatorJob.job_id);
+        renderAll();
+        alert(`Evaluator queued.\n\nJob: ${STATE.evaluatorJob.job_id}\nWindow: ${STATE.evaluatorJob.request_payload.date_from} → ${STATE.evaluatorJob.request_payload.date_to}\n\nStatus will refresh automatically.`);
+    } catch (e) {
+        STATE.evaluatorBusy = false;
+        STATE.evaluatorError = e.message || String(e);
+        renderAll();
+        alert(`Evaluator trigger failed: ${STATE.evaluatorError}`);
+    }
+}
+
+async function reviewBranchProposal(rowId, nextStatus) {
+    if (!rowId) {
+        alert('Proposal row id missing. Refresh proposals first.');
+        return;
+    }
+    const actionLabel = nextStatus === 'approved'
+        ? 'Approve this proposal for live brain use? It will start affecting strategy filtering after sync.'
+        : (nextStatus === 'rejected'
+            ? 'Reject this proposal? It will stay out of the live brain.'
+            : 'Deactivate this approved proposal? It will stop affecting the live brain after sync.');
+    if (!confirm(actionLabel)) return;
+    if (typeof NativeBridge === 'undefined') {
+        alert('Native bridge not available. Use APK version.');
+        return;
+    }
+    const methodName = nextStatus === 'approved' ? 'approveBranchProposal' : 'rejectBranchProposal';
+    const response = callNativeJson(methodName, String(rowId));
+    await loadApprovedBranchProposals(true);
+    if (STATE.evaluatorJob?.job_id) {
+        await loadEvaluationProposals(STATE.evaluatorJob.job_id);
+    }
+    renderAll();
+    alert(response.message || (nextStatus === 'approved' ? 'Proposal approved and synced.' : (nextStatus === 'rejected' ? 'Proposal rejected.' : 'Proposal deactivated from live brain.')));
+}
 
 function syncUpstoxTokenToNative({ promptIfMissing = false } = {}) {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.setApiToken !== 'function') return false;
@@ -3645,6 +3864,12 @@ function renderML() {
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
     const evaluationButtonText = evaluationDone ? '✅ Today Done' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
     const evaluationButtonDisabled = evaluationDone || evaluationRunning;
+    const evaluatorJob = STATE.evaluatorJob || null;
+    const evaluatorStatus = evaluatorStatusLabel(evaluatorJob?.status);
+    const evaluatorProposalCount = Array.isArray(STATE.evaluatorProposals) ? STATE.evaluatorProposals.length : 0;
+    const approvedBranchCount = Array.isArray(STATE.approvedBranchProposals) ? STATE.approvedBranchProposals.length : 0;
+    const evaluatorWindow = evaluatorJob?.request_payload ? `${evaluatorJob.request_payload.date_from} → ${evaluatorJob.request_payload.date_to}` : '--';
+    const evaluatorLastCheck = formatCompactTs(evaluatorJob?.updated_at || evaluatorJob?.started_at);
 
     const verdict = brain?.verdict || {};
     const action = verdict.action || brain.action || 'WAIT';
@@ -3756,6 +3981,60 @@ function renderML() {
             </div>
             <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
                 ML is downstream-only. It records snapshots and evaluates outcomes, but it does not change live trade selection.
+            </div>
+        </section>
+    `;
+
+    html += `
+        <section class="section">
+            <h2>🤖 Gemini Evaluator</h2>
+            <div class="brain-card" style="border-left-color:${STATE.evaluatorError ? 'var(--danger)' : 'var(--accent)'}">
+                <div class="brain-card-header">
+                    <span class="brain-icon">◉</span>
+                    <span class="brain-label">Oracle Job State</span>
+                    <span class="brain-strength" style="color:${STATE.evaluatorBusy ? 'var(--warn)' : (STATE.evaluatorError ? 'var(--danger)' : 'var(--accent)')}">${evaluatorStatus}</span>
+                </div>
+                <div class="brain-detail">
+                    Job: <b>${evaluatorJob?.job_id || '--'}</b> · Proposals: <b>${evaluatorJob?.proposal_count ?? evaluatorProposalCount}</b> · Approved live branches: <b>${approvedBranchCount}</b><br>
+                    Window: <b>${escapeHtml(evaluatorWindow)}</b> · Last check: <b>${escapeHtml(evaluatorLastCheck)}</b>
+                    ${STATE.evaluatorError ? `<br><span style="color:var(--danger)">Error: ${escapeHtml(STATE.evaluatorError)}</span>` : ''}
+                    ${evaluatorJob?.error ? `<br><span style="color:var(--danger)">Oracle: ${escapeHtml(evaluatorJob.error)}</span>` : ''}
+                </div>
+            </div>
+            <div class="v1-trade-btns" style="margin-top:8px">
+                <button onclick="triggerGeminiEvaluation(['BNF','NF'])" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px;${STATE.evaluatorBusy ? 'opacity:.55;pointer-events:none' : ''}" ${STATE.evaluatorBusy ? 'disabled' : ''}>🚀 Run 30D Review</button>
+                <button onclick="STATE.evaluatorJob?.job_id && refreshEvaluatorJobStatus(STATE.evaluatorJob.job_id)" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px;${evaluatorJob?.job_id ? '' : 'opacity:.55;pointer-events:none'}" ${evaluatorJob?.job_id ? '' : 'disabled'}>🔄 Refresh Oracle</button>
+                <button onclick="loadApprovedBranchProposals(true).then(() => renderAll())" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px">📥 Reload Approved</button>
+            </div>
+            <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
+                Gemini remains offline and advisory. Oracle output never auto-activates. Only approved proposals are synced into the live brain.
+            </div>
+            <div style="margin-top:10px">
+                ${(STATE.evaluatorProposals || []).length ? STATE.evaluatorProposals.map(row => {
+                    const p = normalizeProposalRow(row);
+                    const reviewLocked = String(p.status || '').toLowerCase() === 'approved';
+                    const rejected = String(p.status || '').toLowerCase() === 'rejected';
+                    return `
+                        <div class="brain-card" style="border-left-color:${reviewLocked ? 'var(--green)' : 'var(--warn)'};margin-bottom:8px">
+                            <div class="brain-card-header">
+                                <span class="brain-icon">•</span>
+                                <span class="brain-label">${escapeHtml(p.proposalId || p.rowId || 'proposal')}</span>
+                                <span class="brain-strength">${escapeHtml(`${p.indexKey} · ${p.priority || 'priority?'}`)}${reviewLocked ? ' · LIVE' : (rejected ? ' · REJECTED' : '')}</span>
+                            </div>
+                            <div class="brain-detail">
+                                <b>${escapeHtml(p.category || 'proposal')}</b>${p.hypothesis ? ` · ${escapeHtml(p.hypothesis)}` : ''}<br>
+                                ${escapeHtml(proposalSummaryText(row) || 'No structured summary provided.')}
+                                ${p.explanation ? `<br>${escapeHtml(p.explanation)}` : ''}
+                                ${p.validationNotes ? `<br>Notes: ${escapeHtml(p.validationNotes)}` : ''}
+                                ${p.approvedAt ? `<br>Approved: ${escapeHtml(p.approvedAt)}` : ''}
+                            </div>
+                            <div class="v1-trade-btns" style="margin-top:8px">
+                                <button onclick="reviewBranchProposal(${JSON.stringify(String(p.rowId))}, 'approved')" class="btn-primary" style="flex:1;padding:7px 10px;font-size:11px;${reviewLocked ? 'opacity:.55;pointer-events:none' : ''}" ${reviewLocked ? 'disabled' : ''}>✅ Approve Live</button>
+                                <button onclick="reviewBranchProposal(${JSON.stringify(String(p.rowId))}, 'rejected')" class="btn-paper" style="flex:1;padding:7px 10px;font-size:11px">${reviewLocked ? '⏸ Deactivate' : '🛑 Reject'}</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('') : `<div class="empty-state">${String(evaluatorJob?.status || '').toLowerCase() === 'completed' ? 'Job completed. No proposals returned.' : 'No evaluator proposals loaded yet'}</div>`}
             </div>
         </section>
     `;
@@ -4665,6 +4944,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // and button event listeners get attached. Restores rely on localStorage fallback.
     try { if (typeof DB !== 'undefined' && DB.init) DB.init(); } catch (e) { console.warn('[boot] DB.init skipped:', e.message); }
     try { syncUpstoxTokenToNative(); } catch (e) { console.warn('[boot] token sync skipped:', e.message); }
+    try { restoreEvaluatorJob(); } catch (e) { console.warn('[boot] restoreEvaluatorJob failed:', e.message); }
 
     // Fetch all config from Supabase (single query) — localStorage fallback if offline
     let cloudConfig = null;
@@ -4710,6 +4990,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     initTheme(cloudConfig);
     try { await loadOpenTrade(); } catch (e) { console.warn('[boot] loadOpenTrade failed:', e); }
+    try { await loadApprovedBranchProposals(true); } catch (e) { console.warn('[boot] loadApprovedBranchProposals failed:', e.message); }
     try {
         if (typeof DB !== 'undefined' && DB.getSignalAccuracyStats) {
             STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
@@ -4727,6 +5008,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     try { renderAll(); } catch (e) { console.warn('[boot] renderAll failed:', e.message); }
+    try {
+        const restoredJobId = STATE.evaluatorJob?.job_id;
+        const restoredJobStatus = String(STATE.evaluatorJob?.status || '').toLowerCase();
+        if (restoredJobId && !['completed', 'failed', 'rejected'].includes(restoredJobStatus)) {
+            await refreshEvaluatorJobStatus(restoredJobId, { allowReschedule: true });
+        }
+    } catch (e) {
+        console.warn('[boot] evaluator status restore failed:', e.message);
+    }
 
     // Auto-ingestion is native-owned. The service should start on market open
     // when token/schedule conditions are met, even if Lock & Scan is never pressed.
@@ -4804,6 +5094,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (document.visibilityState !== 'visible') return;
         const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
         maybeAutoStartNativeIngestion('resume');
+        try { await loadApprovedBranchProposals(true); } catch (e) { console.warn('[resume] loadApprovedBranchProposals failed:', e.message); }
+        if (STATE.evaluatorJob?.job_id) {
+            try {
+                const status = String(STATE.evaluatorJob.status || '').toLowerCase();
+                if (!['completed', 'failed', 'rejected'].includes(status)) {
+                    await refreshEvaluatorJobStatus(STATE.evaluatorJob.job_id, { allowReschedule: true });
+                }
+            } catch (e) {
+                console.warn('[resume] evaluator status refresh failed:', e.message);
+            }
+        }
         if (!todayNativeSessionActive(serviceStatus) && !serviceStatus.running) {
             clearSessionDerivedState();
             updateWatchStatusHint(serviceStatus);

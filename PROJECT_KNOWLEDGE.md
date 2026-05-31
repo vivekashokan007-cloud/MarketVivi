@@ -1,5 +1,51 @@
 # Market Radar v2.1 — Project Knowledge (Apr 4 2026, b70)
 
+## Release Update - 2026-05-31 - v2.3.83 / b214
+
+- First AI-in-ML integration slice completed on app side.
+- Boundary restored to intended architecture:
+  - PWA = display/dispatch only
+  - Kotlin = all evaluator functionality and persistence
+- Native bridge now owns:
+  - Oracle evaluator trigger/status/proposals
+  - approved proposal refresh
+  - approve/reject proposal writes
+  - cached evaluator job state
+- `MarketWatchService` injects approved proposals into `brain.py`.
+- `brain.py` now supports guarded approved-branch overrides for strategy allow/block and sigma gates.
+- Release versions aligned across both repos:
+  - Android `2.3.83 / 214`
+  - PWA `v2.3.83 · b214`
+
+## Update - 2026-05-31 - Gemini Evaluator Phase 1 App Wiring
+
+- App-side Gemini evaluator integration has started locally.
+- PWA side now includes:
+  - evaluator job state card in ML tab
+  - evaluator trigger button
+  - evaluator proposal review UI
+  - display-only evaluator shell
+  - no direct evaluator Supabase writes in PWA
+  - no evaluator local persistence in PWA
+- Android side now includes:
+  - Oracle HTTP bridge methods for evaluator trigger/status/proposals
+  - native-owned default 30-day evaluator window
+  - cached approved branch proposal storage in SharedPreferences
+  - approved proposal refresh from Supabase during bootstrap and runtime
+  - approved proposals injected into `brain.py` context as `approvedProposals`
+- Brain side now supports guarded learned-branch overrides:
+  - `strategy_allow`
+  - `strategy_block`
+  - `min_sigma_otm`
+  - `max_sigma_otm`
+- Important current dependency:
+  - Oracle evaluator endpoint is plain HTTP at `http://144.24.117.114:8443`
+  - Android manifest was opened for cleartext traffic because HTTPS is not yet available
+- Local verification:
+  - JavaScript syntax passed
+  - Python syntax passed
+  - full Gradle/Kotlin compile still depends on Java toolchain availability in the environment
+
 ## Project Overview
 - **App:** Market Radar v2.1 — Premium-first PWA for NSE options trading decisions
 - **User:** Vivek — part-time options trader, 1 lot at a time, NF primary (BNF secondary)
