@@ -1,5 +1,14 @@
 # Market Radar v2.1 — Project Knowledge (Apr 4 2026, b70)
 
+## Release Update - 2026-06-01 - v2.3.85 / b216
+
+- Hybrid H2 evaluator batch prepared:
+  - evening evaluator now reads all generated candidates from snapshot context
+  - preferred pricing window is `15:15–15:25 IST`
+  - final fallback pricing window is `15:26–15:30 IST`
+  - snapshot context now includes `snapshot_evaluation_legs` per candidate
+- This extends the earlier full-chain H2 safety net into a proper hybrid evaluation design.
+
 ## Release Update - 2026-06-01 - v2.3.84 / b215
 
 - Pushed correction batch for post-market issues:
@@ -13,6 +22,25 @@
 - Still deferred for later discussion with Antigravity:
   - NF50 breadth constituent/update architecture
   - ML architecture split by `NF/BNF × intraday/swing`
+
+## Local Update - 2026-06-01 - Hybrid H2 Evaluator Phase 1 (not pushed yet)
+
+- Python evening evaluator now consumes the full `snapshot_generated_candidates` set from snapshot context instead of limiting secondary evaluation to the old top-5 slice.
+- Evaluation window logic now prefers `15:15–15:25 IST` marks and falls back to the final near-close `15:26–15:30 IST` window.
+- Native full-chain H2 persistence remains in place as the pricing safety net.
+- This is local only until next push.
+
+## Local Update - 2026-06-01 - Hybrid H2 Evaluator Phase 2 (not pushed yet)
+
+- Snapshot context now stores `snapshot_evaluation_legs` for each generated candidate.
+- Each ledger row carries:
+  - candidate id
+  - strategy type
+  - index
+  - expiry
+  - trade mode
+  - exact legs with strike, option type, and entry LTP where available
+- This adds the recommendation-bound evaluation ledger on top of the existing full-chain H2 safety net.
 
 ## Local Update - 2026-06-01 - Reminder + Poll Slot Fixes (not pushed yet)
 
