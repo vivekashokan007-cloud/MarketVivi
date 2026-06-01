@@ -16,6 +16,10 @@
 - Release versions aligned across both repos:
   - Android `2.3.83 / 214`
   - PWA `v2.3.83 · b214`
+- Oracle transport warning:
+  - `http://144.24.117.114:8443` is temporary evaluator-only transport.
+  - Do not route Upstox auth or order relay traffic through Oracle until TLS is deployed.
+- `Marketapp/GIVE_TO_ANTIGRAVITY.md` has been refreshed to the current `v2.3.83 / b214` architecture state.
 
 ## Update - 2026-05-31 - Gemini Evaluator Phase 1 App Wiring
 
