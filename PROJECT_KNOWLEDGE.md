@@ -1,5 +1,70 @@
 # Market Radar v2.1 — Project Knowledge (Apr 4 2026, b70)
 
+## Release Update - 2026-06-01 - v2.3.84 / b215
+
+- Pushed correction batch for post-market issues:
+  - evening evaluation reminder timing hardened
+  - poll loop aligned to 5-minute market slots
+  - coverage header clarified as `polls X/Y slots`
+  - swing rescan blank-state race fixed on display layer
+  - `Position for Tomorrow` removed from Trade tab
+  - ML refresh status now gives explicit feedback
+  - H2 evaluation persistence widened to full BNF/NF chain capture during `15:15–15:30 IST`
+- Still deferred for later discussion with Antigravity:
+  - NF50 breadth constituent/update architecture
+  - ML architecture split by `NF/BNF × intraday/swing`
+
+## Local Update - 2026-06-01 - Reminder + Poll Slot Fixes (not pushed yet)
+
+- Reminder notifications moved back under native evening-window control:
+  - morning `Day Evaluation Ready` notifications are now blocked in Kotlin
+  - stale alarms now reschedule instead of notifying outside the valid evaluation window
+  - duplicate reminder while evaluation is already running is suppressed
+- Polling logic improved on native side:
+  - dispatch now de-dupes by market slot instead of raw elapsed time
+  - next wake aligns to next 5-minute trading slot
+  - daily reset clears new slot-dedup keys
+- UI wording improved:
+  - watch header now labels coverage as `polls X/Y slots`
+  - expected coverage uses grace + first-poll anchoring to reduce false `missed` inflation
+- Scope is local only until next push.
+
+## Local Update - 2026-06-01 - Swing Rescan Blank Trade Tab (not pushed yet)
+
+- Trade-tab blank state traced to PWA refresh behavior, not a Kotlin crash.
+- During `SWING` mode switch or manual `Rescan`, the UI could overwrite the last valid trade view with an empty native brain payload before the new result arrived.
+- Local display-layer hardening added:
+  - preserve last good brain payload during transient empty refresh
+  - mark `brainRefreshPending` on mode switch / rescan
+  - show `Refreshing swing strategies from native brain...` while waiting
+  - if refreshed payload is valid but has zero candidates, show `No swing strategies ready right now` with brain reasoning/conflicts instead of `Lock & Scan`
+- Kotlin remains the functional owner; this patch only prevents misleading blank-state rendering in PWA.
+
+## Local Update - 2026-06-01 - Trade Tab Cleanup + Evaluation Outcome Investigation (not pushed yet)
+
+- `Position for Tomorrow` block removed locally from Trade tab.
+- Evening evaluation issue investigated:
+  - `Outcomes: 0` means evaluation finished but Python returned no evaluable outcome rows.
+  - likely serious cause: H2 evaluator depends on exact option-leg chain slices in the 15:15–15:30 window.
+  - native chain-slice persistence captures legs from the current poll’s generated candidates/watchlist, not a guaranteed replayable set for every earlier surfaced recommendation.
+  - result: valid snapshots can exist while evening labeling still saves `0` outcomes.
+- Kept in local evening fix bundle for architecture review before push.
+
+## Local Update - 2026-06-01 - H2 Evaluation Capture + ML Refresh Feedback (not pushed yet)
+
+- Native H2 evaluation persistence widened locally:
+  - during `15:15–15:30 IST`, chain-slice storage now captures the full BNF and NF option chains, not just the current candidate/watchlist legs.
+  - purpose: keep exact leg prices available for saved recommendations so evening evaluation can still label them even if they disappear from the active watchlist by close.
+  - native diagnostics added:
+    - `ML_CHAIN_SLICE_H2_FULL`
+    - `EVAL_INPUTS: snapshots=X chainSlices=Y date=...`
+- ML feedback improved locally:
+  - `Outcomes` wording changed to `Evaluable outcomes saved`.
+  - zero-label completion now explains that no evaluable H2 outcomes were produced from the day's recommendations.
+  - `Refresh Status` now surfaces explicit no-change / done / running feedback instead of looking inert.
+  - ML panel now shows the last refresh time.
+- Scope is local only until next push.
+
 ## Release Update - 2026-05-31 - v2.3.83 / b214
 
 - First AI-in-ML integration slice completed on app side.

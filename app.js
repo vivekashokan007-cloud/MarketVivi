@@ -229,9 +229,12 @@ const STATE = {
     effectiveBias: null,
     brainLastRun: 0,          // timestamp of last brain run
     brainError: null,         // last error (for debug)
+    brainRefreshPending: false,
+    brainRefreshReason: '',
     morningExpandedAfterLock: false,
     mlModelStatus: null,
     mlModelStatusAt: 0,
+    mlStatusRefreshAt: 0,
     mlDecisions: null,
     mlDecisionsAt: 0,
     evaluatorJob: null,
@@ -340,7 +343,7 @@ function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServ
     const expectedFullDay = Number.isFinite(serviceStatus?.expectedPollsFullDay) ? serviceStatus.expectedPollsFullDay : 76;
     const missed = Number.isFinite(serviceStatus?.missedPollsToday) ? serviceStatus.missedPollsToday : Math.max(expectedByNow - polls, 0);
     const coverage = serviceStatus?.pollCoverageState || '';
-    const coverageLabel = expectedByNow > 0 ? ` · ${polls}/${expectedByNow}` : '';
+    const coverageLabel = expectedByNow > 0 ? ` · polls ${polls}/${expectedByNow} slots` : '';
     if (serviceStatus?.running) {
         const missLabel = missed > 0 ? ` · missed ${missed}` : '';
         watchEl.textContent = `🟢 Auto polling${coverageLabel}${missLabel}`;
@@ -361,9 +364,9 @@ function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServ
             break;
         case 'OUT_OF_HOURS':
             if (coverage === 'COMPLETE' && polls >= expectedFullDay) {
-                watchEl.textContent = `✅ Session complete · ${polls}/${expectedFullDay}${suffix}`;
+                watchEl.textContent = `✅ Session complete · polls ${polls}/${expectedFullDay} slots${suffix}`;
             } else if (expectedByNow > 0 && polls > 0) {
-                watchEl.textContent = `⏸ Session partial · ${polls}/${expectedByNow}${missed > 0 ? ` · missed ${missed}` : ''}${suffix}`;
+                watchEl.textContent = `⏸ Session partial · polls ${polls}/${expectedByNow} slots${missed > 0 ? ` · missed ${missed}` : ''}${suffix}`;
             } else {
                 watchEl.textContent = `⏸ Waiting for 9:15 auto polling${suffix}`;
             }
@@ -407,6 +410,8 @@ function clearSessionDerivedState() {
     STATE.live = null;
     STATE.rangeSigma = 0;
     STATE.lastScanTime = null;
+    STATE.brainRefreshPending = false;
+    STATE.brainRefreshReason = '';
 }
 
 function clearMorningStorage() {
@@ -778,6 +783,44 @@ function getBrainData() {
     }
 }
 
+function hasBrainPayload(brain) {
+    return !!(brain && typeof brain === 'object' && Object.keys(brain).length > 0);
+}
+
+function noteBrainRefreshRequested(reason = 'refresh') {
+    STATE.brainRefreshPending = true;
+    STATE.brainRefreshReason = reason;
+}
+
+function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
+    const incoming = nextBrain && typeof nextBrain === 'object' ? nextBrain : {};
+    const incomingHasPayload = hasBrainPayload(incoming);
+    const currentHasPayload = hasBrainPayload(bd);
+
+    if (!incomingHasPayload && preserveLastGood && currentHasPayload) {
+        return false;
+    }
+
+    bd = incoming;
+    applyBrainRangeSigma(bd);
+
+    if (incomingHasPayload) {
+        STATE.brainReady = true;
+        STATE.brainInsights = incoming;
+        STATE.brainLastRun = Date.now();
+        STATE.brainError = incoming.candidate_error || null;
+        STATE.candidates = Array.isArray(incoming.generated_candidates) ? incoming.generated_candidates.slice() : [];
+        STATE.watchlist = Array.isArray(incoming.watchlist) ? incoming.watchlist.slice() : [];
+        STATE.positioningCandidates = Array.isArray(incoming.positioning_candidates) ? incoming.positioning_candidates.slice() : [];
+        STATE.positioningBias = incoming.positioning_bias || null;
+        STATE.brainRefreshPending = false;
+        STATE.brainRefreshReason = '';
+        STATE.lastScanTime = Date.now();
+        return true;
+    }
+    return false;
+}
+
 function parseMLStatus(raw) {
     const fallback = { ok: false, version: 'unknown', nTrain: 0, thrTake: 0, thrWatch: 0, baseWr: 0, sampleP: 0, error: '' };
     const status = safeParseNB(raw, fallback);
@@ -832,17 +875,7 @@ function refreshBrainData() {
             return bd;
         }
     }
-    bd = getBrainData();
-    applyBrainRangeSigma(bd);
-    if (bd && Object.keys(bd).length) {
-        STATE.brainReady = true;
-        STATE.brainInsights = bd;
-        STATE.brainLastRun = Date.now();
-        STATE.candidates = Array.isArray(bd.generated_candidates) ? bd.generated_candidates.slice() : [];
-        STATE.watchlist = Array.isArray(bd.watchlist) ? bd.watchlist.slice() : [];
-        STATE.positioningCandidates = Array.isArray(bd.positioning_candidates) ? bd.positioning_candidates.slice() : [];
-        STATE.positioningBias = bd.positioning_bias || null;
-    }
+    adoptBrainResult(getBrainData());
     return bd;
 }
 
@@ -873,17 +906,7 @@ function pullNativeState() {
     if (latestPoll && Object.keys(latestPoll).length) {
         STATE.live = latestPoll;
     }
-    if (brainResult && Object.keys(brainResult).length) {
-        bd = brainResult;
-        applyBrainRangeSigma(bd);
-        STATE.brainReady = true;
-        STATE.brainInsights = brainResult;
-        STATE.brainLastRun = Date.now();
-        STATE.candidates = Array.isArray(brainResult.generated_candidates) ? brainResult.generated_candidates.slice() : [];
-        STATE.watchlist = Array.isArray(brainResult.watchlist) ? brainResult.watchlist.slice() : [];
-        STATE.positioningCandidates = Array.isArray(brainResult.positioning_candidates) ? brainResult.positioning_candidates.slice() : [];
-        STATE.positioningBias = brainResult.positioning_bias || null;
-    }
+    adoptBrainResult(brainResult);
     return { status, pollHistory, latestPoll, brainResult };
 }
 
@@ -1314,17 +1337,8 @@ window.syncFromNative = function(dataJson) {
         
         // Phase 4: Full brain result from Kotlin
         if (data.brainResult) {
-            bd = data.brainResult;
-            applyBrainRangeSigma(bd);
-            STATE.brainInsights = data.brainResult;
-            STATE.brainLastRun = Date.now();
-            STATE.brainReady = true;
-            STATE.brainError = null;
+            adoptBrainResult(data.brainResult);
             STATE._nativeBrainAlerts = data.brainResult.alerts || [];
-            STATE.positioningCandidates = Array.isArray(data.brainResult.positioning_candidates)
-                ? data.brainResult.positioning_candidates.slice()
-                : [];
-            STATE.positioningBias = data.brainResult.positioning_bias || null;
             
             // Effective bias from Kotlin brain
             const eb = data.brainResult.effective_bias;
@@ -1399,6 +1413,7 @@ window.syncFromNative = function(dataJson) {
 // ═══ TRADE MODE TOGGLE — Intraday vs Swing ═══
 function toggleTradeMode() {
     STATE.tradeMode = STATE.tradeMode === 'swing' ? 'intraday' : 'swing';
+    noteBrainRefreshRequested(`mode:${STATE.tradeMode}`);
     if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) {
         NativeBridge.setTradeMode(STATE.tradeMode);
     }
@@ -1419,6 +1434,7 @@ async function rescanStrategies() {
     // F.2 reduced: brain.py generates candidates inside analyze().
     // Ask Kotlin for a fresh poll/brain cycle, then re-render current state.
     try {
+        noteBrainRefreshRequested(`rescan:${STATE.tradeMode}`);
         if (typeof NativeBridge !== 'undefined' && NativeBridge.requestImmediatePoll) {
             NativeBridge.requestImmediatePoll();
         }
@@ -2398,6 +2414,29 @@ async function triggerDayEvaluation() {
     }
 }
 
+function triggerRefreshMLStatus() {
+    try {
+        getMLModelStatusCached(true);
+        STATE.mlStatusRefreshAt = Date.now();
+        renderAll();
+        const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});
+        const done = service.evaluationDoneToday === true;
+        const outcomes = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
+        if (done) {
+            const detail = outcomes === 0
+                ? "ML status refreshed. Evaluation is done, but no evaluable H2 outcomes were saved from today's recommendations."
+                : `ML status refreshed. Evaluation is done with ${outcomes} outcomes saved.`;
+            alert(detail);
+        } else if (service.evaluationRunning === true) {
+            alert('ML status refreshed. Evaluation is still running.');
+        } else {
+            alert('ML status refreshed.');
+        }
+    } catch (e) {
+        alert('Could not refresh ML status: ' + e.message);
+    }
+}
+
 function setExecutionSandboxFromUI(enabled) {
     try {
         if (!window.NativeBridge?.setExecutionSandboxEnabled) {
@@ -3202,6 +3241,23 @@ function renderWatchlist() {
     }
 
     if (!(bd.watchlist || []).length && !(bd.generated_candidates || []).length) {
+        if (STATE.brainRefreshPending) {
+            const modeLabel = STATE.tradeMode === 'intraday' ? 'intraday' : 'swing';
+            el.innerHTML = `<div class="empty-state">Refreshing ${modeLabel} strategies from native brain...</div>`;
+            return;
+        }
+        if (STATE.brainReady && hasBrainPayload(bd)) {
+            const verdict = bd.verdict || {};
+            const conflicts = Array.isArray(verdict.conflicts) ? verdict.conflicts.filter(Boolean) : [];
+            const reason = bd.candidate_error || verdict.reasoning || bd.decisionReason || bd.decision_reason || '';
+            el.innerHTML = `
+                <div class="empty-state">
+                    No ${STATE.tradeMode} strategies ready right now
+                    ${reason ? `<div style="margin-top:6px;font-size:12px;color:var(--text-muted)">${reason}</div>` : ''}
+                    ${conflicts.length ? `<div style="margin-top:6px;font-size:11px;color:var(--warn)">⚠️ ${conflicts.join(' · ')}</div>` : ''}
+                </div>`;
+            return;
+        }
         el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
@@ -3232,6 +3288,7 @@ function renderWatchlist() {
     let html = `<div class="${goClass}">
         <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'} · ${modeLabel}</div>
         <div class="go-detail">${brainWatchlist.length} brain watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        ${STATE.brainRefreshPending ? `<div class="go-detail" style="font-size:11px;color:var(--accent)">🔄 Refreshing ${STATE.tradeMode.toUpperCase()} candidates...</div>` : ''}
         ${(() => {
             if (!STATE.lastScanTime) return '';
             const ageMin = Math.floor((Date.now() - STATE.lastScanTime) / 60000);
@@ -3269,110 +3326,7 @@ function renderWatchlist() {
         </div>
     </div>`;
 
-    // ═══ PHASE 8: INSTITUTIONAL POSITIONING CYCLE ═══
-    // Collapsible section: auto-expanded after 3:15PM, collapsed before
-    // Global context is MANDATORY — gates positioning strategies
-    const has315 = STATE._captured315pm && bd.tomorrow_signal;
-    const posOpen = has315 ? 'open' : '';
-    const sig = bd.tomorrow_signal;
-    const sigColor = sig ? (sig.signal === 'BEARISH' ? 'var(--danger)' : sig.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)') : 'var(--text-muted)';
-
-    html += `<details class="positioning-section" ${posOpen}>
-        <summary class="positioning-summary">
-            ⚡ Position for Tomorrow
-            ${sig ? `<span class="pos-signal-badge" style="color:${sigColor}"> · ${sig.signal} (${sig.strength}/5)</span>` : STATE._captured2pm ? ' · ⏳ Awaiting 3:15 PM' : ''}
-        </summary>
-        <div class="positioning-body">`;
-
-    // Global Direction inputs — Dow Now + Crude Now + GIFT Now (b91: evening ref for GIFT)
-    const gd = (JSON.parse(NativeBridge.getGlobalDirection() || '{}'));
-    const hasMorningRef = gd.dowClose || gd.crudeSettle;
-    const dowPct = (gd.dowClose && gd.dowNow) ? (((gd.dowNow - gd.dowClose) / gd.dowClose) * 100).toFixed(2) : null;
-    const crudePct = (gd.crudeSettle && gd.crudeNow) ? (((gd.crudeNow - gd.crudeSettle) / gd.crudeSettle) * 100).toFixed(2) : null;
-    // b91: GIFT reference from evening close (most direct gap signal for tomorrow)
-    const giftRef = (JSON.parse(NativeBridge.getConfig('eveningClose') || '{}'))?.gift || null;
-    const giftPct = (giftRef && gd.giftNow) ? (((gd.giftNow - giftRef) / giftRef) * 100).toFixed(2) : null;
-    const giftDir = giftPct !== null ? (giftPct >= C.GIFT_THRESHOLD ? 'BULL' : giftPct <= -C.GIFT_THRESHOLD ? 'BEAR' : 'NEUTRAL')
-        : bd.gapInfo?.sigma ? (bd.gapInfo.sigma > 0.3 ? 'BULL' : bd.gapInfo.sigma < -0.3 ? 'BEAR' : 'NEUTRAL') : null;
-    const dowDir = dowPct !== null ? (dowPct >= C.DOW_THRESHOLD ? 'BULL' : dowPct <= -C.DOW_THRESHOLD ? 'BEAR' : 'NEUTRAL') : null;
-    const crudeDir = crudePct !== null ? (crudePct >= C.CRUDE_THRESHOLD ? 'BEAR' : crudePct <= -C.CRUDE_THRESHOLD ? 'BULL' : 'NEUTRAL') : null;
-    const dirIcon = (d) => d === 'BULL' ? '🟢' : d === 'BEAR' ? '🔴' : d === 'NEUTRAL' ? '⚪' : '—';
-
-    html += `<div class="global-context-section">
-        <div class="gc-title">🌍 Global Direction <span style="color:var(--danger);font-size:11px">(enter live values)</span></div>
-        ${!hasMorningRef && !giftRef ? '<div style="color:var(--warn);font-size:11px;margin-bottom:6px">⚠️ Enter Dow Close & Crude Settle in morning inputs, GIFT Close in evening section</div>' : ''}
-        <div class="global-context-grid">
-            <div class="input-group compact">
-                <label>GIFT Now</label>
-                <input type="text" inputmode="text" id="in-gift-now" class="input-field input-sm" placeholder="${giftRef || '24000'}"
-                    value="${gd.giftNow ?? ''}">
-                ${giftPct !== null ? `<div style="font-size:10px;color:${giftPct > 0 ? 'var(--green)' : giftPct < 0 ? 'var(--danger)' : 'var(--text-muted)'}">${giftPct > 0 ? '+' : ''}${giftPct}% ${dirIcon(giftDir)}</div>` : giftRef ? '<div style="font-size:9px;color:var(--text-muted)">vs eve ' + giftRef + '</div>' : '<div style="font-size:9px;color:var(--warn)">Set GIFT Close in 🌙 Evening</div>'}
-            </div>
-            <div class="input-group compact">
-                <label>Dow Now</label>
-                <input type="text" inputmode="text" id="in-dow-now" class="input-field input-sm" placeholder="e.g. 46120"
-                    value="${gd.dowNow ?? ''}">
-                ${dowPct !== null ? `<div style="font-size:10px;color:${dowPct < 0 ? 'var(--danger)' : dowPct > 0 ? 'var(--green)' : 'var(--text-muted)'}">${dowPct > 0 ? '+' : ''}${dowPct}% ${dirIcon(dowDir)}</div>` : ''}
-            </div>
-            <div class="input-group compact">
-                <label>Crude Now</label>
-                <input type="text" inputmode="text" id="in-crude-now" class="input-field input-sm" placeholder="e.g. 85.0"
-                    value="${gd.crudeNow ?? ''}">
-                ${crudePct !== null ? `<div style="font-size:10px;color:${crudePct > 0 ? 'var(--danger)' : crudePct < 0 ? 'var(--green)' : 'var(--text-muted)'}">${crudePct > 0 ? '+' : ''}${crudePct}% ${dirIcon(crudeDir)} India</div>` : ''}
-            </div>
-        </div>
-        <button id="btn-save-global-dir" class="btn btn-sm" style="margin-top:6px;padding:4px 16px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer">💾 Save</button>
-        <span id="global-dir-saved" style="font-size:10px;color:var(--green);margin-left:8px;display:none">✓ Saved</span>
-        <div id="global-dir-status" style="font-size:10px;color:var(--text-muted);margin-top:4px">${
-            (gd.dowNow || gd.crudeNow || gd.giftNow)
-            ? `Loaded: ${(JSON.parse(NativeBridge.getGlobalDirection() || '{}'))._date || API.todayIST()} · GIFT ${gd.giftNow || '--'}, Dow ${gd.dowNow || '--'}, Crude ${gd.crudeNow || '--'}`
-            : ''
-        }</div>
-        ${(dowDir || crudeDir || giftDir) ? `<div style="font-size:11px;margin-top:4px">
-            ${giftDir ? `GIFT: ${dirIcon(giftDir)}` : ''} ${dowDir ? `Dow: ${dirIcon(dowDir)}` : ''} ${crudeDir ? `Crude: ${dirIcon(crudeDir)}` : ''}
-        </div>` : ''}
-    </div>`;
-
-    // ═══ POSITIONING TRADES — gated by direction inputs ═══
-    if (has315 && STATE.positioningCandidates?.length > 0) {
-        const gcFilled = gd.dowNow !== null && gd.crudeNow !== null;
-
-        if (!gcFilled) {
-            html += `<div class="positioning-gate">🔒 Enter Dow Futures Now & Crude Now above to unlock positioning strategies.</div>`;
-        } else {
-            html += `<div class="tomorrow-signal" style="border-color:${sigColor}; margin:12px 0">
-                <div class="signal-label">⚡ POSITION FOR TOMORROW</div>
-                <div class="signal-value" style="color:${sigColor}">${sig.signal} (${sig.strength}/5)</div>
-                ${sig.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global boost: ${sig.globalBoost > 0 ? '+' : ''}${sig.globalBoost}</div>` : ''}
-            </div>`;
-
-            // Free capital check for positioning
-            let marginUsed = 0;
-            for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
-                if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin
-            }
-            const freeCapital = C.CAPITAL - marginUsed;
-            const minPeakNeeded = STATE.positioningCandidates.length > 0 ? peakCash(STATE.positioningCandidates[STATE.positioningCandidates.length - 1]) : 0;
-
-            if (freeCapital < minPeakNeeded) {
-                html += `<div class="positioning-gate" style="color:var(--warn)">⚠️ Free capital ₹${(freeCapital/1000).toFixed(1)}K — may not cover buy leg ₹${(minPeakNeeded/1000).toFixed(1)}K.</div>`;
-            }
-
-            // Display-only: any positioning candidates must already be selected by native brain.
-            const posMergeCount = STATE.positioningCandidates.length;
-            if (posMergeCount > 0) {
-                html += `<div style="font-size:11px;color:var(--accent);padding:4px 0">⚡ ${posMergeCount} positioning candidates merged into strategy sections below</div>`;
-            }
-        }
-    } else if (!has315) {
-        const statusMsg = STATE._captured2pm
-            ? '✅ 2:00 PM baseline captured. Waiting for 3:15 PM comparison.'
-            : 'Positioning analysis starts at 2:00 PM. Enter global cues at 3:15 PM.';
-        html += `<div class="positioning-gate" style="color:var(--text-muted)">${statusMsg}</div>`;
-    }
-
-    html += `</div></details>`;
-    // ═══ END POSITIONING SECTION ═══
+    // Position-for-tomorrow planning removed from Trade tab.
 
     const nfCands = brainWatchlist.filter(c => c.index === 'NF');
     const bnfCands = brainWatchlist.filter(c => c.index === 'BNF');
@@ -3862,8 +3816,12 @@ function renderML() {
     const evaluationDone = service.evaluationDoneToday === true;
     const evaluationRunning = service.evaluationRunning === true;
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
+    const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
     const evaluationButtonText = evaluationDone ? '✅ Today Done' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
     const evaluationButtonDisabled = evaluationDone || evaluationRunning;
+    const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
+        ? new Date(STATE.mlStatusRefreshAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
+        : '';
     const evaluatorJob = STATE.evaluatorJob || null;
     const evaluatorStatus = evaluatorStatusLabel(evaluatorJob?.status);
     const evaluatorProposalCount = Array.isArray(STATE.evaluatorProposals) ? STATE.evaluatorProposals.length : 0;
@@ -3924,7 +3882,7 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${service.lastEvaluationOutcomeCount != null ? ` · Outcomes: <b>${service.lastEvaluationOutcomeCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}
+                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Evaluable outcomes saved: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 ? `<br><span style="color:var(--warn)">No evaluable H2 labels were produced from today's saved recommendations.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--green)">
@@ -3957,10 +3915,11 @@ function renderML() {
         <section class="section">
             <h2>⚙️ ML Controls</h2>
             <div class="v1-trade-btns" style="margin-top:0">
-                <button onclick="getMLModelStatusCached(true);renderAll()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
+                <button onclick="triggerRefreshMLStatus()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
                 <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">📊 ML Status</button>
                 <button onclick="triggerDayEvaluation()" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px;${evaluationButtonDisabled ? 'opacity:.55;pointer-events:none' : ''}" ${evaluationButtonDisabled ? 'disabled' : ''}>${evaluationButtonText}</button>
             </div>
+            ${mlStatusRefreshText ? `<div class="brain-detail" style="margin-top:6px;color:var(--text-muted)">Status refreshed: ${mlStatusRefreshText}</div>` : ''}
             <div class="brain-card" style="border-left-color:var(--accent);margin-top:8px">
                 <div class="brain-card-header">
                     <span class="brain-icon">🛠</span>
@@ -5130,14 +5089,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const brJson = window.NativeBridge.getBrainResult();
                     if (brJson && brJson !== '{}' && brJson !== 'null' && brJson !== '') {
                         const br = JSON.parse(brJson);
-                        bd = br;
-                        STATE.brainInsights = br;
-                        STATE.brainLastRun = Date.now();
-                        STATE.brainReady = true;
-                        STATE.candidates = Array.isArray(br.generated_candidates) ? br.generated_candidates.slice() : [];
-                        STATE.watchlist = Array.isArray(br.watchlist) ? br.watchlist.slice() : [];
-                        STATE.positioningCandidates = Array.isArray(br.positioning_candidates) ? br.positioning_candidates.slice() : [];
-                        STATE.positioningBias = br.positioning_bias || null;
+                        adoptBrainResult(br);
                         if (br.effective_bias && br.effective_bias.bias) {
                             STATE.effectiveBias = {
                                 bias: br.effective_bias.bias, strength: br.effective_bias.strength || '',
