@@ -3155,7 +3155,8 @@ function renderOI() {
             const total = Number.isFinite(nf50.total) && nf50.total > 0 ? nf50.total : 50;
             const considered = Number.isFinite(nf50.considered) && nf50.considered > 0 ? nf50.considered : total;
             const pct = Number.isFinite(nf50.advPct) ? nf50.advPct : (Number.isFinite(nf50.pct) ? nf50.pct : null);
-            const coverageNote = considered < total ? ` · coverage ${considered}/${total}` : '';
+            const missingCount = Number.isFinite(nf50.missingCount) ? nf50.missingCount : Math.max(0, total - considered);
+            const coverageNote = considered < total ? ` · coverage ${considered}/${total}${missingCount > 0 ? ` · missing ${missingCount}` : ''}` : '';
             return `
         <div class="env-row">
             <span class="env-row-label">NF50 Breadth</span>

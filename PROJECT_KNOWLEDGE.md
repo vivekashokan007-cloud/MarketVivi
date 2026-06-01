@@ -42,6 +42,21 @@
   - exact legs with strike, option type, and entry LTP where available
 - This adds the recommendation-bound evaluation ledger on top of the existing full-chain H2 safety net.
 
+## Local Update - 2026-06-01 - NF50 Remote Constituent Architecture Phase 1 (not pushed yet)
+
+- Kotlin NF50 breadth now supports a remote-managed constituent source with bundled fallback.
+- Remote lookup order:
+  - `config_nf50_constituents`
+  - `nf50_constituents`
+  - `app_config.key = nf50_constituents`
+  - bundled Kotlin fallback
+- Added 12h local cache in `SharedPreferences`.
+- NF50 breadth payload now includes:
+  - `source`
+  - `missingCount`
+  - `missingKeys`
+- Market tab now shows missing-count detail when NF50 coverage is partial.
+
 ## Local Update - 2026-06-01 - Reminder + Poll Slot Fixes (not pushed yet)
 
 - Reminder notifications moved back under native evening-window control:
@@ -1892,3 +1907,6 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Brain: `BRAIN_VERSION=2.3.82`
   - Web: `v2.3.82 · b213`
   - cache-bust: `app.js?v=1157`, `log-viewer.js?v=1157`
+- 2026-06-01 night: Prepared Supabase NF50 seeding files after `config_nf50_constituents` table verification. Seed source is Taurus Mutual Fund PDF `nifty-index-constituent-as-on-12_05_2026.pdf`; every constituent was mapped to a valid Upstox `NSE_EQ|ISIN` key. Added root files `SUPABASE_NF50_STEP3_SEED_ROWS.sql.txt` and `SUPABASE_NF50_STEP4_VERIFY_SEED.sql.txt`.
+- 2026-06-01 late night: tightened local NF50 remote-loader before push so app reads only `active=true` rows and only the latest `effective_date` snapshot from Supabase. This prevents future historical rows from being mixed into live breadth.
+- 2026-06-01 late night: prepared NF50 remote-config push as shared release `v2.3.86 / b217`. This batch adds Supabase-backed constituent loading with bundled fallback, 12h cache, and missing-symbol diagnostics in breadth payload/UI.
