@@ -1959,11 +1959,13 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - evaluator-backed canonical rows weight `4.0`
     - raw app-trade rows weight `3.0`
   - Retraining remains intentionally paused; this release only fixes the dataset contract and export path.
-- 2026-06-02 follow-up work for pending items 2 and 3 (local, not yet pushed):
+- 2026-06-02 release shipped to GitHub as `v2.3.92 / b223`:
+  - `Marketapp` pushed at commit `a571bc9` (`Bump release to v2.3.92`)
+  - `MarketVivi` pushed at commit `b2fb4be` (`Bump release to v2.3.92`)
   - Added Supabase schema patch files for native `canonical_won` support:
     - `supabase_canonical_won_schema_patch.sql`
     - `supabase_canonical_won_schema_patch.txt`
-  - Patch adds/backfills `canonical_won` on `ml_decisions`, `ml_features`, `ml_recommendation_outcomes`, `ml_evaluation_outcomes`, and `trades_v2`, plus `outcome_h2` on `ml_features` and `trades_v2`.
+  - Final patch was reduced to the real Supabase schema before execution. Actual live DB did not have `ml_features`, and `ml_decisions` did not have `outcome_h2`, so the executed patch only touched the real tables/columns that existed.
   - Retrain architecture redesigned without re-enabling training:
     - `MarketMLService` now exports two future training inputs:
       - `evaluation_outcomes.json`
@@ -1973,4 +1975,42 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
       - backtest rows weight `1.0`
       - evaluator-backed canonical rows weight `4.0`
       - raw app-trade closes weight `3.0`
-    - Retraining still remains intentionally paused; this change prepares the correct data contract for safe future re-enable.
+  - Retraining still remains intentionally paused; this change prepares the correct data contract for safe future re-enable.
+- 2026-06-02 post-release ML evaluation audit:
+  - App UI showed `748 outcomes saved`, but Supabase verification showed:
+    - `ml_brain_snapshots`: 71 rows for the day
+    - `ml_evaluation_outcomes`: 0 rows for the day
+    - `ml_recommendation_outcomes`: 0 rows for the day
+    - joined evaluation rows to snapshots: 0
+  - Root cause: `MarketMLService` reported the number of rows produced by `brain.evening_evaluator()` as if they were persisted, while `SupabaseClient.saveEvaluationOutcomes()` was posting the raw mixed payload (including legacy `won`) to mismatched tables. That payload shape did not match `ml_evaluation_outcomes` / `ml_recommendation_outcomes`, so persistence could fail silently while the UI still claimed success.
+  - Local fix prepared:
+    - `SupabaseClient.saveEvaluationOutcomes(sessionDate, body)` now splits the payload into:
+      - evaluation rows for `ml_evaluation_outcomes`
+      - primary-only recommendation rows for `ml_recommendation_outcomes`
+    - rows are whitelisted to real table columns only (`snapshot_id`, `candidate_id`, `role`, `sim_pnl_h2`, `outcome_h2`, `canonical_won`, `created_at`, plus `session_date` for recommendation rows)
+    - service prefs now store:
+      - `last_evaluation_outcome_count` = persisted count
+      - `last_evaluation_produced_count` = produced count
+    - ML UI text now says `Outcomes persisted` and separately shows `Produced`, so a future persistence failure cannot masquerade as a successful save.
+- 2026-06-02 same-day evaluation rerun override prepared locally:
+  - Added `NativeBridge.forceDayEvaluation()` and native service action `ACTION_DAY_EVALUATION_FORCE`.
+  - ML button behavior now becomes:
+    - normal state: `Evaluate Today`
+    - after same-day completion: `Re-evaluate Today`
+  - Forced rerun does not weaken the normal duplicate-run guard; it is an explicit separate path.
+  - Forced rerun clears the session's existing `ml_recommendation_outcomes` and matching `ml_evaluation_outcomes` rows before re-saving, so a repair rerun replaces today's data instead of duplicating it.
+- 2026-06-02 release prep: bumped both repos to shared version `v2.3.93 / b224` for the ML evaluation persistence repair release. Android `versionName=2.3.93`, `versionCode=224`, `BRAIN_VERSION=2.3.93`, web label `v2.3.93 · b224`, cache-bust `app.js?v=1166`.
+- 2026-06-02 ML evaluation persistence repair release contents:
+  - `SupabaseClient.saveEvaluationOutcomes(sessionDate, body)` now splits evaluator output into table-valid payloads:
+    - all evaluable rows -> `ml_evaluation_outcomes`
+    - primary-only rows -> `ml_recommendation_outcomes`
+  - Payloads are now whitelisted to real target columns only, instead of posting the raw mixed evaluator JSON to multiple incompatible tables.
+  - `MarketMLService` now records and reports:
+    - produced row count
+    - persisted row count
+  - ML UI now distinguishes `Produced` vs `Outcomes persisted`, so Supabase write failures can no longer masquerade as successful saves.
+  - Added explicit same-day repair path:
+    - `NativeBridge.forceDayEvaluation()`
+    - service action `ACTION_DAY_EVALUATION_FORCE`
+    - button label changes to `Re-evaluate Today` once the day is already marked complete
+  - Forced rerun clears today's prior recommendation/evaluation rows before saving replacement rows, preventing duplicate same-day outcomes during repair reruns.

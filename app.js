@@ -2572,6 +2572,26 @@ async function triggerDayEvaluation() {
     }
 }
 
+async function forceDayEvaluation() {
+    if (!window.NativeBridge?.forceDayEvaluation) {
+        alert('Native force re-evaluation is not available in this app version.');
+        return;
+    }
+    if (!confirm("Re-run today's ML evaluation?\n\nUse this only after an app update or save-path fix.")) {
+        return;
+    }
+    try {
+        const response = safeParseNB(window.NativeBridge.forceDayEvaluation(), {});
+        setTimeout(() => {
+            getMLModelStatusCached(true);
+            renderAll();
+        }, 3000);
+        alert(response.message || 'Forced re-evaluation started.');
+    } catch (e) {
+        alert('Forced re-evaluation trigger failed: ' + e.message);
+    }
+}
+
 function triggerRefreshMLStatus() {
     try {
         getMLModelStatusCached(true);
@@ -2580,10 +2600,11 @@ function triggerRefreshMLStatus() {
         const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});
         const done = service.evaluationDoneToday === true;
         const outcomes = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
+        const produced = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
         if (done) {
             const detail = outcomes === 0
-                ? "ML status refreshed. Evaluation is done, but no evaluable H2 outcomes were saved from today's recommendations."
-                : `ML status refreshed. Evaluation is done with ${outcomes} outcomes saved.`;
+                ? "ML status refreshed. Evaluation is done, but no outcomes were persisted to Supabase."
+                : `ML status refreshed. Evaluation is done with ${outcomes} outcomes persisted to Supabase${produced != null ? ` (${produced} produced)` : ''}.`;
             alert(detail);
         } else if (service.evaluationRunning === true) {
             alert('ML status refreshed. Evaluation is still running.');
@@ -3980,8 +4001,10 @@ function renderML() {
     const evaluationRunning = service.evaluationRunning === true;
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
     const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
-    const evaluationButtonText = evaluationDone ? '✅ Today Done' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
-    const evaluationButtonDisabled = evaluationDone || evaluationRunning;
+    const evaluationProducedCount = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
+    const evaluationButtonText = evaluationDone ? '↻ Re-evaluate Today' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
+    const evaluationButtonDisabled = evaluationRunning;
+    const evaluationButtonAction = evaluationDone ? 'forceDayEvaluation()' : 'triggerDayEvaluation()';
     const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
         ? new Date(STATE.mlStatusRefreshAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
         : '';
@@ -4058,7 +4081,7 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Evaluable outcomes saved: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 ? `<br><span style="color:var(--warn)">No evaluable H2 labels were produced from today's saved recommendations.</span>` : ''}
+                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable H2 labels were produced from today's saved recommendations.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--green)">
@@ -4136,7 +4159,7 @@ function renderML() {
             <div class="v1-trade-btns" style="margin-top:0">
                 <button onclick="triggerRefreshMLStatus()" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px">↻ Refresh Status</button>
                 <button onclick="triggerMLRetrain()" class="btn-paper" style="flex:1;padding:8px 10px">📊 ML Status</button>
-                <button onclick="triggerDayEvaluation()" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px;${evaluationButtonDisabled ? 'opacity:.55;pointer-events:none' : ''}" ${evaluationButtonDisabled ? 'disabled' : ''}>${evaluationButtonText}</button>
+                <button onclick="${evaluationButtonAction}" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px;${evaluationButtonDisabled ? 'opacity:.55;pointer-events:none' : ''}" ${evaluationButtonDisabled ? 'disabled' : ''}>${evaluationButtonText}</button>
             </div>
             ${mlStatusRefreshText ? `<div class="brain-detail" style="margin-top:6px;color:var(--text-muted)">Status refreshed: ${mlStatusRefreshText}</div>` : ''}
             <div class="brain-card" style="border-left-color:var(--accent);margin-top:8px">
