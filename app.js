@@ -880,7 +880,7 @@ function getMLEvaluationOutcomesCached(force = false) {
         return STATE.mlEvaluationOutcomes;
     }
     const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLEvaluationOutcomes === 'function'
-        ? NativeBridge.getMLEvaluationOutcomes(200)
+        ? NativeBridge.getMLEvaluationOutcomes(1000)
         : '[]';
     const parsed = safeParseNB(raw, []);
     STATE.mlEvaluationOutcomes = Array.isArray(parsed) ? parsed : [];
@@ -2572,26 +2572,6 @@ async function triggerDayEvaluation() {
     }
 }
 
-async function forceDayEvaluation() {
-    if (!window.NativeBridge?.forceDayEvaluation) {
-        alert('Native force re-evaluation is not available in this app version.');
-        return;
-    }
-    if (!confirm("Re-run today's ML evaluation?\n\nUse this only after an app update or save-path fix.")) {
-        return;
-    }
-    try {
-        const response = safeParseNB(window.NativeBridge.forceDayEvaluation(), {});
-        setTimeout(() => {
-            getMLModelStatusCached(true);
-            renderAll();
-        }, 3000);
-        alert(response.message || 'Forced re-evaluation started.');
-    } catch (e) {
-        alert('Forced re-evaluation trigger failed: ' + e.message);
-    }
-}
-
 function triggerRefreshMLStatus() {
     try {
         getMLModelStatusCached(true);
@@ -4002,9 +3982,9 @@ function renderML() {
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
     const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
     const evaluationProducedCount = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
-    const evaluationButtonText = evaluationDone ? '↻ Re-evaluate Today' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
-    const evaluationButtonDisabled = evaluationRunning;
-    const evaluationButtonAction = evaluationDone ? 'forceDayEvaluation()' : 'triggerDayEvaluation()';
+    const evaluationButtonText = evaluationDone ? '✅ Today Done' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
+    const evaluationButtonDisabled = evaluationRunning || evaluationDone;
+    const evaluationButtonAction = 'triggerDayEvaluation()';
     const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
         ? new Date(STATE.mlStatusRefreshAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
         : '';

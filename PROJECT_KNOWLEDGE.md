@@ -2022,3 +2022,36 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `triggerDayEvaluation()`
     - `forceDayEvaluation()`
   - This release is a narrow native bridge wiring correction so the `Re-evaluate Today` button can call the real Kotlin method.
+- 2026-06-02 post-rerun Supabase verification:
+  - Same-day repair rerun on `v2.3.94 / b225` completed successfully.
+  - App reported:
+    - `Produced: 748`
+    - `Outcomes persisted: 814`
+  - Supabase verification confirmed:
+    - `ml_evaluation_outcomes`: `748` rows for the day
+    - `ml_recommendation_outcomes`: `66` rows for the day
+    - joined evaluation rows to snapshots: `748`
+    - daily snapshots: `71`
+  - The `814 persisted` total is correct and equals:
+    - `748` evaluable outcome rows
+    - `66` primary recommendation rows
+  - Conclusion: the ML evaluation persistence bug is resolved. The remaining defect is reporting, not data capture.
+- 2026-06-02 local cleanup batch prepared after persistence verification:
+  - The temporary same-day repair path is now being removed to avoid future operator confusion:
+    - removed `NativeBridge.forceDayEvaluation()`
+    - removed `ACTION_DAY_EVALUATION_FORCE`
+    - removed JS bridge exposure for `forceDayEvaluation()`
+    - ML button returns to normal one-shot behavior:
+      - before evaluation: `Evaluate Today`
+      - after completion: disabled `Today Done`
+  - Root cause of zeroed 4-lane matrix identified:
+    - `SupabaseClient.fetchRecentEvaluationOutcomes()` used `fetchArrayFromTables(...)`, which returns the first non-empty table.
+    - Once `ml_recommendation_outcomes` became non-empty, the app stopped reading the full evaluator dataset and only saw the smaller recommendation table.
+  - Local fix prepared:
+    - `fetchRecentEvaluationOutcomes()` now reads `ml_evaluation_outcomes` directly
+    - falls back only to legacy `ml_decisions` if no evaluator rows exist
+    - WebView outcome fetch limit increased from `200` to `1000` so the lane matrix can read the full day
+  - Verification for this local cleanup batch:
+    - `python -m py_compile` passed for Python ML files
+    - `node --check MarketVivi/app.js` passed
+- 2026-06-02 release prep: bumped both repos to shared version `v2.3.95 / b226` for the post-repair cleanup batch. Android `versionName=2.3.95`, `versionCode=226`, `BRAIN_VERSION=2.3.95`, web label `v2.3.95 · b226`, cache-bust `app.js?v=1168`.
