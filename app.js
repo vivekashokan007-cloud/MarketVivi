@@ -362,6 +362,13 @@ function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServ
         case 'HOLIDAY':
             watchEl.textContent = `⏸ NSE holiday${suffix}`;
             break;
+        case 'OPEN':
+            if (polls > 0 || serviceStatus?.sessionActive) {
+                watchEl.textContent = `🟠 Auto polling paused${coverageLabel}${missed > 0 ? ` · missed ${missed}` : ''}`;
+            } else {
+                watchEl.textContent = `🔄 Market open · recovering auto polling${expectedByNow > 0 ? ` · ${expectedByNow} slots elapsed` : ''}`;
+            }
+            break;
         case 'OUT_OF_HOURS':
             if (coverage === 'COMPLETE' && polls >= expectedFullDay) {
                 watchEl.textContent = `✅ Session complete · polls ${polls}/${expectedFullDay} slots${suffix}`;
@@ -1462,6 +1469,11 @@ window.syncFromNative = function(dataJson) {
                     label: `${eb.strength ? eb.strength + ' ' : ''}${eb.bias}`
                 };
             }
+        }
+        try {
+            updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus?.(), {}));
+        } catch (e) {
+            console.warn('[syncFromNative] watch-status refresh failed:', e.message);
         }
         
         // Phase 3: Use brain-generated candidates if available (b114)
