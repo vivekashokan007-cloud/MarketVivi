@@ -3615,7 +3615,7 @@ function renderCandidateCard(cand, atm, rank) {
                 const mlBadge = cand.p_ml != null
                     ? `<div style="font-size:10px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
                            <span style="background:${mlColor};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">
-                               ML ${Math.round((cand.p_ml||0)*100)}% ${mlAction}${cand.mlOod?' ⚠️':''}
+                               ML ${Math.round((cand.p_ml||0)*100)}% ${mlAction}${cand.mlOodFlag ? ' ⚠️' : (cand.mlOod ? ' ⚠️' : '')}
                            </span>
                            ${cand.mlRegime ? `<span style="font-size:9px;color:var(--text-muted)">${cand.mlRegime}</span>` : ''}
                            ${cand.mlEdge != null ? `<span style="font-size:9px;color:${cand.mlEdge>=0?'var(--green)':'var(--danger)'}">${cand.mlEdge>=0?'+':''}${(cand.mlEdge*100).toFixed(0)}% edge</span>` : ''}
@@ -3624,16 +3624,17 @@ function renderCandidateCard(cand, atm, rank) {
                        ${cand.mlUnsureReason?.length ? `<div style="font-size:9px;color:var(--warn);margin-bottom:4px">ML unsure: ${cand.mlUnsureReason[0]}</div>` : ''}
                        ${cand.mlOodWarn?.length ? `<div style="font-size:9px;color:var(--danger);margin-bottom:4px">⚠️ ${cand.mlOodWarn[0]}</div>` : ''}`
                     : '';
-                const isBlocked = cand.mlOodBlocked === true;
                 const execModeLower = String(execMode || 'paper').toLowerCase();
                 const execGateRequired = execModeLower === 'sandbox' || execModeLower === 'live';
                 const execBlocked = execGateRequired && !execOk;
                 const execReasonText = execReasons.length ? execReasons.join(' | ') : 'Execution readiness checks not passed';
-                const realBtn = isBlocked
-                    ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#7B2FC4" title="${(cand.mlOodWarn||[]).join(' | ') || 'ML: No training data for this scenario'}">🚫 ML BLOCKED</button>`
-                    : execBlocked
-                        ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
-                        : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)">📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}</button>`;
+                const oodWarnText = (cand.mlOodWarn || []).join(' | ') || 'ML warning: low confidence / out-of-distribution scenario';
+                const oodTitle = cand.mlOodBlocked === true || cand.mlOodFlag === true || cand.mlOod === true
+                    ? ` title="${oodWarnText}"`
+                    : '';
+                const realBtn = execBlocked
+                    ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
+                    : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)"${oodTitle}>📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}${cand.mlOodBlocked || cand.mlOodFlag || cand.mlOod ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
             <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
