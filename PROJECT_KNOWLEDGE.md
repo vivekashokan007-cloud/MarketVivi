@@ -1915,3 +1915,20 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - 2026-06-02 later: prepared shared release `v2.3.87 / b218` for app-side ML 4-lane split. This batch adds native bridges for recent evaluated outcomes and brain snapshots, and makes the ML tab prefer primary evaluated outcomes over mixed decision rows when computing lane stats.
 - 2026-06-02 market-hours fix: auto-polling recovery hardened. `MarketOpenScheduler.maybeStartIngestionNow()` now starts `MarketWatchService` with `ACTION_FORCE_POLL` so market-open and resume paths fire an immediate first poll instead of waiting for the next loop slot. PWA `syncFromNative()` now refreshes the watch-status header after native poll pushes, and the header message for `marketReason=OPEN` was changed from misleading `Next tomorrow 9:15` idle text to explicit recovery/paused messaging.
 - 2026-06-02 release prep: bumped both repos to shared version `v2.3.88 / b219` for the market-hours auto-polling recovery patch.
+- 2026-06-02 pushed shared release `v2.3.88 / b219`.
+  - `Marketapp` commit: `cbb99d4` (`Harden auto polling recovery v2.3.88`)
+  - `MarketVivi` commit: `d540645` (`Update watch status recovery v2.3.88`)
+  - Signed Android release workflow should trigger because `Marketapp/app/build.gradle.kts` changed and the GitHub release workflow is path-filtered on that file.
+- 2026-06-02 Claude advanced audits reviewed in full:
+  - `GOD_MODE_AUDIT_2_v2_3_87_20260602.md`
+  - `ML_ARCHITECTURE_AUDIT_v2_3_87_20260602.md`
+  - Highest-priority confirmed work order: `timezone/H2 outcome fix` -> `tradeMode/trade_mode snapshot mismatch` -> `ml_engine ood_score() 3-vs-4 return bug` -> `online_update safety gate` -> `canonical won-label unification`.
+- 2026-06-02 audit remediation in progress, app-side fixes implemented locally:
+  - H2 evaluator timezone fix: `MarketWatchService` now stamps `dateISO` and `pollTs` in IST, and `brain.py` now parses `poll_ts` as an offset-aware datetime before applying the 15:15-15:30 IST H2 window.
+  - Snapshot naming fix: `brain.take_poll_snapshot()` now reads `tradeMode` first and falls back to legacy `trade_mode`.
+  - ML tuple bug fix: `ml_engine.FeatureEngine.ood_score()` now always returns 4 values, matching `MLEngine.predict()` unpacking.
+  - Online-update safety gate: `ml_train.online_update()` currently short-circuits with reason `online_update_disabled_pending_label_unification`; `MarketMLService` logs this as an intentional skip instead of a fake probability update.
+  - App-side label cleanup: `ml_train` now resolves labels through `_resolve_training_won()` with priority `canonical_won -> outcome_h2 -> won -> pnl`; generic row parsing for holdout/training now prefers `canonical_won -> outcome_h2 -> won`; `MarketMLService.updateMLFeatureOutcome()` follows the same preference order when explicit label fields exist.
+  - Retrain hard pause added: nightly/manual retraining is intentionally paused in both Kotlin and Python pending full canonical label unification. `MarketMLService.checkRetrainReadiness()` now shows a paused-state notification instead of a ready-state threshold message, `runNightlyTraining()` exits unless hidden pref `ml_retrain_force_enable=true`, and `ml_train.run()` returns `retrain_disabled_pending_canonical_won_unification`.
+  - Remaining architecture work after this batch: full canonical `won` unification across historical backtest CSV, evening evaluator persistence schema, and any future re-enabled retrain/deploy path. No further app-side auto-mutation should happen until that cross-dataset contract is redesigned.
+- 2026-06-02 release prep: bumped both repos to shared version `v2.3.89 / b220` for the first Claude-audit remediation batch. Scope of this batch: H2 timezone correctness, snapshot `tradeMode` fix, ML `ood_score()` tuple fix, online-update freeze, app-side label-priority cleanup, and retrain hard-pause until canonical label architecture is redesigned.
