@@ -2014,3 +2014,11 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - service action `ACTION_DAY_EVALUATION_FORCE`
     - button label changes to `Re-evaluate Today` once the day is already marked complete
   - Forced rerun clears today's prior recommendation/evaluation rows before saving replacement rows, preventing duplicate same-day outcomes during repair reruns.
+- 2026-06-02 release prep: bumped both repos to shared version `v2.3.94 / b225` for the native bridge wiring fix. Android `versionName=2.3.94`, `versionCode=225`, `BRAIN_VERSION=2.3.94`, web label `v2.3.94 · b225`, cache-bust `app.js?v=1167`.
+- 2026-06-02 native bridge repair:
+  - The app dialog correctly showed native `Build Version: 2.3.93`, so the rerun failure was not a version mismatch.
+  - Root cause was in `MainActivity.injectNativeBridge()`: the JS wrapper exposed `triggerDayEvaluation()` but did not expose `forceDayEvaluation()`, even though `NativeBridge.forceDayEvaluation()` existed in Kotlin.
+  - Fix: injected JS bridge now exports:
+    - `triggerDayEvaluation()`
+    - `forceDayEvaluation()`
+  - This release is a narrow native bridge wiring correction so the `Re-evaluate Today` button can call the real Kotlin method.
