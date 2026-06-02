@@ -858,12 +858,124 @@ function getMLDecisionsCached(force = false) {
         return STATE.mlDecisions;
     }
     const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLDecisions === 'function'
-        ? NativeBridge.getMLDecisions(8)
+        ? NativeBridge.getMLDecisions(120)
         : '[]';
     const parsed = safeParseNB(raw, []);
     STATE.mlDecisions = Array.isArray(parsed) ? parsed : [];
     STATE.mlDecisionsAt = now;
     return STATE.mlDecisions;
+}
+
+function getMLEvaluationOutcomesCached(force = false) {
+    const ttlMs = 90 * 1000;
+    const now = Date.now();
+    if (!force && Array.isArray(STATE.mlEvaluationOutcomes) && (now - STATE.mlEvaluationOutcomesAt) < ttlMs) {
+        return STATE.mlEvaluationOutcomes;
+    }
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLEvaluationOutcomes === 'function'
+        ? NativeBridge.getMLEvaluationOutcomes(200)
+        : '[]';
+    const parsed = safeParseNB(raw, []);
+    STATE.mlEvaluationOutcomes = Array.isArray(parsed) ? parsed : [];
+    STATE.mlEvaluationOutcomesAt = now;
+    return STATE.mlEvaluationOutcomes;
+}
+
+function getMLBrainSnapshotsCached(force = false) {
+    const ttlMs = 90 * 1000;
+    const now = Date.now();
+    if (!force && Array.isArray(STATE.mlBrainSnapshots) && (now - STATE.mlBrainSnapshotsAt) < ttlMs) {
+        return STATE.mlBrainSnapshots;
+    }
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLBrainSnapshots === 'function'
+        ? NativeBridge.getMLBrainSnapshots(200)
+        : '[]';
+    const parsed = safeParseNB(raw, []);
+    STATE.mlBrainSnapshots = Array.isArray(parsed) ? parsed : [];
+    STATE.mlBrainSnapshotsAt = now;
+    return STATE.mlBrainSnapshots;
+}
+
+function normalizeDecisionIndex(row = {}) {
+    const raw = String(row.index_key || row.index || row.symbol || '').toUpperCase();
+    if (raw.includes('BNF') || raw.includes('BANKNIFTY')) return 'BNF';
+    if (raw.includes('NF') || raw.includes('NIFTY')) return 'NF';
+    return 'UNK';
+}
+
+function normalizeDecisionMode(row = {}) {
+    const raw = String(row.trade_mode || row.mode || '').toLowerCase();
+    if (raw === 'intraday') return 'intraday';
+    if (raw === 'swing') return 'swing';
+    const strategy = String(row.strategy || row.recommendation_strategy || '').toUpperCase();
+    if (strategy === 'IRON_CONDOR' || strategy === 'IRON_BUTTERFLY') return 'intraday';
+    return 'unknown';
+}
+
+function buildMlLaneStats(decisions = []) {
+    const lanes = {
+        NF_intraday: { index: 'NF', mode: 'intraday', rows: 0, labeled: 0, wins: 0 },
+        NF_swing: { index: 'NF', mode: 'swing', rows: 0, labeled: 0, wins: 0 },
+        BNF_intraday: { index: 'BNF', mode: 'intraday', rows: 0, labeled: 0, wins: 0 },
+        BNF_swing: { index: 'BNF', mode: 'swing', rows: 0, labeled: 0, wins: 0 }
+    };
+    for (const row of Array.isArray(decisions) ? decisions : []) {
+        const index = normalizeDecisionIndex(row);
+        const mode = normalizeDecisionMode(row);
+        const key = `${index}_${mode}`;
+        if (!lanes[key]) continue;
+        lanes[key].rows += 1;
+        const won = row?.won;
+        const labeled = won === true || won === false || won === 0 || won === 1;
+        if (!labeled) continue;
+        lanes[key].labeled += 1;
+        if (won === true || won === 1) lanes[key].wins += 1;
+    }
+    for (const lane of Object.values(lanes)) {
+        lane.winRate = lane.labeled > 0 ? ((lane.wins / lane.labeled) * 100) : null;
+    }
+    return lanes;
+}
+
+function buildMlLaneStatsFromOutcomes(outcomes = [], snapshots = []) {
+    const lanes = {
+        NF_intraday: { index: 'NF', mode: 'intraday', rows: 0, labeled: 0, wins: 0 },
+        NF_swing: { index: 'NF', mode: 'swing', rows: 0, labeled: 0, wins: 0 },
+        BNF_intraday: { index: 'BNF', mode: 'intraday', rows: 0, labeled: 0, wins: 0 },
+        BNF_swing: { index: 'BNF', mode: 'swing', rows: 0, labeled: 0, wins: 0 }
+    };
+    const snapshotMap = new Map();
+    for (const snap of Array.isArray(snapshots) ? snapshots : []) {
+        const id = Number(snap?.id);
+        if (Number.isFinite(id) && id > 0 && !snapshotMap.has(id)) snapshotMap.set(id, snap);
+    }
+    for (const row of Array.isArray(outcomes) ? outcomes : []) {
+        const role = String(row?.role || 'secondary').toLowerCase();
+        if (role !== 'primary') continue;
+        const outcome = row?.outcome_h2;
+        if (!(outcome === 0 || outcome === 1 || outcome === true || outcome === false)) continue;
+        const snapshotId = Number(row?.snapshot_id);
+        const snap = Number.isFinite(snapshotId) ? snapshotMap.get(snapshotId) : null;
+        let index = 'UNK';
+        let mode = 'unknown';
+        let strategy = '';
+        if (snap) {
+            const primary = safeParseNB(snap.primary_candidate_json, {});
+            index = normalizeDecisionIndex(primary);
+            strategy = String(primary?.type || '');
+            const ctx = safeParseNB(snap.context_json, {});
+            mode = normalizeDecisionMode({ trade_mode: ctx.trade_mode || ctx.tradeMode, strategy });
+        }
+        const key = `${index}_${mode}`;
+        if (!lanes[key]) continue;
+        lanes[key].rows += 1;
+        lanes[key].labeled += 1;
+        if (outcome === 1 || outcome === true) lanes[key].wins += 1;
+    }
+    for (const lane of Object.values(lanes)) {
+        lane.winRate = lane.labeled > 0 ? ((lane.wins / lane.labeled) * 100) : null;
+    }
+    return lanes;
 }
 
 function refreshBrainData() {
@@ -3813,6 +3925,8 @@ function renderML() {
     const pollHistory = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getPollHistory?.() : null, []);
     const signalStats = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getSignalAccuracyStats?.() : null, {});
     const decisions = getMLDecisionsCached();
+    const evaluationOutcomes = getMLEvaluationOutcomesCached();
+    const brainSnapshots = getMLBrainSnapshotsCached();
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
     const evaluationDone = service.evaluationDoneToday === true;
     const evaluationRunning = service.evaluationRunning === true;
@@ -3842,8 +3956,18 @@ function renderML() {
     const accuracyPct = Number.isFinite(signalStats.pct) ? signalStats.pct.toFixed(1) : '--';
     const recent = decisions.slice(0, 5);
     const labeledRows = decisions.filter(d => d?.won === true || d?.won === false || d?.won === 0 || d?.won === 1);
-    const labeledCount = labeledRows.length;
-    const winCount = labeledRows.filter(d => d?.won === true || d?.won === 1).length;
+    const fallbackLabeledCount = labeledRows.length;
+    const fallbackWinCount = labeledRows.filter(d => d?.won === true || d?.won === 1).length;
+    const outcomeLaneStats = buildMlLaneStatsFromOutcomes(evaluationOutcomes, brainSnapshots);
+    const fallbackLaneStats = buildMlLaneStats(decisions);
+    const outcomeLaneTotal = Object.values(outcomeLaneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0);
+    const laneStats = outcomeLaneTotal > 0 ? outcomeLaneStats : fallbackLaneStats;
+    const labeledCount = outcomeLaneTotal > 0
+        ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0)
+        : fallbackLabeledCount;
+    const winCount = outcomeLaneTotal > 0
+        ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.wins || 0), 0)
+        : fallbackWinCount;
     const labeledWinRate = labeledCount > 0 ? ((winCount / labeledCount) * 100).toFixed(1) : '--';
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
@@ -3894,7 +4018,50 @@ function renderML() {
                 <div class="brain-detail">
                     Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
                     Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
-                    Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b>
+                    Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b><br>
+                    Scope: <b>4 lanes tracked separately</b> (NF/BNF × intraday/swing) · Source: <b>${outcomeLaneTotal > 0 ? 'primary evaluated outcomes' : 'recent decision fallback'}</b>
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧭</span>
+                    <span class="brain-label">4-Lane Training Matrix</span>
+                </div>
+                <div class="brain-detail">
+                    ML review now treats these as separate populations. App-side reporting is split now; backend/oracle separation still depends on the later Antigravity dataset work.
+                </div>
+                <div style="overflow-x:auto;margin-top:8px">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left;padding:6px 4px;color:var(--text-muted)">Lane</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Rows</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Labeled</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Wins</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Win rate</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${[
+                                ['NF_intraday', 'NF intraday'],
+                                ['NF_swing', 'NF swing'],
+                                ['BNF_intraday', 'BNF intraday'],
+                                ['BNF_swing', 'BNF swing']
+                            ].map(([key, label]) => {
+                                const lane = laneStats[key] || {};
+                                const wr = Number.isFinite(lane.winRate) ? `${lane.winRate.toFixed(1)}%` : '--';
+                                return `
+                                    <tr>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border)"><b>${label}</b></td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${lane.rows || 0}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${lane.labeled || 0}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${lane.wins || 0}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${wr}</td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
@@ -4007,6 +4174,9 @@ function renderML() {
                 const rowStrategy = row.strategy || row.recommendation_strategy || '--';
                 const rowOutcome = row.outcome || row.result || row.label_quality || '--';
                 const rowTs = row.created_at || row.updated_at || row.poll_ts || '--';
+                const rowIndex = normalizeDecisionIndex(row);
+                const rowMode = normalizeDecisionMode(row);
+                const rowLane = rowIndex !== 'UNK' && rowMode !== 'unknown' ? `${rowIndex} · ${rowMode}` : (rowIndex !== 'UNK' ? rowIndex : '--');
                 return `
                     <div class="brain-card">
                         <div class="brain-card-header">
@@ -4014,7 +4184,7 @@ function renderML() {
                             <span class="brain-label">${rowAction} · ${rowStrategy}</span>
                             <span class="brain-strength">${rowOutcome}</span>
                         </div>
-                        <div class="brain-detail">${rowTs}</div>
+                        <div class="brain-detail">${escapeHtml(rowLane)} · ${escapeHtml(rowTs)}</div>
                     </div>
                 `;
             }).join('') : '<div class="empty-state">No ML decisions loaded yet</div>'}
