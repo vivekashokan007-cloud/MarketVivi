@@ -919,6 +919,20 @@ function normalizeDecisionMode(row = {}) {
     return 'unknown';
 }
 
+function resolveDecisionWon(row = {}) {
+    for (const key of ['canonical_won', 'outcome_h2', 'won']) {
+        const value = row?.[key];
+        if (value === true || value === 1) return 1;
+        if (value === false || value === 0) return 0;
+        if (typeof value === 'string') {
+            const text = value.trim().toLowerCase();
+            if (text === 'true' || text === '1' || text === 'yes') return 1;
+            if (text === 'false' || text === '0' || text === 'no') return 0;
+        }
+    }
+    return null;
+}
+
 function buildMlLaneStats(decisions = []) {
     const lanes = {
         NF_intraday: { index: 'NF', mode: 'intraday', rows: 0, labeled: 0, wins: 0 },
@@ -932,11 +946,10 @@ function buildMlLaneStats(decisions = []) {
         const key = `${index}_${mode}`;
         if (!lanes[key]) continue;
         lanes[key].rows += 1;
-        const won = row?.won;
-        const labeled = won === true || won === false || won === 0 || won === 1;
-        if (!labeled) continue;
+        const won = resolveDecisionWon(row);
+        if (!(won === 0 || won === 1)) continue;
         lanes[key].labeled += 1;
-        if (won === true || won === 1) lanes[key].wins += 1;
+        if (won === 1) lanes[key].wins += 1;
     }
     for (const lane of Object.values(lanes)) {
         lane.winRate = lane.labeled > 0 ? ((lane.wins / lane.labeled) * 100) : null;
@@ -959,8 +972,8 @@ function buildMlLaneStatsFromOutcomes(outcomes = [], snapshots = []) {
     for (const row of Array.isArray(outcomes) ? outcomes : []) {
         const role = String(row?.role || 'secondary').toLowerCase();
         if (role !== 'primary') continue;
-        const outcome = row?.outcome_h2;
-        if (!(outcome === 0 || outcome === 1 || outcome === true || outcome === false)) continue;
+        const outcome = resolveDecisionWon(row);
+        if (!(outcome === 0 || outcome === 1)) continue;
         const snapshotId = Number(row?.snapshot_id);
         const snap = Number.isFinite(snapshotId) ? snapshotMap.get(snapshotId) : null;
         let index = 'UNK';
@@ -1854,11 +1867,20 @@ async function takeTradeImpl(candidateId, isPaper = false) {
                 ood_conf:      cand.mlOodConf ?? 1.0,
                 ood_warn:      (cand.mlOodWarn || []).join('; ') || null,
                 ood_blocked:   cand.mlOodBlocked ?? false,
+                canonical_won: null,
                 model_version: '2.1.1',
             };
             if (DB.supabase) {
                 DB.supabase.from('ml_decisions').insert(mlDoc)
-                  .then(({error}) => { if (error) console.warn('[ML] ml_decisions insert failed:', error.message); });
+                  .then(({error}) => {
+                      if (!error) return;
+                      const legacyDoc = { ...mlDoc };
+                      delete legacyDoc.canonical_won;
+                      DB.supabase.from('ml_decisions').insert(legacyDoc)
+                        .then(({error: legacyError}) => {
+                            if (legacyError) console.warn('[ML] ml_decisions insert failed:', legacyError.message);
+                        });
+                  });
             }
         }
     } else {
@@ -2201,8 +2223,11 @@ async function closeTrade(tradeId, exitReason) {
 
         // b105: Fill ML outcome for calibration tracking
         if (trade.id && DB.supabase) {
-            DB.supabase.from('ml_decisions').update({
-                won:                (trade.current_pnl ?? 0) > 0,
+            const closedWon = (trade.current_pnl ?? 0) > 0;
+            const outcomeUpdate = {
+                canonical_won:      closedWon,
+                won:                closedWon,
+                outcome_h2:         closedWon ? 1 : 0,
                 outcome_pct_of_max: (trade.max_profit > 0)
                     ? Math.round(((trade.current_pnl ?? 0) / trade.max_profit) * 10000) / 10000
                     : null,
@@ -2219,8 +2244,17 @@ async function closeTrade(tradeId, exitReason) {
                 ci_min:             trade._journey?.min_ci ?? null,
                 ci_max:             trade._journey?.max_ci ?? null,
                 closed_at:          new Date().toISOString(),
-            }).eq('trade_id', trade.id)
-              .then(({error}) => { if (error) console.warn('[ML] ml_decisions outcome fill failed:', error.message); });
+            };
+            DB.supabase.from('ml_decisions').update(outcomeUpdate).eq('trade_id', trade.id)
+              .then(({error}) => {
+                  if (!error) return;
+                  const legacyUpdate = { ...outcomeUpdate };
+                  delete legacyUpdate.canonical_won;
+                  DB.supabase.from('ml_decisions').update(legacyUpdate).eq('trade_id', trade.id)
+                    .then(({error: legacyError}) => {
+                        if (legacyError) console.warn('[ML] ml_decisions outcome fill failed:', legacyError.message);
+                    });
+              });
         }
     } catch (err) {
         console.error('closeTrade error:', err);
@@ -2601,18 +2635,19 @@ async function checkMLDecisions() {
     try {
         const { data, error } = await DB.supabase
             .from('ml_decisions')
-            .select('ml_action, won, p_final')
-            .not('won', 'is', null);
+            .select('ml_action, canonical_won, outcome_h2, won, p_final');
         if (error || !data?.length) {
             alert('No closed ML decisions yet. Take and close some trades first.');
             return;
         }
         const byAction = {};
         for (const r of data) {
+            const won = resolveDecisionWon(r);
+            if (!(won === 0 || won === 1)) continue;
             const a = r.ml_action || 'UNKNOWN';
             if (!byAction[a]) byAction[a] = { n: 0, wins: 0 };
             byAction[a].n++;
-            if (r.won) byAction[a].wins++;
+            if (won === 1) byAction[a].wins++;
         }
         let msg = `ML Calibration Report (${data.length} closed trades)\n\n`;
         for (const [action, s] of Object.entries(byAction)) {
@@ -3968,9 +4003,12 @@ function renderML() {
     const pollsToday = Array.isArray(pollHistory) ? pollHistory.length : 0;
     const accuracyPct = Number.isFinite(signalStats.pct) ? signalStats.pct.toFixed(1) : '--';
     const recent = decisions.slice(0, 5);
-    const labeledRows = decisions.filter(d => d?.won === true || d?.won === false || d?.won === 0 || d?.won === 1);
+    const labeledRows = decisions.filter(d => {
+        const won = resolveDecisionWon(d);
+        return won === 0 || won === 1;
+    });
     const fallbackLabeledCount = labeledRows.length;
-    const fallbackWinCount = labeledRows.filter(d => d?.won === true || d?.won === 1).length;
+    const fallbackWinCount = labeledRows.filter(d => resolveDecisionWon(d) === 1).length;
     const outcomeLaneStats = buildMlLaneStatsFromOutcomes(evaluationOutcomes, brainSnapshots);
     const fallbackLaneStats = buildMlLaneStats(decisions);
     const outcomeLaneTotal = Object.values(outcomeLaneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0);
