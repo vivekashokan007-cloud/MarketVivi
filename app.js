@@ -384,6 +384,10 @@ function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServ
     }
 }
 
+function isLiveRecommendationWindow(serviceStatus = safeParseNB(NativeBridge?.getServiceStatus?.(), {})) {
+    return serviceStatus?.marketReason === 'OPEN';
+}
+
 function maybeAutoStartNativeIngestion(reason = 'ui') {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.getServiceStatus !== 'function') return false;
     const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
@@ -396,6 +400,13 @@ function maybeAutoStartNativeIngestion(reason = 'ui') {
     if (!serviceStatus.tokenReady || !serviceStatus.marketOpen) return false;
     console.log(`[auto-ingestion] starting native service from ${reason}`);
     startWatchLoop();
+    try {
+        if (typeof NativeBridge.requestImmediatePoll === 'function') {
+            NativeBridge.requestImmediatePoll();
+        }
+    } catch (e) {
+        console.warn(`[auto-ingestion] immediate poll request failed from ${reason}:`, e.message);
+    }
     updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), serviceStatus));
     return true;
 }
@@ -2317,6 +2328,7 @@ function renderBrainCard(ins) {
 
 function renderBrainInsights() {
     const bi = bd;
+    const liveWindow = isLiveRecommendationWindow();
     const verdict = bi?.verdict;
     const market = bi?.market || [];
     const timing = bi?.timing || [];
@@ -2330,7 +2342,12 @@ function renderBrainInsights() {
 
     // VERDICT CARD — the ONE answer
     let verdictHtml = '';
-    if (verdict && verdict.action) {
+    if (!liveWindow) {
+        verdictHtml = `<div class="brain-card" style="border-left-color:var(--text-muted);border-left-width:4px;padding:10px 12px">
+            <div style="font-size:14px;font-weight:700;color:var(--text-muted)">Market closed</div>
+            <div class="brain-detail" style="margin-top:4px">Live recommendation archived after the trading window. Review saved signals and ML outcomes instead of acting on the last intraday verdict.</div>
+        </div>`;
+    } else if (verdict && verdict.action) {
         const vColor = verdict.action === 'WAIT' || verdict.action === 'STOP' ? 'var(--warn)' :
             verdict.direction === 'BULL' ? 'var(--green)' : verdict.direction === 'BEAR' ? 'var(--danger)' : 'var(--accent)';
         const confBar = verdict.confidence > 0 ? `<div style="height:3px;background:var(--border);border-radius:2px;margin-top:4px"><div style="height:100%;width:${verdict.confidence}%;background:${vColor};border-radius:2px"></div></div>` : '';
@@ -3996,10 +4013,13 @@ function renderML() {
     const evaluatorLastCheck = formatCompactTs(evaluatorJob?.updated_at || evaluatorJob?.started_at);
 
     const verdict = brain?.verdict || {};
-    const action = verdict.action || brain.action || 'WAIT';
-    const strategy = verdict.strategy || brain.strategy || '--';
-    const confidence = Number.isFinite(verdict.confidence) ? verdict.confidence : (Number.isFinite(brain.confidence) ? brain.confidence : 0);
-    const decisionSource = brain.decisionSource || brain.decision_source || verdict.decisionSource || verdict.decision_source || 'DEFAULT_BRAIN_MATH';
+    const liveWindow = isLiveRecommendationWindow(service);
+    const action = liveWindow ? (verdict.action || brain.action || 'WAIT') : 'WAIT';
+    const strategy = liveWindow ? (verdict.strategy || brain.strategy || '--') : '--';
+    const confidence = liveWindow ? (Number.isFinite(verdict.confidence) ? verdict.confidence : (Number.isFinite(brain.confidence) ? brain.confidence : 0)) : 0;
+    const decisionSource = liveWindow
+        ? (brain.decisionSource || brain.decision_source || verdict.decisionSource || verdict.decision_source || 'DEFAULT_BRAIN_MATH')
+        : 'MARKET_CLOSED';
     const decisionReason = brain.decisionReason || brain.decision_reason || verdict.decisionReason || verdict.decision_reason || '';
     const watchlistCount = Array.isArray(brain.watchlist) ? brain.watchlist.length : 0;
     const candidateCount = Array.isArray(brain.generated_candidates) ? brain.generated_candidates.length : 0;
@@ -4258,9 +4278,12 @@ function renderFooter() {
     const polls = Math.max(nativePolls, STATE.pollCount || 0);
     const bi = bd || {};
     const verdict = bi.verdict;
-    const brain = STATE.brainReady ?
-        (verdict?.action ? `🧠 ${verdict.action}${verdict.confidence ? ' ' + verdict.confidence + '%' : ''}` : '🧠 ready') :
-        (STATE.brainError ? '🧠✗' : '🧠…');
+    const liveWindow = isLiveRecommendationWindow(serviceStatus);
+    const brain = !liveWindow ? '🧠 closed' : (
+        STATE.brainReady ?
+            (verdict?.action ? `🧠 ${verdict.action}${verdict.confidence ? ' ' + verdict.confidence + '%' : ''}` : '🧠 ready') :
+            (STATE.brainError ? '🧠✗' : '🧠…')
+    );
     const riskAlert = (bi.risk || []).some(r => r.strength >= 4) ? ' ⚠️' : '';
     el.textContent = `${watching} ${time} · ${brain}${riskAlert} · Polls: ${polls}`;
 }

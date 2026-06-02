@@ -2055,3 +2055,81 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `python -m py_compile` passed for Python ML files
     - `node --check MarketVivi/app.js` passed
 - 2026-06-02 release prep: bumped both repos to shared version `v2.3.95 / b226` for the post-repair cleanup batch. Android `versionName=2.3.95`, `versionCode=226`, `BRAIN_VERSION=2.3.95`, web label `v2.3.95 · b226`, cache-bust `app.js?v=1168`.
+
+## Current State Snapshot (2026-06-02, after v2.3.95 / b226)
+
+- Release state:
+  - `Marketapp` pushed at commit `98f089f`
+  - `MarketVivi` pushed at commit `d0efffd`
+  - shipped version is `v2.3.95 / b226`
+- What is confirmed fixed:
+  - H2 day evaluation no longer silently fails due to timezone handling.
+  - Supabase now stores real day-evaluation rows instead of only reporting local produced counts.
+  - Canonical outcome labeling is active in code and schema:
+    - `canonical_won`
+    - `outcome_h2`
+    - legacy `won` still mirrored for compatibility
+  - Same-day repair rerun succeeded once and proved the persistence path works.
+- Verified Supabase result from the successful rerun:
+  - `ml_evaluation_outcomes`: `748` rows
+  - `ml_recommendation_outcomes`: `66` rows
+  - total persisted rows reported by app: `814`
+  - joined evaluation rows to snapshots: `748`
+  - brain snapshots for the day: `71`
+- Why `814 persisted` was correct:
+  - `748` evaluable rows were saved into `ml_evaluation_outcomes`
+  - `66` primary recommendation rows were saved into `ml_recommendation_outcomes`
+  - the app now distinguishes:
+    - `Produced`
+    - `Persisted`
+- What was removed in `v2.3.95 / b226`:
+  - temporary `Re-evaluate Today` repair path
+  - native `forceDayEvaluation()` bridge method
+  - `ACTION_DAY_EVALUATION_FORCE`
+  - JS rerun button state and rerun prompt
+- Why the rerun path was removed:
+  - it was created only to recover one broken day of data after the persistence bug
+  - after Supabase verification succeeded, keeping the rerun branch would add future operator confusion and risk
+  - app is now back to the normal one-shot daily evaluation design
+- Remaining reporting fix shipped in `v2.3.95 / b226`:
+  - lane matrix had shown zeros because outcome fetch used first-non-empty table fallback
+  - once `ml_recommendation_outcomes` became non-empty, the app stopped reading the full evaluator table
+  - fix:
+    - `fetchRecentEvaluationOutcomes()` now reads `ml_evaluation_outcomes` directly
+    - falls back only to legacy `ml_decisions` if evaluator rows are absent
+    - web fetch limit increased from `200` to `1000`
+- Current expected ML button behavior:
+  - before evaluation: `Evaluate Today`
+  - while evaluation is running: `Evaluating...`
+  - after evaluation is complete: disabled `Today Done`
+- Retraining state:
+  - still intentionally paused
+  - dataset contract has been corrected for future safe re-enable
+  - future training mix is designed as:
+    - backtest rows weight `1.0`
+    - evaluator-backed canonical rows weight `4.0`
+    - raw app-trade rows weight `3.0`
+- Next live checks:
+  - confirm 4-lane matrix is no longer zero after the fetch-source fix
+  - confirm auto polling starts cleanly at `9:15`
+  - confirm header/footer/session poll counts remain aligned
+  - confirm end-of-day service status does not remain stale after market close
+- 2026-06-02 late-session UI + auto-start hardening prepared locally:
+  - After-hours stale recommendation issue identified:
+    - footer could still show `BUY PREMIUM` / `SELL PREMIUM` after market close
+    - ML tab live output could also continue to show the last intraday verdict as if it were actionable
+  - Root cause:
+    - UI rendered cached `bd.verdict` without checking market state
+    - service clock already knew market was out of hours, but UI did not gate recommendation display on `marketReason`
+  - Local fix prepared:
+    - added live-window gate based on `marketReason === OPEN`
+    - footer now shows `🧠 closed` outside live market hours
+    - ML live output now degrades to `WAIT / MARKET_CLOSED` outside the live window
+    - market copilot section now shows a non-actionable `Market closed` archive message instead of surfacing the last intraday verdict as a live signal
+  - Morning auto-polling recovery hardening:
+    - `maybeAutoStartNativeIngestion()` previously started the native service but did not request an immediate poll
+    - this could leave market-open recovery looking idle until the next 5-minute slot
+    - fix: when UI auto-recovers native ingestion during open market hours, it now also calls `requestImmediatePoll()`
+  - Verification:
+    - `node --check MarketVivi/app.js` passed
+- 2026-06-02 release prep: bumped both repos to shared version `v2.3.96 / b227` for after-hours recommendation gating and market-open recovery hardening.
