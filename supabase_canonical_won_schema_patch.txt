@@ -1,0 +1,14 @@
+Run this in Supabase SQL editor to add and backfill `canonical_won` across the ML/trade tables:
+
+1. `ml_decisions.canonical_won`
+2. `ml_features.canonical_won`
+3. `ml_features.outcome_h2`
+4. `ml_recommendation_outcomes.canonical_won`
+5. `ml_evaluation_outcomes.canonical_won`
+6. `trades_v2.canonical_won`
+7. `trades_v2.outcome_h2`
+
+It also backfills existing rows from `outcome_h2`, `won`, or `actual_pnl` where possible and creates basic indexes.
+
+SQL file:
+- `supabase_canonical_won_schema_patch.sql`

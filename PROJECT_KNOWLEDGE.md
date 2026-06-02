@@ -1942,3 +1942,35 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `SupabaseClient.saveEvaluationOutcomes()` now retries with a legacy payload that strips `canonical_won` if older Supabase tables reject the new column.
   - `MarketVivi/app.js` now resolves decision labels via `canonical_won -> outcome_h2 -> won` in lane stats, fallback win-rate stats, and ML calibration checks. `ml_decisions` insert/update now writes `canonical_won` plus mirrored legacy fields, with a fallback retry that removes `canonical_won` for older schemas.
 - 2026-06-02 release prep: bumped both repos to shared version `v2.3.91 / b222` so the canonical-label hardening batch is carried as a proper app release instead of a bare code push. Android `versionName=2.3.91`, `versionCode=222`, `BRAIN_VERSION=2.3.91`, web label `v2.3.91 · b222`, cache-bust `app.js?v=1164`.
+- 2026-06-02 release prep: bumped both repos to shared version `v2.3.92 / b223` to carry the schema-aligned retrain/export contract work as a proper release. Android `versionName=2.3.92`, `versionCode=223`, `BRAIN_VERSION=2.3.92`, web label `v2.3.92 · b223`, cache-bust `app.js?v=1165`.
+- 2026-06-02 canonical label schema + retrain contract:
+  - Supabase schema was inspected first instead of patched blindly. Actual public tables include `ml_decisions`, `ml_evaluation_outcomes`, `ml_recommendation_outcomes`, `trades_v2`, but not `ml_features`.
+  - Final Supabase patch was reduced to the real schema and executed successfully:
+    - `ml_decisions.canonical_won` added and backfilled from `won`
+    - `ml_evaluation_outcomes.canonical_won` added and backfilled from `outcome_h2`
+    - `ml_recommendation_outcomes.canonical_won` added and backfilled from `outcome_h2`
+    - `trades_v2.canonical_won` and `trades_v2.outcome_h2` added
+  - `MarketMLService` now exports evaluator-backed training inputs:
+    - `evaluation_outcomes.json`
+    - `brain_snapshots.json`
+  - `ml_train.run()` now accepts those two optional files and can reconstruct canonical rows from `primary` evaluated recommendations plus captured snapshot context.
+  - New future retrain weighting contract:
+    - backtest rows weight `1.0`
+    - evaluator-backed canonical rows weight `4.0`
+    - raw app-trade rows weight `3.0`
+  - Retraining remains intentionally paused; this release only fixes the dataset contract and export path.
+- 2026-06-02 follow-up work for pending items 2 and 3 (local, not yet pushed):
+  - Added Supabase schema patch files for native `canonical_won` support:
+    - `supabase_canonical_won_schema_patch.sql`
+    - `supabase_canonical_won_schema_patch.txt`
+  - Patch adds/backfills `canonical_won` on `ml_decisions`, `ml_features`, `ml_recommendation_outcomes`, `ml_evaluation_outcomes`, and `trades_v2`, plus `outcome_h2` on `ml_features` and `trades_v2`.
+  - Retrain architecture redesigned without re-enabling training:
+    - `MarketMLService` now exports two future training inputs:
+      - `evaluation_outcomes.json`
+      - `brain_snapshots.json`
+    - `ml_train.run()` now accepts optional evaluator input paths and can build canonical training rows from `primary` evaluated recommendations plus captured snapshot context.
+    - New mixing contract is now:
+      - backtest rows weight `1.0`
+      - evaluator-backed canonical rows weight `4.0`
+      - raw app-trade closes weight `3.0`
+    - Retraining still remains intentionally paused; this change prepares the correct data contract for safe future re-enable.

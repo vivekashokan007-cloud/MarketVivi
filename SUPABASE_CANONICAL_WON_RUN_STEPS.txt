@@ -1,0 +1,36 @@
+SUPABASE CANONICAL WON PATCH - RUN STEPS
+
+1. Open Supabase.
+
+2. Go to SQL Editor.
+
+3. Open this SQL file from the project:
+   /root/Documents/Codex/2026-05-27/read-the-project-knowledge-that-iam/MarketVivi/supabase_canonical_won_schema_patch.sql
+
+4. Paste the full SQL into the Supabase SQL editor.
+
+5. Run it.
+
+6. Expected result:
+   - success / no fatal error
+   - columns added if missing
+   - old rows backfilled where possible
+   - indexes created if missing
+
+7. After running, send me:
+   - a screenshot, or
+   - just reply: done
+
+What this patch adds:
+- ml_decisions.canonical_won
+- ml_features.canonical_won
+- ml_features.outcome_h2
+- ml_recommendation_outcomes.canonical_won
+- ml_evaluation_outcomes.canonical_won
+- trades_v2.canonical_won
+- trades_v2.outcome_h2
+
+What this patch backfills from old data:
+- outcome_h2
+- won
+- actual_pnl
