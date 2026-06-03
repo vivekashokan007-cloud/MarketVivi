@@ -2133,3 +2133,24 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Verification:
     - `node --check MarketVivi/app.js` passed
 - 2026-06-02 release prep: bumped both repos to shared version `v2.3.96 / b227` for after-hours recommendation gating and market-open recovery hardening.
+- 2026-06-02 local pending batch: label-truth + premium-edge hardening prepared, not yet pushed:
+  - `MarketVivi/app.js` `closeTrade()` now writes realized-truth fields directly into `trades_v2` alongside `status='CLOSED'` and `actual_pnl`:
+    - `canonical_won`
+    - `outcome_h2`
+  - this closes the proven disconnect where `ml_decisions` had close labels but `trades_v2` stayed null for all closed rows
+  - `ml_train._app_trade_to_row()` now reads `actual_pnl` first when converting `trades_v2` rows into training rows, so the new close-truth fields are not stranded in the database
+  - `brain.py` directional credit candidates (`BULL_PUT`, `BEAR_CALL`) now have hard pre-ranking gates for:
+    - minimum DTE (`MIN_CREDIT_DTE = 1`)
+    - minimum credit/width ratio (`MIN_CREDIT_RATIO`)
+    - IV-richness (`IV_RICH_MIN = 1.15`) using bootstrap realized-vol proxy `VIX * 0.85`
+  - `brain.py` now emits additive decision fields on candidates:
+    - `trueProb`
+    - `premiumEdge`
+    - `creditWidthRatio`
+    - `ivRichness`
+  - `rank_candidates()` now promotes `premiumEdge` ahead of win-rate after the existing safety/tier gates
+  - `evaluate_candidate_risk()` no longer crashes on undefined `prob`, `forces`, `ctx_score`; R:R warning now executes deterministically
+  - verification:
+    - `python -m py_compile` passed for `brain.py`, `ml_train.py`, `ml_engine.py`, `ml_temporal.py`
+    - `node --check MarketVivi/app.js` passed
+- 2026-06-03 release prep: bumped both repos to shared version `v2.3.97 / b228` for the realized-label sync and premium-edge hardening release. Android `versionName=2.3.97`, `versionCode=228`, `BRAIN_VERSION=2.3.97`, web label `v2.3.97 · b228`, cache-bust `app.js?v=1170`.

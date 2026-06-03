@@ -2165,11 +2165,15 @@ async function closeTrade(tradeId, exitReason) {
         removeOpenTradeFromState(tradeId); // push removal to Kotlin now
         renderAll();    // re-render immediately — card gone from UI
 
+        const closedWon = (trade.current_pnl ?? 0) > 0;
+
         // Now update Supabase in background (non-blocking)
         DB.updateTrade(trade.id, {
             status: 'CLOSED',
             exit_date: new Date().toISOString(),
             actual_pnl: trade.current_pnl ?? 0,
+            canonical_won: closedWon,
+            outcome_h2: closedWon ? 1 : 0,
             exit_premium: trade.current_premium ?? null,
             exit_reason: exitReason || 'Manual',
             paper_close_reason_quality: null,
@@ -2234,7 +2238,6 @@ async function closeTrade(tradeId, exitReason) {
 
         // b105: Fill ML outcome for calibration tracking
         if (trade.id && DB.supabase) {
-            const closedWon = (trade.current_pnl ?? 0) > 0;
             const outcomeUpdate = {
                 canonical_won:      closedWon,
                 won:                closedWon,
