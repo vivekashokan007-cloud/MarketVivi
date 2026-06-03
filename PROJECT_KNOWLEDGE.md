@@ -2189,3 +2189,93 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `MarketMLService.runNightlyTraining()` still exits behind the retrain block unless hidden pref `ml_retrain_force_enable=true`
   - Verification:
     - `node --check app.js` passed
+- 2026-06-03 audit follow-up completed locally: fallback brain removal.
+  - Claude directive `DIRECTIVE_REMOVE_FALLBACK_BRAIN_20260603-1.md` was validated against code.
+  - `brain.py` still had a live fallback branch in `analyze()` even though the surrounding helpers were marked as dead code.
+  - The isolated fallback subtree has now been removed completely:
+    - `_ltp`
+    - `_delta_val`
+    - `_oi_val`
+    - `_forces_py`
+    - `_varsity_py`
+    - `_closest`
+    - `_build_cand_py`
+    - `generate_candidates_py`
+  - The `analyze()` caller was replaced with an explicit no-trade path:
+    - if no candidates survive the main generator and gate waterfall, the brain now returns `WAIT`
+    - explanation is written into existing surfaced fields:
+      - `verdict.reasoning`
+      - `decisionReason`
+      - `decision_reason`
+      - `no_candidates_reason`
+    - watchlist and generated candidates are forced to empty arrays in that path
+  - This keeps the app philosophically honest:
+    - if nothing is worth trading, the brain says `no trade`
+    - it no longer manufactures backup candidates through the legacy Phase-3 fallback
+  - Verification:
+    - `python -m py_compile Marketapp/app/src/main/python/brain.py` passed
+    - grep confirmed no remaining references to `generate_candidates_py` or the removed helper chain
+  - Status:
+    - local only, not yet pushed
+    - next release should version-bump both repos again before push, per user rule
+- 2026-06-03 BNF generation investigation completed locally: intraday-default migration.
+  - User observation:
+    - BNF strategies had been absent for 2–3 days, which predates the premium-edge hard gates added on 2026-06-02.
+    - User requirement: default mode should always be `intraday`.
+  - Root cause found:
+    - the app was silently defaulting to `swing` in all three layers:
+      - `app.js` default `STATE.tradeMode`
+      - `NativeBridge.getTradeMode()` / `setContext()` fallback
+      - `MarketWatchService.resolveTradeMode()` fallback
+    - older installs also persisted this implicit `swing` state as if it were a user choice, which would suppress BNF more than NF because swing mode blocks IC/IB and leaves only stricter directional spread generation.
+  - Fix applied locally:
+    - `app.js`
+      - default trade mode changed to `intraday`
+      - added explicit-choice tracking via:
+        - `mr2_trade_mode`
+        - `mr2_trade_mode_explicit`
+      - added settings merge helper so theme saves do not overwrite mode metadata
+      - startup migration now converts legacy non-explicit `swing` to `intraday`
+      - explicit user `swing` selections remain preserved
+    - `NativeBridge.kt`
+      - added `trade_mode_explicit` preference tracking
+      - split trade-mode persistence into:
+        - explicit user path: `setTradeMode(...)`
+        - migration/default path: `setTradeModeDefault(...)`
+      - `getTradeMode()` and `setContext()` now treat non-explicit legacy `swing` as migratable, not authoritative
+    - `MarketWatchService.kt`
+      - `resolveTradeMode()` now defaults to `intraday`
+      - non-explicit legacy `swing` no longer wins the service resolution path
+    - `MainActivity.kt`
+      - JS bridge default changed from `"swing"` to `"intraday"`
+      - exposed `setTradeModeDefault(...)` and `getTradeModeExplicit()` for the migration path
+  - Expected impact:
+    - fresh installs start in intraday mode
+    - legacy installs stop inheriting silent swing mode
+    - deliberate user swing choice still works
+    - BNF strategy generation should no longer be suppressed by an unintended mode default
+  - Verification:
+    - `node --check app.js` passed
+    - `python -m py_compile Marketapp/app/src/main/python/brain.py` still passed after this batch
+    - local diffs are scoped to:
+      - `app.js`
+      - `Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt`
+      - `Marketapp/app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+      - `Marketapp/app/src/main/java/com/marketradar/app/MainActivity.kt`
+      - plus the already-local `brain.py` fallback-brain removal
+  - Status:
+    - local only, not yet pushed
+    - should be released together with the fallback-brain removal in the next shared version bump
+- 2026-06-03 release prep: bumped both repos to shared version `v2.4.00 / b231` for the fallback-brain removal + intraday-default migration release. Android `versionName=2.4.00`, `versionCode=231`, `BRAIN_VERSION=2.4.00`, web label `v2.4.00 · b231`, cache-bust `app.js?v=1173`.
+  - Brain honesty hardening shipped:
+    - removed the legacy fallback candidate generator subtree from `brain.py`
+    - when no strategies survive the real generator + gates, the brain now returns explicit `WAIT`
+    - surfaced reason fields now carry the no-candidate explanation instead of manufacturing backup trades
+  - Trade-mode migration shipped:
+    - default mode is now `intraday` in web, native bridge, and watch service
+    - added explicit-choice tracking so old silent `swing` defaults migrate to `intraday`
+    - deliberate user `swing` selections remain preserved
+    - settings writes now merge instead of overwriting mode metadata
+  - Expected effect:
+    - BNF generation should no longer be suppressed by legacy swing defaults
+    - no-trade days should remain honest instead of forcing fallback setups

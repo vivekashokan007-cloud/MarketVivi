@@ -96,6 +96,10 @@ const C = {
     GIFT_THRESHOLD: 0.3     // % change to count as GIFT signal (direct NF correlation, ~75pts)
 };
 
+const DEFAULT_TRADE_MODE = 'intraday';
+const LS_TRADE_MODE = 'mr2_trade_mode';
+const LS_TRADE_MODE_EXPLICIT = 'mr2_trade_mode_explicit';
+
 // ═══ CALIBRATION DATA — paper trades (25) + backtest (8372 trades, 552 days, Apr 2026) ═══
 const CALIBRATION = {
     // Win rates per strategy type — paper trades + [backtest range across 3 dampening presets]
@@ -220,8 +224,9 @@ const STATE = {
     rangeDetected: false,  // b68: true when last 3 polls show ±0.3σ range
     rangeSigma: 0,         // b68: actual range in σ (for display)
 
-    // Trade mode: 'swing' (default, 3-7 DTE, OTM near wall) or 'intraday' (0-1 DTE, ATM OK)
-    tradeMode: 'swing',
+    // Trade mode: 'intraday' (default, 0-1 DTE, ATM OK) or 'swing' (3-7 DTE, OTM near wall)
+    tradeMode: DEFAULT_TRADE_MODE,
+    settingsConfig: null,
 
     // Native Kotlin/Chaquopy brain state.
     brainReady: false,        // true after native brain result is available
@@ -436,6 +441,28 @@ function clearMorningStorage() {
     localStorage.removeItem('mr2_morning_inputs');
     localStorage.removeItem('mr2_morning');
     localStorage.removeItem('mr2_morning_baseline');
+}
+
+function localTradeModeExplicit() {
+    return localStorage.getItem(LS_TRADE_MODE_EXPLICIT) === '1';
+}
+
+function setLocalTradeMode(mode, explicit = true) {
+    STATE.tradeMode = mode === 'swing' ? 'swing' : DEFAULT_TRADE_MODE;
+    localStorage.setItem(LS_TRADE_MODE, STATE.tradeMode);
+    if (explicit) {
+        localStorage.setItem(LS_TRADE_MODE_EXPLICIT, '1');
+    } else {
+        localStorage.removeItem(LS_TRADE_MODE_EXPLICIT);
+    }
+}
+
+function persistSettingsPatch(patch) {
+    const nextSettings = { ...(STATE.settingsConfig || {}), ...(patch || {}) };
+    STATE.settingsConfig = nextSettings;
+    if (typeof DB !== 'undefined' && DB.setConfig) {
+        DB.setConfig('settings', nextSettings);
+    }
 }
 
 function firstCandidateFor(index) {
@@ -1570,8 +1597,8 @@ function toggleTradeMode() {
     }
     // Persist mode
     const currentTheme = document.body.classList.contains('dark') ? 'dark' : 'light';
-    localStorage.setItem('mr2_trade_mode', STATE.tradeMode);
-    DB.setConfig('settings', { theme: currentTheme, tradeMode: STATE.tradeMode });
+    setLocalTradeMode(STATE.tradeMode, true);
+    persistSettingsPatch({ theme: currentTheme, tradeMode: STATE.tradeMode, tradeModeExplicit: true });
     addNotificationLog('Mode Switch', `Switched to ${STATE.tradeMode.toUpperCase()} mode. Waiting for native brain refresh.`, 'info');
     renderWatchlist();
     renderFooter();
@@ -1727,7 +1754,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         lots: 1,
         paper: isPaper,
         // b91: IC/IB always intraday — 0% overnight survival (backtest confirmed)
-        trade_mode: (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? 'intraday' : (STATE.tradeMode || 'swing'),
+        trade_mode: (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? 'intraday' : (STATE.tradeMode || DEFAULT_TRADE_MODE),
 
         // ═══ RICH SNAPSHOT — everything for calibration (JSONB) ═══
         entry_snapshot: {
@@ -1978,7 +2005,7 @@ async function logManualTrade() {
     const sellLTP = parseFloat(document.getElementById('mt-sell-ltp').value);
     const buyLTP = parseFloat(document.getElementById('mt-buy-ltp').value);
     const isPaper = document.getElementById('mt-paper')?.checked || false;
-    const tradeMode = document.getElementById('mt-mode')?.value || STATE.tradeMode || 'swing';
+    const tradeMode = document.getElementById('mt-mode')?.value || STATE.tradeMode || DEFAULT_TRADE_MODE;
 
     if (!sellStrike || !buyStrike || !sellLTP || !buyLTP) {
         alert('Please fill all fields');
@@ -5143,9 +5170,11 @@ function bindCriticalUiHandlers() {
             const isDark = e.target.checked;
             document.body.classList.toggle('dark', isDark);
             localStorage.setItem('mr2_theme', isDark ? 'dark' : 'light');
-            if (typeof DB !== 'undefined' && DB.setConfig) {
-                DB.setConfig('settings', { theme: isDark ? 'dark' : 'light', tradeMode: STATE.tradeMode });
-            }
+            persistSettingsPatch({
+                theme: isDark ? 'dark' : 'light',
+                tradeMode: STATE.tradeMode,
+                tradeModeExplicit: localTradeModeExplicit()
+            });
             document.querySelector('.toggle-icon').textContent = isDark ? '🌙' : '☀️';
             document.querySelector('meta[name="theme-color"]').content = isDark ? '#121218' : '#FFFFFF';
         };
@@ -5425,18 +5454,48 @@ function initStickyLayoutObserver() {
 
 function initTheme(cloudConfig) {
     const settings = cloudConfig?.settings || null;
+    STATE.settingsConfig = settings ? { ...settings } : null;
     const savedTheme = settings?.theme || localStorage.getItem('mr2_theme');
     // Restore trade mode from saved UI settings first; native is a fallback only.
-    const savedMode = settings?.tradeMode || localStorage.getItem('mr2_trade_mode');
-    if (savedMode === 'intraday' || savedMode === 'swing') STATE.tradeMode = savedMode;
+    const savedMode = settings?.tradeMode || localStorage.getItem(LS_TRADE_MODE);
+    const savedModeExplicit = settings?.tradeModeExplicit === true || localTradeModeExplicit();
+    if (savedMode === 'intraday' || savedMode === 'swing') {
+        STATE.tradeMode = savedModeExplicit ? savedMode : DEFAULT_TRADE_MODE;
+    }
     try {
         const nativeMode = (typeof NativeBridge !== 'undefined' && NativeBridge.getTradeMode) ? NativeBridge.getTradeMode() : '';
+        const nativeModeExplicit = (typeof NativeBridge !== 'undefined' && NativeBridge.getTradeModeExplicit)
+            ? !!NativeBridge.getTradeModeExplicit()
+            : false;
         if (savedMode === 'intraday' || savedMode === 'swing') {
-            if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) NativeBridge.setTradeMode(STATE.tradeMode);
+            if (savedModeExplicit) {
+                setLocalTradeMode(STATE.tradeMode, true);
+            } else {
+                setLocalTradeMode(DEFAULT_TRADE_MODE, false);
+                persistSettingsPatch({ theme: savedTheme === 'dark' ? 'dark' : 'light', tradeMode: DEFAULT_TRADE_MODE, tradeModeExplicit: false });
+            }
+            if (typeof NativeBridge !== 'undefined') {
+                if (savedModeExplicit && NativeBridge.setTradeMode) {
+                    NativeBridge.setTradeMode(STATE.tradeMode);
+                } else if (!savedModeExplicit && NativeBridge.setTradeModeDefault) {
+                    NativeBridge.setTradeModeDefault(STATE.tradeMode);
+                }
+            }
         } else if (nativeMode === 'intraday' || nativeMode === 'swing') {
-            STATE.tradeMode = nativeMode;
-        } else if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeMode) {
-            NativeBridge.setTradeMode(STATE.tradeMode);
+            if (nativeModeExplicit) {
+                STATE.tradeMode = nativeMode;
+                setLocalTradeMode(STATE.tradeMode, true);
+                persistSettingsPatch({ theme: savedTheme === 'dark' ? 'dark' : 'light', tradeMode: STATE.tradeMode, tradeModeExplicit: true });
+            } else {
+                STATE.tradeMode = nativeMode === 'swing' ? DEFAULT_TRADE_MODE : nativeMode;
+                setLocalTradeMode(STATE.tradeMode, false);
+                persistSettingsPatch({ theme: savedTheme === 'dark' ? 'dark' : 'light', tradeMode: STATE.tradeMode, tradeModeExplicit: false });
+                if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeModeDefault) {
+                    NativeBridge.setTradeModeDefault(STATE.tradeMode);
+                }
+            }
+        } else if (typeof NativeBridge !== 'undefined' && NativeBridge.setTradeModeDefault) {
+            NativeBridge.setTradeModeDefault(STATE.tradeMode);
         }
     } catch {}
     if (savedTheme === 'dark') {
