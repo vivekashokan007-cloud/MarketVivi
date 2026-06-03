@@ -2167,3 +2167,25 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Impact:
     - when remote Supabase constituent loading is unavailable and the app falls back to bundled keys, NF50 breadth should now use the same current universe as the seeded remote config instead of the old stale list.
 - 2026-06-03 release prep: bumped both repos to shared version `v2.3.98 / b229` for the NF50 bundled-fallback correction release. Android `versionName=2.3.98`, `versionCode=229`, `BRAIN_VERSION=2.3.98`, web label `v2.3.98 · b229`, cache-bust `app.js?v=1171`.
+- 2026-06-03 Supabase integrity verification completed:
+  - Historical `trades_v2` backfill verification now returns `null_closed_labels = 0` for `status = 'CLOSED' and canonical_won is null`.
+  - One corrupt legacy row (`id = 4`) was identified as `CLOSED` with `actual_pnl = null`, `exit_date = null`, and `canonical_won = null`; it was normalized back to `OPEN` in Supabase rather than forcing a fake realized label.
+  - Result: Claude Batch 1 label-integrity closure is now complete at the database level.
+- 2026-06-03 release prep: bumped both repos to shared version `v2.3.99 / b230` for the frontend UI severity honesty release. Android `versionName=2.3.99`, `versionCode=230`, `BRAIN_VERSION=2.3.99`, web label `v2.3.99 · b230`, cache-bust `app.js?v=1172`.
+  - Frontend UI severity honesty patch shipped:
+  - `app.js` trade-card renderer now computes a weak-economics state for credit spreads using:
+    - `premiumEdge <= 0`
+    - or `maxProfit / maxLoss < 0.10`
+  - Weak-economics credit candidates no longer present as fully approved trades:
+    - `EXEC READY` becomes `EXEC MONITOR`
+    - gate text becomes `MONITOR`
+    - alignment label degrades from `ALIGNED — Entry Ready` to `STRUCTURE OK — Review Edge`
+    - `SWEET SPOT` degrades to `structure ok, edge weak`
+    - real-trade button is disabled and relabeled `REVIEW EDGE`
+    - explicit warning text is shown with the weak economics reasons
+  - Retrain / online-update status rechecked during the same pass:
+    - `ml_train.run()` still returns `retrain_disabled_pending_canonical_won_unification`
+    - `ml_train.online_update()` still returns `online_update_disabled_pending_label_unification`
+    - `MarketMLService.runNightlyTraining()` still exits behind the retrain block unless hidden pref `ml_retrain_force_enable=true`
+  - Verification:
+    - `node --check app.js` passed

@@ -3544,13 +3544,6 @@ function renderCandidateCard(cand, atm, rank) {
     const forces = cand.forces || { f1: 0, f2: 0, f3: 0, aligned: 0 };
     const dots = alignmentDots(forces.aligned);
     const backendBlocked = cand.directionSafe === false || cand.entryAction === 'BLOCKED' || cand.blocked === true;
-    const alignLabel = backendBlocked ? '⛔ BLOCKED BY BRAIN' :
-        forces.aligned === 3 ? '🟢 ALIGNED — Entry Ready' :
-        forces.aligned === 2 ? '🟡 CONDITIONAL' : '⚫ WATCHING';
-    const alignClass = backendBlocked ? 'align-1' :
-        forces.aligned === 3 ? 'align-3' :
-        forces.aligned === 2 ? 'align-2' : 'align-1';
-
     const is4Leg = cand.legs === 4;
     const otmDist = Math.abs(cand.sellStrike - atm);
     const otmLabel = otmDist < 50 ? 'ATM' : 'OTM';
@@ -3560,8 +3553,26 @@ function renderCandidateCard(cand, atm, rank) {
     const execOk = execReady.ready === true || cand.executionReady === true;
     const execReasons = Array.isArray(execReady.reasons) ? execReady.reasons : [];
     const execMode = execReady.mode || 'paper';
-    const execBadgeBg = execOk ? '#2E7D32' : '#B45309';
-    const execBadgeText = execOk ? 'READY' : 'WAIT';
+    const rrValue = (typeof cand.maxProfit === 'number' && typeof cand.maxLoss === 'number' && cand.maxLoss > 0)
+        ? cand.maxProfit / cand.maxLoss
+        : null;
+    const premiumEdge = Number.isFinite(Number(cand.premiumEdge)) ? Number(cand.premiumEdge)
+        : (Number.isFinite(Number(cand.ev)) ? Number(cand.ev) : null);
+    const weakEconomicsReasons = [];
+    if (cand.isCredit && premiumEdge != null && premiumEdge <= 0) weakEconomicsReasons.push('premium edge <= 0');
+    if (cand.isCredit && rrValue != null && rrValue < 0.10) weakEconomicsReasons.push(`R:R ${rrValue.toFixed(2)} < 0.10`);
+    const weakEconomics = cand.isCredit && weakEconomicsReasons.length > 0;
+    const economicallyStrong = !weakEconomics;
+    const alignLabel = backendBlocked ? '⛔ BLOCKED BY BRAIN' :
+        forces.aligned === 3 && economicallyStrong ? '🟢 ALIGNED — Entry Ready' :
+        forces.aligned === 3 ? '🟡 STRUCTURE OK — Review Edge' :
+        forces.aligned === 2 ? '🟡 CONDITIONAL' : '⚫ WATCHING';
+    const alignClass = backendBlocked ? 'align-1' :
+        forces.aligned === 3 && economicallyStrong ? 'align-3' :
+        forces.aligned >= 2 ? 'align-2' : 'align-1';
+    const execBadgeBg = execOk ? (economicallyStrong ? '#2E7D32' : '#6B7280') : '#B45309';
+    const execBadgeText = execOk ? (economicallyStrong ? 'READY' : 'MONITOR') : 'WAIT';
+    const execDisplayGate = execOk && !economicallyStrong ? 'MONITOR' : execGate;
 
     // Legs — execution order: BUY protection first, then SELL credit (Indian margin rule)
     let legsText = '';
@@ -3626,7 +3637,7 @@ function renderCandidateCard(cand, atm, rank) {
             }
             return '';
         })()}
-        ${cand.sigmaOTM ? `<div style="font-size:10px;padding:2px 8px;color:${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? 'var(--green)' : cand.sigmaOTM < 0.5 ? 'var(--danger)' : 'var(--warn)'}">Strike: ${cand.sigmaOTM}σ OTM ${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? '● SWEET SPOT' : cand.sigmaOTM > 0.8 ? '● thin credit zone' : '● too close'}</div>` : ''}
+        ${cand.sigmaOTM ? `<div style="font-size:10px;padding:2px 8px;color:${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? (economicallyStrong ? 'var(--green)' : 'var(--warn)') : cand.sigmaOTM < 0.5 ? 'var(--danger)' : 'var(--warn)'}">Strike: ${cand.sigmaOTM}σ OTM ${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? (economicallyStrong ? '● SWEET SPOT' : '● structure ok, edge weak') : cand.sigmaOTM > 0.8 ? '● thin credit zone' : '● too close'}</div>` : ''}
         ${renderBrainForCandidate(cand.id)}
 
         <div class="v1-metrics">
@@ -3648,9 +3659,10 @@ function renderCandidateCard(cand, atm, rank) {
             💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${estimateBrokerMargin(cand).toLocaleString()}${cand.legs === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : ''}
             · EV/₹1K: ₹${(cand.ev / (peakCash(cand) / 1000 || 1)).toFixed(0)}
         </div>
+        ${weakEconomics ? `<div style="font-size:10px;color:var(--warn);margin-top:4px">⚠️ Economics weak: ${weakEconomicsReasons.join(' · ')}</div>` : ''}
         <div style="font-size:10px;margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span style="background:${execBadgeBg};color:#fff;border-radius:4px;padding:2px 7px;font-weight:600">EXEC ${execBadgeText}</span>
-            <span style="color:var(--text-muted)">Mode: ${String(execMode).toUpperCase()} · Gate: ${execGate}</span>
+            <span style="color:var(--text-muted)">Mode: ${String(execMode).toUpperCase()} · Gate: ${execDisplayGate}</span>
             ${execReasons.length ? `<span style="color:var(--warn)">(${execReasons.join(' | ')})</span>` : ''}
         </div>
 
@@ -3688,8 +3700,11 @@ function renderCandidateCard(cand, atm, rank) {
                 const oodTitle = cand.mlOodBlocked === true || cand.mlOodFlag === true || cand.mlOod === true
                     ? ` title="${oodWarnText}"`
                     : '';
+                const weakEconomicsText = weakEconomicsReasons.length ? weakEconomicsReasons.join(' | ') : 'Economics weak';
                 const realBtn = execBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
+                    : weakEconomics
+                    ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${weakEconomicsText}">⚠️ REVIEW EDGE</button>`
                     : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)"${oodTitle}>📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}${cand.mlOodBlocked || cand.mlOodFlag || cand.mlOod ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
