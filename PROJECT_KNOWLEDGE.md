@@ -2154,3 +2154,16 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `python -m py_compile` passed for `brain.py`, `ml_train.py`, `ml_engine.py`, `ml_temporal.py`
     - `node --check MarketVivi/app.js` passed
 - 2026-06-03 release prep: bumped both repos to shared version `v2.3.97 / b228` for the realized-label sync and premium-edge hardening release. Android `versionName=2.3.97`, `versionCode=228`, `BRAIN_VERSION=2.3.97`, web label `v2.3.97 · b228`, cache-bust `app.js?v=1170`.
+- 2026-06-03 local NF50 breadth fallback correction prepared, not yet pushed:
+  - Root cause of `NF50 coverage 47/50 · missing 3` was broader than three isolated quote failures.
+  - The bundled Kotlin fallback list `NF50_CONSTITUENTS_BASE` in `MarketWatchService.kt` was stale versus the validated seed file `SUPABASE_NF50_STEP3_SEED_ROWS.sql.txt`.
+  - The three surfaced missing keys were:
+    - stale `SHRIRAMFIN` key `INE721A01013` instead of validated `INE721A01047`
+    - stale `NESTLEIND` key `INE239A01016` instead of validated `INE239A01024`
+    - one additional stale bundled constituent that surfaced in the same partial-coverage set
+  - Fix applied locally:
+    - replaced the entire 49-name bundled `NF50_CONSTITUENTS_BASE` with the validated seed-based fallback set (excluding Kotak, which is appended dynamically)
+    - verified exact set match between Kotlin fallback and seed file
+  - Impact:
+    - when remote Supabase constituent loading is unavailable and the app falls back to bundled keys, NF50 breadth should now use the same current universe as the seeded remote config instead of the old stale list.
+- 2026-06-03 release prep: bumped both repos to shared version `v2.3.98 / b229` for the NF50 bundled-fallback correction release. Android `versionName=2.3.98`, `versionCode=229`, `BRAIN_VERSION=2.3.98`, web label `v2.3.98 · b229`, cache-bust `app.js?v=1171`.
