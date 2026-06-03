@@ -283,7 +283,9 @@ let bd = {};
 // "null" string from Kotlin prefs defaults and JSON null payloads.
 function safeParseNB(rawValue, fallback) {
     try {
-        if (!rawValue || rawValue === 'null') return fallback;
+        if (rawValue === null || rawValue === undefined || rawValue === '' || rawValue === 'null') return fallback;
+        if (Array.isArray(rawValue)) return rawValue;
+        if (typeof rawValue === 'object') return rawValue;
         const parsed = JSON.parse(rawValue);
         return (parsed === null || parsed === undefined) ? fallback : parsed;
     } catch (e) {
@@ -2611,6 +2613,8 @@ async function triggerDayEvaluation() {
         const response = safeParseNB(window.NativeBridge.triggerDayEvaluation(), {});
         setTimeout(() => {
             getMLModelStatusCached(true);
+            getMLEvaluationOutcomesCached(true);
+            getMLBrainSnapshotsCached(true);
             renderAll();
         }, 3000);
         alert(response.message || 'Day evaluation started. Refresh ML status in a few seconds.');
@@ -2622,6 +2626,8 @@ async function triggerDayEvaluation() {
 function triggerRefreshMLStatus() {
     try {
         getMLModelStatusCached(true);
+        getMLEvaluationOutcomesCached(true);
+        getMLBrainSnapshotsCached(true);
         STATE.mlStatusRefreshAt = Date.now();
         renderAll();
         const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});

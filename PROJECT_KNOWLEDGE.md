@@ -2279,3 +2279,32 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Expected effect:
     - BNF generation should no longer be suppressed by legacy swing defaults
     - no-trade days should remain honest instead of forcing fallback setups
+- 2026-06-03 live ML matrix diagnosis:
+  - Supabase evidence proved lane data exists:
+    - `ml_evaluation_outcomes` for the day contained `primary = 85`, `secondary = 1513`
+    - joined primary rows to `ml_brain_snapshots` also returned `85`
+    - sample joined rows contained `primary_candidate_json.index = NF` and `context_json.tradeMode = intraday`
+  - Conclusion:
+    - the zeroed `4-Lane Training Matrix` is not a database persistence issue
+    - it is an app-side parser/cache issue in `app.js`
+  - Local fix applied:
+    - `safeParseNB(...)` now returns arrays/objects directly instead of trying to `JSON.parse(...)` them again
+    - this unblocks lane decoding when the native bridge already returns nested JSON objects for:
+      - `primary_candidate_json`
+      - `context_json`
+    - `triggerDayEvaluation()` and `triggerRefreshMLStatus()` now force-refresh:
+      - ML model status
+      - evaluation outcomes cache
+      - brain snapshots cache
+    - this prevents the matrix from staying on stale cached rows immediately after evaluation completes
+  - Status:
+    - local only, not yet pushed
+- 2026-06-03 release prep: bumped both repos to shared version `v2.4.01 / b232` for the 4-lane matrix parser/cache repair. Android `versionName=2.4.01`, `versionCode=232`, `BRAIN_VERSION=2.4.01`, web label `v2.4.01 · b232`, cache-bust `app.js?v=1174`.
+  - Fixed app-side lane decoding:
+    - `safeParseNB(...)` now returns arrays/objects directly instead of forcing `JSON.parse(...)`
+    - this prevents `primary_candidate_json` and `context_json` from being flattened to `{}` when the native bridge already returns nested objects
+  - Fixed stale ML cache refresh:
+    - `triggerDayEvaluation()` now refreshes ML status, evaluation outcomes, and brain snapshots before render
+    - `triggerRefreshMLStatus()` now refreshes the same caches
+  - Expected effect:
+    - `4-Lane Training Matrix` should now populate from real `primary` evaluation rows instead of staying at zero
