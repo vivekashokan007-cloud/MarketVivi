@@ -3544,14 +3544,12 @@ function renderWatchlist() {
 
     const nfCands = brainWatchlist.filter(c => c.index === 'NF');
     const bnfCands = brainWatchlist.filter(c => c.index === 'BNF');
+    const nfTop = nfCands.slice(0, 5);
+    const bnfTop = bnfCands.slice(0, 5);
     const nfTotal = (bd.generated_candidates || []).filter(c => c.index === 'NF').length;
-    if (nfCands.length) {
-        html += renderCandidateCard(nfCands[0], nfAtm, 1);
-        if (nfCands.length > 1) {
-            html += `<details><summary style="cursor:pointer;font-size:12px;color:var(--accent);padding:6px 0;user-select:none;">NF: ${nfCands.length - 1} more ▸</summary>`;
-            nfCands.slice(1).forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 2); });
-            html += '</details>';
-        }
+    if (nfTop.length) {
+        html += `<div class="section-note" style="font-size:11px;color:var(--text-muted);margin:4px 0 8px 0;">NF: showing best ${nfTop.length}${nfCands.length > nfTop.length ? ` of ${nfCands.length} watchlist` : ''}</div>`;
+        nfTop.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
     } else if (nfTotal > 0) {
         html += `<div class="empty-state">NF: ${nfTotal} generated — brain returned no NF watchlist candidate.</div>`;
     } else {
@@ -3560,9 +3558,9 @@ function renderWatchlist() {
 
     // ═══ BANK NIFTY — collapsed by default ═══
     const bnfTotal = (bd.generated_candidates || []).filter(c => c.index === 'BNF').length;
-    if (bnfCands.length) {
-        html += `<details><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);padding:8px 0;user-select:none;">BANK NIFTY — ${bnfCands.length} candidates ▸</summary>`;
-        bnfCands.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
+    if (bnfTop.length) {
+        html += `<details><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);padding:8px 0;user-select:none;">BANK NIFTY — showing best ${bnfTop.length}${bnfCands.length > bnfTop.length ? ` of ${bnfCands.length}` : ''} ▸</summary>`;
+        bnfTop.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
         html += '</details>';
     } else if (bnfTotal > 0) {
         html += `<div class="empty-state">BNF: ${bnfTotal} generated — brain returned no BNF watchlist candidate.</div>`;
