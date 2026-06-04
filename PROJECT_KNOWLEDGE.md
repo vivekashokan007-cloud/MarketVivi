@@ -2318,3 +2318,16 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Tightened trade-tab display:
     - NF now shows only the best 5 watchlist candidates
     - BNF now shows only the best 5 watchlist candidates
+- 2026-06-04 release prep: bumped both repos to shared version `v2.4.03 / b234` for automatic ML post-close status sync. Android `versionName=2.4.03`, `versionCode=234`, `BRAIN_VERSION=2.4.03`, web label `v2.4.03 · b234`.
+  - Preserved native architecture:
+    - day evaluation still auto-runs after market close from `MarketWatchService`
+    - manual `Evaluate Today` remains a fallback, not the primary trigger
+  - Fixed app-side sync gap:
+    - `app.js` now watches native ML evaluation status transitions
+    - when native status flips to `RUNNING` or `DONE`, the app force-refreshes:
+      - ML model status cache
+      - evaluation outcomes cache
+      - brain snapshots cache
+    - `Status refreshed` timestamp is also updated automatically
+  - Expected effect:
+    - after native auto-evaluation completes, ML tab should reflect `Today Done` and final produced/persisted counts without requiring the user to press `Refresh Status`

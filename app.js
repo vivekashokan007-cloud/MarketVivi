@@ -249,6 +249,7 @@ const STATE = {
     evaluatorPollTimer: null,
     approvedBranchProposals: [],
     approvedBranchProposalsAt: 0,
+    _mlEvaluationStatusKey: '',
 
     // Active tab
     activeTab: 'market'
@@ -304,6 +305,29 @@ function latestPollData() {
 function validDateOrBlank(value) {
     if (!value || typeof value !== 'string') return '';
     return value >= API.todayIST() ? value : '';
+}
+
+function maybeAutoRefreshMlStatus(serviceStatus = {}) {
+    const evaluationDone = serviceStatus?.evaluationDoneToday === true;
+    const evaluationRunning = serviceStatus?.evaluationRunning === true;
+    const statusKey = [
+        serviceStatus?.evaluationDoneDate || '',
+        evaluationDone ? 'done' : (evaluationRunning ? 'running' : 'idle'),
+        Number.isFinite(serviceStatus?.lastEvaluationOutcomeCount) ? serviceStatus.lastEvaluationOutcomeCount : 0,
+        Number.isFinite(serviceStatus?.lastEvaluationProducedCount) ? serviceStatus.lastEvaluationProducedCount : 0,
+        serviceStatus?.lastEvaluationMessage || ''
+    ].join('|');
+
+    if (STATE._mlEvaluationStatusKey === statusKey) return false;
+    STATE._mlEvaluationStatusKey = statusKey;
+
+    if (!evaluationDone && !evaluationRunning) return false;
+
+    getMLModelStatusCached(true);
+    getMLEvaluationOutcomesCached(true);
+    getMLBrainSnapshotsCached(true);
+    STATE.mlStatusRefreshAt = Date.now();
+    return true;
 }
 
 function isTodayRecord(record) {
@@ -1088,9 +1112,10 @@ function startNativePollWatchdog() {
     STATE._nativePollWatchdog = setInterval(() => {
         try {
             const snapshot = pullNativeState();
+            const mlAutoRefreshed = maybeAutoRefreshMlStatus(snapshot.status);
             renderFooter();
             const hasPoll = snapshot.latestPoll && Object.keys(snapshot.latestPoll).length;
-            if (hasPoll || STATE.pollCount > 0) {
+            if (mlAutoRefreshed || hasPoll || STATE.pollCount > 0) {
                 renderAll();
                 return;
             }
@@ -4033,8 +4058,9 @@ function renderML() {
     const el = document.getElementById('ml-content');
     if (!el) return;
 
-    const status = getMLModelStatusCached();
     const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});
+    maybeAutoRefreshMlStatus(service);
+    const status = getMLModelStatusCached();
     const brain = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getBrainResult?.() : null, {});
     const infra = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getExecutionInfraStatus?.() : null, {});
     const pollHistory = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getPollHistory?.() : null, []);
