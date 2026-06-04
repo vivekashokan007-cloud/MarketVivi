@@ -2308,3 +2308,13 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `triggerRefreshMLStatus()` now refreshes the same caches
   - Expected effect:
     - `4-Lane Training Matrix` should now populate from real `primary` evaluation rows instead of staying at zero
+- 2026-06-04 release prep: bumped both repos to shared version `v2.4.02 / b233` for the BNF expiry refresh fix, top-5 per-index display cap, and per-index candidate diagnostics. Android `versionName=2.4.02`, `versionCode=233`, `BRAIN_VERSION=2.4.02`, web label `v2.4.02 · b233`, cache-bust `app.js?v=1175`.
+  - Fixed BNF expiry handling:
+    - live Upstox expiry resolution now wins over stale stored expiry when the current session polls
+    - `performPoll()` refreshes active expiries before building option-chain URLs
+  - Added BNF/NF diagnostics:
+    - brain result logs now split generated/watchlist counts per index
+    - this should reveal whether BNF is missing at generation time or only missing from the curated watchlist
+  - Tightened trade-tab display:
+    - NF now shows only the best 5 watchlist candidates
+    - BNF now shows only the best 5 watchlist candidates
