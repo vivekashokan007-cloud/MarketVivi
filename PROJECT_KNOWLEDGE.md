@@ -1,4 +1,56 @@
-# Market Radar v2.1 — Project Knowledge (Apr 4 2026, b70)
+# Market Radar — Project Knowledge (updated through v2.4.04 / b235)
+
+## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
+
+- Continued the app-side build for `MASTER_DIRECTIVE_WAVE1_WAVE2_20260605.md`.
+- Python `brain.py` now carries additive leg-first candidate metadata without removing compatibility fields:
+  - `legs[]`
+  - `legCount`
+  - `lane`
+  - `leg_schema_version = 1`
+  - `candidate_schema_version = 1`
+- Directional candidates and IC/IB candidates now all stamp the same leg/candidate schema metadata.
+- Added signal-independence persistence:
+  - verdict now includes `signal_independence_score`
+  - snapshot context now stores `signal_independence`
+- Added separate snapshot slices:
+  - `top_5_nf`
+  - `top_5_bnf`
+- Added teacher staging payload in snapshot context:
+  - `teaching_snapshot_staging.bnf`
+  - `teaching_snapshot_staging.nf`
+  - captures ATM±8 strike-band leg rows with greeks from in-memory chain data
+- Added compact rejected-candidate trace persistence:
+  - `candidate_generation_trace`
+  - stores per-index accepted/rejected attempt summaries, stage, reason, width, premium-edge/IV-richness fields where available
+- Rejected-candidate capture is now wired end-to-end in Python:
+  - `generate_candidates(...)` returns `(accepted_candidates, rejected_records)`
+  - `analyze(...)` stores `result['rejected_candidates']`
+  - `candidate_stats.rejected` is populated
+  - `candidate_stats.by_index`, `candidate_stats.rejected_by_index`, `candidate_stats.rejected_by_stage`, and `candidate_stats.by_lane` now give direct BNF/NF diagnostics in the brain payload
+  - `take_poll_snapshot(...)` persists `snapshot_rejected_candidates`
+  - IC/IB multi-leg gate failures no longer disappear silently for the main actionable branches:
+    - sigma too close / too far
+    - strike missing
+    - leg data missing
+    - non-positive credit
+    - invalid economics / capital limit
+    - probability floor
+    - credit-ratio floor (IC)
+    - IV-richness floor
+- Normalized all remaining missing-VIX defaults in the Python brain/calibration path to `15` so F3 is consistent, including:
+  - calibration regime bucketing from `entry_vix`
+  - live VIX-change tracking against open trades
+- PWA compatibility updated so candidate rendering no longer assumes numeric `legs` and now respects `legCount` / `legs[]`.
+- Kotlin `MarketWatchService.kt` reliability hardening added locally:
+  - market-hours session wake lock
+  - gap warning if no successful poll for 12+ minutes during market hours
+  - self-heal restart alarm if service dies unexpectedly while still marked running
+- Verification completed locally:
+  - `python3 -m py_compile Marketapp/app/src/main/python/brain.py` pass
+  - `node --check MarketVivi/app.js` pass
+- Current blocker for full Android verification:
+  - no Java toolchain / `JAVA_HOME` in this container, so Kotlin changes remain static-reviewed until release build time
 
 ## Release Update - 2026-06-01 - v2.3.85 / b216
 
@@ -2318,7 +2370,7 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Tightened trade-tab display:
     - NF now shows only the best 5 watchlist candidates
     - BNF now shows only the best 5 watchlist candidates
-- 2026-06-04 release prep: bumped both repos to shared version `v2.4.03 / b234` for automatic ML post-close status sync. Android `versionName=2.4.03`, `versionCode=234`, `BRAIN_VERSION=2.4.03`, web label `v2.4.03 · b234`.
+- 2026-06-06 release prep: bumped both repos to shared version `v2.4.04 / b235` for the BNF observability / rejected-candidate capture batch. Android `versionName=2.4.04`, `versionCode=235`, `BRAIN_VERSION=2.4.04`, web label `v2.4.04 · b235`, cache-bust `app.js?v=1176`.
   - Preserved native architecture:
     - day evaluation still auto-runs after market close from `MarketWatchService`
     - manual `Evaluate Today` remains a fallback, not the primary trigger

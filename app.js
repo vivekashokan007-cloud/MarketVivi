@@ -1388,8 +1388,15 @@ function renderPositioning() {
 // ═══════════════════════════════════════════════════════════════
 
 // Dynamic peak cash — what actually leaves your account to enter (buy leg first)
+function candidateLegCount(c) {
+    if (Array.isArray(c?.legs)) return c.legs.length;
+    if (Number.isFinite(Number(c?.legCount))) return Number(c.legCount);
+    if (Number.isFinite(Number(c?.legs))) return Number(c.legs);
+    return 0;
+}
+
 function peakCash(c) {
-    const buyLeg = (c.buyLTP || 0) + (c.legs === 4 ? (c.buyLTP2 || 0) : 0);
+    const buyLeg = (c.buyLTP || 0) + (candidateLegCount(c) === 4 ? (c.buyLTP2 || 0) : 0);
     return Math.round(buyLeg * (c.lotSize || 30));
 }
 
@@ -1397,7 +1404,7 @@ function peakCash(c) {
 // 2-leg spreads: margin ≈ maxLoss (spread benefit applies)
 // 4-leg IC/IB: SPAN on 2 short legs, ~90% after spread benefit from long legs
 function estimateBrokerMargin(c) {
-    if (c.legs === 4) {
+    if (candidateLegCount(c) === 4) {
         // IC/IB = defined risk spread. Broker charges ~maxLoss, not naked short.
         // Buffer 1.3x for slippage + exchange margin rounding
         return Math.round((c.maxLoss || 0) * 1.3);
@@ -3600,7 +3607,7 @@ function renderCandidateCard(cand, atm, rank) {
     const forces = cand.forces || { f1: 0, f2: 0, f3: 0, aligned: 0 };
     const dots = alignmentDots(forces.aligned);
     const backendBlocked = cand.directionSafe === false || cand.entryAction === 'BLOCKED' || cand.blocked === true;
-    const is4Leg = cand.legs === 4;
+    const is4Leg = candidateLegCount(cand) === 4;
     const otmDist = Math.abs(cand.sellStrike - atm);
     const otmLabel = otmDist < 50 ? 'ATM' : 'OTM';
     const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
@@ -3712,7 +3719,7 @@ function renderCandidateCard(cand, atm, rank) {
             ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · ${cand.varsityTier === 'PRIMARY' ? '<span style="color:var(--green)">PRIMARY</span>' : '<span style="color:var(--warn)">ALLOWED</span>'}${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
         </div>
         <div class="v1-footer">
-            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${estimateBrokerMargin(cand).toLocaleString()}${cand.legs === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : ''}
+            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${estimateBrokerMargin(cand).toLocaleString()}${candidateLegCount(cand) === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : ''}
             · EV/₹1K: ₹${(cand.ev / (peakCash(cand) / 1000 || 1)).toFixed(0)}
         </div>
         ${weakEconomics ? `<div style="font-size:10px;color:var(--warn);margin-top:4px">⚠️ Economics weak: ${weakEconomicsReasons.join(' · ')}</div>` : ''}
