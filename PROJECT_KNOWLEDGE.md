@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.04 / b235)
+# Market Radar — Project Knowledge (updated through v2.4.05 / b236)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2383,3 +2383,20 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - `Status refreshed` timestamp is also updated automatically
   - Expected effect:
     - after native auto-evaluation completes, ML tab should reflect `Today Done` and final produced/persisted counts without requiring the user to press `Refresh Status`
+- 2026-06-08 release prep: bumped both repos to shared version `v2.4.05 / b236` for Wave 3 observe-only Elephant wiring. Android `versionName=2.4.05`, `versionCode=236`, `BRAIN_VERSION=2.4.05`, web label `v2.4.05 · b236`, cache-bust `app.js?v=1177`.
+  - Added additive Elephant fact-pack export in native Python brain output:
+    - `result.elephant_fact_pack`
+    - lane-aware candidate payloads
+    - lane-scoped ML memory block from closed trades plus `signal_reliability`
+    - stable poll timestamp derived from actual poll/session data instead of a fresh wall-clock fallback where possible
+  - Added native Supabase support:
+    - read `signal_reliability`
+    - upsert opaque Elephant assessments keyed by `(poll_timestamp, lane)`
+  - Added observe-only Oracle wiring in `MarketWatchService`:
+    - monthly cache for `signal_reliability`
+    - async POST to `/elephant`
+    - per-lane candidate cap at 15
+    - opaque request/response persistence to `elephant_assessments`
+  - Isolation rule preserved:
+    - Elephant response is not fed back into verdict, ranking, notifications, or live candidate selection
+    - failures collapse to stored/logged `WAIT`, not runtime decision changes
