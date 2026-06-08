@@ -1526,8 +1526,18 @@ window.syncFromNative = function(dataJson) {
     try {
         const data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
 
-        // b106 null-guard: Kotlin may push empty/null before first poll runs
-        if (!data || typeof data !== 'object') return;
+        // The Android service now sends POLL_TICK as a lightweight wake-up signal.
+        // When no payload is attached, pull the current native snapshot directly.
+        if (!data || typeof data !== 'object') {
+            const snapshot = pullNativeState();
+            try {
+                updateWatchStatusHint(snapshot.status || {});
+            } catch (e) {
+                console.warn('[syncFromNative] watch-status refresh failed:', e.message);
+            }
+            renderAll();
+            return;
+        }
 
         // Poll history — Kotlin is the source of truth for today's session.
         if (data.pollHistory && Array.isArray(data.pollHistory)) {
