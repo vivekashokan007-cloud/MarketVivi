@@ -2400,3 +2400,49 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Isolation rule preserved:
     - Elephant response is not fed back into verdict, ranking, notifications, or live candidate selection
     - failures collapse to stored/logged `WAIT`, not runtime decision changes
+
+## 2026-06-08 Hotfix - v2.4.06 / b237
+
+- Bumped both repos to shared version `v2.4.06 / b237`.
+- Root cause identified from device log:
+  - `TransactionTooLargeException`
+  - `POLL_TICK` Binder parcel size was about `1.1 MB`
+  - Android service was trying to push full poll / brain / history / open-trade JSON through an intent extra
+- User-visible impact:
+  - app crash / restart loop
+  - morning auto polling looked dead or unstable even though forced poll execution had started
+- Fix shipped:
+  - removed oversized `broadcastData` payload from `MarketWatchService`
+  - `POLL_TICK` now acts only as a lightweight UI refresh signal
+  - `app.js` now treats `syncFromNative(null)` as a native pull refresh and uses `pullNativeState()` to re-render
+- Architectural note:
+  - this did not change the agreed Claude architecture
+  - it is a transport-layer sync fix only
+  - no changes were made to brain decision logic, poll scheduling logic, candidate generation, ML evaluation flow, Elephant observe-only isolation, or verdict / ranking / notification pathways
+  - the fix is more aligned with the architecture because UI state is now pulled from native truth instead of copied through large Binder payloads
+
+## 2026-06-09 Async Elephant + ML Reporting - v2.4.07 / b238
+
+- Bumped both repos to shared version `v2.4.07 / b238`.
+- Implemented Claude's async Elephant directive:
+  - Android app now performs a fast handoff to `/elephant` and does not wait for Gemini verdict completion inside the poll loop
+  - Oracle `/elephant` now returns immediate `202 accepted`
+  - live Gemini work runs in a background task on the server
+  - server persists opaque `request` and `response` JSON directly to `elephant_assessments`
+  - observe-only isolation remains intact:
+    - no readback into brain verdict
+    - no ranking change
+    - no notification change
+    - `quality_tag` remains `placeholder_prompt_era`
+- Fixed app-side ML reporting defects:
+  - `4-Lane Training Matrix` aggregation now joins UUID `snapshot_id` correctly as a string instead of coercing to number
+  - lane derivation now prefers explicit lane on each outcome row, then row index/mode, then snapshot fallback
+  - ML summary counts now separate:
+    - evaluation rows produced/persisted
+    - primary recommendation rows persisted separately
+  - intended effect:
+    - lane matrix should populate when evaluation outcomes exist
+    - `persisted > produced` should no longer be shown as a misleading summary
+- Validation completed locally:
+  - `python3 -m py_compile` passed for `oracle_server/evaluator_app.py`
+  - `node --check` passed for `app.js`

@@ -1030,28 +1030,37 @@ function buildMlLaneStatsFromOutcomes(outcomes = [], snapshots = []) {
     };
     const snapshotMap = new Map();
     for (const snap of Array.isArray(snapshots) ? snapshots : []) {
-        const id = Number(snap?.id);
-        if (Number.isFinite(id) && id > 0 && !snapshotMap.has(id)) snapshotMap.set(id, snap);
+        const id = String(snap?.id || '').trim();
+        if (id && !snapshotMap.has(id)) snapshotMap.set(id, snap);
     }
     for (const row of Array.isArray(outcomes) ? outcomes : []) {
         const role = String(row?.role || 'secondary').toLowerCase();
         if (role !== 'primary') continue;
         const outcome = resolveDecisionWon(row);
         if (!(outcome === 0 || outcome === 1)) continue;
-        const snapshotId = Number(row?.snapshot_id);
-        const snap = Number.isFinite(snapshotId) ? snapshotMap.get(snapshotId) : null;
+        const explicitLane = String(row?.lane || '').trim();
+        let key = lanes[explicitLane] ? explicitLane : '';
         let index = 'UNK';
         let mode = 'unknown';
         let strategy = '';
-        if (snap) {
+        if (!key) {
+            index = normalizeDecisionIndex(row);
+            mode = normalizeDecisionMode(row);
+            const directKey = `${index}_${mode}`;
+            if (lanes[directKey]) key = directKey;
+        }
+        const snapshotId = String(row?.snapshot_id || '').trim();
+        const snap = snapshotId ? snapshotMap.get(snapshotId) : null;
+        if (!key && snap) {
             const primary = safeParseNB(snap.primary_candidate_json, {});
             index = normalizeDecisionIndex(primary);
             strategy = String(primary?.type || '');
             const ctx = safeParseNB(snap.context_json, {});
             mode = normalizeDecisionMode({ trade_mode: ctx.trade_mode || ctx.tradeMode, strategy });
+            const snapshotKey = `${index}_${mode}`;
+            if (lanes[snapshotKey]) key = snapshotKey;
         }
-        const key = `${index}_${mode}`;
-        if (!lanes[key]) continue;
+        if (!key || !lanes[key]) continue;
         lanes[key].rows += 1;
         lanes[key].labeled += 1;
         if (outcome === 1 || outcome === true) lanes[key].wins += 1;
