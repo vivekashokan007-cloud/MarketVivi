@@ -1005,9 +1005,10 @@ function buildMlLaneStats(decisions = []) {
         BNF_swing: { index: 'BNF', mode: 'swing', rows: 0, labeled: 0, wins: 0 }
     };
     for (const row of Array.isArray(decisions) ? decisions : []) {
+        const explicitLane = String(row?.lane || '').trim();
         const index = normalizeDecisionIndex(row);
         const mode = normalizeDecisionMode(row);
-        const key = `${index}_${mode}`;
+        const key = lanes[explicitLane] ? explicitLane : `${index}_${mode}`;
         if (!lanes[key]) continue;
         lanes[key].rows += 1;
         const won = resolveDecisionWon(row);
@@ -1053,12 +1054,17 @@ function buildMlLaneStatsFromOutcomes(outcomes = [], snapshots = []) {
         const snap = snapshotId ? snapshotMap.get(snapshotId) : null;
         if (!key && snap) {
             const primary = safeParseNB(snap.primary_candidate_json, {});
-            index = normalizeDecisionIndex(primary);
-            strategy = String(primary?.type || '');
-            const ctx = safeParseNB(snap.context_json, {});
-            mode = normalizeDecisionMode({ trade_mode: ctx.trade_mode || ctx.tradeMode, strategy });
-            const snapshotKey = `${index}_${mode}`;
-            if (lanes[snapshotKey]) key = snapshotKey;
+            const primaryLane = String(primary?.lane || '').trim();
+            if (lanes[primaryLane]) {
+                key = primaryLane;
+            } else {
+                index = normalizeDecisionIndex(primary);
+                strategy = String(primary?.type || '');
+                const ctx = safeParseNB(snap.context_json, {});
+                mode = normalizeDecisionMode({ trade_mode: ctx.trade_mode || ctx.tradeMode, strategy });
+                const snapshotKey = `${index}_${mode}`;
+                if (lanes[snapshotKey]) key = snapshotKey;
+            }
         }
         if (!key || !lanes[key]) continue;
         lanes[key].rows += 1;
