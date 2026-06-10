@@ -968,17 +968,54 @@ function getMLBrainSnapshotsCached(force = false) {
 }
 
 function normalizeDecisionIndex(row = {}) {
-    const raw = String(row.index_key || row.index || row.symbol || '').toUpperCase();
+    const primary = safeParseNB(row.primary_candidate_json, {});
+    const candidate = safeParseNB(row.candidate_json, {});
+    const context = safeParseNB(row.context_json, {});
+    const raw = String(
+        row.index_key ||
+        row.index ||
+        row.indexKey ||
+        row.symbol ||
+        row.underlying ||
+        row.instrument ||
+        primary.index ||
+        candidate.index ||
+        context.index_key ||
+        context.index ||
+        ''
+    ).toUpperCase();
     if (raw.includes('BNF') || raw.includes('BANKNIFTY')) return 'BNF';
     if (raw.includes('NF') || raw.includes('NIFTY')) return 'NF';
     return 'UNK';
 }
 
 function normalizeDecisionMode(row = {}) {
-    const raw = String(row.trade_mode || row.mode || '').toLowerCase();
+    const primary = safeParseNB(row.primary_candidate_json, {});
+    const candidate = safeParseNB(row.candidate_json, {});
+    const context = safeParseNB(row.context_json, {});
+    const raw = String(
+        row.trade_mode ||
+        row.tradeMode ||
+        row.mode ||
+        row.execution_mode ||
+        primary.trade_mode ||
+        primary.tradeMode ||
+        candidate.trade_mode ||
+        candidate.tradeMode ||
+        context.trade_mode ||
+        context.tradeMode ||
+        ''
+    ).toLowerCase();
     if (raw === 'intraday') return 'intraday';
     if (raw === 'swing') return 'swing';
-    const strategy = String(row.strategy || row.recommendation_strategy || '').toUpperCase();
+    const strategy = String(
+        row.strategy ||
+        row.recommendation_strategy ||
+        row.strategy_type ||
+        primary.type ||
+        candidate.type ||
+        ''
+    ).toUpperCase();
     if (strategy === 'IRON_CONDOR' || strategy === 'IRON_BUTTERFLY') return 'intraday';
     return 'unknown';
 }
@@ -1005,7 +1042,9 @@ function buildMlLaneStats(decisions = []) {
         BNF_swing: { index: 'BNF', mode: 'swing', rows: 0, labeled: 0, wins: 0 }
     };
     for (const row of Array.isArray(decisions) ? decisions : []) {
-        const explicitLane = String(row?.lane || '').trim();
+        const primary = safeParseNB(row?.primary_candidate_json, {});
+        const candidate = safeParseNB(row?.candidate_json, {});
+        const explicitLane = String(row?.lane || primary?.lane || candidate?.lane || '').trim();
         const index = normalizeDecisionIndex(row);
         const mode = normalizeDecisionMode(row);
         const key = lanes[explicitLane] ? explicitLane : `${index}_${mode}`;

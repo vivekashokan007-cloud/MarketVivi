@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.05 / b236)
+# Market Radar — Project Knowledge (updated through v2.4.10 / b241)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2446,3 +2446,40 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Validation completed locally:
   - `python3 -m py_compile` passed for `oracle_server/evaluator_app.py`
   - `node --check` passed for `app.js`
+
+## 2026-06-10 Local Repo Recovery Alignment - v2.4.09 / b240
+
+- Recreated full local working copies from the current uploaded repo archives:
+  - `/root/.openclaw/Marketapp`
+  - `/root/.openclaw/MarketVivi`
+- Treated the current repo labels as canonical latest:
+  - Android `versionName=2.4.09`, `versionCode=240`
+  - PWA label `v2.4.09 · b240`
+- Corrected stale release metadata after reinstall/recovery:
+  - `BRAIN_VERSION` aligned to `2.4.09`
+  - PWA `app.js` cache-buster advanced to `v=1181`
+  - handoff/build-status notes updated to `v2.4.09 / b240`
+- Push is intentionally deferred until local review/checks pass.
+
+## 2026-06-10 ML Status Repair + Release Prep - v2.4.10 / b241
+
+- Bumped both repos to shared version `v2.4.10 / b241`.
+- Native ML day-evaluation fetch is now tolerant of rows whose `session_date` is
+  missing or misaligned but whose `poll_ts` still belongs to the IST session day:
+  - `SupabaseClient.fetchBrainSnapshots(...)` now falls back to recent rows and
+    filters client-side by IST date using `session_date`, `poll_ts`, or legacy `date`
+  - `fetchChainSlices(...)` applies the same fallback/date-normalization path
+- PWA ML lane parsing is now broader so fallback decision rows classify into the
+  `NF/BNF x intraday/swing` matrix even when index/mode live inside nested JSON:
+  - lane derivation now inspects `primary_candidate_json`, `candidate_json`,
+    `context_json`, `indexKey`, `tradeMode`, `strategy_type`, and embedded `lane`
+- Intended effect from this release:
+  - `Today's evaluation done: no brain snapshots found` should stop appearing for
+    valid same-day rows that were only missing normalized `session_date`
+  - the `4-Lane Training Matrix` should no longer stay all-zero when fallback
+    labeled decisions already exist
+- Release metadata aligned:
+  - Android `versionName=2.4.10`, `versionCode=241`
+  - PWA label `v2.4.10 · b241`
+  - `BRAIN_VERSION=2.4.10`
+  - cache-bust `app.js?v=1182`
