@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.12 / b243)
+# Market Radar — Project Knowledge (updated through v2.4.13 / b244)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2525,3 +2525,26 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - the app should render normally again after installing `v2.4.12 / b243`
   - `Evaluate Today` should still become available for the stale same-day
     no-snapshot result without freezing the WebView UI
+
+## 2026-06-10 Stale Evaluation Running Latch Fix - v2.4.13 / b244
+
+- Bumped both repos to shared version `v2.4.13 / b244`.
+- Fixed the post-close ML state where the UI could remain stuck on:
+  - `Day evaluation: RUNNING`
+  - disabled `Evaluating...` button
+  - while service status already showed `STOPPED`
+- Root cause:
+  - `evaluation_running_date` was stored when day evaluation started
+  - if `MarketMLService` was interrupted/destroyed before normal completion,
+    timeout, or failure cleanup finished, that flag could remain stuck in prefs
+  - the WebView trusted the stale flag and kept the ML controls latched
+- Native repair:
+  - `NativeBridge` now checks whether `MarketMLService` is actually running
+  - if today's `evaluation_running_date` exists but the service is no longer
+    alive, it clears the stale running flag and replaces the message with a
+    retry prompt
+  - `MarketMLService.onDestroy()` now also clears the running flag for the
+    current day and marks evaluation as interrupted/retryable
+- Intended effect:
+  - stuck `RUNNING` / `Evaluating...` state should clear automatically
+  - `Evaluate Today` should become tappable again after an interrupted ML run
