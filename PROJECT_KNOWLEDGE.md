@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.11 / b242)
+# Market Radar — Project Knowledge (updated through v2.4.12 / b243)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2505,3 +2505,23 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - installing `v2.4.11 / b242` should let today's ML evaluation be rerun from
     the device instead of staying stuck on the stale `no brain snapshots found`
     result
+
+## 2026-06-10 UI Thread Bridge Regression Fix - v2.4.12 / b243
+
+- Bumped both repos to shared version `v2.4.12 / b243`.
+- Fixed a regression introduced in `v2.4.11`:
+  - `NativeBridge.getServiceStatus()` was calling the Supabase snapshot fetch
+    path synchronously in order to decide whether the stale same-day
+    `no brain snapshots found` result should be retryable
+  - the WebView render path calls `getServiceStatus()` frequently, so this
+    introduced a UI-thread network dependency and could leave the app sitting on
+    the static placeholder screen after launch/update
+- Retry gating is now local-only:
+  - same-day stale `no brain snapshots found` result is considered retryable if
+    local native session markers still exist (`last_poll_date=today` plus saved
+    poll/latest-poll state)
+  - no Supabase network call runs inside the synchronous bridge status method
+- Intended effect:
+  - the app should render normally again after installing `v2.4.12 / b243`
+  - `Evaluate Today` should still become available for the stale same-day
+    no-snapshot result without freezing the WebView UI
