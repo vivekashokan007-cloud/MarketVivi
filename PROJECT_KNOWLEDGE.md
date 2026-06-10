@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.10 / b241)
+# Market Radar — Project Knowledge (updated through v2.4.11 / b242)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2483,3 +2483,25 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - PWA label `v2.4.10 · b241`
   - `BRAIN_VERSION=2.4.10`
   - cache-bust `app.js?v=1182`
+
+## 2026-06-10 ML Status Retry Gate Repair - v2.4.11 / b242
+
+- Bumped both repos to shared version `v2.4.11 / b242`.
+- Fixed the post-update dead-end where the ML panel still showed the stale
+  same-day message `Today's evaluation done: no brain snapshots found.` even
+  after the snapshot fetch path had been repaired.
+- Root cause:
+  - native prefs had already marked `evaluation_done_date=today`
+  - `Refresh Status` only reloads cached/native status; it does not rerun the
+    day evaluation job
+  - `triggerDayEvaluation()` therefore returned `already done` and kept the
+    false-negative result frozen in place
+- Native bridge behavior now self-heals this case:
+  - if today's saved evaluation message says `no brain snapshots found`
+  - and Supabase now does contain today's brain snapshots
+  - the app marks the result as retryable instead of permanently done
+  - `Evaluate Today` becomes available again and requeues the day evaluation
+- Intended effect:
+  - installing `v2.4.11 / b242` should let today's ML evaluation be rerun from
+    the device instead of staying stuck on the stale `no brain snapshots found`
+    result
