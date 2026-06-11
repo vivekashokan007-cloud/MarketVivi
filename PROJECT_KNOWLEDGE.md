@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.16 / b247)
+# Market Radar — Project Knowledge (updated through v2.4.17 / b248)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2613,3 +2613,144 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - PWA/UI repair:
   - ML button can now show `⏳ Await Full Close Data` for partial sessions
   - cache-bust updated to `app.js?v=1188`
+
+## 2026-06-11 Learning Control Plane Decisions (post-b247 architecture lock)
+
+- The `v2.4.16 / b247` payload-slimming decision is now considered the correct
+  emergency stability fix, not the final ML architecture.
+- Verified evaluation tradeoff:
+  - PRIMARY labels remain intact because `brain.evening_evaluator()` reads
+    `primary_candidate_json` for the surfaced recommendation truth target
+  - SECONDARY breadth is temporarily narrowed because removing `context_json`
+    drops fallback access to full `snapshot_generated_candidates`
+  - app stability takes precedence; the old same-day evaluation payload was
+    roughly `47 MB` with `context_json` versus `~125 KB` without it
+- Agreed long-term fix for secondary breadth:
+  - do **not** restore giant `context_json` fetches
+  - add a normalized compact Supabase table `ml_generated_candidates`
+  - ownership: app-written at snapshot time because only the app computes the
+    candidate set deterministically
+  - intended purpose: restore evaluation and learning visibility for
+    non-surfaced generated candidates without reintroducing large JSON blobs
+- Learning control plane is now frozen to **committed release artifacts**, not
+  runtime mutation:
+  - learned judgment may affect live behavior only through reviewed,
+    versioned, committed releases
+  - no runtime-fetched calibration/config for live brain behavior
+  - determinism, auditability, fixture replay, and Android stability all take
+    precedence over fast remote parameter mutation
+- Current intended long-term learned artifact:
+  - a committed `calibration.json` carrying Class-J fitted values
+  - shipped through APK/PWA release after review, not fetched live
+- Classes are now explicitly separated:
+  - Class F (facts): never learned, never runtime-configurable
+  - Class M (math): deterministic, fixed
+  - Class J (judgment): may evolve from evaluated data, but only after review
+- What is allowed to influence live ranking later:
+  - reviewed Class-J calibration values
+  - subtract-only Branch/MATCH/JUDGE compression/veto behavior
+  - subtract-only Gemini caution/veto behavior after earned authority
+- What is forbidden:
+  - any history-driven confidence addition
+  - any LLM-produced ranking/confidence
+  - any auto-applied parameter mutation
+  - any same-poll feedback loop
+- Monthly learning workflow agreed in principle:
+  1. collect evaluated outcomes
+  2. aggregate by lane/regime/strategy/bucket
+  3. generate proposal artifact
+  4. human review
+  5. fixture replay / parity gate
+  6. staged release
+  7. next-cycle observation
+- Immediate priority order after `b247`:
+  1. keep slim evaluation payload in place
+  2. reconcile live Oracle persistence / deployed-vs-repo drift
+  3. verify stable automatic post-close evaluation across real close cycles
+  4. add compact generated-candidate persistence (`ml_generated_candidates`)
+  5. only then build the one-month review artifact pipeline
+
+## 2026-06-11 Oracle VM Live Reconciliation (post-b247, direct VM access)
+
+- Direct Oracle VM access details confirmed:
+  - host: `144.24.117.114`
+  - user: `opc`
+  - port: `22`
+  - auth: private key
+  - runtime dir: `/home/opc/oracle_server/`
+  - env file: `/home/opc/oracle_server/.env`
+  - privilege: passwordless `sudo`
+  - service management: **not** systemd; process is managed manually through
+    `/home/opc/oracle_server/restart.sh`
+- Live deployment findings:
+  - VM is **not** operating as a normal git checkout (`git` not present)
+  - deployment is file-copy / ad hoc runtime state, not controlled service
+    management
+  - live `evaluator_app.py` was stale relative to repo:
+    - `/elephant` returned immediate `200` verdict JSON
+    - OpenAPI described the older Wave 2 synchronous behavior
+    - no live Supabase persistence path was active
+  - live `restart.sh` was clobbering `.env` on every restart:
+    - it rewrote `.env` with only `GEMINI_API_KEY`
+    - it silently dropped `SUPABASE_URL` and `SUPABASE_ANON_KEY`
+    - this explains why Supabase persistence could disappear after restarts
+- Live remediation performed directly on the VM:
+  - backed up `evaluator_app.py`, `.env`, and `restart.sh`
+  - replaced live `evaluator_app.py` with the repo observe-only version
+  - rewrote `.env` to include:
+    - `GEMINI_API_KEY`
+    - `SUPABASE_URL`
+    - `SUPABASE_ANON_KEY`
+  - rewrote `restart.sh` so it:
+    - sources `.env`
+    - does **not** overwrite `.env`
+    - launches uvicorn with all three runtime env vars
+  - restarted live uvicorn on `443` using existing trusted TLS certs
+- Live verification after fix:
+  - public `openapi.json` now matches the repo observe-only contract
+  - `/elephant` now returns `202 Accepted`
+  - a live probe for
+    - `poll_timestamp = 2026-06-11T18:45:00+00:00`
+    - `lane = NF_intraday`
+    successfully created a new row in Supabase `elephant_assessments`
+  - confirmed persisted row:
+    - `poll_timestamp = 2026-06-11T18:45:00+00:00`
+    - `lane = NF_intraday`
+    - `assessments.status = ok`
+- Operational caution:
+  - the VM currently runs Python `3.9`, and the Google Gemini SDK emits
+    deprecation / end-of-life warnings there
+  - not an immediate blocker, but the Oracle runtime should later be upgraded
+    and standardized
+- Repo/handoff consequence:
+  - Oracle persistence is **fixed live**
+  - but the VM runtime remains operationally brittle because restart/deploy is
+    still manual and not version-controlled on the host
+  - next Oracle hygiene step should be to make the runtime restart contract
+    explicit in repo-tracked scripts and reduce ad hoc drift
+
+## 2026-06-11 Compact Generated-Candidate Persistence Prep - v2.4.17 / b248
+
+- Bumped both repos to shared version `v2.4.17 / b248`.
+- First Claude-aligned follow-up after `b247`:
+  - added best-effort app-side persistence for compact generated-candidate rows
+    destined for a new `ml_generated_candidates` table
+- Safety constraints of the implementation:
+  - write path is bounded to a hard cap of `50` rows per poll
+  - surfaced/watchlist candidates are kept first
+  - remaining non-surfaced candidates are sampled in a lane-balanced round-robin
+  - persistence runs only after the normal brain snapshot save succeeds
+  - if the table does not exist yet, writes fail closed and do not affect the
+    live poll path
+- New schema artifacts prepared in repo:
+  - `supabase_ml_generated_candidates_schema_patch.sql`
+  - `ML_GENERATED_CANDIDATES_RUN_STEPS.txt`
+- Intended long-term role:
+  - restore secondary/offline evaluation breadth without restoring giant
+    `context_json` fetches
+  - provide the durable compact source for later evaluator/learning work
+- Release metadata aligned:
+  - Android `versionName=2.4.17`, `versionCode=248`
+  - `BRAIN_VERSION=2.4.17`
+  - PWA label `v2.4.17 · b248`
+  - cache-bust updated to `app.js?v=1189`

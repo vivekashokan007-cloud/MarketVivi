@@ -1,0 +1,30 @@
+1. Open Supabase SQL Editor.
+
+2. Run:
+   `/root/.openclaw/MarketVivi/supabase_ml_generated_candidates_schema_patch.sql`
+
+3. Confirm the table exists:
+   - `ml_generated_candidates`
+
+4. Confirm the unique index exists:
+   - `idx_ml_generated_candidates_poll_candidate`
+
+5. After the next live market poll on the updated app build, verify writes:
+
+```sql
+with session as (
+  select (now() at time zone 'Asia/Kolkata')::date as session_date
+)
+select session_date, snapshot_poll_ts, lane, candidate_id, strategy_type, was_surfaced, watchlist_rank
+from public.ml_generated_candidates, session
+where ml_generated_candidates.session_date = session.session_date
+order by snapshot_poll_ts desc, was_surfaced desc, watchlist_rank nulls last
+limit 50;
+```
+
+6. Row-shape sanity:
+   - surfaced candidates should have `was_surfaced = true`
+   - non-surfaced sampled candidates should have `was_surfaced = false`
+   - rows per poll should stay bounded (target cap: 50)
+
+7. If the table is not created, the app-side write path fails closed and the app still functions.
