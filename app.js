@@ -4142,11 +4142,19 @@ function renderML() {
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
     const evaluationDone = service.evaluationDoneToday === true;
     const evaluationRunning = service.evaluationRunning === true;
+    const evaluationReady = service.evaluationReady !== false;
+    const evaluationBlockedReason = service.evaluationBlockedReason || '';
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
     const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
     const evaluationProducedCount = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
-    const evaluationButtonText = evaluationDone ? '✅ Today Done' : (evaluationRunning ? '⏳ Evaluating...' : '📋 Evaluate Today');
-    const evaluationButtonDisabled = evaluationRunning || evaluationDone;
+    const evaluationButtonText = evaluationDone
+        ? '✅ Today Done'
+        : (evaluationRunning
+            ? '⏳ Evaluating...'
+            : (!evaluationReady
+                ? (evaluationBlockedReason === 'WAIT_FOR_POST_CLOSE_HANDOFF' ? '⏳ Auto After Close' : '⛔ Not Ready')
+                : '📋 Evaluate Today'));
+    const evaluationButtonDisabled = evaluationRunning || evaluationDone || !evaluationReady;
     const evaluationButtonAction = 'triggerDayEvaluation()';
     const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
         ? new Date(STATE.mlStatusRefreshAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })

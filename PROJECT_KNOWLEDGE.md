@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.14 / b245)
+# Market Radar — Project Knowledge (updated through v2.4.15 / b246)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2565,3 +2565,29 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - PWA alignment:
   - label updated to `v2.4.14 · b245`
   - cache-bust updated to `app.js?v=1186`
+
+## 2026-06-11 Post-Close Evaluation Handoff Repair - v2.4.15 / b246
+
+- Bumped both repos to shared version `v2.4.15 / b246`.
+- Root cause addressed:
+  - ML day evaluation had split ownership
+  - `MarketWatchService` could remain alive after close while the app still
+    offered manual `Evaluate Today`
+  - this allowed evaluation to be launched against a still-active live watch
+    service, causing repeated stuck-running / crash-prone behavior
+- Android repair:
+  - post-close evaluation is now handed off from `MarketWatchService` once the
+    session has actually closed
+  - the watch service schedules the next open and stops itself after the
+    evaluation handoff instead of lingering in a fake-running closed state
+  - manual `triggerDayEvaluation()` is now blocked while:
+    - the watch service is still active
+    - the market is still open
+    - or no completed session exists yet
+- PWA/UI repair:
+  - ML controls now surface readiness more honestly
+  - button states can show `⏳ Auto After Close` / `⛔ Not Ready` instead of
+    exposing `Evaluate Today` prematurely
+  - cache-bust updated to `app.js?v=1187`
+- Oracle repo side also includes:
+  - `diagnose_runtime.sh` helper for tonight's Oracle VM reconciliation work
