@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.13 / b244)
+# Market Radar — Project Knowledge (updated through v2.4.14 / b245)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2548,3 +2548,20 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Intended effect:
   - stuck `RUNNING` / `Evaluating...` state should clear automatically
   - `Evaluate Today` should become tappable again after an interrupted ML run
+
+## 2026-06-11 Repo Alignment + Oracle Deploy Hygiene - v2.4.14 / b245
+
+- Bumped both repos to shared version `v2.4.14 / b245`.
+- Android side:
+  - added timestamp-based cleanup for interrupted ML evaluation runs
+  - restored calibration read for `entry_snapshot.sigma_from_atm`
+  - removed the dead app-side `elephant_assessments` writer so that table
+    remains Oracle-owned
+- Oracle repo side:
+  - deployment scripts now carry `SUPABASE_URL` and `SUPABASE_ANON_KEY`
+  - `evaluator_app.py` loads `.env` when present
+  - deploy script now copies `evaluator_app.py` and `requirements.txt` into the
+    runtime directory before starting `uvicorn`
+- PWA alignment:
+  - label updated to `v2.4.14 · b245`
+  - cache-bust updated to `app.js?v=1186`
