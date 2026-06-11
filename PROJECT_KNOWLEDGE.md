@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.15 / b246)
+# Market Radar — Project Knowledge (updated through v2.4.16 / b247)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2591,3 +2591,25 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - cache-bust updated to `app.js?v=1187`
 - Oracle repo side also includes:
   - `diagnose_runtime.sh` helper for tonight's Oracle VM reconciliation work
+
+## 2026-06-11 Day-Evaluation Crash Guard + Payload Slimming - v2.4.16 / b247
+
+- Bumped both repos to shared version `v2.4.16 / b247`.
+- Root cause addressed:
+  - manual `Evaluate Today` could still be triggered on a partial session
+    (`75/76`, missed close poll)
+  - day evaluation was still fetching full snapshot rows including
+    oversized `context_json` blobs
+  - today’s saved evaluation input for `ml_brain_snapshots` was roughly
+    47 MB with `context_json`, versus about 125 KB without it
+- Android repair:
+  - `triggerDayEvaluation()` now blocks partial-session runs unless the app is
+    explicitly in a retry state
+  - `getServiceStatus()` now exposes partial-session blocking so the UI does
+    not present manual evaluation as ready
+  - `runDayEvaluation()` now uses dedicated slim Supabase fetches with only the
+    fields actually consumed by `brain.evening_evaluator()`
+  - evaluation input logs now include byte sizes for snapshots and chain rows
+- PWA/UI repair:
+  - ML button can now show `⏳ Await Full Close Data` for partial sessions
+  - cache-bust updated to `app.js?v=1188`

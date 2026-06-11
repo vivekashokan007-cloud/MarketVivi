@@ -4152,7 +4152,11 @@ function renderML() {
         : (evaluationRunning
             ? '⏳ Evaluating...'
             : (!evaluationReady
-                ? (evaluationBlockedReason === 'WAIT_FOR_POST_CLOSE_HANDOFF' ? '⏳ Auto After Close' : '⛔ Not Ready')
+                ? (evaluationBlockedReason === 'WAIT_FOR_POST_CLOSE_HANDOFF'
+                    ? '⏳ Auto After Close'
+                    : evaluationBlockedReason === 'SESSION_PARTIAL'
+                        ? '⏳ Await Full Close Data'
+                        : '⛔ Not Ready')
                 : '📋 Evaluate Today'));
     const evaluationButtonDisabled = evaluationRunning || evaluationDone || !evaluationReady;
     const evaluationButtonAction = 'triggerDayEvaluation()';
