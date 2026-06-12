@@ -952,6 +952,21 @@ function getMLEvaluationOutcomesCached(force = false) {
     return STATE.mlEvaluationOutcomes;
 }
 
+function getMLEvaluationLaneSummaryCached(force = false) {
+    const ttlMs = 90 * 1000;
+    const now = Date.now();
+    if (!force && STATE.mlEvaluationLaneSummary && (now - (STATE.mlEvaluationLaneSummaryAt || 0)) < ttlMs) {
+        return STATE.mlEvaluationLaneSummary;
+    }
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLEvaluationLaneSummary === 'function'
+        ? NativeBridge.getMLEvaluationLaneSummary(1000)
+        : '{}';
+    const parsed = safeParseNB(raw, {});
+    STATE.mlEvaluationLaneSummary = parsed && typeof parsed === 'object' ? parsed : {};
+    STATE.mlEvaluationLaneSummaryAt = now;
+    return STATE.mlEvaluationLaneSummary;
+}
+
 function getMLBrainSnapshotsCached(force = false) {
     const ttlMs = 90 * 1000;
     const now = Date.now();
@@ -2747,6 +2762,7 @@ function triggerRefreshMLStatus() {
     try {
         getMLModelStatusCached(true);
         getMLEvaluationOutcomesCached(true);
+        getMLEvaluationLaneSummaryCached(true);
         getMLBrainSnapshotsCached(true);
         STATE.mlStatusRefreshAt = Date.now();
         renderAll();
@@ -4162,6 +4178,7 @@ function renderML() {
     const signalStats = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getSignalAccuracyStats?.() : null, {});
     const decisions = getMLDecisionsCached();
     const evaluationOutcomes = getMLEvaluationOutcomesCached();
+    const evaluationLaneSummary = getMLEvaluationLaneSummaryCached();
     const brainSnapshots = getMLBrainSnapshotsCached();
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
     const evaluationDone = service.evaluationDoneToday === true;
@@ -4214,16 +4231,35 @@ function renderML() {
     });
     const fallbackLabeledCount = labeledRows.length;
     const fallbackWinCount = labeledRows.filter(d => resolveDecisionWon(d) === 1).length;
-    const outcomeLaneStats = buildMlLaneStatsFromOutcomes(evaluationOutcomes, brainSnapshots);
+    const summaryLanes = safeParseNB(evaluationLaneSummary?.lanes, evaluationLaneSummary?.lanes || {});
+    const summaryRowsToday = Number(evaluationLaneSummary?.rowsToday || 0);
+    const summaryAttributedRows = Number(evaluationLaneSummary?.attributedRows || 0);
+    const hasNativeLaneSummary = summaryLanes && typeof summaryLanes === 'object' && Object.keys(summaryLanes).length > 0;
+    const outcomeLaneStats = hasNativeLaneSummary ? {
+        NF_intraday: { index: 'NF', mode: 'intraday', rows: Number(summaryLanes.NF_intraday?.rows || 0), labeled: Number(summaryLanes.NF_intraday?.labeled || 0), wins: Number(summaryLanes.NF_intraday?.wins || 0) },
+        NF_swing: { index: 'NF', mode: 'swing', rows: Number(summaryLanes.NF_swing?.rows || 0), labeled: Number(summaryLanes.NF_swing?.labeled || 0), wins: Number(summaryLanes.NF_swing?.wins || 0) },
+        BNF_intraday: { index: 'BNF', mode: 'intraday', rows: Number(summaryLanes.BNF_intraday?.rows || 0), labeled: Number(summaryLanes.BNF_intraday?.labeled || 0), wins: Number(summaryLanes.BNF_intraday?.wins || 0) },
+        BNF_swing: { index: 'BNF', mode: 'swing', rows: Number(summaryLanes.BNF_swing?.rows || 0), labeled: Number(summaryLanes.BNF_swing?.labeled || 0), wins: Number(summaryLanes.BNF_swing?.wins || 0) }
+    } : buildMlLaneStatsFromOutcomes(evaluationOutcomes, brainSnapshots);
+    for (const lane of Object.values(outcomeLaneStats)) {
+        lane.winRate = lane.labeled > 0 ? ((lane.wins / lane.labeled) * 100) : null;
+    }
     const fallbackLaneStats = buildMlLaneStats(decisions);
     const outcomeLaneTotal = Object.values(outcomeLaneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0);
-    const laneStats = outcomeLaneTotal > 0 ? outcomeLaneStats : fallbackLaneStats;
+    const persistedOutcomeRows = Number.isFinite(evaluationOutcomeCount) ? evaluationOutcomeCount : 0;
+    const attributionBackfillNeeded = (summaryRowsToday > 0 && summaryAttributedRows === 0) || (persistedOutcomeRows > 0 && outcomeLaneTotal === 0);
+    const laneStats = outcomeLaneTotal > 0 ? outcomeLaneStats : (attributionBackfillNeeded ? {
+        NF_intraday: { index: 'NF', mode: 'intraday', rows: 0, labeled: 0, wins: 0, winRate: null },
+        NF_swing: { index: 'NF', mode: 'swing', rows: 0, labeled: 0, wins: 0, winRate: null },
+        BNF_intraday: { index: 'BNF', mode: 'intraday', rows: 0, labeled: 0, wins: 0, winRate: null },
+        BNF_swing: { index: 'BNF', mode: 'swing', rows: 0, labeled: 0, wins: 0, winRate: null }
+    } : fallbackLaneStats);
     const labeledCount = outcomeLaneTotal > 0
         ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0)
-        : fallbackLabeledCount;
+        : (attributionBackfillNeeded ? persistedOutcomeRows : fallbackLabeledCount);
     const winCount = outcomeLaneTotal > 0
         ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.wins || 0), 0)
-        : fallbackWinCount;
+        : (attributionBackfillNeeded ? 0 : fallbackWinCount);
     const labeledWinRate = labeledCount > 0 ? ((winCount / labeledCount) * 100).toFixed(1) : '--';
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
@@ -4275,7 +4311,7 @@ function renderML() {
                     Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
                     Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
                     Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b><br>
-                    Scope: <b>4 lanes tracked separately</b> (NF/BNF × intraday/swing) · Source: <b>${outcomeLaneTotal > 0 ? 'primary evaluated outcomes' : 'recent decision fallback'}</b>
+                    Scope: <b>4 lanes tracked separately</b> (NF/BNF × intraday/swing) · Source: <b>${outcomeLaneTotal > 0 ? 'primary evaluated outcomes' : (attributionBackfillNeeded ? 'persisted outcomes need attribution backfill' : 'recent decision fallback')}</b>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
@@ -4285,6 +4321,7 @@ function renderML() {
                 </div>
                 <div class="brain-detail">
                     ML review now treats these as separate populations. App-side reporting is split now; backend/oracle separation still depends on the later Antigravity dataset work.
+                    ${attributionBackfillNeeded ? `<br><span style="color:var(--warn)">Persisted evaluation outcomes exist, but these older rows do not carry enough lane attribution yet. Run the backfill to populate the matrix.</span>` : ''}
                 </div>
                 <div style="overflow-x:auto;margin-top:8px">
                     <table style="width:100%;border-collapse:collapse;font-size:12px">

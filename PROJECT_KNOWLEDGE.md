@@ -1,4 +1,26 @@
-# Market Radar — Project Knowledge (updated through v2.4.18 / b249)
+# Market Radar — Project Knowledge (updated through v2.4.19 / b250)
+
+## 2026-06-12 Native Lane Summary Repair - v2.4.19 / b250
+
+- Bumped both repos to shared version `v2.4.19 / b250`.
+- Root cause of the zero 4-lane ML matrix after successful evaluation was narrowed to the
+  app read/render contract, not evaluation execution:
+  - Supabase `ml_evaluation_outcomes` rows were present and attributed after backfill.
+  - The phone still rendered zeros because the PWA was reconstructing lane stats from raw
+    rows/snapshots instead of consuming an explicit native summary.
+- Added a native evaluation lane summary bridge:
+  - `SupabaseClient.fetchEvaluationLaneSummary(sessionDate, limit)`
+  - `NativeBridge.getMLEvaluationLaneSummary(limit)`
+- `app.js` now prefers the native lane summary for the 4-lane matrix and refreshes it from
+  the `↻ Refresh Status` action.
+- Added schema-safe evaluation persistence fallback in Kotlin:
+  - if `ml_evaluation_outcomes` / `ml_recommendation_outcomes` reject the richer attribution
+    columns, persistence falls back to legacy rows rather than failing outright.
+- Version alignment:
+  - Android `versionName=2.4.19`, `versionCode=250`
+  - `BRAIN_VERSION=2.4.19`
+  - PWA label `v2.4.19 · b250`
+  - cache-bust updated to `app.js?v=1191`
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
