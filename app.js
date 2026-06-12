@@ -1073,38 +1073,62 @@ function buildMlLaneStatsFromOutcomes(outcomes = [], snapshots = []) {
         const id = String(snap?.id || '').trim();
         if (id && !snapshotMap.has(id)) snapshotMap.set(id, snap);
     }
+
+    function resolveOutcomeCandidate(row, snap) {
+        const wantedId = String(row?.candidate_id || '').trim();
+        if (!snap || !wantedId) return {};
+        const primary = safeParseNB(snap.primary_candidate_json, {});
+        if (String(primary?.id || '').trim() === wantedId) return primary;
+
+        const ctx = safeParseNB(snap.context_json, {});
+        const generated = Array.isArray(ctx?.snapshot_generated_candidates) ? ctx.snapshot_generated_candidates : [];
+        const generatedMatch = generated.find(c => String(c?.id || '').trim() === wantedId);
+        if (generatedMatch) return generatedMatch;
+
+        const topCandidates = safeParseNB(snap.top_candidates_json, []);
+        if (Array.isArray(topCandidates)) {
+            const topMatch = topCandidates.find(c => String(c?.id || '').trim() === wantedId);
+            if (topMatch) return topMatch;
+        }
+        return {};
+    }
+
+    function resolveOutcomeLaneKey(row, snap) {
+        const explicitLane = String(row?.lane || '').trim();
+        if (lanes[explicitLane]) return explicitLane;
+
+        const candidate = resolveOutcomeCandidate(row, snap);
+        const candidateLane = String(candidate?.lane || '').trim();
+        if (lanes[candidateLane]) return candidateLane;
+
+        const directBase = {
+            index_key: row?.index_key || candidate?.index || candidate?.index_key,
+            trade_mode: row?.trade_mode || candidate?.trade_mode || candidate?.tradeMode,
+            strategy_type: row?.strategy_type || candidate?.type || candidate?.strategy_type
+        };
+        const directKey = `${normalizeDecisionIndex(directBase)}_${normalizeDecisionMode(directBase)}`;
+        if (lanes[directKey]) return directKey;
+
+        const primary = safeParseNB(snap?.primary_candidate_json, {});
+        const primaryLane = String(primary?.lane || '').trim();
+        if (lanes[primaryLane]) return primaryLane;
+
+        const ctx = safeParseNB(snap?.context_json, {});
+        const fallbackBase = {
+            index_key: primary?.index || primary?.index_key || row?.index_key,
+            trade_mode: row?.trade_mode || ctx?.trade_mode || ctx?.tradeMode,
+            strategy_type: row?.strategy_type || primary?.type || primary?.strategy_type
+        };
+        const fallbackKey = `${normalizeDecisionIndex(fallbackBase)}_${normalizeDecisionMode(fallbackBase)}`;
+        return lanes[fallbackKey] ? fallbackKey : '';
+    }
+
     for (const row of Array.isArray(outcomes) ? outcomes : []) {
-        const role = String(row?.role || 'secondary').toLowerCase();
-        if (role !== 'primary') continue;
         const outcome = resolveDecisionWon(row);
         if (!(outcome === 0 || outcome === 1)) continue;
-        const explicitLane = String(row?.lane || '').trim();
-        let key = lanes[explicitLane] ? explicitLane : '';
-        let index = 'UNK';
-        let mode = 'unknown';
-        let strategy = '';
-        if (!key) {
-            index = normalizeDecisionIndex(row);
-            mode = normalizeDecisionMode(row);
-            const directKey = `${index}_${mode}`;
-            if (lanes[directKey]) key = directKey;
-        }
         const snapshotId = String(row?.snapshot_id || '').trim();
         const snap = snapshotId ? snapshotMap.get(snapshotId) : null;
-        if (!key && snap) {
-            const primary = safeParseNB(snap.primary_candidate_json, {});
-            const primaryLane = String(primary?.lane || '').trim();
-            if (lanes[primaryLane]) {
-                key = primaryLane;
-            } else {
-                index = normalizeDecisionIndex(primary);
-                strategy = String(primary?.type || '');
-                const ctx = safeParseNB(snap.context_json, {});
-                mode = normalizeDecisionMode({ trade_mode: ctx.trade_mode || ctx.tradeMode, strategy });
-                const snapshotKey = `${index}_${mode}`;
-                if (lanes[snapshotKey]) key = snapshotKey;
-            }
-        }
+        const key = resolveOutcomeLaneKey(row, snap);
         if (!key || !lanes[key]) continue;
         lanes[key].rows += 1;
         lanes[key].labeled += 1;

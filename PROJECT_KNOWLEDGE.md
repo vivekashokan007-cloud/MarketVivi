@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through v2.4.17 / b248)
+# Market Radar — Project Knowledge (updated through v2.4.18 / b249)
 
 ## Local Update - 2026-06-06 - Wave 1 Master Directive Implementation (not pushed yet)
 
@@ -2754,3 +2754,19 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `BRAIN_VERSION=2.4.17`
   - PWA label `v2.4.17 · b248`
   - cache-bust updated to `app.js?v=1189`
+
+## 2026-06-12 Reporting Repair - v2.4.18 / b249
+
+- Bumped both repos to shared version `v2.4.18 / b249`.
+- Fixed post-close ML reporting defects found in live verification:
+  - session status no longer displays poll counts above the expected full-day slot count
+  - 4-lane ML matrix now reconstructs lane stats from persisted evaluation outcomes more defensibly, including candidate-id matching against saved snapshot candidates
+- Forward fix also added for future evaluator rows:
+  - Python/Kotlin evaluation persistence now carries `session_date`, `lane`,
+    `index_key`, `trade_mode`, and `strategy_type`
+  - this reduces dependence on brittle snapshot-only reconstruction
+- Release metadata aligned:
+  - Android `versionName=2.4.18`, `versionCode=249`
+  - `BRAIN_VERSION=2.4.18`
+  - PWA label `v2.4.18 · b249`
+  - cache-bust updated to `app.js?v=1190`
