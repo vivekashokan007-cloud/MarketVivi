@@ -1,4 +1,19 @@
-# Market Radar — Project Knowledge (updated through v2.4.19 / b250)
+# Market Radar — Project Knowledge (updated through v2.4.20 / b251)
+
+## 2026-06-12 Bridge Export Repair - v2.4.20 / b251
+
+- Bumped both repos to shared version `v2.4.20 / b251`.
+- Fixed the actual reason `b250` still showed the lane-backfill warning and zero matrix:
+  - `NativeBridge.getMLEvaluationLaneSummary()` existed in Kotlin
+  - but `MainActivity.injectNativeBridge()` did not expose it into the WebView `window.NativeBridge`
+  - so the phone could not call the new native lane-summary path and fell back to the warning branch
+- Added the missing WebView bridge export:
+  - `getMLEvaluationLaneSummary(limit) { return AndroidBridge.getMLEvaluationLaneSummary(limit || 1000); }`
+- Version alignment:
+  - Android `versionName=2.4.20`, `versionCode=251`
+  - `BRAIN_VERSION=2.4.20`
+  - PWA label `v2.4.20 · b251`
+  - cache-bust updated to `app.js?v=1192`
 
 ## 2026-06-12 Native Lane Summary Repair - v2.4.19 / b250
 
