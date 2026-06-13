@@ -1,4 +1,22 @@
-# Market Radar — Project Knowledge (updated through v2.4.21 / b252)
+# Market Radar — Project Knowledge (updated through v2.4.22 / b253)
+
+## 2026-06-13 Reconciliation Batch - v2.4.22 / b253
+
+- Bumped both repos to shared version `v2.4.22 / b253`.
+- Applied the reconciliation directive against the `b252` Round 0 batch.
+- Upgraded the observe-only qualitative schema to `qualitative_prompt_v2`.
+- Replaced ungradeable Elephant enums with gradeable values:
+  - `distribution_signal = genuine|hedging|ambiguous|unclear`
+  - `coherence_read = aligned|conflicted|unclear`
+- Removed `support` from `candidate_notes.stance`; the set is now:
+  - `neutral|caution|ignore`
+- Locked candidate notes as display/logging only, with no approval/ranking/confidence authority.
+- Wired `signal_coherence()` into deterministic confidence as a subtract-only caution penalty.
+- Added the tracked self-audit:
+  - [RECONCILIATION_SCOPE_AUDIT_b252_20260613.md](/root/.openclaw/Marketapp/RECONCILIATION_SCOPE_AUDIT_b252_20260613.md)
+- Required Claude framework checks still pass locally after the reconciliation patch.
+- PWA label updated to `v2.4.22 · b253`.
+- Cache-bust updated to `app.js?v=1194`.
 
 ## 2026-06-13 Claude Framework Prep - v2.4.21 / b252
 
