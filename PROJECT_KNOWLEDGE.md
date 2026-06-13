@@ -1,4 +1,47 @@
-# Market Radar — Project Knowledge (updated through v2.4.20 / b251)
+# Market Radar — Project Knowledge (updated through v2.4.21 / b252)
+
+## 2026-06-13 Claude Framework Prep - v2.4.21 / b252
+
+- Bumped both repos to shared version `v2.4.21 / b252`.
+- Implemented Claude Round 0 as an observe-only framework change:
+  - Oracle `/elephant` prompt no longer asks for arithmetic approval/judgment
+  - new qualitative schema:
+    - `distribution_signal`
+    - `coherence_read`
+    - `anomaly_flag`
+    - `anomaly_reason`
+    - `brief`
+    - `candidate_notes`
+  - raw request/response persistence remains intact
+  - Oracle now also stores `normalized_flags` as a stable qualitative block
+- Updated native fact-pack generation:
+  - `quality_tag` now reports `qualitative_prompt_v1`
+  - `coherence_signal` is exported from `brain.py` into the Elephant handoff payload
+- Added local Claude framework test infrastructure in `Marketapp`:
+  - `test_round0_elephant_schema.py`
+  - `test_candidate_parity_contract.py`
+  - `capture_candidate_parity_fixture.py`
+  - `run_claude_framework_checks.py`
+  - `fixtures/candidate_parity_template.candidate_parity.json`
+  - `fixtures/CANDIDATE_PARITY_FIXTURE_README.txt`
+- Current framework result:
+  - required Claude checks pass locally:
+    - Gate 5 trace smoke
+    - Round 0 Elephant qualitative schema
+    - candidate parity contract currently cleanly skips until a real rich fixture is captured
+  - older legacy fixture-baseline tests are now explicitly treated as stale:
+    - `fixture_a/b/c` do not carry `bnfChain` / `nfChain`
+    - they are still useful for legacy verdict-level drift awareness
+    - they are not sufficient for top-1 / top-6 candidate parity
+- Monday market-hours requirement:
+  - capture one real chain-rich poll bundle
+  - generate a `.candidate_parity.json` fixture and baseline
+  - freeze exact top-1 and top-6 before any Round 1 / Round 2 gate reform
+- Version alignment:
+  - Android `versionName=2.4.21`, `versionCode=252`
+  - `BRAIN_VERSION=2.4.21`
+  - PWA label `v2.4.21 · b252`
+  - cache-bust updated to `app.js?v=1193`
 
 ## 2026-06-12 Bridge Export Repair - v2.4.20 / b251
 
@@ -14,6 +57,20 @@
   - `BRAIN_VERSION=2.4.20`
   - PWA label `v2.4.20 · b251`
   - cache-bust updated to `app.js?v=1192`
+- Live verification after install confirmed the lane matrix finally renders from the
+  repaired data contract:
+  - `NF intraday`: `11 rows / 11 labeled / 4 wins / 36.4%`
+  - `BNF intraday`: `6 rows / 6 labeled / 0 wins / 0.0%`
+  - swing lanes remained `0`
+- This closes the main ML evaluation/reporting defect for 2026-06-12:
+  - evaluation executed
+  - outcomes persisted
+  - attribution backfill succeeded
+  - on-device matrix rendered correctly after the bridge export fix
+- Remaining minor defect after `b251`:
+  - header/session badge correctly caps to `76/76`
+  - footer status can still show uncapped raw poll count (`Polls: 77`)
+  - this is a small reporting inconsistency, not an ML/evaluation failure
 
 ## 2026-06-12 Native Lane Summary Repair - v2.4.19 / b250
 
