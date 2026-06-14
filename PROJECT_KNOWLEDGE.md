@@ -1,4 +1,116 @@
-# Market Radar — Project Knowledge (updated through v2.4.22 / b253)
+# Market Radar — Project Knowledge (updated through 2026-06-14 ranking Stage 1 on v2.4.23 / b254)
+
+## 2026-06-14 Ranking Stage 1 - v2.4.23 / b254
+
+- Implemented the only pre-Monday-safe part of `DIRECTIVE_RANKING_CORRECTION_20260614.md`.
+- Changed `brain.py` `_get_strike_pairs(...)` so it no longer returns `pairs[:10]`.
+- Result:
+  - wall/in-band strike pairs are no longer discarded before sigma/probability gates
+  - those pairs can now reach the existing deterministic ranker
+- Explicitly unchanged:
+  - `rank_candidates(...)`
+  - EV / `true_prob` / probability math
+  - gate thresholds and gate ordering
+  - ML weighting and confidence logic
+- Added focused regression:
+  - [test_stage1_strike_pair_truncation.py](/root/.openclaw/Marketapp/app/src/main/python/tests/test_stage1_strike_pair_truncation.py)
+- Added self-audit:
+  - [RANKING_STAGE1_SELF_AUDIT_20260614.md](/root/.openclaw/Marketapp/RANKING_STAGE1_SELF_AUDIT_20260614.md)
+- Monday live verification should now check candidate-producing polls for:
+  - sane watchlist size
+  - wall/in-band candidates appearing when market structure supports them
+  - no unexpected expansion from the removed pre-ranking cap
+
+## 2026-06-14 Paper P&L Realism Review (v2 directive accepted, not implemented yet)
+
+- Reviewed the original paper-trade P&L directive and the revised
+  `DIRECTIVE_PAPER_PNL_REALISM_20260614_v2.md` against current code and the
+  exported workbook `MarketRadar_Export_2026-06-14.xlsx`.
+- Current accepted implementation spec is **v2**. It supersedes the earlier
+  directive because it correctly places `brain.py compute_position_live()` in scope.
+- The Excel warning about `32 oversized cell(s)` is NOT the P&L issue:
+  - truncation is confined to config audit sheets (`App Config Audit`, `app_config`)
+  - no oversized-cell evidence was found in `trades_v2`, `ml_decisions`,
+    `chain_snapshots`, or the flat poll sheets
+  - therefore the workbook is still usable as evidence for the paper-trade P&L defect
+- Confirmed the directive's core code finding in [app.js](/root/.openclaw/MarketVivi/app.js):
+  - realized close path still writes paper outcomes from `trade.current_pnl ?? 0`
+  - producer sites remain:
+    - `closedWon = (trade.current_pnl ?? 0) > 0`
+    - `actual_pnl: trade.current_pnl ?? 0` in `DB.updateTrade(...)`
+    - `outcome_pct_of_max` derived from `trade.current_pnl ?? 0`
+    - `actual_pnl: trade.current_pnl ?? 0` in ML outcome writeback
+- Current `current_pnl` origin is now known and should be treated as the P2 recon finding:
+  - Python `brain.py` `compute_position_live(...)` computes raw mark-to-market P&L
+  - Kotlin `MarketWatchService.kt` writes that raw live value into local `open_trades`
+  - `NativeBridge.getOpenTrades()` serves the local state to the PWA
+  - no slippage or transaction cost is currently applied in this live mark path
+- Existing realism constants are present in PWA and are reusable:
+  - per-leg slippage constants are defined in `app.js`
+  - cost estimation logic exists for display/summary use, but is not centralized into the
+    realized close path yet
+- Important analytical conclusion:
+  - the paper-trade realized P&L problem is real and is a measurement issue, not only a UI/reporting issue
+  - fix should apply cost/slippage exactly once at the realized close boundary, not in the live poll mark path
+  - `RECORD == DISPLAY` is the correct target invariant at the realized close boundary
+  - preferred implementation caution:
+    - do not invent stale short-leg marks casually when LTP is missing
+    - prefer explicit unpriceable-state handling unless a time-bounded cached-mark rule is made precise
+
+## 2026-06-14 Confidence vs Economics Observation
+
+- A user-observed case prompted direct code review:
+  - high brain confidence (~90%) on a 4-leg trade
+  - but only ~`₹231` peak profit
+- Current code indicates this is NOT automatically an arithmetic bug:
+  - candidate economics are computed from net credit/debit × lot size in `brain.py`
+  - four-leg structures can legitimately have very small `maxProfit` if net credit is thin
+- The more important issue is modeling:
+  - confidence currently reflects structural/decision conviction
+  - it is not tightly capped by absolute rupee reward
+  - verdict alignment logic can floor/lift confidence even when the economic payload is weak
+- Working conclusion:
+  - the app may be computing that low absolute profit correctly
+  - but the brain likely overstates conviction on weak-payout setups
+  - this should later become an economics-aware confidence-cap / downgrade task
+
+## 2026-06-14 Candidate Ranking Audit (Stage 1 implemented; full rebuild pending)
+
+- Reviewed `DIRECTIVE_RANKING_CORRECTION_20260614.md` against current `brain.py`.
+- Added local audit note:
+  - [RANKING_AUDIT_20260614.txt](/root/.openclaw/RANKING_AUDIT_20260614.txt)
+- Confirmed the directive's main ranker finding:
+  - `rank_candidates()` uses a lexicographic tuple
+  - after safety and tier gates, `premiumEdge` usually decides the ordering
+  - later signals such as verdict alignment, win-rate, forces, context, gamma, wall score,
+    probability, and ML mostly act only as rare exact-tie breakers
+- Confirmed the safer immediate defect:
+  - `_get_strike_pairs()` enumerates nearest-ATM pairs first
+  - wall-anchored pairs are appended later
+  - `return pairs[:10]` can discard wall/in-band candidates before ranking
+- Synthetic proof captured:
+  - NF `BULL_PUT`, ATM `23500`, width `150`, put wall `22800`
+  - current function returned only 10 near-ATM pairs
+  - wall sell `22800` did not reach ranking
+- Accepted sequencing:
+  - Stage 1 truncation fix was implemented in `v2.4.23 / b254`
+  - full weighted-score rebuild is gated behind real fixtures, corrected P&L calibration, and Monday live review
+  - EV / true-probability math must remain untouched until the planned rebuild
+
+## Post-Monday TODO
+
+- Monday market-hours verification remains the priority:
+  - live branching / edge-case observation
+  - real `ml_generated_candidates` write proof on a candidate-producing poll
+  - clean post-close ML evaluation verification
+- After Monday verification, next queued implementation topics are:
+  1. paper-trade realized P&L realism directive v2 (`DIRECTIVE_PAPER_PNL_REALISM_20260614_v2.md`)
+  2. economics-aware confidence governance for low-payout setups
+  3. ranking post-Stage-1 review:
+     - confirm live candidate volume remains sane
+     - decide later weighted-score rebuild only after real fixtures and P&L calibration
+  4. Stage 0 characterization harness with real chain-rich snapshots
+  5. bounded observability / parity work already queued under Claude framework steps
 
 ## 2026-06-13 Reconciliation Batch - v2.4.22 / b253
 
