@@ -1280,6 +1280,8 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
     const liveStats = safeParseNB(brain?.candidate_stats, brain?.candidate_stats || {});
     const trace = safeParseNB(ctx?.candidate_generation_trace, ctx?.candidate_generation_trace || {});
     const rejectedStats = safeParseNB(ctx?.snapshot_rejected_candidate_stats, ctx?.snapshot_rejected_candidate_stats || {});
+    const skipReason = safeParseNB(ctx?.snapshot_generation_skip_reason, ctx?.snapshot_generation_skip_reason || {});
+    const skipReasons = Array.isArray(ctx?.snapshot_generation_skip_reasons) ? ctx.snapshot_generation_skip_reasons : [];
     const snapshotGenerated = Array.isArray(ctx?.snapshot_generated_candidates) ? ctx.snapshot_generated_candidates : [];
     const snapshotWatchlist = Array.isArray(ctx?.snapshot_watchlist) ? ctx.snapshot_watchlist : [];
     const latestPoll = safeParseNB(ctx?.snapshot_latest_poll, ctx?.snapshot_latest_poll || {});
@@ -1319,7 +1321,10 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
         latestPollTime: latestPoll?.t || latestPoll?.time || latestSnapshot?.poll_ts || '',
         stageEntries,
         reasonEntries,
-        indexSummaries
+        indexSummaries,
+        skipReason: skipReason?.detail || '',
+        skipReasonCode: skipReason?.reason_code || '',
+        skipReasons
     };
 }
 
@@ -4512,10 +4517,12 @@ function renderML() {
                     Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
                     Generated: <b>${candidateDiagnostics.generatedCount}</b> · Watchlist: <b>${candidateDiagnostics.watchlistCount}</b> · Rejected: <b>${candidateDiagnostics.rejectedCount}</b><br>
                     Trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
+                    ${candidateDiagnostics.skipReason ? `Skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
                     By index: <b>${diagnosticIndexText}</b><br>
                     Top rejection stages: <b>${diagnosticStageText}</b><br>
                     Top rejection reasons: <b>${diagnosticReasonText}</b>
                     ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount > 0 ? `<br><span style="color:var(--warn)">The brain saw candidate attempts, but none survived the gate waterfall into generated/watchlist payloads.</span>` : ''}
+                    ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount === 0 && candidateDiagnostics.skipReason ? `<br><span style="color:var(--warn)">Generation was skipped before the gate waterfall. Fix the upstream contract named in the skip reason.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
