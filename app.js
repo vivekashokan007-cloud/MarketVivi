@@ -982,6 +982,117 @@ function getMLBrainSnapshotsCached(force = false) {
     return STATE.mlBrainSnapshots;
 }
 
+function defaultTeacherTruthConfig() {
+    return {
+        label_version: 'teacher_v1',
+        config_version: '2026-06-15',
+        tp_capture_pct: 0.50,
+        sl_loss_multiple: 1.00,
+        stt_options: 0.0015,
+        brokerage_per_order: 20,
+        exchange_per_leg: 15,
+        gst_rate: 0.18,
+        fixed_buffer: 3,
+        slippage: {
+            NF_2LEG: 1.0,
+            NF_4LEG: 2.0,
+            BNF_2LEG: 2.0,
+            BNF_4LEG: 4.0
+        }
+    };
+}
+
+function getTeacherTruthConfigCached(force = false) {
+    const ttlMs = 5 * 60 * 1000;
+    const now = Date.now();
+    if (!force && STATE.teacherTruthConfig && (now - (STATE.teacherTruthConfigAt || 0)) < ttlMs) {
+        return STATE.teacherTruthConfig;
+    }
+    const fallback = defaultTeacherTruthConfig();
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getTeacherTruthConfig === 'function'
+        ? NativeBridge.getTeacherTruthConfig()
+        : '{}';
+    const parsed = safeParseNB(raw, fallback);
+    STATE.teacherTruthConfig = parsed && typeof parsed === 'object'
+        ? { ...fallback, ...parsed, slippage: { ...fallback.slippage, ...(parsed.slippage || {}) } }
+        : fallback;
+    STATE.teacherTruthConfigAt = now;
+    return STATE.teacherTruthConfig;
+}
+
+function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthConfigCached()) {
+    const indexKey = String(tradeLike.index_key || tradeLike.indexKey || 'BNF').toUpperCase() === 'NF' ? 'NF' : 'BNF';
+    const strategyType = String(tradeLike.strategy_type || tradeLike.strategyType || '').toUpperCase();
+    const legCount = Number(tradeLike.leg_count || tradeLike.legCount || ((strategyType === 'IRON_CONDOR' || strategyType === 'IRON_BUTTERFLY') ? 4 : 2)) || 2;
+    const lotSize = Number(tradeLike.lot_size || tradeLike.lotSize || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT)) || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT);
+    const sellLtp = Number(tradeLike.sell_ltp ?? tradeLike.sellLTP ?? 0) || 0;
+    const sellLtp2 = Number(tradeLike.sell_ltp2 ?? tradeLike.sellLTP2 ?? 0) || 0;
+    const sellPrem = legCount === 4 ? (sellLtp + sellLtp2) * lotSize : sellLtp * lotSize;
+    const slipKey = `${indexKey}_${legCount}LEG`;
+    const slipPerUnit = Number(config?.slippage?.[slipKey] ?? 0) || 0;
+    const sttRate = Number(config?.stt_options ?? 0.0015) || 0.0015;
+    const brokerage = Number(config?.brokerage_per_order ?? 20) || 20;
+    const exchange = Number(config?.exchange_per_leg ?? 15) || 15;
+    const gstRate = Number(config?.gst_rate ?? 0.18) || 0.18;
+    const fixedBuffer = Number(config?.fixed_buffer ?? 3) || 3;
+    return Math.round(
+        sellPrem * sttRate * 2 +
+        brokerage * legCount * 2 +
+        exchange * legCount * 2 * (1 + gstRate) +
+        slipPerUnit * lotSize * legCount * 2 +
+        fixedBuffer
+    );
+}
+
+function buildTeacherLaneStatsFromOutcomes(outcomes = []) {
+    const lanes = {
+        NF_intraday: { rows: 0, successes: 0, sumR: 0, winRs: [], lossRs: [], capturedSum: 0, capturedCount: 0 },
+        NF_swing: { rows: 0, successes: 0, sumR: 0, winRs: [], lossRs: [], capturedSum: 0, capturedCount: 0 },
+        BNF_intraday: { rows: 0, successes: 0, sumR: 0, winRs: [], lossRs: [], capturedSum: 0, capturedCount: 0 },
+        BNF_swing: { rows: 0, successes: 0, sumR: 0, winRs: [], lossRs: [], capturedSum: 0, capturedCount: 0 }
+    };
+    const normalizeBool = (value) => {
+        if (value === true || value === 1 || value === '1') return true;
+        if (value === false || value === 0 || value === '0') return false;
+        if (typeof value === 'string') {
+            const text = value.trim().toLowerCase();
+            if (text === 'true' || text === 'yes') return true;
+            if (text === 'false' || text === 'no') return false;
+        }
+        return null;
+    };
+    for (const row of Array.isArray(outcomes) ? outcomes : []) {
+        if (String(row?.role || 'secondary').toLowerCase() !== 'primary') continue;
+        if (String(row?.label_version || '').trim() !== 'teacher_v1') continue;
+        const laneKey = String(row?.lane || '').trim();
+        const lane = lanes[laneKey];
+        if (!lane) continue;
+        const r = Number(row?.r_multiple);
+        if (!Number.isFinite(r)) continue;
+        lane.rows += 1;
+        lane.sumR += r;
+        if (r > 0) lane.winRs.push(r);
+        if (r < 0) lane.lossRs.push(Math.abs(r));
+        const success = normalizeBool(row?.is_success);
+        if (success === true) lane.successes += 1;
+        const captured = Number(row?.captured_pct);
+        if (Number.isFinite(captured)) {
+            lane.capturedSum += captured;
+            lane.capturedCount += 1;
+        }
+    }
+    Object.values(lanes).forEach((lane) => {
+        lane.successRatePct = lane.rows > 0 ? (lane.successes / lane.rows) * 100 : 0;
+        lane.expectancyR = lane.rows > 0 ? lane.sumR / lane.rows : 0;
+        const avgWinR = lane.winRs.length ? lane.winRs.reduce((s, v) => s + v, 0) / lane.winRs.length : 0;
+        const avgLossR = lane.lossRs.length ? lane.lossRs.reduce((s, v) => s + v, 0) / lane.lossRs.length : 0;
+        lane.breakEvenWinRatePct = (avgWinR > 0 && avgLossR > 0) ? (avgLossR / (avgLossR + avgWinR)) * 100 : 0;
+        lane.avgCapturedPct = lane.capturedCount > 0 ? (lane.capturedSum / lane.capturedCount) * 100 : 0;
+        lane.worthTrading = lane.rows >= 30 && lane.expectancyR > 0 && lane.successRatePct > lane.breakEvenWinRatePct;
+    });
+    return lanes;
+}
+
 function normalizeDecisionIndex(row = {}) {
     const primary = safeParseNB(row.primary_candidate_json, {});
     const candidate = safeParseNB(row.candidate_json, {});
@@ -3924,13 +4035,7 @@ function renderTradeCard(t, isPaper) {
             ${t.peak_pnl > 0 ? `<span class="pos-peak">(peak ₹${t.peak_pnl.toLocaleString()})</span>` : ''}
         </div>
         ${(() => {
-            const legs = (t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY') ? 4 : 2;
-            const lotSize = t.index_key === 'NF' ? C.NF_LOT : C.BNF_LOT;
-            const sellPrem = (legs === 4)
-                ? ((t.sell_ltp || 0) + (t.sell_ltp2 || 0)) * lotSize
-                : (t.sell_ltp || 0) * lotSize;
-            const slipPU = legs === 4 ? (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_4LEG : C.SLIPPAGE.NF_4LEG) : (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_2LEG : C.SLIPPAGE.NF_2LEG);
-            const estCost = Math.round(sellPrem * C.STT_OPTIONS * 2 + C.BROKERAGE_PER_ORDER * legs * 2 + C.EXCHANGE_PER_LEG * legs * 2 * 1.18 + slipPU * lotSize * legs * 2 + 3);
+            const estCost = estimateTeacherRoundTripCost(t);
             const netPnl = (t.current_pnl || 0) - estCost;
             return `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Net: ₹${netPnl.toLocaleString()} <span style="color:var(--text-dimmed)">(cost ~₹${estCost.toLocaleString()})</span></div>`;
         })()}
@@ -4061,15 +4166,7 @@ function renderPosition() {
         const nfPapers = paperTrades.filter(t => t.index_key === 'NF').length;
         const bnfPapers = paperTrades.filter(t => t.index_key === 'BNF').length;
         html += `<div class="paper-header">📋 Paper Trades (${nfPapers} NF · ${bnfPapers} BNF)</div>`;
-        const totalEstCost = paperTrades.reduce((s, t) => {
-            const legs = (t.strategy_type === 'IRON_CONDOR' || t.strategy_type === 'IRON_BUTTERFLY') ? 4 : 2;
-            const lotSize = t.index_key === 'NF' ? C.NF_LOT : C.BNF_LOT;
-            const sellPrem = (legs === 4)
-                ? ((t.sell_ltp || 0) + (t.sell_ltp2 || 0)) * lotSize
-                : (t.sell_ltp || 0) * lotSize;
-            const slipPU = legs === 4 ? (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_4LEG : C.SLIPPAGE.NF_4LEG) : (t.index_key === 'BNF' ? C.SLIPPAGE.BNF_2LEG : C.SLIPPAGE.NF_2LEG);
-            return s + Math.round(sellPrem * C.STT_OPTIONS * 2 + C.BROKERAGE_PER_ORDER * legs * 2 + C.EXCHANGE_PER_LEG * legs * 2 * 1.18 + slipPU * lotSize * legs * 2 + 3);
-        }, 0);
+        const totalEstCost = paperTrades.reduce((s, t) => s + estimateTeacherRoundTripCost(t), 0);
         const netPaperPnL = paperPnL - totalEstCost;
         html += `<div class="total-pnl-bar paper-pnl ${paperClass}">Paper P&L: ₹${paperPnL.toLocaleString()}</div>`;
         html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Net (est.): ₹${netPaperPnL.toLocaleString()} · Costs: ₹${totalEstCost.toLocaleString()}</div>`;
@@ -4232,9 +4329,14 @@ function renderML() {
     const fallbackLabeledCount = labeledRows.length;
     const fallbackWinCount = labeledRows.filter(d => resolveDecisionWon(d) === 1).length;
     const summaryLanes = safeParseNB(evaluationLaneSummary?.lanes, evaluationLaneSummary?.lanes || {});
+    const summaryTeacherLanes = safeParseNB(evaluationLaneSummary?.teacher_lanes, evaluationLaneSummary?.teacher_lanes || {});
+    const summaryTeacher = safeParseNB(evaluationLaneSummary?.teacher_summary, evaluationLaneSummary?.teacher_summary || {});
+    const summaryComparison = safeParseNB(evaluationLaneSummary?.comparison_summary, evaluationLaneSummary?.comparison_summary || {});
+    const summaryComparisonLanes = safeParseNB(evaluationLaneSummary?.comparison_lanes, evaluationLaneSummary?.comparison_lanes || {});
     const summaryRowsToday = Number(evaluationLaneSummary?.rowsToday || 0);
     const summaryAttributedRows = Number(evaluationLaneSummary?.attributedRows || 0);
     const hasNativeLaneSummary = summaryLanes && typeof summaryLanes === 'object' && Object.keys(summaryLanes).length > 0;
+    const hasNativeTeacherSummary = summaryTeacherLanes && typeof summaryTeacherLanes === 'object' && Object.keys(summaryTeacherLanes).length > 0;
     const outcomeLaneStats = hasNativeLaneSummary ? {
         NF_intraday: { index: 'NF', mode: 'intraday', rows: Number(summaryLanes.NF_intraday?.rows || 0), labeled: Number(summaryLanes.NF_intraday?.labeled || 0), wins: Number(summaryLanes.NF_intraday?.wins || 0) },
         NF_swing: { index: 'NF', mode: 'swing', rows: Number(summaryLanes.NF_swing?.rows || 0), labeled: Number(summaryLanes.NF_swing?.labeled || 0), wins: Number(summaryLanes.NF_swing?.wins || 0) },
@@ -4245,7 +4347,14 @@ function renderML() {
         lane.winRate = lane.labeled > 0 ? ((lane.wins / lane.labeled) * 100) : null;
     }
     const fallbackLaneStats = buildMlLaneStats(decisions);
+    const teacherLaneStats = hasNativeTeacherSummary ? {
+        NF_intraday: { rows: Number(summaryTeacherLanes.NF_intraday?.rows || 0), successes: Number(summaryTeacherLanes.NF_intraday?.successes || 0), successRatePct: Number(summaryTeacherLanes.NF_intraday?.successRatePct || 0), expectancyR: Number(summaryTeacherLanes.NF_intraday?.expectancyR || 0), avgCapturedPct: Number(summaryTeacherLanes.NF_intraday?.avgCapturedPct || 0), breakEvenWinRatePct: Number(summaryTeacherLanes.NF_intraday?.breakEvenWinRatePct || 0), worthTrading: summaryTeacherLanes.NF_intraday?.worthTrading === true },
+        NF_swing: { rows: Number(summaryTeacherLanes.NF_swing?.rows || 0), successes: Number(summaryTeacherLanes.NF_swing?.successes || 0), successRatePct: Number(summaryTeacherLanes.NF_swing?.successRatePct || 0), expectancyR: Number(summaryTeacherLanes.NF_swing?.expectancyR || 0), avgCapturedPct: Number(summaryTeacherLanes.NF_swing?.avgCapturedPct || 0), breakEvenWinRatePct: Number(summaryTeacherLanes.NF_swing?.breakEvenWinRatePct || 0), worthTrading: summaryTeacherLanes.NF_swing?.worthTrading === true },
+        BNF_intraday: { rows: Number(summaryTeacherLanes.BNF_intraday?.rows || 0), successes: Number(summaryTeacherLanes.BNF_intraday?.successes || 0), successRatePct: Number(summaryTeacherLanes.BNF_intraday?.successRatePct || 0), expectancyR: Number(summaryTeacherLanes.BNF_intraday?.expectancyR || 0), avgCapturedPct: Number(summaryTeacherLanes.BNF_intraday?.avgCapturedPct || 0), breakEvenWinRatePct: Number(summaryTeacherLanes.BNF_intraday?.breakEvenWinRatePct || 0), worthTrading: summaryTeacherLanes.BNF_intraday?.worthTrading === true },
+        BNF_swing: { rows: Number(summaryTeacherLanes.BNF_swing?.rows || 0), successes: Number(summaryTeacherLanes.BNF_swing?.successes || 0), successRatePct: Number(summaryTeacherLanes.BNF_swing?.successRatePct || 0), expectancyR: Number(summaryTeacherLanes.BNF_swing?.expectancyR || 0), avgCapturedPct: Number(summaryTeacherLanes.BNF_swing?.avgCapturedPct || 0), breakEvenWinRatePct: Number(summaryTeacherLanes.BNF_swing?.breakEvenWinRatePct || 0), worthTrading: summaryTeacherLanes.BNF_swing?.worthTrading === true }
+    } : buildTeacherLaneStatsFromOutcomes(evaluationOutcomes);
     const outcomeLaneTotal = Object.values(outcomeLaneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0);
+    const teacherLaneTotal = Object.values(teacherLaneStats).reduce((sum, lane) => sum + (lane.rows || 0), 0);
     const persistedOutcomeRows = Number.isFinite(evaluationOutcomeCount) ? evaluationOutcomeCount : 0;
     const attributionBackfillNeeded = (summaryRowsToday > 0 && summaryAttributedRows === 0) || (persistedOutcomeRows > 0 && outcomeLaneTotal === 0);
     const laneStats = outcomeLaneTotal > 0 ? outcomeLaneStats : (attributionBackfillNeeded ? {
@@ -4261,6 +4370,31 @@ function renderML() {
         ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.wins || 0), 0)
         : (attributionBackfillNeeded ? 0 : fallbackWinCount);
     const labeledWinRate = labeledCount > 0 ? ((winCount / labeledCount) * 100).toFixed(1) : '--';
+    const teacherSuccessCount = hasNativeTeacherSummary
+        ? Number(summaryTeacher?.successes || 0)
+        : Object.values(teacherLaneStats).reduce((sum, lane) => sum + (lane.successes || 0), 0);
+    const teacherSuccessRatePct = hasNativeTeacherSummary
+        ? Number(summaryTeacher?.successRatePct || 0)
+        : (teacherLaneTotal > 0 ? (teacherSuccessCount / teacherLaneTotal) * 100 : 0);
+    const teacherExpectancyR = hasNativeTeacherSummary
+        ? Number(summaryTeacher?.expectancyR || 0)
+        : (teacherLaneTotal > 0 ? Object.values(teacherLaneStats).reduce((sum, lane) => sum + ((lane.expectancyR || 0) * (lane.rows || 0)), 0) / teacherLaneTotal : 0);
+    const teacherBreakEvenPct = hasNativeTeacherSummary
+        ? Number(summaryTeacher?.breakEvenWinRatePct || 0)
+        : 0;
+    const teacherAvgCapturedPct = hasNativeTeacherSummary
+        ? Number(summaryTeacher?.avgCapturedPct || 0)
+        : (teacherLaneTotal > 0 ? Object.values(teacherLaneStats).reduce((sum, lane) => sum + ((lane.avgCapturedPct || 0) * (lane.rows || 0)), 0) / teacherLaneTotal : 0);
+    const teacherTradeableBucketCount = Number(summaryTeacher?.tradeableBucketCount || 0);
+    const teacherBucketCount = Number(summaryTeacher?.bucketCount || 0);
+    const teacherWorthTrading = summaryTeacher?.worthTrading === true;
+    const comparisonLegacyWinRatePct = Number(summaryComparison?.legacyWinRatePct || 0);
+    const comparisonTeacherSuccessRatePct = Number(summaryComparison?.teacherSuccessRatePct || 0);
+    const comparisonTeacherExpectancyR = Number(summaryComparison?.teacherExpectancyR || 0);
+    const comparisonTeacherBreakEvenPct = Number(summaryComparison?.teacherBreakEvenWinRatePct || 0);
+    const comparisonTeacherRows = Number(summaryComparison?.teacherPrimaryRows || 0);
+    const comparisonLegacyRows = Number(summaryComparison?.legacyPrimaryLabeled || 0);
+    const comparisonWinRateDeltaPts = Number(summaryComparison?.winRateDeltaPts || 0);
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
 
@@ -4299,7 +4433,66 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable H2 labels were produced from today's saved recommendations.</span>` : ''}
+                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from today's saved recommendations.</span>` : ''}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧪</span>
+                    <span class="brain-label">Teacher v1 Shadow Review</span>
+                </div>
+                <div class="brain-detail">
+                    Primary shadow rows: <b>${teacherLaneTotal}</b> · Success rate: <b>${teacherLaneTotal > 0 ? `${teacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
+                    Expectancy: <b>${teacherLaneTotal > 0 ? `${teacherExpectancyR.toFixed(2)}R` : '--'}</b> · Break-even win rate: <b>${teacherLaneTotal > 0 ? `${teacherBreakEvenPct.toFixed(1)}%` : '--'}</b><br>
+                    Avg captured: <b>${teacherLaneTotal > 0 ? `${teacherAvgCapturedPct.toFixed(1)}%` : '--'}</b> · Bucket gate: <b>${teacherBucketCount > 0 ? `${teacherTradeableBucketCount}/${teacherBucketCount}` : '--'}</b>${teacherBucketCount > 0 ? ` · Verdict: <b style="color:${teacherWorthTrading ? 'var(--green)' : 'var(--warn)'}">${teacherWorthTrading ? 'POSITIVE EXPECTANCY' : 'NOT WORTH RISK YET'}</b>` : ''}<br>
+                    Label version: <b>${summaryTeacher?.labelVersion || 'teacher_v1'}</b> · Scope: <b>managed exit, primary-only shadow</b>
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--warn)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">⚖️</span>
+                    <span class="brain-label">Old vs Honest Teacher</span>
+                </div>
+                <div class="brain-detail">
+                    Legacy primary win rate: <b>${comparisonLegacyRows > 0 ? `${comparisonLegacyWinRatePct.toFixed(1)}%` : '--'}</b> · Honest teacher success: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
+                    Honest expectancy: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherExpectancyR.toFixed(2)}R` : '--'}</b> · Honest BE win rate: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherBreakEvenPct.toFixed(1)}%` : '--'}</b><br>
+                    Delta: <b style="color:${comparisonWinRateDeltaPts >= 0 ? 'var(--green)' : 'var(--warn)'}">${comparisonTeacherRows > 0 ? `${comparisonWinRateDeltaPts.toFixed(1)} pts` : '--'}</b> · Scope: <b>${summaryComparison?.scope || 'primary_only_old_vs_teacher_shadow'}</b>
+                </div>
+                <div style="overflow-x:auto;margin-top:8px">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left;padding:6px 4px;color:var(--text-muted)">Lane</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Old WR</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Teacher SR</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Exp R</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">BE win</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${[
+                                ['NF_intraday', 'NF intraday'],
+                                ['NF_swing', 'NF swing'],
+                                ['BNF_intraday', 'BNF intraday'],
+                                ['BNF_swing', 'BNF swing']
+                            ].map(([key, label]) => {
+                                const row = summaryComparisonLanes[key] || {};
+                                const oldWr = Number(row.legacyLabeled || 0) > 0 ? `${Number(row.legacyWinRatePct || 0).toFixed(1)}%` : '--';
+                                const newSr = Number(row.teacherRows || 0) > 0 ? `${Number(row.teacherSuccessRatePct || 0).toFixed(1)}%` : '--';
+                                const expR = Number(row.teacherRows || 0) > 0 ? `${Number(row.teacherExpectancyR || 0).toFixed(2)}R` : '--';
+                                const beWr = Number(row.teacherRows || 0) > 0 ? `${Number(row.teacherBreakEvenWinRatePct || 0).toFixed(1)}%` : '--';
+                                return `
+                                    <tr>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border)"><b>${label}</b></td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${oldWr}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${newSr}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${expR}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${beWr}</td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--green)">
@@ -4311,17 +4504,17 @@ function renderML() {
                     Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
                     Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
                     Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b><br>
-                    Scope: <b>4 lanes tracked separately</b> (NF/BNF × intraday/swing) · Source: <b>${outcomeLaneTotal > 0 ? 'primary evaluated outcomes' : (attributionBackfillNeeded ? 'persisted outcomes need attribution backfill' : 'recent decision fallback')}</b>
+                    Scope: <b>legacy label consumer</b> (canonical_won/outcome_h2 unchanged until switch gate) · Source: <b>${outcomeLaneTotal > 0 ? 'primary evaluated outcomes' : (attributionBackfillNeeded ? 'persisted outcomes need attribution backfill' : 'recent decision fallback')}</b>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
                 <div class="brain-card-header">
                     <span class="brain-icon">🧭</span>
-                    <span class="brain-label">4-Lane Training Matrix</span>
+                    <span class="brain-label">4-Lane Teacher Matrix</span>
                 </div>
                 <div class="brain-detail">
-                    ML review now treats these as separate populations. App-side reporting is split now; backend/oracle separation still depends on the later Antigravity dataset work.
-                    ${attributionBackfillNeeded ? `<br><span style="color:var(--warn)">Persisted evaluation outcomes exist, but these older rows do not carry enough lane attribution yet. Run the backfill to populate the matrix.</span>` : ''}
+                    Honest teacher metrics are expectancy-first. Success means the managed exit actually captured the target, not just that P&L stayed above zero at one late snapshot.
+                    ${teacherLaneTotal === 0 ? `<br><span style="color:var(--warn)">No teacher_v1 primary rows are available yet for lane-level reporting.</span>` : ''}
                 </div>
                 <div style="overflow-x:auto;margin-top:8px">
                     <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -4329,9 +4522,10 @@ function renderML() {
                             <tr>
                                 <th style="text-align:left;padding:6px 4px;color:var(--text-muted)">Lane</th>
                                 <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Rows</th>
-                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Labeled</th>
-                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Wins</th>
-                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Win rate</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Success</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Exp R</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">BE win</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Worth</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -4341,15 +4535,19 @@ function renderML() {
                                 ['BNF_intraday', 'BNF intraday'],
                                 ['BNF_swing', 'BNF swing']
                             ].map(([key, label]) => {
-                                const lane = laneStats[key] || {};
-                                const wr = Number.isFinite(lane.winRate) ? `${lane.winRate.toFixed(1)}%` : '--';
+                                const lane = teacherLaneStats[key] || {};
+                                const successRate = Number.isFinite(lane.successRatePct) && lane.rows > 0 ? `${lane.successRatePct.toFixed(1)}%` : '--';
+                                const expectancy = Number.isFinite(lane.expectancyR) && lane.rows > 0 ? `${lane.expectancyR.toFixed(2)}R` : '--';
+                                const breakEven = Number.isFinite(lane.breakEvenWinRatePct) && lane.rows > 0 ? `${lane.breakEvenWinRatePct.toFixed(1)}%` : '--';
+                                const worth = lane.rows > 0 ? (lane.worthTrading ? 'YES' : 'NO') : '--';
                                 return `
                                     <tr>
                                         <td style="padding:6px 4px;border-top:1px solid var(--border)"><b>${label}</b></td>
                                         <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${lane.rows || 0}</td>
-                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${lane.labeled || 0}</td>
-                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${lane.wins || 0}</td>
-                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${wr}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${successRate}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${expectancy}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${breakEven}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right;color:${lane.worthTrading ? 'var(--green)' : 'var(--warn)'}">${worth}</td>
                                     </tr>
                                 `;
                             }).join('')}
