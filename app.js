@@ -1266,6 +1266,63 @@ function buildMlLaneStatsFromOutcomes(outcomes = [], snapshots = []) {
     return lanes;
 }
 
+function topCounterEntries(counter, limit = 3) {
+    if (!counter || typeof counter !== 'object') return [];
+    return Object.entries(counter)
+        .filter(([, value]) => Number(value) > 0)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, limit);
+}
+
+function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
+    const latestSnapshot = Array.isArray(snapshots) && snapshots.length > 0 ? snapshots[0] : null;
+    const ctx = safeParseNB(latestSnapshot?.context_json, {});
+    const liveStats = safeParseNB(brain?.candidate_stats, brain?.candidate_stats || {});
+    const trace = safeParseNB(ctx?.candidate_generation_trace, ctx?.candidate_generation_trace || {});
+    const rejectedStats = safeParseNB(ctx?.snapshot_rejected_candidate_stats, ctx?.snapshot_rejected_candidate_stats || {});
+    const snapshotGenerated = Array.isArray(ctx?.snapshot_generated_candidates) ? ctx.snapshot_generated_candidates : [];
+    const snapshotWatchlist = Array.isArray(ctx?.snapshot_watchlist) ? ctx.snapshot_watchlist : [];
+    const latestPoll = safeParseNB(ctx?.snapshot_latest_poll, ctx?.snapshot_latest_poll || {});
+    const byIndex = safeParseNB(trace?.by_index, trace?.by_index || {});
+
+    const generatedCount = Array.isArray(brain?.generated_candidates) && brain.generated_candidates.length > 0
+        ? brain.generated_candidates.length
+        : snapshotGenerated.length;
+    const watchlistCount = Array.isArray(brain?.watchlist) && brain.watchlist.length > 0
+        ? brain.watchlist.length
+        : snapshotWatchlist.length;
+    const rejectedCount = Number.isFinite(liveStats?.rejected) ? Number(liveStats.rejected) : Number(rejectedStats?.total || 0);
+    const acceptedTrace = Number.isFinite(trace?.accepted_count) ? Number(trace.accepted_count) : Number(liveStats?.total || 0);
+    const rejectedTrace = Number.isFinite(trace?.rejected_count) ? Number(trace.rejected_count) : rejectedCount;
+
+    const stageEntries = topCounterEntries(rejectedStats?.by_stage, 4);
+    const reasonEntries = topCounterEntries(rejectedStats?.by_reason, 4);
+    const indexSummaries = ['BNF', 'NF'].map(indexKey => {
+        const row = byIndex?.[indexKey];
+        const stats = row?.attempt_stats || {};
+        if (!row || (!Number(stats.total) && !Number(stats.accepted) && !Number(stats.rejected))) return null;
+        return {
+            index: indexKey,
+            total: Number(stats.total || 0),
+            accepted: Number(stats.accepted || 0),
+            rejected: Number(stats.rejected || 0)
+        };
+    }).filter(Boolean);
+
+    return {
+        source: latestSnapshot ? 'latest_saved_snapshot' : 'live_brain_result',
+        generatedCount,
+        watchlistCount,
+        rejectedCount,
+        acceptedTrace,
+        rejectedTrace,
+        latestPollTime: latestPoll?.t || latestPoll?.time || latestSnapshot?.poll_ts || '',
+        stageEntries,
+        reasonEntries,
+        indexSummaries
+    };
+}
+
 function refreshBrainData() {
     if (typeof NativeBridge !== 'undefined') {
         const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
@@ -4397,6 +4454,16 @@ function renderML() {
     const comparisonWinRateDeltaPts = Number(summaryComparison?.winRateDeltaPts || 0);
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
+    const candidateDiagnostics = buildCandidatePipelineDiagnostics(brain, brainSnapshots);
+    const diagnosticStageText = candidateDiagnostics.stageEntries.length > 0
+        ? candidateDiagnostics.stageEntries.map(([stage, count]) => `${stage} ${count}`).join(' · ')
+        : '--';
+    const diagnosticReasonText = candidateDiagnostics.reasonEntries.length > 0
+        ? candidateDiagnostics.reasonEntries.map(([reason, count]) => `${reason} ${count}`).join(' · ')
+        : '--';
+    const diagnosticIndexText = candidateDiagnostics.indexSummaries.length > 0
+        ? candidateDiagnostics.indexSummaries.map(row => `${row.index} accepted ${row.accepted}/${row.total}`).join(' · ')
+        : '--';
 
     let html = '';
     html += `
@@ -4434,6 +4501,21 @@ function renderML() {
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
                     Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from today's saved recommendations.</span>` : ''}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--warn)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧭</span>
+                    <span class="brain-label">Candidate Pipeline Diagnostics</span>
+                </div>
+                <div class="brain-detail">
+                    Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
+                    Generated: <b>${candidateDiagnostics.generatedCount}</b> · Watchlist: <b>${candidateDiagnostics.watchlistCount}</b> · Rejected: <b>${candidateDiagnostics.rejectedCount}</b><br>
+                    Trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
+                    By index: <b>${diagnosticIndexText}</b><br>
+                    Top rejection stages: <b>${diagnosticStageText}</b><br>
+                    Top rejection reasons: <b>${diagnosticReasonText}</b>
+                    ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount > 0 ? `<br><span style="color:var(--warn)">The brain saw candidate attempts, but none survived the gate waterfall into generated/watchlist payloads.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
