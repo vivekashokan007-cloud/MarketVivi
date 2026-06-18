@@ -1,4 +1,346 @@
-# Market Radar — Project Knowledge (updated through 2026-06-14 ranking Stage 1 on v2.4.23 / b254)
+# Market Radar — Project Knowledge (updated through 2026-06-17 live candidate-persistence verification on v2.4.32 / b263)
+
+## Release Discipline - Mandatory Sync Rule
+
+- Kotlin app repo (`Marketapp`) and PWA repo (`MarketVivi`) must be kept on the same visible version for every user-facing release.
+- Do not push one side alone when the change affects runtime behavior, ML reporting, bridge contracts, cache-busting, or app labeling.
+- The safe release order is:
+  1. finish code changes in both repos
+  2. bump Android `versionName` + `versionCode` in `Marketapp/app/build.gradle.kts`
+  3. bump Python `BRAIN_VERSION` in `Marketapp/app/src/main/python/brain.py`
+  4. update PWA-visible version label / cache-bust in `MarketVivi/app.js` if the PWA changed
+  5. commit `Marketapp`
+  6. commit `MarketVivi`
+  7. push both repos
+  8. confirm the Android signed release workflow completed successfully
+  9. confirm the app update reached the phone
+- Additional sync rule after the 2026-06-16 drift incident:
+  - PWA-visible version is controlled in `MarketVivi/index.html`, not only by `app.js`
+  - for every synced release, update all three PWA markers together:
+    1. `<title>`
+    2. header version label
+    3. `app.js?v=...` cache-buster
+- Verification rule after installation:
+  - the header label, About dialog build version, and active PWA cache-buster must agree
+  - if they disagree, treat that as a version-surface bug, not as proof that the release failed
+- Important GitHub rule:
+  - the signed Android release workflow triggers from changes to `Marketapp/app/build.gradle.kts`
+  - a repo push alone is not enough; the Gradle version file must change for the signed release action to auto-run
+- Current confirmed signed-release pattern:
+  - `Marketapp` push with `app/build.gradle.kts` version bump -> GitHub Actions auto-runs signed release
+  - release artifact is published under GitHub Releases as `app-release.apk`
+- Future rule:
+  - if user says both sides must stay aligned, treat that as a hard invariant, not a preference
+
+## 2026-06-16 Candidate-Flow / Teacher Diagnostics - v2.4.31 / b262 and v2.4.32 / b263
+
+- Live market diagnosis on 2026-06-16 established:
+  - `ml_brain_snapshots` was writing
+  - `ml_generated_candidates` was `0`
+  - `primary_candidate_json = {}`
+  - `top_candidates_json = []`
+  - `context_json` was large and contained chain/market context
+  - `context_json.snapshot_generated_candidates = []`
+  - `context_json.candidates = []`
+- This ruled out:
+  - Supabase as the primary fault
+  - teacher evaluation as the root cause
+  - Kotlin stripping candidate arrays from the saved snapshot contract
+- Claude second-opinion conclusion accepted:
+  - the candidate arrays were already empty when `take_poll_snapshot()` ran
+  - most likely failure mode is generation skip before gates, especially `spot <= 0`
+  - rich `context_json` only proves inbound `ctx` had market context; it does not prove candidate generation ran
+
+### v2.4.31 / b262
+
+- Both repos were moved to `v2.4.31 / b262`.
+- Added `Candidate Pipeline Diagnostics` in the ML tab.
+- Added zero-candidate logging on Android:
+  - `ML_GENERATED_CANDIDATES_SKIP`
+  - includes rejected count, trace accepted/rejected, top rejection stages, poll timestamp
+- Purpose:
+  - convert opaque zero-candidate days into diagnosable sessions
+  - separate “nothing survived gates” from generic blank output
+
+### v2.4.32 / b263
+
+- Both repos were moved to `v2.4.32 / b263`.
+- Accepted Claude A+B candidate-pipeline fix sequence:
+  - persist structured generation skip reasons
+  - persist rejected rows into `ml_generated_candidates` instead of dropping zero-accepted days
+- Implemented in `Marketapp`:
+  - `brain.py`
+    - `generation_skip_reason`
+    - `generation_skip_reasons`
+    - skip reasons recorded for:
+      - missing chain
+      - missing strikes
+      - missing atm
+      - `spot_zero`
+    - snapshot context now includes:
+      - `snapshot_generation_skip_reason`
+      - `snapshot_generation_skip_reasons`
+    - elephant fact pack now carries:
+      - rejected candidate stats
+      - rejected candidate sample
+      - generation skip reason(s)
+  - `MarketWatchService.kt`
+    - when accepted candidates are empty:
+      - logs skip diagnostics
+      - persists compact rejected rows to `ml_generated_candidates`
+    - rejected rows use deterministic synthetic `candidate_id`s so the existing table schema remains valid
+- Implemented in `MarketVivi`:
+  - `Candidate Pipeline Diagnostics` now shows explicit skip reason and skip code
+  - UI distinguishes:
+    - skipped before generation
+    - generated then rejected by gates
+- Important schema choice:
+  - no new Supabase columns were required for `ml_generated_candidates`
+  - rejected rows are encoded through the existing compact table shape
+
+### Current Architecture Reading After 2026-06-16
+
+- Immediate blocker:
+  - candidate flow must be restored first
+- Current strongest hypothesis:
+  - `spot` is resolving to `0` in live generation path for at least some sessions
+- Required next verification on live `b263`:
+  1. check whether `snapshot_generation_skip_reason` populates
+  2. verify rejected rows reach `ml_generated_candidates` on zero-accepted polls
+  3. determine whether the day is:
+     - generation skip
+     - gate rejection
+     - or accepted-candidate persistence failure
+
+## 2026-06-17 Live Verification - Candidate Store Root Cause Closed
+
+- Installed app was confirmed on `v2.4.32 / b263`.
+- Early live poll evidence on 2026-06-17 showed:
+  - `ml_brain_snapshots > 0`
+  - `ml_generated_candidates = 0`
+  - ML UI diagnostics showed:
+    - `Generated: 16`
+    - `Watchlist: 7`
+    - `Rejected: 318`
+    - `Trace accepted: 16`
+    - `Trace rejected: 318`
+  - Live brain output was active, not skipped:
+    - decision source `ML_UNSURE_FALLBACK`
+    - action `SELL PREMIUM`
+    - strategy `IRON_CONDOR`
+- This proved:
+  - candidate generation was working
+  - ranking/watchlist selection was working
+  - snapshot persistence was working
+  - the remaining failure was specifically the `ml_generated_candidates` insert path
+
+### 2026-06-17 Root Cause
+
+- Exported app logs showed the exact insert failure:
+  - `ML_GENERATED_CANDIDATES_HTTP`
+  - HTTP `401`
+  - Postgres body code `42501`
+  - `new row violates row-level security policy for table "ml_generated_candidates"`
+- Final diagnosis:
+  - not a Python generation bug
+  - not a teacher bug
+  - not a snapshot-contract bug
+  - not a Kotlin candidate-assembly bug
+  - root cause was Supabase RLS on `ml_generated_candidates`
+
+### 2026-06-17 Supabase Fix
+
+- Supabase policy fix was applied live:
+  - anon insert allowed on `public.ml_generated_candidates`
+  - anon select allowed on `public.ml_generated_candidates`
+- After one fresh poll:
+  - `ml_generated_candidates` count moved from `16` to `51`
+- This closed the persistence fault line.
+
+### 2026-06-17 Post-Fix Verification Result
+
+- Query of latest `ml_generated_candidates` rows showed all three row classes now persist:
+  1. surfaced accepted candidates
+  2. unsurfaced accepted candidates
+  3. rejected-only rows with explicit rejection stages/reasons
+- Example persisted accepted shape:
+  - `candidate_id = BEAR_PUT_...` / `BEAR_CALL_...`
+  - `execution_gate = READY`
+  - `was_surfaced = true|false`
+- Example persisted rejected shape:
+  - `candidate_id = rej_...`
+  - `execution_gate = rejected:sigma_otm_too_close` or `rejected:sigma_otm_too_far`
+  - `entry_action` carries compact rejection reason text
+
+### Current State After 2026-06-17
+
+- Candidate-store path is now working.
+- Rejected-row persistence is now working.
+- Candidate generation is no longer the active blocker.
+- Remaining live ML work is downstream:
+  - post-close teacher evaluation production
+  - teacher matrix population
+  - old-vs-honest comparison population once evaluable rows exist
+
+## 2026-06-16 Claude Logic Audits - Accepted Architectural Findings
+
+### Candidate-to-Snapshot Contract Audit
+
+- Accepted findings:
+  - candidate arrays are written unconditionally by `take_poll_snapshot()`
+  - therefore empty arrays in saved snapshots were empty at source
+  - Kotlin is not stripping candidate arrays from `context_json`
+  - the likely root issue is skip-before-generation, not snapshot corruption
+- Accepted sequencing:
+  - A. persist rejected candidates for offline analysis
+  - B. persist structured generation skip reasons
+  - C. only then fix the exact spot-key mismatch once identified
+
+### God-Mode Logic Audit
+
+- Accepted as roadmap-level findings, not immediate emergency patches:
+  - live ranker is still optimizing on structurally weak truth inputs
+  - raw EV is tail-blind
+  - constant `0.85 * VIX` realized-vol proxy is too blunt and likely regime-wrong
+  - calibration built from contaminated / optimistic trade outcomes is not trustworthy
+  - teacher and ranker objectives are still inconsistent
+  - teacher stop-loss path still has optimism leakage on gap-through stops
+  - hard generation gates likely delete evidence the teacher should later judge
+- Priority order currently adopted:
+  0. fix candidate-flow skip path so data flows
+  1. replace opaque zero-candidate days with structured skip/reject evidence
+  2. then inspect/fix spot-key mismatch if confirmed
+  3. then tighten teacher honesty:
+     - stop-loss gap handling
+     - granular path source
+     - swing path coverage
+  4. then rebuild truth inputs:
+     - realized-vol proxy
+     - calibration from teacher labels
+  5. then rebuild ranking objective:
+     - tail / ruin penalty
+     - converge ranker objective to managed-exit expectancy
+  6. only after that, revisit gate-to-prior conversion
+
+## Current Ordered Execution Plan
+
+1. Next live market-hours verification on `v2.4.32 / b263`
+   - confirm installed build is really `b263`
+   - inspect `Candidate Pipeline Diagnostics`
+   - determine skip vs reject vs accept
+   - if skip, capture exact skip reason
+   - if reject, verify rejected rows persist to `ml_generated_candidates`
+2. Spot-resolution root-cause fix
+   - compare Kotlin live poll spot key(s) vs `_latest_spot_value()` read keys
+   - patch only the confirmed mismatch
+3. Teacher integrity repairs
+   - remove stop-loss cap optimism on gap-through exits
+   - verify granular chain-path source for intraday labels
+   - verify swing path spans entry to expiry
+4. Truth-input rebuild
+   - realized-vol series instead of constant `0.85 * VIX`
+   - calibration from teacher labels, not contaminated `trades_v2`
+5. Ranker rebuild
+   - risk-adjusted expectancy instead of raw tail-blind EV
+   - converge ranker objective to teacher-managed exit objective
+
+## Current Ordered Execution Plan
+
+1. Monday live verification during market hours
+   - verify one real candidate-producing poll
+   - verify `ml_generated_candidates` write path
+   - verify live teacher-shadow persistence
+   - verify old-vs-honest teacher comparison is populated correctly
+   - verify live decision output stays aligned with deterministic ranking + ML annotation
+2. Teacher shadow backfill / comparison review
+   - run historical relabel against stored snapshots and chain path
+   - inspect lane-wise old win rate vs teacher success rate vs expectancy
+   - keep legacy consumer unchanged until the comparison is accepted
+3. Paper-trade realized P&L realism v2
+   - correct the realized close path so persisted paper outcomes are not driven by `trade.current_pnl ?? 0`
+   - apply slippage and transaction costs exactly once at close, not in live mark-to-market
+   - keep this exit model aligned with the teacher friction/exit model
+4. Economics-aware confidence correction
+   - reduce overconfident scores on weak-payoff multi-leg setups
+   - tie confidence more tightly to actual rupee reward, not only structural conviction
+5. Full ranking rebuild
+   - only after live verification and corrected P&L calibration
+   - preserve EV / true-probability math until characterization work is ready
+6. Stage 0 characterization harness
+   - capture real chain-rich fixtures and freeze ranking/P&L baselines before deeper ranker changes
+7. Oracle / LLM reliability follow-up
+   - revisit Oracle VM and provider stability only after live market behavior is understood
+
+## 2026-06-16 Teacher v1 Shadow Rollout - v2.4.30 / b261
+
+- Both repos are now aligned at:
+  - Android `versionName=2.4.30`, `versionCode=261`
+  - Python `BRAIN_VERSION=2.4.30`
+  - signed Android GitHub release `v2.4.30` published successfully
+- Supabase schema was prepared before push for the new shadow-teacher fields in:
+  - `ml_evaluation_outcomes`
+  - `ml_recommendation_outcomes`
+- Implemented Claude directive `DIRECTIVE_TEACHER_HONEST_LABELING_20260615.md` as a shadow rollout.
+- Core architecture change:
+  - fixed-H2 single-sample labeling is no longer the only truth path
+  - `brain.py` now computes a managed-exit teacher label using path walk + friction + TP/SL/EOD semantics
+- Managed teacher logic now records:
+  - `managed_pnl`
+  - `managed_gross_pnl`
+  - `friction_cost`
+  - `exit_reason`
+  - `exit_step`
+  - `exit_ts`
+  - `r_multiple`
+  - `captured_pct`
+  - `is_success`
+  - `risk_at_entry`
+  - `regime_bucket`
+  - `label_version='teacher_v1'`
+  - `teacher_config_version`
+  - `tp_threshold`
+  - `sl_threshold`
+  - `break_even_win_rate_pct`
+- Legacy fields remain intentionally unchanged for shadow phase:
+  - `sim_pnl_h2`
+  - `canonical_won`
+  - `outcome_h2`
+  - `won`
+- Important evaluation input repair:
+  - `fetchEvaluationSnapshots()` now includes `context_json`
+  - this restores access to stored generated candidates during post-close evaluation
+- Path source used by the teacher:
+  - evaluation now reads from `ml_option_chain_snapshots` path rows through `fetchEvaluationChainSlices(...)`
+  - this is materially better than relying on the old H2-only late-window snapshot
+- Shared friction/config rule now exists:
+  - Kotlin `TeacherTruthConfig` is the source exported to JS
+  - PWA cost estimation reads the same config via `NativeBridge.getTeacherTruthConfig()`
+  - this reduces drift between teacher accounting and app-side display accounting
+- ML UI/reporting changes:
+  - added `Teacher v1 Shadow Review`
+  - added `Old vs Honest Teacher`
+  - `4-Lane Training Matrix` became `4-Lane Teacher Matrix`
+  - reporting is now expectancy-first for teacher shadow metrics
+  - paper-training card explicitly states the legacy consumer is still active until switch gate
+- Added teacher comparison summary in native summary payload:
+  - primary-only legacy win rate
+  - primary-only teacher success rate
+  - teacher expectancy in `R`
+  - teacher break-even win rate
+  - lane-level comparison table
+- Verification completed locally:
+  - `brain.py` AST parse passed
+  - focused teacher tests passed
+  - `app.js` parse passed
+- Android local Gradle compile remained blocked by environment/build-system issue:
+  - `Failed to transform R.jar ... Check failed`
+  - signed GitHub release still succeeded, which is the user-facing source of truth for this version
+- Current status:
+  - code is shipped
+  - schema is ready
+  - signed release exists
+  - live market-hours verification is still pending
+  - historical backfill / comparison review is still pending before any switch from legacy labels
 
 ## 2026-06-14 Ranking Stage 1 - v2.4.23 / b254
 
@@ -56,6 +398,52 @@
   - preferred implementation caution:
     - do not invent stale short-leg marks casually when LTP is missing
     - prefer explicit unpriceable-state handling unless a time-bounded cached-mark rule is made precise
+
+### Upstox Reference Model Accepted on 2026-06-17
+
+- Reviewed external file `UPSTOX_TRADING_PROJECT_COMPLETE_KNOWLEDGE.md` and accepted the following as the broker-reference model we should align to conceptually.
+- Upstox `Get Positions` returns separate position fields including:
+  - `pnl`
+  - `unrealised`
+  - `realised`
+  - `buy_value`
+  - `sell_value`
+  - `average_price`
+  - `last_price`
+- Upstox also exposes dedicated charge surfaces:
+  - `GET /v2/charges/brokerage`
+  - returns:
+    - `total`
+    - `brokerage`
+    - `taxes` (`gst`, `stt`, `stamp_duty`)
+    - `other_charges` (`transaction`, `clearing`, `ipft`, `sebi_turnover`)
+- For multi-leg structures, Upstox margin is checked using:
+  - `POST /v2/charges/margin`
+  - all four IC/IB legs should be passed together
+
+### Project Interpretation of the Upstox Model
+
+- The current app should not blur these states together:
+  1. gross live mark-to-market
+  2. estimated exit cost
+  3. net-if-closed-now
+  4. realized closed P&L
+- Current code still mixes these concepts too loosely:
+  - Python produces raw live `current_pnl`
+  - PWA subtracts estimated round-trip cost for display
+  - realized close path still persists from `trade.current_pnl ?? 0`
+- This is now treated as an architecture mismatch with the broker-style reference model, not just a UI quirk.
+
+### Required P&L Output Model Going Forward
+
+- Open trades must expose:
+  - `Gross MTM`
+  - `Estimated exit cost`
+  - `Net if closed now`
+- Closed trades must expose:
+  - `Realized closed P&L`
+- Cost/slippage must be applied exactly once at the close boundary for realized results.
+- The open-trade headline should not make `gross MTM` look like `realized net`.
 
 ## 2026-06-14 Confidence vs Economics Observation
 
