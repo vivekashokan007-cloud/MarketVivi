@@ -313,6 +313,9 @@ function maybeAutoRefreshMlStatus(serviceStatus = {}) {
     const statusKey = [
         serviceStatus?.evaluationDoneDate || '',
         evaluationDone ? 'done' : (evaluationRunning ? 'running' : 'idle'),
+        serviceStatus?.evaluationPhase || '',
+        Number.isFinite(serviceStatus?.evaluationProgressCurrent) ? serviceStatus.evaluationProgressCurrent : 0,
+        Number.isFinite(serviceStatus?.evaluationProgressTotal) ? serviceStatus.evaluationProgressTotal : 0,
         Number.isFinite(serviceStatus?.lastEvaluationOutcomeCount) ? serviceStatus.lastEvaluationOutcomeCount : 0,
         Number.isFinite(serviceStatus?.lastEvaluationProducedCount) ? serviceStatus.lastEvaluationProducedCount : 0,
         serviceStatus?.lastEvaluationMessage || ''
@@ -4362,23 +4365,33 @@ function renderML() {
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
     const evaluationDone = service.evaluationDoneToday === true;
     const evaluationRunning = service.evaluationRunning === true;
+    const evaluationRetryable = service.evaluationRetryable === true || service.evaluationRetryRecommended === true;
     const evaluationReady = service.evaluationReady !== false;
     const evaluationBlockedReason = service.evaluationBlockedReason || '';
+    const evaluationPhase = String(service.evaluationPhase || '');
+    const evaluationProgressCurrent = Number(service.evaluationProgressCurrent || 0);
+    const evaluationProgressTotal = Number(service.evaluationProgressTotal || 0);
+    const evaluationPhaseLabel = evaluationPhase ? evaluationPhase.replace(/_/g, ' ') : '';
+    const evaluationProgressText = evaluationProgressTotal > 0
+        ? `${evaluationProgressCurrent}/${evaluationProgressTotal} snapshots`
+        : '--';
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
     const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
     const evaluationProducedCount = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
-    const evaluationButtonText = evaluationDone
+    const evaluationButtonText = (evaluationDone && !evaluationRetryable)
         ? '✅ Today Done'
         : (evaluationRunning
-            ? '⏳ Evaluating...'
+            ? `⏳ ${evaluationPhaseLabel || 'Evaluating'}`
+            : (evaluationRetryable
+                ? '↻ Retry Eval'
             : (!evaluationReady
                 ? (evaluationBlockedReason === 'WAIT_FOR_POST_CLOSE_HANDOFF'
                     ? '⏳ Auto After Close'
                     : evaluationBlockedReason === 'SESSION_PARTIAL'
                         ? '⏳ Await Full Close Data'
                         : '⛔ Not Ready')
-                : '📋 Evaluate Today'));
-    const evaluationButtonDisabled = evaluationRunning || evaluationDone || !evaluationReady;
+                : '📋 Evaluate Today')));
+    const evaluationButtonDisabled = evaluationRunning || ((evaluationDone && !evaluationRetryable) || !evaluationReady);
     const evaluationButtonAction = 'triggerDayEvaluation()';
     const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
         ? new Date(STATE.mlStatusRefreshAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
@@ -4525,7 +4538,7 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : 'var(--text)')}">${evaluationDone ? 'DONE' : (evaluationRunning ? 'RUNNING' : 'PENDING')}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from today's saved recommendations.</span>` : ''}
+                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from today's saved recommendations.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
