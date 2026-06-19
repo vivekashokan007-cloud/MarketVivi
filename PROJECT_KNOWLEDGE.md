@@ -85,6 +85,10 @@
   - per-page prepare heartbeat is wired into the streaming loop
   - Python `_load_json_file()` now uses `json.load()` instead of reading the whole file into a raw string before parsing
 - The old accumulating filtered-chain method was removed so only the streaming path remains callable for day-end evaluation.
+- First `v2.4.39 / b270` push failed Android CI because `SupabaseClient.writePagedFilteredChain()` referenced `rowBelongsToIstSessionDate()` before it existed at object scope.
+- CI repair applied:
+  - refactored `filterRowsByIstSessionDate()` to use an object-level `rowBelongsToIstSessionDate()` helper
+  - touched `Marketapp/app/build.gradle.kts` with a no-version-change comment so the path-filtered signed-release workflow reruns
 
 ## 2026-06-19 Batched Day-End Evaluation Recovery - v2.4.38 / b269
 
