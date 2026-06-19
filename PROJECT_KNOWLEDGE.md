@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through 2026-06-17 live candidate-persistence verification on v2.4.32 / b263)
+# Market Radar — Project Knowledge (updated through 2026-06-19 CI repair follow-up for v2.4.38 / b269)
 
 ## Release Discipline - Mandatory Sync Rule
 
@@ -31,6 +31,111 @@
   - release artifact is published under GitHub Releases as `app-release.apk`
 - Future rule:
   - if user says both sides must stay aligned, treat that as a hard invariant, not a preference
+
+## 2026-06-19 Batched Day-End Evaluation Recovery - v2.4.38 / b269
+
+- Both repos were moved to `v2.4.38 / b269`.
+- GitHub push completed on `main`:
+  - `Marketapp` commit `7d3bf44`
+  - `MarketVivi` commit `fc9cdc4`
+- Release metadata was synced correctly:
+  - Android `versionName=2.4.38`, `versionCode=269`
+  - Python `BRAIN_VERSION=2.4.38`
+  - PWA `<title>` updated to `v2.4.38`
+  - PWA header label updated to `v2.4.38 · b269`
+  - PWA cache-buster updated to `app.js?v=1209`
+
+### Root Cause Framing
+
+- The active failure was no longer candidate generation.
+- The post-close teacher pipeline was still fragile because:
+  - full-session evaluation was handled as one large in-memory operation
+  - a single malformed snapshot/candidate row could abort the whole batch
+  - stale/interrupted evaluation state was too easy to create
+  - manual recovery messaging was too vague after crashes or failed save steps
+
+### Implemented in `Marketapp`
+
+- `MarketMLService.kt`
+  - day-end evaluation now runs as a resumable batch job instead of a single all-at-once `evening_evaluator` call
+  - full-session inputs are materialized once to app-internal files under a dedicated `day_evaluation` directory
+  - evaluation progress is persisted across phases:
+    - `PREPARING`
+    - `RUNNING`
+    - `SAVING`
+    - `AGGREGATING`
+    - `DONE`
+    - `FAILED`
+    - `FAILED_SAVE`
+    - `STALLED`
+  - progress counters now persist:
+    - total snapshots
+    - completed snapshots
+    - produced outcome count
+    - persisted outcome count
+  - automatic post-close evaluation behavior is preserved
+  - `onDestroy()` no longer clears an active run unconditionally
+  - final-save failure is now treated as retryable instead of looking like a generic crash
+- `NativeBridge.kt`
+  - service status now exposes:
+    - evaluation phase
+    - progress current/total
+    - retryable state
+    - last error
+    - last job heartbeat/update time
+  - stale-run detection is now heartbeat-based and uses a longer timeout
+  - manual `triggerDayEvaluation()` now behaves as a recovery path:
+    - resumes from the last completed batch when possible
+    - or replays the final save step from local outputs
+- `brain.py`
+  - added evaluation job helpers:
+    - `evaluation_job_prepare(...)`
+    - `evaluation_job_run_batch(...)`
+    - `evaluation_job_finalize(...)`
+  - added `_evaluate_snapshot_outcomes(...)` to isolate row-level failures
+  - malformed `primary_candidate_json`, `context_json`, or secondary candidate rows no longer kill the full day evaluation run
+
+### Implemented in `MarketVivi`
+
+- ML tab evaluation state now surfaces:
+  - phase
+  - snapshot progress
+  - retryable recovery state
+  - clearer button labels for:
+    - active evaluation
+    - retry
+    - blocked/not-ready states
+- ML auto-refresh key now includes evaluation phase/progress so the UI updates more honestly during long post-close runs
+
+### Verification Status
+
+- Verified locally:
+  - Python syntax compile passed for `brain.py`
+  - release markers were synced across both repos before push
+  - both repos were pushed successfully to GitHub `main`
+- Not verified locally:
+  - Android Kotlin/Gradle compile was not run in this environment because `JAVA_HOME` / JDK was unavailable
+- Required next live verification:
+  1. confirm GitHub Actions produced the signed Android release from the Gradle version bump
+  2. install the new APK and verify visible version surfaces all show `v2.4.38 / b269`
+  3. let one real post-close evaluation run complete
+  4. confirm:
+     - progress moves batch-by-batch
+     - retry appears only when genuinely needed
+     - save/aggregation phases report clearly
+     - teacher outcomes persist correctly after a full close cycle
+
+### Follow-up CI Repair After Push
+
+- The first `Marketapp` push for `v2.4.38 / b269` failed GitHub Actions in both:
+  - `Market Radar Debug APK / Validation / Build Debug APK`
+  - `Market Radar Signed Release / build`
+- The failure was **not** a signing or workflow-secret problem.
+- Root cause from Actions logs:
+  - Kotlin syntax error in `NativeBridge.kt` at line `584`
+  - error text: `Expecting an element`
+- Local diagnosis confirmed one extra closing parenthesis in the `evaluationReady` expression inside `getServiceStatus()`.
+- A narrow local fix has been prepared to remove that unmatched `)` and should be pushed as the next repair commit before trusting any `v2.4.38 / b269` release artifact.
 
 ## 2026-06-16 Candidate-Flow / Teacher Diagnostics - v2.4.31 / b262 and v2.4.32 / b263
 
