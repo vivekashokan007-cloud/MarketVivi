@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through 2026-06-19 CI repair follow-up for v2.4.38 / b269)
+# Market Radar — Project Knowledge (updated through 2026-06-19 ML evaluation prep crash fix)
 
 ## Release Discipline - Mandatory Sync Rule
 
@@ -31,6 +31,60 @@
   - release artifact is published under GitHub Releases as `app-release.apk`
 - Future rule:
   - if user says both sides must stay aligned, treat that as a hard invariant, not a preference
+
+## 2026-06-19 ML Day-End Evaluation Prep Crash Fix - v2.4.39 / b270
+
+- User reported that after the market close on 2026-06-19, day-end ML evaluation failed again:
+  - automatic evaluation entered `PREPARING`
+  - app crashed / process stopped before any batch progress
+  - manual retry also failed
+  - UI later showed `RETRYABLE` with `Evaluation stalled during preparing at 0/0 snapshots`
+- Uploaded log CSV did not include the actual crash stack:
+  - it only captured app restart / WebView bridge startup after the crash
+  - screenshots were the strongest evidence for failure phase and state
+- Root cause diagnosis:
+  - the previous `v2.4.38 / b269` batching fix batched Python evaluation, but still prepared inputs with a full-session chain fetch first
+  - `ensureEvaluationInputFiles()` fetched and normalized the entire day of option-chain rows into one `JSONArray`
+  - Python prepare then loaded the full snapshots file and full chain file before batches started
+  - this could still cause memory pressure / app death during `PREPARING`, which matches the observed `0/0 snapshots` stalled state
+- Implemented in `Marketapp`:
+  - Android version bumped to `versionName=2.4.39`, `versionCode=270`
+  - Python `BRAIN_VERSION` bumped to `2.4.39`
+  - chain cache filename changed to `chain_filtered_v2_<sessionDate>.json` so old oversized `chain_<date>.json` files are ignored on retry
+  - `MarketMLService` now extracts the exact candidate option legs from:
+    - `primary_candidate_json`
+    - `context_json.snapshot_generated_candidates`
+    - fallback `top_candidates_json`
+  - `SupabaseClient` now fetches day-end chain rows page-by-page and keeps only rows matching those candidate legs
+  - option type matching is hardened so `CALL/PUT` and `CE/PE` forms do not silently drop valid rows
+  - preparation now updates evaluation job state after each fetched page, so a long healthy prepare phase does not look stale
+- Teacher-quality constraint:
+  - this does **not** reduce the teacher’s evaluated candidate set
+  - it removes irrelevant strikes from the chain input while preserving all timestamps for every candidate leg needed by `_build_candidate_path()`
+- Implemented in `MarketVivi`:
+  - visible app title/header bumped to `v2.4.39 / b270`
+  - PWA cache-buster bumped to `app.js?v=1210`
+- Validation completed locally:
+  - `git diff --check` passed for both repos
+  - `python3 -m py_compile` passed for `brain.py`
+  - Android Gradle compile could not run locally because this environment has no Java / `JAVA_HOME`
+- Release note:
+  - push only after user confirmation
+  - signed release should run because `Marketapp/app/build.gradle.kts` changed
+
+### Claude Audit Follow-Up
+
+- Claude's `GOD_MODE_AUDIT_b269_TEACHER_EVAL_20260619.md` agreed with the filtered-chain architecture but identified the first local patch as incomplete because it still accumulated filtered chain rows in a Kotlin `JSONArray`.
+- The implementation was upgraded before push:
+  - `SupabaseClient.writeEvaluationChainCandlesForLegs()` now streams page -> filter -> append JSON to temp file -> release page
+  - the final chain file is atomically replaced only after a source attempt finishes
+  - `MarketMLService` deletes stale partial chain files before rebuild
+  - a `chain_filtered_v2_<date>.complete` sentinel is written only after the filtered chain is fully built
+  - retries require snapshots file + chain file + complete sentinel before reusing prepared inputs
+  - `EVAL_NO_LEGKEYS`, `EVAL_NO_CHAINROWS`, and `EVAL_CHAIN_TRUNCATED` fail loudly instead of producing a misleading done-with-zero state
+  - per-page prepare heartbeat is wired into the streaming loop
+  - Python `_load_json_file()` now uses `json.load()` instead of reading the whole file into a raw string before parsing
+- The old accumulating filtered-chain method was removed so only the streaming path remains callable for day-end evaluation.
 
 ## 2026-06-19 Batched Day-End Evaluation Recovery - v2.4.38 / b269
 
@@ -136,6 +190,762 @@
   - error text: `Expecting an element`
 - Local diagnosis confirmed one extra closing parenthesis in the `evaluationReady` expression inside `getServiceStatus()`.
 - A narrow local fix has been prepared to remove that unmatched `)` and should be pushed as the next repair commit before trusting any `v2.4.38 / b269` release artifact.
+- Repair sequence completed on `2026-06-19`:
+  - `Marketapp` commit `4e9840d` fixed the Kotlin syntax error
+  - `Marketapp` commit `a6b9b95` touched `app/build.gradle.kts` only to retrigger the path-filtered signed-release workflow without changing `versionName` / `versionCode`
+- Final GitHub outcome:
+  - `Market Radar Debug APK Validation` passed
+  - `Market Radar Signed Release` passed
+  - GitHub Release `v2.4.38` was published with `app-release.apk`
+  - `releases/latest` now points to `v2.4.38`
+- User impact:
+  - phones still on `v2.4.37` should now see the update when `Check for update` is pressed, because updater logic compares `BuildConfig.VERSION_NAME` against the latest GitHub release tag
+
+## 2026-06-19 Upstox Historical Ingestion Bootstrap
+
+- Purpose:
+  - start a separate offline-quality historical options-candle store for better teacher path reconstruction and later backfill work
+  - keep this independent from live `ml_option_chain_snapshots`
+- Upstox API status confirmed live on 2026-06-19:
+  - the provided **analytics/read-only token** is **not** sufficient for expired-instruments history
+  - a proper Upstox user access token with Plus access works for:
+    - `expired-instruments/expiries`
+    - `expired-instruments/option/contract`
+    - `expired-instruments/historical-candle`
+- Live probe findings:
+  - `NSE_INDEX|Nifty 50` expiries returned successfully
+  - returned range was much deeper than the original 6-month expectation:
+    - from `2024-10-03` through `2026-06-16`
+  - one sample NF contract fetch succeeded:
+    - `NIFTY 23750 CE 16 JUN 26`
+    - instrument key `NSE_FO|50605|16-06-2026`
+    - `450` five-minute bars returned
+  - Upstox returns candle rows newest-first, so ingestion must normalize sort order before downstream use
+
+### Supabase Historical Table
+
+- Created new table:
+  - `historical_option_candles`
+- Schema intent:
+  - one row per `(underlying, expiry_date, strike_price, option_type, interval_mins, bar_ts)`
+  - unique constraint enforced on that logical key
+  - dedicated lookup index created
+  - RLS disabled because this ingestion path writes via trusted service-role credentials
+- Live verification:
+  - service-role access to Supabase confirmed
+  - sample rows were successfully inserted and read back from `historical_option_candles`
+
+### Ingestion Script
+
+- Added root utility:
+  - `upstox_historical_ingest.py`
+- Script design constraints:
+  - resumable via checkpoint file
+  - bounded, contract-by-contract processing
+  - small Supabase upsert chunks
+  - retry/backoff on request failures
+  - explicit `rate_delay`
+  - pilot controls:
+    - `--max-expiries`
+    - `--max-contracts`
+    - `--from-expiry`
+    - `--to-expiry`
+    - `--dry-run`
+- Stability fix applied during implementation:
+  - Upstox/Cloudflare blocked Python's default request signature with `Error 1010`
+  - resolved by sending a normal browser `User-Agent`
+- Write-path fix applied during implementation:
+  - Supabase `return=minimal` can return an empty body on successful POST
+  - script was patched so empty-body success does not look like JSON failure
+
+### Pilot Results
+
+- Dry-run pilot succeeded:
+  - `NF`
+  - `1` expiry
+  - `2` contracts
+  - `900` bars processed
+- First real write pilot succeeded:
+  - `NF`
+  - expiry `2026-06-16`
+  - `4` contracts
+  - `1798` rows written to `historical_option_candles`
+  - Supabase readback confirmed persisted rows
+- This proves:
+  - Upstox fetch works
+  - Supabase storage works
+  - checkpointed batch ingestion works
+  - the system can scale gradually without relying on a single giant run
+
+### Operating Rule Going Forward
+
+- User instruction accepted on 2026-06-19:
+  - continue historical ingestion autonomously in careful batches
+  - do **not** ask for confirmation on every batch
+  - stop immediately and report if any issue or instability appears
+- Working policy:
+  - expand scope gradually
+  - prefer `NF` first, then `BNF`
+  - verify each pilot step before widening batch size or expiry span
+
+### First Autonomous Batch Expansion Completed
+
+- After the initial proof and 4-contract NF pilot, the next controlled expansions were completed on 2026-06-19 without manual intervention between batches.
+- `NF` batch 1 completed:
+  - expiries:
+    - `2026-06-02`
+    - `2026-06-09`
+    - `2026-06-16`
+  - `20` contracts per expiry
+  - `60` contracts total
+  - `24,318` rows written
+- `BNF` batch 1 completed:
+  - actual recent expiries exposed by Upstox were monthly, not weekly in the selected range
+  - expiries:
+    - `2026-03-30`
+    - `2026-04-28`
+    - `2026-05-26`
+  - `20` contracts per expiry
+  - `60` contracts total
+  - `25,009` rows written
+- Aggregate table state after these completed batches:
+  - `historical_option_candles` total rows: `49,332`
+- One non-failure adjustment was required during BNF expansion:
+  - the first guessed BNF date window matched zero expiries
+  - this was corrected by probing actual BNF expiries and rerunning with the proper monthly range
+- No ingestion hang or write-path instability was observed in these completed batch runs.
+
+### Second Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the same autonomous batch rule and the same cautious operating limits.
+- `NF` batch 2 completed:
+  - expiries:
+    - `2026-05-05`
+    - `2026-05-12`
+    - `2026-05-19`
+    - `2026-05-26`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `31,407` rows written
+- `BNF` batch 2 completed:
+  - expiries:
+    - `2025-12-30`
+    - `2026-01-27`
+    - `2026-02-24`
+  - `20` contracts per expiry
+  - `60` contracts total
+  - `16,444` rows written
+- Aggregate table state after the second expansion:
+  - `historical_option_candles` total rows: `97,183`
+
+### Historical Coverage Note Observed During Older BNF Batches
+
+- Older BNF monthly expiries showed uneven CE-side historical density from Upstox:
+  - some CE contracts had sparse bars
+  - a few returned `0` bars
+- Interpretation:
+  - this was observed as source-data variability, not as a pipeline or write failure
+  - matching PE contracts in the same filtered windows often had normal/full bar counts
+- Working rule:
+  - do not treat sparse/zero older-contract rows as ingestion breakage by default
+  - preserve the raw outcome in the historical table and let later quality filters decide whether a contract path is usable for teacher/backfill work
+
+### Third Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with one older NF weekly window and one older BNF monthly window.
+- `NF` batch 3 completed:
+  - expiries:
+    - `2026-04-07`
+    - `2026-04-13`
+    - `2026-04-21`
+    - `2026-04-28`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `29,864` rows written
+- `BNF` batch 3 completed:
+  - expiries:
+    - `2025-09-30`
+    - `2025-10-28`
+    - `2025-11-25`
+  - `20` contracts per expiry
+  - `60` contracts total
+  - `18,967` rows written
+- Aggregate table state after the third expansion:
+  - `historical_option_candles` total rows: `146,014`
+
+### Additional Coverage Observation
+
+- Older NF weekly expiries can also show uneven CE-side density on some contracts:
+  - example seen in `2026-04-21` filtered CE rows where some strikes had much lower bar counts than their matching PEs
+- Interpretation remains the same as for older BNF:
+  - source-data coverage varies by contract
+  - this is not currently treated as ingestion failure
+
+### Fourth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with one NF March window and one older BNF monthly window.
+- `NF` batch 4 completed:
+  - expiries:
+    - `2026-03-02`
+    - `2026-03-10`
+    - `2026-03-17`
+    - `2026-03-24`
+    - `2026-03-30`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `40,411` rows written
+- `BNF` batch 4 completed:
+  - expiries:
+    - `2025-06-26`
+    - `2025-07-31`
+    - `2025-08-28`
+  - `20` contracts per expiry
+  - `60` contracts total
+  - `17,451` rows written
+- Aggregate table state after the fourth expansion:
+  - `historical_option_candles` total rows: `203,876`
+
+### Additional Source-Data Note
+
+- In the `2025-06-26` BNF monthly window, one filtered strike pair returned `0` bars for both CE and PE.
+- Current interpretation:
+  - still treated as an Upstox historical coverage gap for that contract pair
+  - not treated as an ingestion or checkpointing defect
+
+### Fifth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with an NF February 2026 window and a BNF spring 2025 monthly window.
+- `NF` batch 5 completed:
+  - expiries:
+    - `2026-02-03`
+    - `2026-02-10`
+    - `2026-02-17`
+    - `2026-02-24`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `34,168` rows written
+- `BNF` batch 5 completed:
+  - expiries:
+    - `2025-03-27`
+    - `2025-04-24`
+    - `2025-05-29`
+  - `20` contracts per expiry
+  - `60` contracts total
+  - `25,898` rows written
+- Aggregate table state after the fifth expansion:
+  - `historical_option_candles` total rows: `263,942`
+
+### Stronger Historical Coverage Variability Note
+
+- The `2025-03-27` / `2025-04-24` / `2025-05-29` BNF monthly windows showed clearly uneven contract availability from Upstox:
+  - some filtered CE contracts were dense/full
+  - some nearby CE contracts were sparse
+  - a few filtered PE contracts were also zero or near-zero
+- This strengthens the earlier conclusion:
+  - older historical coverage is contract-specific and irregular in places
+  - the ingestion pipeline should preserve raw availability rather than attempting to infer missing bars at ingest time
+
+### Sixth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with an NF January 2026 window and the oldest currently exposed BNF window.
+- `NF` batch 6 completed:
+  - expiries:
+    - `2026-01-06`
+    - `2026-01-13`
+    - `2026-01-20`
+    - `2026-01-27`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `30,795` rows written
+- `BNF` batch 6 completed:
+  - expiries:
+    - `2024-10-01`
+    - `2024-10-09`
+    - `2024-10-16`
+    - `2024-10-23`
+    - `2024-10-30`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `31,537` rows written
+- Aggregate table state after the sixth expansion:
+  - `historical_option_candles` total rows: `326,274`
+
+### Oldest-Range Boundary Observation
+
+- The oldest exposed BNF expiry tested so far, `2024-10-01`, returned `0` bars across the full sampled 20-contract window.
+- Adjacent older BNF expiries such as `2024-10-09`, `2024-10-16`, `2024-10-23`, and `2024-10-30` returned substantial data.
+- Working interpretation:
+  - `2024-10-01` is likely a hard historical availability boundary or incomplete expiry in Upstox's expired-instruments store
+  - this is treated as a source limit, not as an ingestion defect
+
+### Seventh Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with an NF December 2025 window and the next older BNF late-2024 window.
+- `NF` batch 7 completed:
+  - expiries:
+    - `2025-12-02`
+    - `2025-12-09`
+    - `2025-12-16`
+    - `2025-12-23`
+    - `2025-12-30`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `37,348` rows written
+- `BNF` batch 7 completed:
+  - expiries:
+    - `2024-11-06`
+    - `2024-11-13`
+    - `2024-11-27`
+    - `2024-12-24`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `20,738` rows written
+- Aggregate table state after the seventh expansion:
+  - `historical_option_candles` total rows: `384,360`
+
+### Additional Boundary Observation
+
+- `2024-12-24` BNF also returned `0` bars across the full sampled 20-contract filtered window.
+- This now gives at least two clearly observed zero-coverage BNF monthly boundary points:
+  - `2024-10-01`
+  - `2024-12-24`
+- Current interpretation:
+  - some earliest/edge BNF expiries in Upstox's expired-instruments catalog exist as metadata/contract surfaces but do not carry usable historical candle payloads for the sampled window
+  - these should be treated as source-side null coverage, not as ingestion corruption
+
+### Eighth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with:
+  - the final two remaining BNF expiries in the current capped 20-contract historical pass
+  - the next oldest NF weekly block from October 2024
+- `BNF` batch 8 completed:
+  - expiries:
+    - `2025-01-30`
+    - `2025-02-27`
+  - `20` contracts per expiry
+  - `40` contracts total
+  - `16,459` rows written
+- `NF` batch 8 completed:
+  - expiries:
+    - `2024-10-03`
+    - `2024-10-10`
+    - `2024-10-17`
+    - `2024-10-24`
+    - `2024-10-31`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `41,607` rows written
+- Aggregate table state after the eighth expansion:
+  - `historical_option_candles` total rows: `442,426`
+
+### Current Coverage Position
+
+- `BNF` capped-expiry pass is now complete across the currently exposed Upstox expiry list used in this ingestion workflow.
+- `NF` historical coverage is still expanding backward through older weekly expiries.
+- After this eighth expansion:
+  - `BNF` remaining in the current pass: `0` expiries
+  - `NF` remaining in the current pass: `56` expiries
+
+### Fresh Data-Shape Observation
+
+- `BNF` expiry `2025-01-30` returned a dense, clean 20-contract sample with `450` bars on every sampled contract.
+- `BNF` expiry `2025-02-27` remained usable but showed some unevenness on a few sampled contracts, for example:
+  - `47500 CE` returned `374` bars
+  - `47600 CE` returned `336` bars
+- Working interpretation:
+  - some later BNF expiries are fully dense in the sampled window
+  - other nearby expiries still show selective contract-level sparsity even when the expiry overall is usable
+  - this remains a source-data characteristic, not an ingestion-path defect
+
+### Ninth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the next oldest NF weekly block after the October 2024 pass.
+- `NF` batch 9 completed:
+  - expiries:
+    - `2024-11-07`
+    - `2024-11-14`
+    - `2024-11-21`
+    - `2024-11-28`
+    - `2024-12-05`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `39,455` rows written
+- Aggregate table state after the ninth expansion:
+  - `historical_option_candles` total rows: `481,881`
+
+### Additional NF Density Observation
+
+- `NF` expiry `2024-11-28` returned a fully dense 20-contract sample with `450` bars on every sampled contract.
+- Nearby older NF expiries remained usable but showed selective CE thinning, for example:
+  - `2024-11-21` samples were mostly around `300` bars
+  - `2024-12-05` included CE rows as low as `124`, `223`, and `263` bars while paired PE rows stayed near `449-450`
+- Working interpretation:
+  - older NF weekly coverage is still broadly usable
+  - density is expiry-specific and often asymmetric between CE and PE in the sampled strike window
+  - this is still treated as source-data variability, not a pipeline write defect
+
+### Tenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the next NF December 2024 to January 2025 block.
+- `NF` batch 10 completed:
+  - expiries:
+    - `2024-12-12`
+    - `2024-12-19`
+    - `2024-12-26`
+    - `2025-01-02`
+    - `2025-01-09`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `31,317` rows written
+- Aggregate table state after the tenth expansion:
+  - `historical_option_candles` total rows: `513,198`
+
+### New NF Boundary Observation
+
+- `NF` expiry `2024-12-26` returned `0` bars across the full sampled 20-contract filtered window.
+- That creates a clear NF zero-coverage boundary point similar to earlier BNF edge expiries.
+- Nearby NF expiries remained usable:
+  - `2024-12-12` and `2024-12-19` showed heavy CE thinning but non-zero coverage
+  - `2025-01-02` and `2025-01-09` returned strong overall coverage with selective CE sparsity
+- Current interpretation:
+  - `2024-12-26` appears to be a source-side null-coverage expiry in Upstox's expired-instruments history
+  - the ingestion pipeline itself remained healthy because adjacent expiries in the same batch wrote normally
+
+### Eleventh Autonomous Batch Expansion Completed
+
+- Per the explicit stop-check rule, one more NF batch was run after the `2024-12-26` zero-coverage finding to test whether the next historical window also collapsed to zero.
+- `NF` batch 11 completed:
+  - expiries:
+    - `2025-01-16`
+    - `2025-01-23`
+    - `2025-01-30`
+    - `2025-02-06`
+    - `2025-02-13`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `43,886` rows written
+- Aggregate table state after the eleventh expansion:
+  - `historical_option_candles` total rows: `557,084`
+
+### Post-Zero Check Outcome
+
+- The follow-up batch did **not** reproduce the full zero-coverage pattern.
+- Results by interpretation:
+  - `2025-01-30` returned a fully dense sampled window with `450` bars on every sampled contract
+  - `2025-02-06` returned even denser sampled rows, with multiple contracts in the `501-525` bar range
+  - `2025-02-13` remained usable but again showed selective CE thinning while PE stayed near `450`
+- Working conclusion after the stop-check batch:
+  - `2024-12-26` currently looks like an isolated Upstox null-coverage expiry, not proof that the next historical region is broadly unusable
+  - no repeated zero-expiry boundary was observed in the immediately following batch
+
+### Twelfth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the next NF late-February to March 2025 block.
+- `NF` batch 12 completed:
+  - expiries:
+    - `2025-02-20`
+    - `2025-02-27`
+    - `2025-03-06`
+    - `2025-03-13`
+    - `2025-03-20`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `40,772` rows written
+- Aggregate table state after the twelfth expansion:
+  - `historical_option_candles` total rows: `597,856`
+
+### March 2025 Density Observation
+
+- No new full zero-coverage expiry appeared in this block.
+- Notable expiry shapes:
+  - `2025-02-27` returned a shorter but internally consistent window with `375` bars across all sampled contracts
+  - `2025-03-06` and `2025-03-13` were broadly dense with most sampled contracts near `446-450` bars
+  - `2025-03-20` remained usable but again showed selective CE thinning, including CE rows as low as `50`, `78`, and `284` while paired PE rows stayed at `375`
+- Current interpretation:
+  - the source still provides strong usable coverage through this region
+  - variation continues to appear mostly as expiry-specific CE truncation rather than whole-expiry failure
+
+### Thirteenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the next NF late-March to late-April 2025 block.
+- `NF` batch 13 completed:
+  - expiries:
+    - `2025-03-27`
+    - `2025-04-03`
+    - `2025-04-09`
+    - `2025-04-17`
+    - `2025-04-24`
+  - `20` contracts per expiry
+  - `100` contracts total
+  - `45,309` rows written
+- Aggregate table state after the thirteenth expansion:
+  - `historical_option_candles` total rows: `643,165`
+
+### April 2025 Mixed-Length Observation
+
+- No whole-expiry zero-coverage failure appeared in this block.
+- The source shape diversified further:
+  - `2025-04-17` was short but internally consistent, clustering near `300` bars
+  - `2025-04-03` mixed `755`, `375`, mid-range CE values, and one `0`-bar CE contract in the sampled window
+  - `2025-04-24` was very dense, with many contracts in the `624-755` bar range
+- Current interpretation:
+  - April 2025 coverage is clearly usable but no longer follows a single consistent session-length pattern
+  - the dominant issue remains contract-level asymmetry or variable bar depth, not whole-expiry collapse
+  - transient Supabase readback instability was observed once as a `500` during post-batch count verification, but retry succeeded and ingestion writes themselves were unaffected
+
+### Fourteenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the next NF May 2025 block.
+- `NF` batch 14 completed:
+  - expiries:
+    - `2025-05-08`
+    - `2025-05-15`
+    - `2025-05-22`
+    - `2025-05-29`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `28,723` rows written
+- Aggregate table state after the fourteenth expansion:
+  - `historical_option_candles` total rows: `671,888`
+
+### May 2025 Selective CE Collapse Observation
+
+- No whole-expiry failure appeared in this block.
+- The May 2025 pattern was consistent with strong PE continuity and heavy CE asymmetry:
+  - `2025-05-08` included one sampled CE contract with `0` bars and several others under `200`
+  - `2025-05-15`, `2025-05-22`, and `2025-05-29` remained broadly usable but repeatedly showed CE truncation in the `43-240` range while paired PE contracts stayed near `375-450`
+- Additional execution note:
+  - the requested date window exposed only `4` NF expiries, so this batch naturally completed at `80` contracts instead of `100`
+- Current interpretation:
+  - the source remains valuable through May 2025
+  - CE-side degradation is becoming a recurring pattern in some weekly windows, but it is still not presenting as whole-expiry collapse
+
+### Fifteenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with the next NF June 2025 block.
+- `NF` batch 15 completed:
+  - expiries:
+    - `2025-06-05`
+    - `2025-06-12`
+    - `2025-06-19`
+    - `2025-06-26`
+  - `20` contracts per expiry
+  - `80` contracts total
+  - `30,264` rows written
+- Aggregate table state after the fifteenth expansion:
+  - `historical_option_candles` total rows: `702,152`
+
+### June 2025 Execution And Density Note
+
+- The first launch of batch 15 failed immediately with `Supabase HTTP 401: Invalid API key`.
+- Root cause:
+  - operator-side malformed `SUPABASE_SERVICE_ROLE` value in the shell export
+  - not a source-data problem
+  - not an ingestion-script defect
+- Recovery:
+  - reran the same batch with the correct key
+  - checkpointed flow resumed cleanly with no meaningful lost work
+- Source-shape findings after the successful rerun:
+  - no whole-expiry zero-coverage failure appeared
+  - June 2025 continued the same CE-vs-PE asymmetry pattern
+  - `2025-06-05`, `2025-06-12`, `2025-06-19`, and `2025-06-26` all remained usable
+  - several CE contracts dropped into low-count ranges such as `52`, `56`, `98`, `116`, `118`, `141`, and `149` while paired PE rows remained near `450`
+- Current interpretation:
+  - June 2025 still adds useful teacher-path coverage
+  - the dominant issue remains selective CE truncation, not expiry-level collapse or pipeline instability
+
+### Sixteenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with a deliberately wider NF July-August 2025 run.
+- This was the first intentional speedup by expiry-count widening rather than contract-count widening.
+- `NF` batch 16 completed:
+  - expiries:
+    - `2025-07-03`
+    - `2025-07-10`
+    - `2025-07-17`
+    - `2025-07-24`
+    - `2025-07-31`
+    - `2025-08-07`
+  - `20` contracts per expiry
+  - `120` contracts total
+  - `47,998` rows written
+- Aggregate table state after the sixteenth expansion:
+  - `historical_option_candles` total rows: `750,150`
+
+### Wider-Run Stability Conclusion
+
+- Increasing expiry count from the usual `4-5` range to `6` in a single run did **not** introduce instability.
+- The run completed cleanly with:
+  - no hang
+  - no retry-worthy source failure
+  - no whole-expiry zero-coverage collapse
+- This strengthens the operating rule:
+  - if faster progress is needed, widen by expiries per run before increasing contracts per expiry
+
+### July-August 2025 Density Observation
+
+- Source behavior remained broadly usable through this wider window:
+  - PE contracts stayed very steady near `450`
+  - CE contracts remained irregular but mostly non-zero
+- Notable shapes:
+  - July weekly expiries continued the familiar CE truncation pattern, with CE counts like `70`, `83`, `117`, `136`, `152`, `163`, `199`, `204`, and `230`
+  - `2025-08-07` was notably stronger, with most sampled CE contracts in the `414-450` range and no zero-coverage contract in the sampled window
+- Current interpretation:
+  - the widened batch strategy is safe at this level
+  - later 2025 NF coverage is still high-value and does not currently show expiry-level breakdown
+
+### Seventeenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with another widened NF run covering late August into September 2025.
+- `NF` batch 17 completed:
+  - expiries:
+    - `2025-08-14`
+    - `2025-08-21`
+    - `2025-08-28`
+    - `2025-09-02`
+    - `2025-09-09`
+    - `2025-09-16`
+  - `20` contracts per expiry
+  - `120` contracts total
+  - `44,545` rows written
+- Aggregate table state after the seventeenth expansion:
+  - `historical_option_candles` total rows: `794,695`
+
+### Late-August / September 2025 Shape Observation
+
+- The widened expiry-count approach remained stable again:
+  - no hang
+  - no expiry-level zero-coverage failure
+  - no retry or recovery event required
+- Source pattern stayed usable but heterogeneous:
+  - `2025-08-14` looked relatively strong, with many CE contracts in the `416-450` range
+  - `2025-08-21` and `2025-08-28` clustered closer to a `375`-bar PE regime with mid-range CE truncation
+  - early September (`2025-09-02`, `2025-09-09`, `2025-09-16`) continued the same PE stability with CE counts often landing between roughly `59` and `386`
+- Current interpretation:
+  - widening expiry count to `6` is now validated across more than one run
+  - later 2025 NF data still provides substantial teacher-path value even when CE depth remains uneven
+
+### Eighteenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with another widened NF run covering late September through late October 2025.
+- `NF` batch 18 completed:
+  - expiries:
+    - `2025-09-23`
+    - `2025-09-30`
+    - `2025-10-07`
+    - `2025-10-14`
+    - `2025-10-20`
+    - `2025-10-28`
+  - `20` contracts per expiry
+  - `120` contracts total
+  - `41,162` rows written
+- Aggregate table state after the eighteenth expansion:
+  - `historical_option_candles` total rows: `835,857`
+
+### Late-September / October 2025 New Regime Observation
+
+- The widened run remained stable:
+  - no hang
+  - no retry event
+  - no whole-expiry zero-coverage collapse
+- New source-shape detail:
+  - `2025-09-30` contained one isolated zero-bar CE/PE strike pair while surrounding strikes remained usable
+  - `2025-10-07` returned a shorter but internally consistent `375`-bar style window
+  - `2025-10-28` introduced another shorter but internally consistent PE regime around `312` bars, with CE rows scaled down alongside it
+- Current interpretation:
+  - later 2025 NF data still looks usable for teacher-path enrichment
+  - source session length is no longer just a `450` vs `375` story; there are now additional internally consistent shorter regimes
+  - isolated zero-strike gaps continue to look like contract-level source anomalies rather than expiry-level failure
+
+### Nineteenth Autonomous Batch Expansion Completed
+
+- Continued on 2026-06-19 with another widened NF run covering November through early December 2025.
+- `NF` batch 19 completed:
+  - expiries:
+    - `2025-11-04`
+    - `2025-11-11`
+    - `2025-11-18`
+    - `2025-11-25`
+    - `2025-12-02`
+    - `2025-12-09`
+  - `20` contracts per expiry
+  - `120` contracts total
+  - `43,908` rows written
+- Aggregate table state after the nineteenth expansion:
+  - `historical_option_candles` total rows: `864,368`
+
+### November / Early December 2025 Continuity Observation
+
+- The widened expiry-count strategy remained stable again:
+  - no hang
+  - no retry event
+  - no expiry-level zero-coverage collapse
+- Source pattern remained consistent with prior late-2025 observations:
+  - PE contracts stayed highly stable near `450`
+  - CE contracts remained variable, with some deeper truncations such as `27`, `54`, `85`, `125`, `132`, `137`, `144`, `151`, `175`, `176`, `178`, and `198`
+  - despite that CE asymmetry, every expiry in this run stayed usable at the aggregate level
+- Current interpretation:
+  - widened `6`-expiry runs are still operating safely
+  - late-2025 NF remains valuable for teacher-path enrichment even though CE-side incompleteness is persistent
+  - no new evidence of a hard historical boundary was observed in this block
+
+### Coverage Audit And Overlap Finding
+
+- After batch 19, a coverage audit was run against:
+  - the live Upstox NF expired-expiry list
+  - all local NF checkpoint files
+- Audit result:
+  - total NF expiries exposed by Upstox in this session: `90`
+  - NF expiries already covered by checkpointed ingestion: `89`
+  - true remaining NF expiry gaps: `1`
+- The single remaining uncovered NF expiry identified by the audit is:
+  - `2025-04-30`
+
+### Twentieth Run Was Overlap, Not New Coverage
+
+- A subsequent widened run was allowed to complete before the full audit was done.
+- That run processed:
+  - `2025-12-16`
+  - `2025-12-23`
+  - `2025-12-30`
+  - `2026-01-06`
+  - `2026-01-13`
+  - `2026-01-20`
+- Script-reported work:
+  - `120` contracts
+  - `45,313` rows processed/upserted
+- But Supabase table total did **not** increase after that run:
+  - remained `864,368`
+- Audit confirmed why:
+  - `2025-12-16`, `2025-12-23`, `2025-12-30` were already covered in `upstox_ingest_nf_batch7_state.json`
+  - `2026-01-06`, `2026-01-13`, `2026-01-20` were already covered in `upstox_ingest_nf_batch6_state.json`
+- Working conclusion:
+  - the pipeline was healthy
+  - the zero net growth was caused by duplicate upsert overlap, not by source failure or write failure
+  - future continuation should use audited remaining-expiry selection instead of broad calendar windows
+
+### Twenty-First Run Closed The Final NF Gap
+
+- Continued on 2026-06-19 with the single audited remaining NF expiry only.
+- `NF` batch 21 completed:
+  - expiry:
+    - `2025-04-30`
+  - `20` contracts
+  - `9,957` rows written
+- Aggregate table state after the twenty-first expansion:
+  - `historical_option_candles` total rows: `874,325`
+
+### Final NF Coverage Result
+
+- The final audited NF gap is now closed.
+- Coverage audit outcome after batch 21:
+  - total NF expiries exposed by Upstox in this session: `90`
+  - NF expiries covered by checkpointed ingestion: `90`
+  - remaining NF expiries: `0`
+- Current interpretation:
+  - NF historical ingestion is now complete for the full expiry list exposed in this session
+  - no duplicate overlap remains in the NF pass
+  - the only meaningful next work, if needed, is BNF re-audit for any future newly exposed expiries or a schema/use-case expansion, not more NF backfill
 
 ## 2026-06-16 Candidate-Flow / Teacher Diagnostics - v2.4.31 / b262 and v2.4.32 / b263
 
