@@ -308,9 +308,10 @@ function validDateOrBlank(value) {
 }
 
 function maybeAutoRefreshMlStatus(serviceStatus = {}) {
-    const evaluationDone = serviceStatus?.evaluationDoneToday === true;
+    const evaluationDone = serviceStatus?.evaluationDoneForTarget === true || serviceStatus?.evaluationDoneToday === true;
     const evaluationRunning = serviceStatus?.evaluationRunning === true;
     const statusKey = [
+        serviceStatus?.evaluationTargetDate || '',
         serviceStatus?.evaluationDoneDate || '',
         evaluationDone ? 'done' : (evaluationRunning ? 'running' : 'idle'),
         serviceStatus?.evaluationPhase || '',
@@ -641,6 +642,17 @@ function formatCompactTs(ts) {
         hour: '2-digit',
         minute: '2-digit',
         hour12: true
+    });
+}
+
+function formatSessionDateLabel(dateStr) {
+    if (!dateStr || typeof dateStr !== 'string') return '';
+    const date = new Date(`${dateStr}T00:00:00+05:30`);
+    if (Number.isNaN(date.getTime())) return dateStr;
+    return date.toLocaleDateString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short'
     });
 }
 
@@ -2946,7 +2958,7 @@ async function triggerDayEvaluation() {
             getMLBrainSnapshotsCached(true);
             renderAll();
         }, 3000);
-        alert(response.message || 'Day evaluation started. Refresh ML status in a few seconds.');
+        alert(response.message || `Day evaluation started${response?.target_date ? ` for ${response.target_date}` : ''}. Refresh ML status in a few seconds.`);
     } catch (e) {
         alert('Day evaluation trigger failed: ' + e.message);
     }
@@ -4363,7 +4375,10 @@ function renderML() {
     const evaluationLaneSummary = getMLEvaluationLaneSummaryCached();
     const brainSnapshots = getMLBrainSnapshotsCached();
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
-    const evaluationDone = service.evaluationDoneToday === true;
+    const evaluationTargetDate = String(service.evaluationTargetDate || '');
+    const evaluationTargetIsToday = service.evaluationTargetIsToday !== false;
+    const evaluationTargetLabel = evaluationTargetDate ? formatSessionDateLabel(evaluationTargetDate) : '';
+    const evaluationDone = service.evaluationDoneForTarget === true || service.evaluationDoneToday === true;
     const evaluationRunning = service.evaluationRunning === true;
     const evaluationRetryable = service.evaluationRetryable === true || service.evaluationRetryRecommended === true;
     const evaluationReady = service.evaluationReady !== false;
@@ -4375,11 +4390,14 @@ function renderML() {
     const evaluationProgressText = evaluationProgressTotal > 0
         ? `${evaluationProgressCurrent}/${evaluationProgressTotal} snapshots`
         : '--';
-    const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? "Today's evaluation done." : '');
+    const evaluationScopeLabel = evaluationTargetDate
+        ? (evaluationTargetIsToday ? 'today' : `${evaluationTargetLabel || evaluationTargetDate}`)
+        : 'latest session';
+    const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? `Evaluation done for ${evaluationScopeLabel}.` : '');
     const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
     const evaluationProducedCount = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
     const evaluationButtonText = (evaluationDone && !evaluationRetryable)
-        ? '✅ Today Done'
+        ? `✅ ${evaluationTargetIsToday ? 'Today' : 'Session'} Done`
         : (evaluationRunning
             ? `⏳ ${evaluationPhaseLabel || 'Evaluating'}`
             : (evaluationRetryable
@@ -4390,7 +4408,7 @@ function renderML() {
                     : evaluationBlockedReason === 'SESSION_PARTIAL'
                         ? '⏳ Await Full Close Data'
                         : '⛔ Not Ready')
-                : '📋 Evaluate Today')));
+                : `📋 Evaluate ${evaluationTargetIsToday ? 'Today' : (evaluationTargetLabel || 'Session')}`)));
     const evaluationButtonDisabled = evaluationRunning || ((evaluationDone && !evaluationRetryable) || !evaluationReady);
     const evaluationButtonAction = 'triggerDayEvaluation()';
     const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
@@ -4538,7 +4556,7 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from today's saved recommendations.</span>` : ''}
+                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
