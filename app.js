@@ -4511,6 +4511,7 @@ function renderML() {
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
     const candidateDiagnostics = buildCandidatePipelineDiagnostics(brain, brainSnapshots);
+    const historicalMlView = Boolean(evaluationTargetDate) && !evaluationTargetIsToday;
     const diagnosticStageText = candidateDiagnostics.stageEntries.length > 0
         ? candidateDiagnostics.stageEntries.map(([stage, count]) => `${stage} ${count}`).join(' · ')
         : '--';
@@ -4562,18 +4563,24 @@ function renderML() {
             <div class="brain-card" style="border-left-color:var(--warn)">
                 <div class="brain-card-header">
                     <span class="brain-icon">🧭</span>
-                    <span class="brain-label">Candidate Pipeline Diagnostics</span>
+                    <span class="brain-label">${historicalMlView ? 'Historical Snapshot Diagnostics' : 'Candidate Pipeline Diagnostics'}</span>
                 </div>
                 <div class="brain-detail">
-                    Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
-                    Generated: <b>${candidateDiagnostics.generatedCount}</b> · Watchlist: <b>${candidateDiagnostics.watchlistCount}</b> · Rejected: <b>${candidateDiagnostics.rejectedCount}</b><br>
-                    Trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
-                    ${candidateDiagnostics.skipReason ? `Skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
-                    By index: <b>${diagnosticIndexText}</b><br>
-                    Top rejection stages: <b>${diagnosticStageText}</b><br>
-                    Top rejection reasons: <b>${diagnosticReasonText}</b>
-                    ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount > 0 ? `<br><span style="color:var(--warn)">The brain saw candidate attempts, but none survived the gate waterfall into generated/watchlist payloads.</span>` : ''}
-                    ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount === 0 && candidateDiagnostics.skipReason ? `<br><span style="color:var(--warn)">Generation was skipped before the gate waterfall. Fix the upstream contract named in the skip reason.</span>` : ''}
+                    ${historicalMlView && candidateDiagnostics.source === 'live_brain_result' ? `
+                        Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b><br>
+                        Saved snapshot diagnostics were not available for this historical session.<br>
+                        Current live candidate diagnostics are hidden here to avoid mixing today's closed-market state with the evaluated session.
+                    ` : `
+                        Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
+                        Generated: <b>${candidateDiagnostics.generatedCount}</b> · Watchlist: <b>${candidateDiagnostics.watchlistCount}</b> · Rejected: <b>${candidateDiagnostics.rejectedCount}</b><br>
+                        Trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
+                        ${candidateDiagnostics.skipReason ? `Skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
+                        By index: <b>${diagnosticIndexText}</b><br>
+                        Top rejection stages: <b>${diagnosticStageText}</b><br>
+                        Top rejection reasons: <b>${diagnosticReasonText}</b>
+                        ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount > 0 ? `<br><span style="color:var(--warn)">The brain saw candidate attempts, but none survived the gate waterfall into generated/watchlist payloads.</span>` : ''}
+                        ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount === 0 && candidateDiagnostics.skipReason ? `<br><span style="color:var(--warn)">Generation was skipped before the gate waterfall. Fix the upstream contract named in the skip reason.</span>` : ''}
+                    `}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
