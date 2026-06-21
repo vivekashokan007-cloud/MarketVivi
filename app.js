@@ -329,6 +329,8 @@ function maybeAutoRefreshMlStatus(serviceStatus = {}) {
 
     getMLModelStatusCached(true);
     getMLEvaluationOutcomesCached(true);
+    getMLEvaluationLaneSummaryCached(true);
+    getMLTeacherResearchReportCached(true);
     getMLBrainSnapshotsCached(true);
     STATE.mlStatusRefreshAt = Date.now();
     return true;
@@ -980,6 +982,21 @@ function getMLEvaluationLaneSummaryCached(force = false) {
     STATE.mlEvaluationLaneSummary = parsed && typeof parsed === 'object' ? parsed : {};
     STATE.mlEvaluationLaneSummaryAt = now;
     return STATE.mlEvaluationLaneSummary;
+}
+
+function getMLTeacherResearchReportCached(force = false) {
+    const ttlMs = 90 * 1000;
+    const now = Date.now();
+    if (!force && STATE.mlTeacherResearchReport && (now - (STATE.mlTeacherResearchReportAt || 0)) < ttlMs) {
+        return STATE.mlTeacherResearchReport;
+    }
+    const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLTeacherResearchReport === 'function'
+        ? NativeBridge.getMLTeacherResearchReport()
+        : '{}';
+    const parsed = safeParseNB(raw, {});
+    STATE.mlTeacherResearchReport = parsed && typeof parsed === 'object' ? parsed : {};
+    STATE.mlTeacherResearchReportAt = now;
+    return STATE.mlTeacherResearchReport;
 }
 
 function getMLBrainSnapshotsCached(force = false) {
@@ -4373,6 +4390,7 @@ function renderML() {
     const decisions = getMLDecisionsCached();
     const evaluationOutcomes = getMLEvaluationOutcomesCached();
     const evaluationLaneSummary = getMLEvaluationLaneSummaryCached();
+    const teacherResearchReport = getMLTeacherResearchReportCached();
     const brainSnapshots = getMLBrainSnapshotsCached();
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
     const evaluationTargetDate = String(service.evaluationTargetDate || '');
@@ -4508,6 +4526,30 @@ function renderML() {
     const comparisonTeacherRows = Number(summaryComparison?.teacherPrimaryRows || 0);
     const comparisonLegacyRows = Number(summaryComparison?.legacyPrimaryLabeled || 0);
     const comparisonWinRateDeltaPts = Number(summaryComparison?.winRateDeltaPts || 0);
+    const researchOk = teacherResearchReport?.ok === true;
+    const researchPvb = safeParseNB(teacherResearchReport?.primary_vs_best, teacherResearchReport?.primary_vs_best || {});
+    const researchMarket = safeParseNB(teacherResearchReport?.market, teacherResearchReport?.market || {});
+    const researchBrain = safeParseNB(teacherResearchReport?.brain_behavior, teacherResearchReport?.brain_behavior || {});
+    const researchTeacher = safeParseNB(teacherResearchReport?.teacher_outcomes, teacherResearchReport?.teacher_outcomes || {});
+    const researchPrimary = safeParseNB(researchTeacher?.primary, researchTeacher?.primary || {});
+    const researchByStrategy = safeParseNB(researchTeacher?.by_strategy, researchTeacher?.by_strategy || {});
+    const researchVix = safeParseNB(researchMarket?.vix, researchMarket?.vix || {});
+    const researchBnf = safeParseNB(researchMarket?.bnf, researchMarket?.bnf || {});
+    const researchNf = safeParseNB(researchMarket?.nf, researchMarket?.nf || {});
+    const researchGeneratedCounts = safeParseNB(researchBrain?.generated_type_counts, researchBrain?.generated_type_counts || {});
+    const researchPrimaryCounts = safeParseNB(researchBrain?.primary_type_counts, researchBrain?.primary_type_counts || {});
+    const researchBestCounts = safeParseNB(researchPvb?.best_type_counts, researchPvb?.best_type_counts || {});
+    const researchFmt = (value, digits = 1, suffix = '') => Number.isFinite(Number(value)) ? `${Number(value).toFixed(digits)}${suffix}` : '--';
+    const researchCountPairs = (obj) => Object.entries(obj || {})
+        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+        .slice(0, 4)
+        .map(([key, count]) => `${key} ${count}`)
+        .join(' · ') || '--';
+    const researchStrategyLine = Object.entries(researchByStrategy || {})
+        .sort((a, b) => Number(b[1]?.rows || 0) - Number(a[1]?.rows || 0))
+        .slice(0, 3)
+        .map(([key, row]) => `${key} ${Number(row?.rows || 0)} @ ${researchFmt(row?.avg_r, 2, 'R')}`)
+        .join(' · ') || '--';
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
     const candidateDiagnostics = buildCandidatePipelineDiagnostics(brain, brainSnapshots);
@@ -4558,6 +4600,25 @@ function renderML() {
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
                     Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:${researchOk ? 'var(--accent)' : 'var(--warn)'}">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🔬</span>
+                    <span class="brain-label">Daily Teacher Research</span>
+                </div>
+                <div class="brain-detail">
+                    ${researchOk ? `
+                        Session: <b>${formatSessionDateLabel(teacherResearchReport.session_date) || teacherResearchReport.session_date || '--'}</b> · Snapshots: <b>${Number(teacherResearchReport.snapshot_count || 0)}</b> · Outcomes: <b>${Number(teacherResearchReport.outcome_count || 0)}</b><br>
+                        Market: VIX <b>${researchFmt(researchVix.avg, 2)}</b> (${researchFmt(researchVix.min, 2)}-${researchFmt(researchVix.max, 2)}) · BNF Δ <b>${researchFmt(researchBnf.change, 1)}</b> · NF Δ <b>${researchFmt(researchNf.change, 1)}</b><br>
+                        Primary: <b>${researchCountPairs(researchPrimaryCounts)}</b> · Generated: <b>${researchCountPairs(researchGeneratedCounts)}</b><br>
+                        Primary teacher: <b>${Number(researchPrimary.rows || 0)}</b> rows · <b>${researchFmt(researchPrimary.avg_r, 2, 'R')}</b> avg · Success <b>${researchFmt(researchPrimary.success_rate_pct, 1, '%')}</b><br>
+                        Best available: primary best <b>${Number(researchPvb.primary_was_best || 0)}/${Number(researchPvb.snapshots_compared || 0)}</b> · Better candidate <b>${Number(researchPvb.better_candidate_available || 0)}</b> · Uplift <b>${researchFmt(researchPvb.avg_best_minus_primary_r, 3, 'R')}</b><br>
+                        Best family: <b>${researchCountPairs(researchBestCounts)}</b><br>
+                        Strategy outcomes: <b>${researchStrategyLine}</b>
+                    ` : `
+                        Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen primary against the full generated candidate menu.
+                    `}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">

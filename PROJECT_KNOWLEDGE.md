@@ -1,4 +1,50 @@
-# Market Radar — Project Knowledge (updated through 2026-06-19 ML evaluation prep crash fix)
+# Market Radar — Project Knowledge (updated through 2026-06-21 daily teacher research report v2.4.44 / b275)
+
+## 2026-06-21 Daily Teacher Research Report - v2.4.44 / b275
+
+- User clarified that the desired ML teacher architecture must reach the same
+  explanatory level as the manual Friday analysis:
+  - not just label persisted outcomes
+  - explain market behavior, generated candidate menu, chosen primary, best
+    available alternative, rank inversion, and family-level expectancy
+- Implemented a measurement-only daily research artifact:
+  - Python `session_teacher_research_report(...)` now builds the session report
+    from saved `ml_brain_snapshots` plus locally produced teacher outcomes
+  - future evaluator rows now include:
+    - `rank_in_snapshot`
+    - `varsity_tier`
+    - `premium_edge`
+    - `credit_width_ratio`
+    - `sigma_otm`
+  - Android stores `teacher_research_<session>.json` after day evaluation and
+    exposes it through `NativeBridge.getMLTeacherResearchReport()`
+  - PWA ML tab now shows a `Daily Teacher Research` card with:
+    - market summary
+    - primary vs generated family counts
+    - primary teacher expectancy
+    - primary-vs-best comparison
+    - best-family counts
+    - top strategy outcome summary
+- Local Friday verification using live Supabase data reproduced the manual
+  baseline:
+  - snapshots: `76`
+  - chain rows: `45,144`
+  - outcomes: `665`
+  - primary rows: `67`
+  - primary average `R = -0.1343`
+  - primary was best: `0 / 67`
+  - better candidate available: `67 / 67`
+  - positive alternative available: `64 / 67`
+  - average best-minus-primary uplift: `+0.2472R`
+  - best family:
+    - `BULL_PUT`: `57`
+    - `BEAR_CALL`: `10`
+- Release metadata prepared:
+  - Android `versionName=2.4.44`, `versionCode=275`
+  - `BRAIN_VERSION=2.4.44`
+  - PWA visible label `v2.4.44 / b275`
+  - PWA cache-buster `app.js?v=1215`
+- No live brain selection logic was changed.
 
 ## Release Discipline - Mandatory Sync Rule
 
