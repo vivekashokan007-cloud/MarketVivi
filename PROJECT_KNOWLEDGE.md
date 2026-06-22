@@ -4601,3 +4601,16 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - header version `v2.4.45 · b276`
   - cache-bust `app.js?v=1216`
 - The next action after confirmation is to rerun the post-close evaluation and verify that the crash is gone and the `Class A` gate remains green.
+
+## 2026-06-22 Chosen vs Candidate Menu Visibility
+
+- The `4-Lane Teacher Matrix` is the chosen-candidate view. It summarizes the candidates the brain actually selected for the session.
+- Alternatives are equally important for research because they show what else was available at the same poll and whether the brain ranked the wrong lane or family.
+- The ML tab now includes a separate `Chosen vs Candidate Menu` panel.
+- The panel reads `ml_recommendation_outcomes` role splits for the evaluated session and shows:
+  - total recommendation rows per lane
+  - chosen rows per lane
+  - alternative rows per lane
+- This is the correct surface for generated-menu visibility on days where BNF existed in the candidate menu but was not chosen.
+- The database still stores `role=primary/secondary` for compatibility, but user-facing language should be `chosen/alternatives`.
+- Swing remains informational in this panel until multi-day replay evidence exists. Do not treat single-day swing counts as a validated swing signal.

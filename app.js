@@ -4466,6 +4466,7 @@ function renderML() {
     const summaryTeacher = safeParseNB(evaluationLaneSummary?.teacher_summary, evaluationLaneSummary?.teacher_summary || {});
     const summaryComparison = safeParseNB(evaluationLaneSummary?.comparison_summary, evaluationLaneSummary?.comparison_summary || {});
     const summaryComparisonLanes = safeParseNB(evaluationLaneSummary?.comparison_lanes, evaluationLaneSummary?.comparison_lanes || {});
+    const summaryRecommendationMix = safeParseNB(evaluationLaneSummary?.recommendation_mix_lanes, evaluationLaneSummary?.recommendation_mix_lanes || {});
     const summaryRowsToday = Number(evaluationLaneSummary?.rowsToday || 0);
     const summaryAttributedRows = Number(evaluationLaneSummary?.attributedRows || 0);
     const hasNativeLaneSummary = summaryLanes && typeof summaryLanes === 'object' && Object.keys(summaryLanes).length > 0;
@@ -4521,6 +4522,7 @@ function renderML() {
     const teacherTradeableBucketCount = Number(summaryTeacher?.tradeableBucketCount || 0);
     const teacherBucketCount = Number(summaryTeacher?.bucketCount || 0);
     const teacherWorthTrading = summaryTeacher?.worthTrading === true;
+    const recommendationMixTotal = Object.values(summaryRecommendationMix || {}).reduce((sum, lane) => sum + (Number(lane?.rows || 0)), 0);
     const comparisonLegacyWinRatePct = Number(summaryComparison?.legacyWinRatePct || 0);
     const comparisonTeacherSuccessRatePct = Number(summaryComparison?.teacherSuccessRatePct || 0);
     const comparisonTeacherExpectancyR = Number(summaryComparison?.teacherExpectancyR || 0);
@@ -4617,13 +4619,13 @@ function renderML() {
                     ${researchOk ? `
                         Session: <b>${formatSessionDateLabel(teacherResearchReport.session_date) || teacherResearchReport.session_date || '--'}</b> · Snapshots: <b>${Number(teacherResearchReport.snapshot_count || 0)}</b> · Outcomes: <b>${Number(teacherResearchReport.outcome_count || 0)}</b><br>
                         Market: VIX <b>${researchFmt(researchVix.avg, 2)}</b> (${researchFmt(researchVix.min, 2)}-${researchFmt(researchVix.max, 2)}) · BNF Δ <b>${researchFmt(researchBnf.change, 1)}</b> · NF Δ <b>${researchFmt(researchNf.change, 1)}</b><br>
-                        Primary: <b>${researchCountPairs(researchPrimaryCounts)}</b> · Generated: <b>${researchCountPairs(researchGeneratedCounts)}</b><br>
-                        Primary teacher: <b>${Number(researchPrimary.rows || 0)}</b> rows · <b>${researchFmt(researchPrimary.avg_r, 2, 'R')}</b> avg · Success <b>${researchFmt(researchPrimary.success_rate_pct, 1, '%')}</b><br>
-                        Best available: primary best <b>${Number(researchPvb.primary_was_best || 0)}/${Number(researchPvb.snapshots_compared || 0)}</b> · Better candidate <b>${Number(researchPvb.better_candidate_available || 0)}</b> · Uplift <b>${researchFmt(researchPvb.avg_best_minus_primary_r, 3, 'R')}</b><br>
+                        Chosen: <b>${researchCountPairs(researchPrimaryCounts)}</b> · Full menu: <b>${researchCountPairs(researchGeneratedCounts)}</b><br>
+                        Chosen teacher: <b>${Number(researchPrimary.rows || 0)}</b> rows · <b>${researchFmt(researchPrimary.avg_r, 2, 'R')}</b> avg · Success <b>${researchFmt(researchPrimary.success_rate_pct, 1, '%')}</b><br>
+                        Best available: chosen best <b>${Number(researchPvb.primary_was_best || 0)}/${Number(researchPvb.snapshots_compared || 0)}</b> · Better candidate <b>${Number(researchPvb.better_candidate_available || 0)}</b> · Uplift <b>${researchFmt(researchPvb.avg_best_minus_primary_r, 3, 'R')}</b><br>
                         Best family: <b>${researchCountPairs(researchBestCounts)}</b><br>
                         Strategy outcomes: <b>${researchStrategyLine}</b>
                     ` : `
-                        Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen primary against the full generated candidate menu.
+                        Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.
                     `}
                 </div>
             </div>
@@ -4634,9 +4636,9 @@ function renderML() {
                 </div>
                 <div class="brain-detail">
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
-                    Primary snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
+                    Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Primary rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : `<br><span style="color:var(--green)">Baseline is complete enough for tomorrow comparison.</span>`}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : `<br><span style="color:var(--green)">Baseline is complete enough for tomorrow comparison.</span>`}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
@@ -4668,10 +4670,10 @@ function renderML() {
                     <span class="brain-label">Teacher v1 Shadow Review</span>
                 </div>
                 <div class="brain-detail">
-                    Primary shadow rows: <b>${teacherLaneTotal}</b> · Success rate: <b>${teacherLaneTotal > 0 ? `${teacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
+                    Chosen rows: <b>${teacherLaneTotal}</b> · Success rate: <b>${teacherLaneTotal > 0 ? `${teacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
                     Expectancy: <b>${teacherLaneTotal > 0 ? `${teacherExpectancyR.toFixed(2)}R` : '--'}</b> · Break-even win rate: <b>${teacherLaneTotal > 0 ? `${teacherBreakEvenPct.toFixed(1)}%` : '--'}</b><br>
                     Avg captured: <b>${teacherLaneTotal > 0 ? `${teacherAvgCapturedPct.toFixed(1)}%` : '--'}</b> · Bucket gate: <b>${teacherBucketCount > 0 ? `${teacherTradeableBucketCount}/${teacherBucketCount}` : '--'}</b>${teacherBucketCount > 0 ? ` · Verdict: <b style="color:${teacherWorthTrading ? 'var(--green)' : 'var(--warn)'}">${teacherWorthTrading ? 'POSITIVE EXPECTANCY' : 'NOT WORTH RISK YET'}</b>` : ''}<br>
-                    Label version: <b>${summaryTeacher?.labelVersion || 'teacher_v1'}</b> · Scope: <b>managed exit, primary-only shadow</b>
+                    Label version: <b>${summaryTeacher?.labelVersion || 'teacher_v1'}</b> · Scope: <b>managed exit, chosen-candidate view</b>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
@@ -4680,7 +4682,7 @@ function renderML() {
                     <span class="brain-label">Old vs Honest Teacher</span>
                 </div>
                 <div class="brain-detail">
-                    Legacy primary win rate: <b>${comparisonLegacyRows > 0 ? `${comparisonLegacyWinRatePct.toFixed(1)}%` : '--'}</b> · Honest teacher success: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
+                    Legacy chosen win rate: <b>${comparisonLegacyRows > 0 ? `${comparisonLegacyWinRatePct.toFixed(1)}%` : '--'}</b> · Honest teacher success: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
                     Honest expectancy: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherExpectancyR.toFixed(2)}R` : '--'}</b> · Honest BE win rate: <b>${comparisonTeacherRows > 0 ? `${comparisonTeacherBreakEvenPct.toFixed(1)}%` : '--'}</b><br>
                     Delta: <b style="color:${comparisonWinRateDeltaPts >= 0 ? 'var(--green)' : 'var(--warn)'}">${comparisonTeacherRows > 0 ? `${comparisonWinRateDeltaPts.toFixed(1)} pts` : '--'}</b> · Scope: <b>${summaryComparison?.scope || 'primary_only_old_vs_teacher_shadow'}</b>
                 </div>
@@ -4730,7 +4732,7 @@ function renderML() {
                     Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
                     Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
                     Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b><br>
-                    Scope: <b>legacy label consumer</b> (canonical_won/outcome_h2 unchanged until switch gate) · Source: <b>${outcomeLaneTotal > 0 ? 'primary evaluated outcomes' : (attributionBackfillNeeded ? 'persisted outcomes need attribution backfill' : 'recent decision fallback')}</b>
+                    Scope: <b>legacy label consumer</b> (canonical_won/outcome_h2 unchanged until switch gate) · Source: <b>${outcomeLaneTotal > 0 ? 'chosen evaluated outcomes' : (attributionBackfillNeeded ? 'persisted outcomes need attribution backfill' : 'recent decision fallback')}</b>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">
@@ -4740,7 +4742,7 @@ function renderML() {
                 </div>
                 <div class="brain-detail">
                     Honest teacher metrics are expectancy-first. Success means the managed exit actually captured the target, not just that P&L stayed above zero at one late snapshot.
-                    ${teacherLaneTotal === 0 ? `<br><span style="color:var(--warn)">No teacher_v1 primary rows are available yet for lane-level reporting.</span>` : ''}
+                    ${teacherLaneTotal === 0 ? `<br><span style="color:var(--warn)">No teacher_v1 chosen rows are available yet for lane-level reporting.</span>` : ''}
                 </div>
                 <div style="overflow-x:auto;margin-top:8px">
                     <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -4774,6 +4776,50 @@ function renderML() {
                                         <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${expectancy}</td>
                                         <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${breakEven}</td>
                                         <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right;color:${lane.worthTrading ? 'var(--green)' : 'var(--warn)'}">${worth}</td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧩</span>
+                    <span class="brain-label">Chosen vs Candidate Menu</span>
+                </div>
+                <div class="brain-detail">
+                    This view shows the chosen candidate and the remaining evaluated alternatives for the same session. Both are important evidence: chosen rows show what the brain selected, while alternatives show what else was available.
+                    <br>
+                    Session rows: <b>${recommendationMixTotal}</b>
+                </div>
+                <div style="overflow-x:auto;margin-top:8px">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left;padding:6px 4px;color:var(--text-muted)">Lane</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Rows</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Chosen</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Alternatives</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${[
+                                ['NF_intraday', 'NF intraday'],
+                                ['NF_swing', 'NF swing'],
+                                ['BNF_intraday', 'BNF intraday'],
+                                ['BNF_swing', 'BNF swing']
+                            ].map(([key, label]) => {
+                                const lane = summaryRecommendationMix[key] || {};
+                                const rows = Number(lane.rows || 0);
+                                const primaryRows = Number(lane.primaryRows || 0);
+                                const secondaryRows = Number(lane.secondaryRows || 0);
+                                return `
+                                    <tr>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border)"><b>${label}</b></td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${rows}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${primaryRows}</td>
+                                        <td style="padding:6px 4px;border-top:1px solid var(--border);text-align:right">${secondaryRows}</td>
                                     </tr>
                                 `;
                             }).join('')}
