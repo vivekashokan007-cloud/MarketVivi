@@ -1,4 +1,228 @@
-# Market Radar — Project Knowledge (updated through 2026-06-21 daily teacher research report v2.4.44 / b275)
+# Market Radar — Project Knowledge (updated through 2026-06-22 historical parity input audit)
+
+## 2026-06-22 Historical Parity Input Audit - Supabase + Upstox + Claude Gate
+
+- User requested a strict preflight before any historical replay work:
+  - inspect what Supabase already has
+  - identify what the laptop simulator still needs
+  - avoid silent incompleteness
+- Live anon-readable Supabase probe confirmed the current app key can read:
+  - `ml_brain_snapshots`: `1329` rows
+  - `ml_option_chain_snapshots`: `136,896` rows
+  - `ml_evaluation_outcomes`: `6,804` rows
+  - `ml_recommendation_outcomes`: `533` rows
+- Live anon-readable probe also reconfirmed:
+  - `historical_option_candles` returns empty / effectively `0` rows for the app key
+  - project knowledge service-role count remains `874,325`
+  - implication: historical option data exists, but current phone/anon access still cannot use it
+
+### Saved Live Snapshot Context - Verified Richness
+
+- A real `ml_brain_snapshots.context_json` row for `2026-06-19` was inspected live.
+- Verified keys already present in saved live snapshots include:
+  - `vix`
+  - `vixHistory`
+  - `yesterdayHistory`
+  - `morning_input`
+  - `bnfChain`
+  - `nfChain`
+  - `ivPercentile`
+  - `gap`
+  - `live`
+  - `mins_since_open`
+  - `tradeMode`
+  - `bnfBreadth`
+  - `nf50Breadth`
+  - `fiiHistory`
+  - `approvedProposals`
+  - `snapshot_generated_candidates`
+  - `snapshot_rejected_candidates`
+  - `snapshot_market_profiles`
+  - `teaching_snapshot_staging`
+  - `significant_move`
+  - `eveningClose`
+- Important observed shapes:
+  - `vixHistory`: list length `60`
+  - `yesterdayHistory`: list length `60`
+  - `morning_input` contains overnight / expiry / FII-DII context
+  - `bnfChain` / `nfChain` already carry the full chain-dict shape the brain consumed live
+- Consequence:
+  - saved live days already contain much richer context than the earlier historical harness assumption of "minimal context"
+  - this makes `Class A` replay (saved live days) a fundamentally easier and safer first target than `Class B` replay (old unsaved historical days)
+
+### Upstox Historical VIX - Live Preflight Passed
+
+- A live Upstox preflight was executed on 2026-06-22 using the current bearer access token.
+- Verified:
+  - endpoint family: Upstox V3 historical candle API
+  - instrument: `NSE_INDEX|India VIX`
+  - interval: `5` minutes
+  - requested range: `2024-09-01` -> `2024-09-30`
+  - result: success
+  - returned candles: `1575`
+  - oldest returned candle: `2024-09-02T09:15:00+05:30`
+  - newest returned candle: `2024-09-30T15:25:00+05:30`
+- Consequence:
+  - historical `India VIX` is reachable at 5-minute granularity at least back to September 2024
+  - this removes one previously suspected historical-input blocker
+
+### brain.py Dependency Audit - Critical Framing Shift
+
+- `brain.py` was re-audited directly from code by extracting the actual `ctx.get(...)` dependency surface.
+- Important confirmed context dependencies include:
+  - `vix`, `vixHistory`, `yesterdayHistory`
+  - `morning_input`
+  - `bnfChain`, `nfChain`
+  - `ivPercentile`
+  - `bnfDTE`, `nfDTE`
+  - `bnfExpiry`, `nfExpiry`
+  - `tradeMode`
+  - `bnfBreadth`, `nf50Breadth`
+  - `fiiHistory`
+  - `gap`, `live`, `mins_since_open`
+  - `approvedProposals`
+- Working conclusion after this audit:
+  - the real parity problem is not just "can we rebuild historical chains?"
+  - the real parity problem is "can we reconstruct the seven `analyze()` inputs faithfully, especially `context_json`?"
+  - any harness assumption that old-day replay needs only option candles + VIX + minimal context is unsafe until proven otherwise
+
+### Claude Review Outcome - Accepted Direction
+
+- Claude's 2026-06-22 parity reply was assessed against the verified Supabase and Upstox findings.
+- Accepted core conclusion:
+  - `Class A` correctness gate must come before any full historical walk
+  - `Class A` = saved live days with rich `context_json`
+  - `Class B` = unsaved old historical days requiring reconstruction
+- Important accepted findings from Claude:
+  - `minimal context` is unsafe
+  - the first correctness gate should use saved live-day `context_json` directly
+  - `snapshot_generated_candidates` and `snapshot_rejected_candidates` should both be parity targets
+  - older `Class B` replay is still blocked until two data questions are answered:
+    - whether `historical_option_candles` contains usable OI columns
+    - whether some historical table such as `daily_data` contains FII/DII / short context by trade date
+  - ranking parity may still depend on:
+    - the exact point-in-time `ml_models` artifact
+    - point-in-time closed-trade calibration
+
+### Current Working Rule
+
+- Do **not** start a full historical walk yet.
+- Next priority is:
+  1. prove `Class A` replay parity on `2026-06-19`
+  2. inspect the remaining `Class B` blockers:
+     - `historical_option_candles` schema for OI
+     - historical FII/DII source such as `daily_data`
+     - live producer rules for `bnfDTE` and `ivPercentile`
+     - retrievability of the live `ml_models` artifact
+- Important strategy change:
+  - ingesting full historical `India VIX` is still useful
+  - but it is no longer the first critical path item
+  - the first critical path item is the saved-live-day correctness gate
+
+### 2026-06-22 Follow-up Checks Completed After Claude Review
+
+- Claude requested four concrete follow-up checks before trusting the parity plan.
+
+#### 1. `historical_option_candles` schema
+
+- Verified live with service-role access:
+  - columns include:
+    - `underlying`
+    - `expiry_date`
+    - `strike_price`
+    - `option_type`
+    - `interval_mins`
+    - `bar_ts`
+    - `open`
+    - `high`
+    - `low`
+    - `close`
+    - `volume`
+    - `open_interest`
+    - `lot_size`
+    - `instrument_key`
+- Important consequence:
+  - the historical store **does** contain OI via `open_interest`
+  - this removes one major `Class B` blocker that was still only a suspicion during the first parity discussion
+
+#### 2. Historical FII/DII source
+
+- `daily_data` was checked live with service-role access.
+- Result:
+  - table exists with columns such as:
+    - `trade_date`
+    - `fii_cash`
+    - `dii_cash`
+    - `fii_fut`
+    - `fii_opt`
+    - `india_vix`
+  - but current probed rows were null-filled for those historical fields
+  - a direct non-null probe returned no rows
+- `premium_history` was then checked live:
+  - total rows: `145`
+  - contains usable fields:
+    - `date`
+    - `session`
+    - `vix`
+    - `fii_cash`
+    - `fii_short_pct`
+    - `bnf_spot`
+    - `nf_spot`
+  - many rows are populated, especially `morning` rows
+- Current consequence:
+  - `daily_data` is **not** the reliable historical FII/DII source at the moment
+  - `premium_history` is the stronger candidate source for replaying the live bias inputs that Kotlin actually used
+
+#### 3. Live producer rules for `bnfDTE` and `ivPercentile`
+
+- Kotlin producer was verified in `MarketWatchService.kt`.
+- `bnfDTE` / `nfDTE`:
+  - computed as plain calendar-day difference:
+    - `(expiryDate.time - todayDate.time) / (24 * 60 * 60 * 1000L)`
+  - fallback default remains `3` if parsing fails
+- `ivPercentile`:
+  - computed from `premium_history`
+  - logic:
+    - if history length `< 10`, return `50`
+    - otherwise count how many historical rows have `vix` below current `vix`
+    - percentile = `lower * 100 / hist.length`
+- Important consequence:
+  - these two producer rules are now known exactly, not guessed
+  - `ivPercentile` is simpler than previously feared and is tied directly to `premium_history`, not an opaque external feature store
+
+#### 4. `ml_models` artifact availability
+
+- Supabase `ml_models` was checked with service-role access.
+- Result:
+  - table exists but currently has `0` rows
+  - `app_config` also showed no obvious model/calibration keys
+- Repo/runtime check:
+  - the app ships baseline model assets:
+    - `app/src/main/assets/ml_model.json`
+    - `app/src/main/assets/temporal_model.json`
+  - `brain.py` loads runtime models from:
+    - `/data/data/com.marketradar.app/files/ml_model.json`
+    - `/data/data/com.marketradar.app/files/temporal_model.json`
+  - `MainActivity` copies asset models into `filesDir` only when missing and preserves trained runtime models if they already exist
+- Current consequence:
+  - the exact point-in-time trained model that was active on the phone for `2026-06-19` is **not yet proven retrievable from Supabase**
+  - but a baseline deployable model artifact **is** present in repo assets
+  - therefore `p_ml` parity remains an open asterisk for the full correctness gate
+
+### Refined Working Conclusion After the Four Checks
+
+- `Class A` replay is now even stronger as the next step:
+  - saved live snapshots already contain the actual context
+  - teacher chain rows already exist
+  - Kotlin producer rules for DTE and IV percentile are known
+- `Class B` is no longer blocked by missing OI:
+  - `historical_option_candles.open_interest` exists
+- `Class B` is still partially blocked by historical bias context quality:
+  - `premium_history` looks usable
+  - `daily_data` does not currently look trustworthy for those fields
+- Remaining parity asterisks before a full correctness claim:
+  - exact point-in-time ML model artifact used on 2026-06-19
+  - point-in-time calibration / closed-trade history as of that session
 
 ## 2026-06-21 Daily Teacher Research Report - v2.4.44 / b275
 
@@ -39,11 +263,14 @@
   - best family:
     - `BULL_PUT`: `57`
     - `BEAR_CALL`: `10`
-- Release metadata prepared:
+- Release metadata shipped:
   - Android `versionName=2.4.44`, `versionCode=275`
   - `BRAIN_VERSION=2.4.44`
   - PWA visible label `v2.4.44 / b275`
   - PWA cache-buster `app.js?v=1215`
+- GitHub push completed:
+  - `Marketapp` commit `225e2e3` — `Release v2.4.44 daily teacher research report`
+  - `MarketVivi` commit `8af8b5f` — `Release v2.4.44 daily teacher research report`
 - No live brain selection logic was changed.
 
 ## Release Discipline - Mandatory Sync Rule
@@ -4347,3 +4574,30 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `BRAIN_VERSION=2.4.18`
   - PWA label `v2.4.18 · b249`
   - cache-bust updated to `app.js?v=1190`
+
+## 2026-06-22 Class A Correctness Gate - Local Baseline
+
+- The teacher architecture now has a dedicated `Class A Correctness Gate` on top of the saved live-day research report.
+- The gate uses persisted Friday-style session data, not guessed inputs.
+- It checks the saved live-session slice for:
+  - `primary_snapshot_count`
+  - `context_ready_count`
+  - `primary_candidate_ready_count`
+  - `generated_menu_ready_count`
+  - `rejected_menu_ready_count`
+  - `comparison_ready_count`
+- The gate only passes when the evaluated primary slice has the full saved menu/context contract needed for tomorrow comparison.
+- The PWA ML tab now shows a `Class A Correctness Gate` card alongside the `Daily Teacher Research` card.
+- This is baseline work, not a brain-logic change. The goal is to make tomorrow's comparison explicit before any broader historical walk.
+
+## 2026-06-22 Release Prep - v2.4.45 / b276
+
+- The next synced release packages the `Class A` baseline gate together with the post-close service hardening.
+- Android / brain version bumped to `v2.4.45 / b276`.
+- `brain.py` now reports a `class_a_gate` alongside the daily teacher research report.
+- `MarketMLService` now launches the teacher research report build asynchronously after aggregation so the completion path is not held hostage by report generation.
+- PWA visible surfaces updated:
+  - title `Market Radar v2.4.45`
+  - header version `v2.4.45 · b276`
+  - cache-bust `app.js?v=1216`
+- The next action after confirmation is to rerun the post-close evaluation and verify that the crash is gone and the `Class A` gate remains green.

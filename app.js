@@ -249,6 +249,8 @@ const STATE = {
     evaluatorPollTimer: null,
     approvedBranchProposals: [],
     approvedBranchProposalsAt: 0,
+    mlTeacherResearchReport: null,
+    mlTeacherResearchReportAt: 0,
     _mlEvaluationStatusKey: '',
 
     // Active tab
@@ -4550,6 +4552,10 @@ function renderML() {
         .slice(0, 3)
         .map(([key, row]) => `${key} ${Number(row?.rows || 0)} @ ${researchFmt(row?.avg_r, 2, 'R')}`)
         .join(' · ') || '--';
+    const classAGate = safeParseNB(teacherResearchReport?.class_a_gate, teacherResearchReport?.class_a_gate || {});
+    const classAGateStatus = String(classAGate?.status || (teacherResearchReport?.ok ? 'PASS' : 'FAIL')).toUpperCase();
+    const classAGateColor = classAGateStatus === 'PASS' ? 'var(--green)' : 'var(--warn)';
+    const classAGateBlocked = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
     const targetLabels = 500;
     const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
     const candidateDiagnostics = buildCandidatePipelineDiagnostics(brain, brainSnapshots);
@@ -4619,6 +4625,18 @@ function renderML() {
                     ` : `
                         Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen primary against the full generated candidate menu.
                     `}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:${classAGateColor}">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧪</span>
+                    <span class="brain-label">Class A Correctness Gate</span>
+                </div>
+                <div class="brain-detail">
+                    Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
+                    Primary snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
+                    Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Primary rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : `<br><span style="color:var(--green)">Baseline is complete enough for tomorrow comparison.</span>`}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
