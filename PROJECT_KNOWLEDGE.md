@@ -4728,3 +4728,121 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
     - NF intraday: `515` rows, `61` chosen, `454` alternatives
     - BNF intraday: `485` rows, `0` chosen, `485` alternatives
   - This display cap is a UI/data-fetch pagination issue separate from the exact count fix. It should be treated as future reporting polish unless it blocks research.
+
+## 2026-06-23 Stage 0.2 Replay Parity - First Real Harness Run
+
+- A local-only `historical_replay_harness.py` was added in `Marketapp-git` to test Stage `0.2` correctness-gate parity against saved live-day snapshots.
+- The harness uses the shipped `brain.py` directly and does not reimplement brain logic.
+- It fetches:
+  - `ml_brain_snapshots` / `ml_poll_sequences`
+  - `app_config` morning baseline
+  - fallback `trades_v2` open/closed rows when exact trade-state capture is missing
+- It replays each saved poll using cumulative `snapshot_latest_poll` history and compares:
+  - `verdict_json`
+  - `snapshot_generated_candidates`
+  - `snapshot_rejected_candidates`
+  - `snapshot_rejected_candidate_stats`
+- First real verify run performed locally for `session_date = 2026-06-23`.
+- Result summary:
+  - `verdict = 2 / 85`
+  - `generated = 54 / 85`
+  - `rejected = 77 / 85`
+- This is the current known parity baseline. Stage `0.2` is **not closed**.
+
+## 2026-06-23 Replay Parity - What Was Proven And What Was Not
+
+- The actual mismatch pattern on `2026-06-23` was structured, not random:
+  - many early rows showed `generated=OK`, `rejected=OK`, `verdict=FAIL`
+  - some later rows showed candidate-family divergence as well
+- A conservative harness correction was applied locally:
+  - reduced over-stripping of saved `context_json`
+  - kept only clearly safe output/report fields stripped
+- That rerun produced the **same** summary:
+  - `verdict = 2 / 85`
+  - `generated = 54 / 85`
+  - `rejected = 77 / 85`
+- Engineering conclusion:
+  - over-stripping was a legitimate concern, but it was **not** the load-bearing cause of the current parity failure on this saved day
+  - the main unresolved blocker remains incomplete replay input capture on the saved live day
+
+## 2026-06-23 Direct Supabase Check - Today's Snapshots Exist But Are Pre-Patch
+
+- Supabase was checked directly for `session_date = 2026-06-23`.
+- Saved live-day rows are present and complete in the normal ML sense:
+  - first rows start around `2026-06-23T03:45:02+00:00`
+  - latest row observed:
+    - `id = 1493`
+    - `poll_ts = 2026-06-23T10:00:06+00:00`
+  - latest snapshot contained:
+    - `snapshot_generated_candidates = 14`
+    - `snapshot_rejected_candidates` sample length `20`
+    - `snapshot_rejected_candidate_stats.total = 301`
+- But today's saved rows do **not** contain the new replay-capture fields:
+  - `snapshot_open_trades_json` missing
+  - `snapshot_closed_trades_json` missing
+- Therefore today's saved day is "today" chronologically, but still **pre-patch data** for Stage `0.2` parity.
+- This is because the trade-state snapshot patch existed only locally and had not yet been pushed/installed when today's market session ran.
+
+## 2026-06-23 Direct Supabase Check - Important Context Presence
+
+- Direct inspection of today's saved `context_json` confirmed:
+  - `morning_input` present
+  - `gap` present
+  - `eveningClose` present
+  - `globalDirection` absent in the latest inspected row
+  - `prevVerdict` absent in the latest inspected row
+- This means today's snapshots are valid for normal post-close ML/teacher research, but not sufficient for strict replay parity because exact live trade-state capture is missing.
+
+## 2026-06-23 Local-Only Forward Fix Prepared
+
+- A local Kotlin patch was added in `Marketapp-git` `MarketWatchService.kt` before the `brain.analyze()` / `take_poll_snapshot()` path.
+- The patch injects the exact live trade state into the saved snapshot context:
+  - `snapshot_open_trades_json`
+  - `snapshot_closed_trades_json`
+- Purpose:
+  - future saved live days will carry the exact trade-state inputs used by the brain
+  - future Stage `0.2` replay runs can then verify parity against a fully captured day instead of falling back to current `trades_v2`
+- This patch is local only at this checkpoint and has **not** yet been pushed.
+
+## 2026-06-23 Stage 0.2 Operational Conclusion
+
+- Do **not** judge Stage `0.2` correctness-gate pass/fail from `2026-06-23`.
+- `2026-06-23` is a useful diagnosis day, but not a fully instrumented parity day.
+- Current correct sequence:
+  1. keep the local trade-state snapshot patch
+  2. push/install it in the next synced release batch
+  3. let one fresh market day run with the new capture fields present
+  4. rerun `historical_replay_harness.py --verify-day <fresh_date>`
+  5. judge Stage `0.2` from that fresh fully captured day
+## 2026-06-23 local batch after knowledge refresh
+
+- Local-only pre-push Stage 0.2 capture expansion is now in place in `Marketapp-git`:
+  - `MarketWatchService.kt` now persists `snapshot_strike_oi_json` before `brain.analyze(...)`.
+  - Unified notification processing now runs before `take_poll_snapshot(...)`, so the saved snapshot can carry the exact contract emitted on that poll.
+  - `brain.py` `take_poll_snapshot(...)` now persists `snapshot_brain_notification`.
+- Local-only unified-notification transport instrumentation is now in place:
+  - `MarketWatchService.kt` records `brain_notification_meta` into the live `brain_result`.
+  - Meta contains `mode`, `dispatched`, `notify_user`, `decision_type`, `reason_code`, `updated_at_ms`.
+  - Last contract + meta are also persisted in SharedPreferences for crash/reopen continuity.
+  - A `brain_notification_transport_mode` pref now controls transport with values:
+    - `live` = contract dispatches Android notification
+    - `shadow` = contract is logged/persisted but user notification is suppressed
+- Local-only bridge/UI support is now in place in `MarketVivi-git`:
+  - `NativeBridge.kt` exposes `getNotificationTransportMode()` and `setNotificationTransportMode(mode)`.
+  - `app.js` ML tab now shows:
+    - `Brain Notification Contract`
+    - `Notification Routing`
+  - UI can switch routing between `Live ON` and `Shadow ONLY`.
+- Replay harness (`historical_replay_harness.py`, still local/untracked) now does more than candidate parity:
+  - reads `snapshot_strike_oi_json` when present
+  - resets notification-agent state at verify start
+  - reconstructs `brain_notification` via `brain_notification_process(...)`
+  - compares saved vs replayed notification contract when `snapshot_brain_notification` is present
+  - prints notification parity as `OK` / `FAIL` / `SKIP`
+- Verification after this batch:
+  - `python3 -m py_compile historical_replay_harness.py` passed
+  - `python3 -m unittest tests.test_unified_brain_notification` passed (`8/8`)
+  - `node --check MarketVivi-git/app.js` passed
+- Push status:
+  - none of the above has been pushed yet
+  - tomorrow’s first valid strict Stage 0.2 day should be collected only after this batch is pushed and installed

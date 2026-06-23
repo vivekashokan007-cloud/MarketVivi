@@ -3086,6 +3086,23 @@ function saveOrderProxyUrlFromUI() {
     }
 }
 
+function setNotificationTransportModeFromUI(mode) {
+    try {
+        if (!window.NativeBridge?.setNotificationTransportMode) {
+            alert('Native bridge not available.');
+            return;
+        }
+        const ok = window.NativeBridge.setNotificationTransportMode(String(mode || 'live'));
+        if (!ok) {
+            alert('Could not update notification routing mode.');
+            return;
+        }
+        renderAll();
+    } catch (e) {
+        alert('Could not update notification routing mode: ' + e.message);
+    }
+}
+
 async function checkMLDecisions() {
     try {
         const { data, error } = await DB.supabase
@@ -4513,6 +4530,15 @@ function renderML() {
         ? (brain.decisionSource || brain.decision_source || verdict.decisionSource || verdict.decision_source || 'DEFAULT_BRAIN_MATH')
         : 'MARKET_CLOSED';
     const decisionReason = brain.decisionReason || brain.decision_reason || verdict.decisionReason || verdict.decision_reason || '';
+    const brainNotification = brain?.brain_notification || {};
+    const brainNotificationMeta = brain?.brain_notification_meta || {};
+    const notificationMode = String((typeof NativeBridge !== 'undefined' ? NativeBridge.getNotificationTransportMode?.() : null) || brainNotificationMeta.mode || 'live');
+    const notificationDispatched = brainNotificationMeta.dispatched === true;
+    const notificationNotify = brainNotification.notify_user === true;
+    const notificationDecisionType = String(brainNotification.decision_type || 'WAIT');
+    const notificationReason = String(brainNotification.reason_code || 'NO_CONTRACT');
+    const notificationCandidate = String(brainNotification.candidate_id || '--');
+    const notificationLane = String(brainNotification.lane || '--');
     const watchlistCount = Array.isArray(brain.watchlist) ? brain.watchlist.length : 0;
     const candidateCount = Array.isArray(brain.generated_candidates) ? brain.generated_candidates.length : 0;
     const pollsToday = Array.isArray(pollHistory) ? pollHistory.length : 0;
@@ -4662,6 +4688,17 @@ function renderML() {
                     Action: <b>${action}</b> · Strategy: <b>${strategy}</b> · Confidence: <b>${confidence.toFixed(0)}%</b><br>
                     Watchlist: <b>${watchlistCount}</b> · Candidates: <b>${candidateCount}</b> · Polls today: <b>${pollsToday}</b><br>
                     Decision source: <b>${decisionSource}</b>${decisionReason ? ` · ${decisionReason}` : ''}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:${notificationNotify ? (notificationDispatched ? 'var(--green)' : 'var(--warn)') : 'var(--accent)'}">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🔔</span>
+                    <span class="brain-label">Brain Notification Contract</span>
+                </div>
+                <div class="brain-detail">
+                    Decision: <b>${escapeHtml(notificationDecisionType)}</b> · Notify user: <b>${notificationNotify ? 'YES' : 'NO'}</b> · Transport: <b>${escapeHtml(notificationMode.toUpperCase())}</b>${notificationNotify ? ` · Dispatched: <b>${notificationDispatched ? 'YES' : 'NO'}</b>` : ''}<br>
+                    Candidate: <b>${escapeHtml(notificationCandidate)}</b> · Lane: <b>${escapeHtml(notificationLane)}</b><br>
+                    Reason: <b>${escapeHtml(notificationReason)}</b>${brainNotification.reason_text ? ` · ${escapeHtml(String(brainNotification.reason_text))}` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
@@ -4931,6 +4968,22 @@ function renderML() {
                         <div class="v1-trade-btns" style="margin-top:6px">
                             <button onclick="saveOrderProxyUrlFromUI()" class="btn-primary" style="padding:7px 10px;font-size:11px">Save Proxy URL</button>
                         </div>
+                    </div>
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:var(--accent);margin-top:8px">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🔔</span>
+                    <span class="brain-label">Notification Routing</span>
+                </div>
+                <div class="brain-detail">
+                    Trading notification transport is controlled here. Shadow records the brain contract without dispatching a user alert.
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+                        <button onclick="setNotificationTransportModeFromUI('live')" class="btn-primary" style="padding:7px 10px;font-size:11px;${notificationMode === 'live' ? '' : 'opacity:.75'}">Live ON</button>
+                        <button onclick="setNotificationTransportModeFromUI('shadow')" class="btn-paper" style="padding:7px 10px;font-size:11px;${notificationMode === 'shadow' ? '' : 'opacity:.75'}">Shadow ONLY</button>
+                    </div>
+                    <div style="margin-top:6px;color:var(--text-muted)">
+                        Current mode: <b>${escapeHtml(notificationMode.toUpperCase())}</b>${notificationNotify ? ` · Last contract dispatched: <b>${notificationDispatched ? 'YES' : 'NO'}</b>` : ''}
                     </div>
                 </div>
             </div>
