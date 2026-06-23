@@ -330,12 +330,46 @@ function maybeAutoRefreshMlStatus(serviceStatus = {}) {
     if (!evaluationDone && !evaluationRunning) return false;
 
     getMLModelStatusCached(true);
-    getMLEvaluationOutcomesCached(true);
-    getMLEvaluationLaneSummaryCached(true);
-    getMLTeacherResearchReportCached(true);
-    getMLBrainSnapshotsCached(true);
+    if (evaluationDone) {
+        getMLEvaluationOutcomesCached(true);
+        getMLEvaluationLaneSummaryCached(true);
+        getMLTeacherResearchReportCached(true);
+        getMLBrainSnapshotsCached(true);
+    }
     STATE.mlStatusRefreshAt = Date.now();
     return true;
+}
+
+function reportNativeCrash(payload) {
+    try {
+        if (!window.NativeBridge?.reportJsCrash) return false;
+        return window.NativeBridge.reportJsCrash(JSON.stringify(payload || {})) === true;
+    } catch (e) {
+        console.warn('[crash-report] native bridge failed:', e.message);
+        return false;
+    }
+}
+
+if (!window.__MARKET_RADAR_CRASH_HOOKS__) {
+    window.__MARKET_RADAR_CRASH_HOOKS__ = true;
+    window.addEventListener('error', (event) => {
+        reportNativeCrash({
+            type: 'JS_WINDOW_ERROR',
+            message: event?.message || 'Unknown JS error',
+            source: event?.filename || '',
+            line: Number.isFinite(event?.lineno) ? event.lineno : -1,
+            column: Number.isFinite(event?.colno) ? event.colno : -1,
+            stack: event?.error?.stack || ''
+        });
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+        const reason = event?.reason;
+        reportNativeCrash({
+            type: 'JS_UNHANDLED_REJECTION',
+            message: typeof reason === 'string' ? reason : (reason?.message || 'Unhandled promise rejection'),
+            stack: reason?.stack || ''
+        });
+    });
 }
 
 function isTodayRecord(record) {
@@ -3084,6 +3118,21 @@ async function checkMLDecisions() {
 function renderDebug() {
     const el = document.getElementById('debug-log');
     if (!el) return;
+    const crashReport = safeParseNB(window.NativeBridge?.getLastCrashReport?.(), {});
+    const crashCard = crashReport && (crashReport.message || crashReport.stack || crashReport.tag) ? `
+        <div style="background:var(--surface);border-radius:8px;padding:8px 10px;margin-bottom:8px;border-left:3px solid var(--warn)">
+            <div style="font-size:11px;font-weight:600;color:var(--warn);margin-bottom:6px">
+                ⚠️ Last Crash Report
+            </div>
+            <div style="font-size:10px;color:var(--text-primary);line-height:1.45">
+                ${crashReport.captured_at_ms ? `Captured: <b>${new Date(Number(crashReport.captured_at_ms)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</b><br>` : ''}
+                ${crashReport.tag ? `Tag: <b>${crashReport.tag}</b><br>` : ''}
+                ${crashReport.message ? `Message: <b>${String(crashReport.message).replace(/</g, '&lt;')}</b><br>` : ''}
+                ${crashReport.evaluation_context ? `Eval: <b>${crashReport.evaluation_context.phase || '--'}</b> · ${Number(crashReport.evaluation_context.completed_snapshots || 0)}/${Number(crashReport.evaluation_context.total_snapshots || 0)} · produced <b>${Number(crashReport.evaluation_context.produced_count || 0)}</b> · persisted <b>${Number(crashReport.evaluation_context.persisted_count || 0)}</b><br>` : ''}
+                ${crashReport.extra?.type ? `Kind: <b>${crashReport.extra.type}</b><br>` : ''}
+                ${crashReport.stack ? `<details style="margin-top:6px"><summary>Stack</summary><pre style="white-space:pre-wrap;font-size:10px;max-height:180px;overflow:auto">${String(crashReport.stack).replace(/</g, '&lt;')}</pre></details>` : ''}
+            </div>
+        </div>` : '';
 
     // ── b105: ML status + manual retrain button ─────────────────────────
     const mlReady = window.NativeBridge?.isMLModelReady?.() === true;
@@ -3112,7 +3161,7 @@ function renderDebug() {
         </div>`;
     const debugEntries = window._API_DEBUG || [];
     if (debugEntries.length === 0) {
-        el.innerHTML = mlSection + '<div class="empty-state">Debug data appears after scan</div>';
+        el.innerHTML = crashCard + mlSection + '<div class="empty-state">Debug data appears after scan</div>';
         return;
     }
 
@@ -3149,7 +3198,7 @@ function renderDebug() {
 
     const allEntries = [...stateInfo, ...debugEntries].reverse(); // newest first
 
-    el.innerHTML = mlSection + allEntries.map(entry => {
+    el.innerHTML = crashCard + mlSection + allEntries.map(entry => {
         const isError = entry.label === 'ERROR';
         const label = entry.label || '';
         const time = entry.time || '';
@@ -4396,10 +4445,6 @@ function renderML() {
     const pollHistory = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getPollHistory?.() : null, []);
     const signalStats = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getSignalAccuracyStats?.() : null, {});
     const decisions = getMLDecisionsCached();
-    const evaluationOutcomes = getMLEvaluationOutcomesCached();
-    const evaluationLaneSummary = getMLEvaluationLaneSummaryCached();
-    const teacherResearchReport = getMLTeacherResearchReportCached();
-    const brainSnapshots = getMLBrainSnapshotsCached();
     const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
     const evaluationTargetDate = String(service.evaluationTargetDate || '');
     const evaluationTargetIsToday = service.evaluationTargetIsToday !== false;
@@ -4408,6 +4453,18 @@ function renderML() {
     const evaluationRunning = service.evaluationRunning === true;
     const evaluationRetryable = service.evaluationRetryable === true || service.evaluationRetryRecommended === true;
     const evaluationReady = service.evaluationReady !== false;
+    const evaluationOutcomes = evaluationRunning
+        ? (Array.isArray(STATE.mlEvaluationOutcomes) ? STATE.mlEvaluationOutcomes : [])
+        : getMLEvaluationOutcomesCached();
+    const evaluationLaneSummary = evaluationRunning
+        ? (STATE.mlEvaluationLaneSummary && typeof STATE.mlEvaluationLaneSummary === 'object' ? STATE.mlEvaluationLaneSummary : {})
+        : getMLEvaluationLaneSummaryCached();
+    const teacherResearchReport = evaluationRunning
+        ? (STATE.mlTeacherResearchReport && typeof STATE.mlTeacherResearchReport === 'object' ? STATE.mlTeacherResearchReport : {})
+        : getMLTeacherResearchReportCached();
+    const brainSnapshots = evaluationRunning
+        ? (Array.isArray(STATE.mlBrainSnapshots) ? STATE.mlBrainSnapshots : [])
+        : getMLBrainSnapshotsCached();
     const evaluationBlockedReason = service.evaluationBlockedReason || '';
     const evaluationPhase = String(service.evaluationPhase || '');
     const evaluationProgressCurrent = Number(service.evaluationProgressCurrent || 0);
