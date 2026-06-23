@@ -1760,8 +1760,14 @@ async function initialFetch() {
 // ═══════════════════════════════════════════════════════════════
 
 async function sendNotification(title, body, type) {
+    if (!String(type || '').startsWith('ops_')) {
+        console.warn('sendNotification blocked for non-operational type', type);
+        return;
+    }
+    const opsType = String(type || '').replace(/^ops_/, '') || 'routine';
+
     // Play sound
-    playSound(type);
+    playSound(opsType);
 
     // Native APK notification (if running in APK)
     if (window.NativeBridge && window.NativeBridge.isNative()) {
@@ -1773,15 +1779,15 @@ async function sendNotification(title, body, type) {
             new Notification(title, {
                 body,
                 icon: '/favicon.ico',
-                tag: type + '_' + Date.now(),
-                vibrate: type === 'urgent' ? [200, 100, 200] : [200],
+                tag: opsType + '_' + Date.now(),
+                vibrate: opsType === 'urgent' ? [200, 100, 200] : [200],
                 silent: false
             });
         } catch (e) { /* mobile may block this */ }
     }
 
     // Log to UI
-    addNotificationLog(title, body, type);
+    addNotificationLog(title, body, opsType);
 }
 
 function addNotificationLog(title, body, type) {
