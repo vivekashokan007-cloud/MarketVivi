@@ -1,4 +1,4 @@
-# Market Radar — Project Knowledge (updated through 2026-06-22 historical parity input audit)
+# Market Radar — Project Knowledge (updated through 2026-06-22 b281 exact-count fix)
 
 ## 2026-06-22 Historical Parity Input Audit - Supabase + Upstox + Claude Gate
 
@@ -4614,3 +4614,117 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - This is the correct surface for generated-menu visibility on days where BNF existed in the candidate menu but was not chosen.
 - The database still stores `role=primary/secondary` for compatibility, but user-facing language should be `chosen/alternatives`.
 - Swing remains informational in this panel until multi-day replay evidence exists. Do not treat single-day swing counts as a validated swing signal.
+
+## 2026-06-22 Live Post-Close Result - Local Eval Succeeded, Supabase Save Failed
+
+- The `v2.4.45 / b276` post-close run did not fail in teacher evaluation itself.
+- The live screen showed:
+  - `Produced: 1334`
+  - `Outcomes persisted: 0`
+  - `Day evaluation: RETRYABLE`
+  - session `22 Jun`
+- This means the evaluator completed locally and wrote the retryable local output, but Supabase persistence failed after production.
+- The visible downstream effects were:
+  - `Daily Teacher Research` unavailable
+  - `Class A Correctness Gate` showing `FAIL` with zero persisted rows
+  - teacher/reporting panels reflecting incomplete persisted-state follow-through
+- The attached log export from that run was not sufficient for root-cause error text. It only contained startup/sync noise and did not include the actual Supabase failure line.
+- The engineering conclusion was that the high-risk segment had moved from evaluation to bulk persistence of the produced outcome rows.
+
+## 2026-06-22 Release v2.4.46 / b277 - Chunked Outcome Persistence
+
+- A synced follow-up release was prepared and pushed to harden the Supabase save path used after day evaluation.
+- Android / brain version bumped to `v2.4.46 / b277`.
+- PWA visible surfaces updated:
+  - title `Market Radar v2.4.46`
+  - header version `v2.4.46 · b277`
+  - cache-bust `app.js?v=1217`
+- Kotlin persistence change:
+  - `SupabaseClient.saveEvaluationOutcomes()` no longer attempts one large monolithic POST for the full day result payload.
+  - Evaluation rows and recommendation rows are now split into smaller JSON array chunks before POSTing.
+  - Chunk posting is best-effort inside the existing schema-fallback chain, so a large payload is less likely to fail purely due to request size or body limits.
+- This release does **not** change the evaluator math. It only hardens the post-evaluation save step.
+- Pushed commits:
+  - `Marketapp`: `2b631cf` - `Release v2.4.46 chunked outcome persistence`
+  - `MarketVivi`: `50df584` - `Release v2.4.46 chunked outcome persistence`
+- GitHub authentication note:
+  - the PAT itself was valid; the successful push required using the GitHub username in the HTTPS remote form rather than the earlier failed auth format.
+- Expected verification after install:
+  - rerun `Retry Eval`
+  - confirm `Produced` matches `Outcomes persisted`
+  - confirm `Daily Teacher Research` appears
+  - confirm `Class A Correctness Gate` reflects persisted data instead of the retryable zero-persist state
+
+## 2026-06-22 b278-b280 Postmortem - Persistence Was Saved, App Verification Was Wrong
+
+- Multiple follow-up releases were attempted after b277 because the app continued to show `Day evaluation: RETRYABLE` after retrying the 2026-06-22 post-close evaluation.
+- The user screenshots showed the important contradiction:
+  - app reported `Produced: 1334`
+  - app reported `Outcomes persisted: 1000` or earlier partial counts
+  - SQL in Supabase confirmed `ml_evaluation_outcomes` had `1334` rows for `session_date = '2026-06-22'`
+- This proved the final failure was **not** missing produced rows and not a teacher-evaluator crash.
+- The actual b280 bug was in Kotlin verification:
+  - `SupabaseClient.countRows()` fetched rows from Supabase REST and counted the returned JSON array
+  - Supabase/PostgREST was returning at most `1000` rows for that REST read
+  - the app compared `1000 persisted < 1334 produced`
+  - therefore it incorrectly kept the session in `RETRYABLE`
+- Confirmed database state from Supabase:
+  - `ml_evaluation_outcomes` count for `2026-06-22`: `1334`
+  - `ml_recommendation_outcomes` count for `2026-06-22`: `74` initially, later chosen/candidate fallback showed broader menu visibility
+  - `ml_recommendation_outcomes` role split initially only contained `primary`, confirming the old chosen/alternative persistence path was incomplete
+- User-facing symptoms in b279/b280:
+  - `Chosen vs Candidate Menu` started working after the fallback/read-path fixes
+  - BNF alternatives became visible later, proving BNF was present in the candidate menu but not chosen
+  - `Daily Teacher Research` stayed unavailable because the app still considered the day retryable
+  - `Class A Correctness Gate` stayed `FAIL` with zero-ready fields because the completed-day status was not being finalized
+
+## 2026-06-22 Release v2.4.50 / b281 - Exact Supabase Count Fix
+
+- b281 is the focused fix for the false `RETRYABLE` state.
+- Android / brain version bumped to `v2.4.50 / b281`.
+- PWA visible surfaces updated:
+  - title `Market Radar v2.4.50`
+  - header version `v2.4.50 · b281`
+  - cache-bust `app.js?v=1221`
+- Kotlin fix:
+  - `SupabaseClient.countRows()` now requests Supabase exact counts using:
+    - `Prefer: count=exact`
+    - `Range-Unit: items`
+    - `Range: 0-0`
+  - it parses the `Content-Range` total instead of counting the returned JSON array
+  - this avoids the Supabase REST row-return cap and should report `1334` instead of `1000`
+  - if `Content-Range` is missing, it logs a warning and falls back to body length rather than crashing
+- Pushed commits:
+  - `Marketapp`: `e449495` - `Fix Supabase exact evaluation counts`
+  - `MarketVivi`: `8e81867` - `Bump web shell for b281`
+- GitHub verification:
+  - `Market Radar Signed Release`: success
+  - `Market Radar Debug APK Validation`: success
+  - `MarketVivi` Pages deployment: success
+- Local verification limitation:
+  - local Gradle compile could not run in the Codex environment because `JAVA_HOME` / `java` was unavailable
+  - GitHub CI and signed release build passed, so the Kotlin compile/build was validated remotely
+- Expected b281 behavior after install:
+  - `Outcomes persisted` should read the exact full count for 2026-06-22 (`1334`) instead of capping at `1000`
+  - `Day evaluation` should be able to leave `RETRYABLE` once exact verification sees produced and persisted counts match
+  - `Daily Teacher Research` and `Class A Correctness Gate` can then proceed from completed persisted state
+
+## 2026-06-22 Current ML Interpretation From Screenshots
+
+- The 2026-06-22 teacher run is showing the brain-selected NF intraday lane performed poorly under honest managed-exit evaluation:
+  - chosen rows around `61`
+  - teacher success `0.0%`
+  - expectancy around `-1.20R`
+  - break-even win rate around `89.3%`
+- Legacy/canonical win rate remains high in the UI, but this is explicitly the old label consumer and should not be treated as proof the strategy made money.
+- The important research conclusion is that the app now needs to compare:
+  - chosen candidates
+  - same-session alternatives
+  - full generated candidate menu
+  - market context at each poll
+- Do not change brain trading logic based only on legacy win rate. Use the honest teacher metrics and the chosen-vs-alternative menu evidence.
+- For 2026-06-22 screenshots after b281:
+  - `Chosen vs Candidate Menu` displayed `1000` rows due to the same REST read cap pattern on display pagination, but lane splits showed the menu exists:
+    - NF intraday: `515` rows, `61` chosen, `454` alternatives
+    - BNF intraday: `485` rows, `0` chosen, `485` alternatives
+  - This display cap is a UI/data-fetch pagination issue separate from the exact count fix. It should be treated as future reporting polish unless it blocks research.
