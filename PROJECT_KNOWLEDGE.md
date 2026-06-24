@@ -5018,3 +5018,23 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `node --check MarketVivi-git/app.js` passed
   - `python3 -m py_compile Marketapp-git/historical_replay_harness.py` passed
   - Android Gradle/Kotlin compile was not run because this environment has no Java/JDK (`JAVA_HOME` not set)
+
+## 2026-06-24 b288 retry result and b289 correction
+
+- After installing `v2.4.57 / b288` and pressing `Retry Eval`, the app still showed:
+  - `Day evaluation: RETRYABLE`
+  - `Session rows: 0`
+  - `Teacher v1 Shadow Review: Chosen rows: 0`
+  - fallback `Paper Training Progress: 6/500`, source `recent decision fallback`
+- Direct Supabase verification after the retry:
+  - `ml_brain_snapshots` still has `77` rows for `2026-06-24`
+  - `ml_evaluation_outcomes` still has `0` rows for `2026-06-24`
+- New root cause found:
+  - the Android evaluator used a single REST query for evaluation snapshots with large `context_json`
+  - the same app-side projection reproduced Supabase error `57014: canceling statement due to statement timeout`
+  - the replay harness had already been fixed to page this fetch, but Android `SupabaseClient.fetchEvaluationSnapshots(...)` had not
+  - because today’s snapshots were created before local cache was introduced, `EvaluationLocalCache` could not rescue this historical retry
+- b289 local fix:
+  - `SupabaseClient.fetchEvaluationSnapshots(...)` now pages evaluation snapshot fetches with small pages
+  - tested against `2026-06-24`: paged fetch returned all `77` rows without timeout
+  - version bumped to `v2.4.58 / b289` in both repos
