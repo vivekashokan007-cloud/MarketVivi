@@ -2805,8 +2805,27 @@ function renderBrainInsights() {
 }
 
 function renderBrainForTrade(tradeId) {
+    const trade = (JSON.parse(NativeBridge.getOpenTrades() || '[]') || []).find(t => String(t.id || '') === String(tradeId || '')) || null;
     const data = bd?.positions?.[tradeId];
-    if (!data) return '';
+    if (!data) {
+        if (!trade) return '';
+        const trackedKind = trade.paper ? 'Paper' : 'Real';
+        const heldFor = trade.entry_date ? (() => {
+            const mins = Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000);
+            if (mins < 60) return `${mins}m`;
+            if (mins < 1440) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+            return `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`;
+        })() : '--';
+        return `<div class="brain-section" style="margin:6px 0 2px;border-left:3px solid var(--border)">
+            <div style="font-size:12px;font-weight:700;color:var(--text-muted);padding:4px 0">🧠 ${trackedKind} position is being tracked</div>
+            <div style="font-size:11px;color:var(--text-secondary)">
+                ${trade.strategy_type ? `${friendlyType(trade.strategy_type)} · ` : ''}${trade.index_key || '--'} · Held ${heldFor}
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+                No active exit / book / risk alert on the latest poll. The brain will surface a position alert only on a state change.
+            </div>
+        </div>`;
+    }
     const v = data.verdict;
     const insights = data.insights || [];
     if (!v && !insights.length) return '';
@@ -4329,9 +4348,28 @@ function renderPosition() {
     // ═══ OPEN TRADES — split real vs paper ═══
     const realTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => !t.paper);
     const paperTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper);
+    const trackedPositions = bd && typeof bd === 'object' && bd.positions && typeof bd.positions === 'object' ? bd.positions : {};
+    const trackedPositionIds = Object.keys(trackedPositions);
 
     if (realTrades.length === 0 && paperTrades.length === 0) {
         html += '<div class="empty-state">No open positions</div>';
+    }
+
+    if (realTrades.length > 0 || paperTrades.length > 0) {
+        const trackedHitCount = trackedPositionIds.filter(id => [...realTrades, ...paperTrades].some(t => String(t.id || '') === String(id))).length;
+        html += `
+            <div class="brain-card" style="margin-bottom:10px;border-left-color:var(--accent)">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧭</span>
+                    <span class="brain-label">Position Monitor</span>
+                    <span class="brain-strength" style="color:var(--accent)">${trackedHitCount}/${realTrades.length + paperTrades.length} tracked</span>
+                </div>
+                <div class="brain-detail">
+                    Real positions: <b>${realTrades.length}</b> · Paper positions: <b>${paperTrades.length}</b> · Brain tracked: <b>${trackedHitCount}</b><br>
+                    Setup WAIT does not notify. Open positions remain tracked and will show exit / book / risk alerts when state changes.
+                </div>
+            </div>
+        `;
     }
 
     // ═══ REAL TRADES ═══
@@ -4470,6 +4508,8 @@ function renderML() {
     const evaluationRunning = service.evaluationRunning === true;
     const evaluationRetryable = service.evaluationRetryable === true || service.evaluationRetryRecommended === true;
     const evaluationReady = service.evaluationReady !== false;
+    const liveSessionPendingEvaluation = evaluationTargetIsToday && !evaluationDone && !evaluationRunning;
+    const postCloseArtifactsPending = liveSessionPendingEvaluation || (evaluationRunning && evaluationTargetIsToday);
     const evaluationOutcomes = evaluationRunning
         ? (Array.isArray(STATE.mlEvaluationOutcomes) ? STATE.mlEvaluationOutcomes : [])
         : getMLEvaluationOutcomesCached();
@@ -4494,8 +4534,8 @@ function renderML() {
         ? (evaluationTargetIsToday ? 'today' : `${evaluationTargetLabel || evaluationTargetDate}`)
         : 'latest session';
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? `Evaluation done for ${evaluationScopeLabel}.` : '');
-    const evaluationOutcomeCount = Number.isFinite(service.lastEvaluationOutcomeCount) ? service.lastEvaluationOutcomeCount : null;
-    const evaluationProducedCount = Number.isFinite(service.lastEvaluationProducedCount) ? service.lastEvaluationProducedCount : null;
+    const evaluationOutcomeCount = (!postCloseArtifactsPending && Number.isFinite(service.lastEvaluationOutcomeCount)) ? service.lastEvaluationOutcomeCount : null;
+    const evaluationProducedCount = (!postCloseArtifactsPending && Number.isFinite(service.lastEvaluationProducedCount)) ? service.lastEvaluationProducedCount : null;
     const evaluationButtonText = (evaluationDone && !evaluationRetryable)
         ? `✅ ${evaluationTargetIsToday ? 'Today' : 'Session'} Done`
         : (evaluationRunning
@@ -4620,6 +4660,9 @@ function renderML() {
     const comparisonLegacyRows = Number(summaryComparison?.legacyPrimaryLabeled || 0);
     const comparisonWinRateDeltaPts = Number(summaryComparison?.winRateDeltaPts || 0);
     const researchOk = teacherResearchReport?.ok === true;
+    const researchPendingMessage = postCloseArtifactsPending
+        ? 'Session research report is pending for today. It is produced only after the post-close day evaluation completes.'
+        : 'Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.';
     const researchPvb = safeParseNB(teacherResearchReport?.primary_vs_best, teacherResearchReport?.primary_vs_best || {});
     const researchMarket = safeParseNB(teacherResearchReport?.market, teacherResearchReport?.market || {});
     const researchBrain = safeParseNB(teacherResearchReport?.brain_behavior, teacherResearchReport?.brain_behavior || {});
@@ -4644,9 +4687,14 @@ function renderML() {
         .map(([key, row]) => `${key} ${Number(row?.rows || 0)} @ ${researchFmt(row?.avg_r, 2, 'R')}`)
         .join(' · ') || '--';
     const classAGate = safeParseNB(teacherResearchReport?.class_a_gate, teacherResearchReport?.class_a_gate || {});
-    const classAGateHasData = Boolean(classAGate?.status);
-    const classAGateStatus = String(classAGateHasData ? classAGate.status : 'FAIL').toUpperCase();
-    const classAGateColor = classAGateStatus === 'PASS' ? 'var(--green)' : 'var(--warn)';
+    const classAGateHasData = Boolean(classAGate?.status) && !postCloseArtifactsPending;
+    const classAGateStatus = String(
+        postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : 'FAIL')
+    ).toUpperCase();
+    const classAGateColor =
+        classAGateStatus === 'PASS'
+            ? 'var(--green)'
+            : (classAGateStatus === 'PENDING' ? 'var(--accent)' : 'var(--warn)');
     const classAGateBlocked = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
     const classAGateReady = classAGateHasData && classAGateStatus === 'PASS' && classAGateBlocked.length === 0;
     const targetLabels = 500;
@@ -4709,7 +4757,7 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${evaluationMessage}` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}
+                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${researchOk ? 'var(--accent)' : 'var(--warn)'}">
@@ -4727,7 +4775,7 @@ function renderML() {
                         Best family: <b>${researchCountPairs(researchBestCounts)}</b><br>
                         Strategy outcomes: <b>${researchStrategyLine}</b>
                     ` : `
-                        Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.
+                        ${researchPendingMessage}
                     `}
                 </div>
             </div>
@@ -4740,7 +4788,7 @@ function renderML() {
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classAGateHasData ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${classAGateHasData ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">

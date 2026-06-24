@@ -1,3 +1,56 @@
+## 2026-06-24 Intraday Live Check + Stage 1 Scaffold
+
+- Intraday validation at `09:54` on `v2.4.56 / b287` showed the live engine is healthy after `9/9` polls:
+  - auto polling healthy
+  - brain running and saving results
+  - candidate generation healthy
+  - unified notification contract visible in UI
+  - no live crash or snapshot-save failure signal
+- Fresh log export `marketapp-logs-2026-06-24T04-24-30-731Z.csv` confirmed:
+  - repeated `BRAIN_COMPLETE`
+  - repeated `ML_CHAIN_SAVE: rows=676 saved=true`
+  - repeated `BRAIN_NOTIFICATION_MODE: mode=live dispatched=false notify=false type=TRADE`
+  - repeated `BRAIN_NOTIFICATION_CONTRACT: ... reason=NO_ACTIONABLE_STATE_CHANGE`
+- Operational interpretation:
+  - the live path is behaving correctly
+  - the brain is producing candidates but intentionally not notifying yet
+  - this is not a live-engine failure
+- The confusing part was UI semantics during market hours:
+  - `Daily Teacher Research` and `Class A Correctness Gate` were showing zero-state / `FAIL`
+  - yesterday's post-close persisted counts were leaking into today's still-pending session
+- Local-only UI correction now exists in `MarketVivi-git/app.js`:
+  - during market hours, if today's post-close evaluation has not run, post-close cards show as pending rather than failed
+  - stale `Produced` / `Outcomes persisted` numbers from yesterday are hidden from today's pending session
+  - research pending message explicitly says it waits for post-close evaluation
+  - `Class A` status shows `PENDING` instead of `FAIL` while today's session is still live
+- Local-only Stage `1.1 / 1.2` harness scaffold now exists in `Marketapp-git/historical_replay_harness.py`:
+  - existing Stage `0.2` verify-day remains intact
+  - new `--walk --from YYYY-MM-DD --to YYYY-MM-DD` walks stored sessions from Supabase
+  - walker reuses Python's existing `_evaluate_snapshot_outcomes(...)` / teacher path instead of inventing a second evaluator
+  - raw outcomes are persisted to local SQLite `historical_outcomes.sqlite`
+  - local aggregation via `--aggregate` builds `strategy_weights_local`
+  - aggregation buckets currently use:
+    - `strategy_type`
+    - `regime_bucket`
+    - `vix_bucket`
+    - `dte_bucket`
+  - low-confidence buckets are flagged locally when `n < 30`
+- Local harness DB tables now include:
+  - `historical_outcomes`
+  - `historical_walk_errors`
+  - `historical_walk_runs`
+  - `strategy_weights_local` (created by aggregate step)
+- Verification completed locally:
+  - `python3 -m py_compile historical_replay_harness.py` passed
+  - `python3 historical_replay_harness.py --help` shows live `--walk` and `--aggregate`
+  - `node --check MarketVivi-git/app.js` passed
+- Push status:
+  - none of the above 2026-06-24 changes are pushed yet
+  - after-hours validation still comes first:
+    - confirm today's completed session
+    - then run Stage `0.2` replay parity for `2026-06-24`
+    - only after that decide whether to push the UI semantics fix + Stage `1.1/1.2` scaffold batch
+
 # Market Radar — Project Knowledge (updated through 2026-06-22 b281 exact-count fix)
 
 ## 2026-06-22 Historical Parity Input Audit - Supabase + Upstox + Claude Gate
@@ -4846,3 +4899,122 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Push status:
   - none of the above has been pushed yet
   - tomorrow’s first valid strict Stage 0.2 day should be collected only after this batch is pushed and installed
+
+## 2026-06-24 local scaffold - Supabase Gemini evaluator replacement
+
+- A design-only Supabase replacement scaffold has now been created locally in `Marketapp-git/supabase/`.
+- Important contract finding:
+  - Android `NativeBridge.kt` already treats the evaluator as a job/proposal service with:
+    - `POST /evaluation-jobs`
+    - `GET /evaluation-jobs/{job_id}`
+    - `GET /evaluation-jobs/{job_id}/proposals`
+  - The checked-in `oracle_server/evaluator_app.py` does not expose that same contract.
+  - Therefore the app-side evaluator job contract must be treated as canonical for the migration.
+- Local scaffold contents:
+  - `supabase/migrations/20260624_evaluator_jobs_schema.sql`
+  - `supabase/functions/evaluator-jobs-create/index.ts`
+  - `supabase/functions/evaluator-jobs-run/index.ts`
+  - `supabase/functions/evaluator-jobs-status/index.ts`
+  - `supabase/functions/evaluator-jobs-proposals/index.ts`
+  - shared helpers under `supabase/functions/_shared/`
+- Local schema shape:
+  - `evaluator_jobs`
+  - `evaluator_brief_artifacts`
+  - `evaluator_verdict_artifacts`
+  - `evaluator_proposals`
+  - optional future `approved_branch_proposals`
+- Guardrails locked into the design:
+  - advisory only
+  - no live brain/rank mutation
+  - no notification authority
+  - no trade execution authority
+  - no automatic approval path
+- Verification note:
+  - `deno` is not installed in the current Codex environment, so `deno check` was not run here
+  - this scaffold is for review and later deployment prep only
+- Compatibility decision now recorded:
+  - evaluator job output and live-approved branch rows stay separate for now
+  - `evaluator_proposals` is the new advisory job-output table
+  - `ai_branch_proposals` remains the live-approved table currently consumed by Android
+  - a new local compatibility view `evaluator_proposals_app_view` reshapes advisory proposals into the exact card model expected by `normalizeProposalRow()`
+  - later migration should copy approved evaluator rows into `ai_branch_proposals` on explicit approval, rather than forcing a live-reader table switch during the transport migration
+- Payload contract now fixed locally:
+  - new file `Marketapp-git/supabase/EVALUATOR_PAYLOAD_CONTRACT_20260624.md`
+  - brief artifacts use top-level `brief_v1`
+  - verdict artifacts use top-level `verdict_v1`
+  - stub runner now persists schema-versioned structured payloads instead of free-text-only placeholders
+  - later real Gemini integration should preserve those top-level shapes
+- Approval-sync bridge now scaffolded locally:
+  - new file `Marketapp-git/supabase/APPROVAL_SYNC_PLAN_20260624.md`
+  - new function stub `supabase/functions/evaluator-proposals-review/index.ts`
+  - explicit rule: evaluator output remains in `evaluator_proposals`; explicit approval copies normalized payload into `ai_branch_proposals`
+  - local review stub only assumes the minimal live columns already proven by runtime usage:
+    - `proposal_id`, `status`, `index_key`, `category`, `priority`, `validation_notes`, `approved_by`, `approved_at`, `proposal_json`
+  - no runtime wiring has been changed yet
+
+## 2026-06-24 position-tracking architecture clarification
+
+- The positions tab is now treated as a separate layer from setup recommendations.
+- Brain setup verdicts can remain `WAIT` without any notification.
+- Open paper/real positions are still tracked independently and should surface
+  through the per-trade brain data path.
+- `brain.py` already emits:
+  - `result["positions"][tradeId]` for per-trade monitoring
+  - `brain_notification` with separate `POSITION_RISK` / `POSITION_EXIT` contracts when a position alert becomes actionable
+- Local UI now shows a `Position Monitor` summary and a fallback tracking card even when there is no immediate exit/book/risk alert.
+- This keeps the UX honest:
+  - no entry notification for `WAIT`
+  - visible tracking for open positions
+  - notification only on a real state change
+- Trade identity is stable through the open-trade path because persisted trades are keyed by `trade.id`, and the UI now looks up the current open trade before rendering the per-trade brain card.
+- The remaining notification question is threshold-based, not structural:
+  - `POSITION_*` alerts are only produced when `significant_move` is true and the open trade crosses a real risk/exit condition
+  - if no alert is emitted, the fallback tracking card is the correct behavior
+- Current working rule:
+  - do not push partial fixes during market hours
+  - wait for the after-hours validation run
+  - then push all locked changes together with the same version number
+
+## 2026-06-24 after-hours auto evaluation failure and local fixes
+
+- Phone state after auto evaluation on `v2.4.56 / b287`:
+  - app showed `Session complete` with `Polls: 77`
+  - ML evaluation showed `RETRYABLE`
+  - message said `Evaluation done for 2026-06-24: no brain snapshots found`
+  - `Produced: 0`, `Outcomes persisted: 0`
+  - app later reopened into a mostly blank WebView screen
+- Direct Supabase verification from Codex showed the data was actually present:
+  - `ml_brain_snapshots` has `77` rows for `2026-06-24`
+  - latest snapshot observed: `id=1570`, `poll_ts=2026-06-24T10:00:07+00:00`
+  - `ml_option_chain_snapshots` has `52052` rows for `2026-06-24`
+  - `chain_slices` has `676` rows for `2026-06-24`
+- Root cause assessment:
+  - this was not a Supabase data absence
+  - deployed evaluation likely reused a stale local prepared-input cache containing zero snapshots because the cache-validity check only tested file existence/length
+  - a zero-snapshot evaluation was incorrectly allowed to mark the date as completed/retryable even though the app had a completed polling session
+- Local Android fixes now prepared:
+  - new `EvaluationLocalCache.kt` appends every brain snapshot to internal JSONL storage as a durable fallback
+  - `MarketWatchService.kt` now appends snapshots locally and logs `ML_BRAIN_SNAPSHOT_SAVE`
+  - `SupabaseClient.saveBrainSnapshot(...)` now logs explicit full/minimal save failure details instead of silently returning false
+  - `MarketMLService.ensureEvaluationInputFiles(...)` now rejects a prepared cache when `snapshot_count <= 0`
+  - if Supabase returns zero snapshots, evaluation now falls back to local cached snapshots before preparing
+  - if `totalSnapshots == 0` but the same session has poll count > 0, evaluation now throws `EVAL_NO_SNAPSHOTS_AFTER_POLLING` instead of marking the day done
+- Additional Stage 0.2 capture finding:
+  - all `77` today snapshots contain `snapshot_open_trades_json`, `snapshot_closed_trades_json`, and `snapshot_strike_oi_json`
+  - `snapshot_brain_notification` was empty in all rows because Kotlin called `take_poll_snapshot(...)` with the original pre-notification result string
+  - local fix: `MarketWatchService.kt` now passes `resultObj.toString()` after `processUnifiedBrainNotifications(...)`
+- Replay harness update:
+  - full-day context fetch timed out when requesting all snapshot rows at once
+  - `historical_replay_harness.py` now fetches snapshot rows in smaller pages and tolerates alternate table schema failures
+- Stage 0.2 result for `2026-06-24` after harness paging:
+  - `trade_state=snapshot:yes`
+  - snapshots: `77`
+  - verdict parity: `2/77`
+  - generated candidate parity: `75/77`
+  - rejected parity: `74/77`
+  - notification parity: `0/0` because existing rows had empty `snapshot_brain_notification`
+  - conclusion: capture is materially better than `2026-06-23`, but Stage 0.2 is not closed; verdict parity still has systematic drift, commonly bull-score differences of about `0.4`
+- Verification completed locally:
+  - `node --check MarketVivi-git/app.js` passed
+  - `python3 -m py_compile Marketapp-git/historical_replay_harness.py` passed
+  - Android Gradle/Kotlin compile was not run because this environment has no Java/JDK (`JAVA_HOME` not set)
