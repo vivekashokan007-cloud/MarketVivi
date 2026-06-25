@@ -1,3 +1,167 @@
+## 2026-06-25 Reevaluation Baseline Recovery + Stage 1 Architecture Lock
+
+- Release progression across both repos is now:
+  - `v2.4.60 / b291`
+    - fixed the original day-close evaluation prep OOM by streaming snapshot fetch + filtered chain fetch
+    - `Marketapp` commit `8ea74ba`
+    - `MarketVivi` commit `2974e4b`
+  - `v2.4.61 / b292`
+    - fixed the second OOM path by removing the full snapshot-file reload during aggregation / research generation
+    - `Marketapp` commit `0d91333`
+    - `MarketVivi` commit `1ed07af`
+  - `v2.4.62 / b293`
+    - native teacher-research artifact rebuild + stale negative cache bypass + saved-snapshot fallback for historical diagnostics
+    - PWA refresh path now force-refreshes teacher research / lane summary / brain snapshots
+    - `Marketapp` commit `8beee0b`
+    - `MarketVivi` commit `e46711e`
+
+### Phone validation completed so far
+
+- Historical reevaluation for `session_date = 2026-06-24` was rerun on phone on `v2.4.61 / b292`.
+- Verified UI state:
+  - `Day evaluation: DONE`
+  - `Outcomes persisted: 411`
+  - `Produced: 411`
+  - `Progress: 77/77 snapshots`
+  - action button changed to `Session Done`
+- Operational conclusion:
+  - the old reevaluation crash / OOM loop is no longer the main blocker
+  - the core reevaluation engine is now completing far enough to finish, produce outcomes, and persist them
+- Remaining issue before `b293`:
+  - post-evaluation artifacts were still not cleanly surfacing:
+    - `Daily Teacher Research`
+    - `Class A Correctness Gate`
+    - `Historical Snapshot Diagnostics`
+- `b293` was pushed specifically to harden that artifact layer before the next post-close auto evaluation.
+
+### Supabase audit refreshed on 2026-06-25
+
+- Live service-role counts observed:
+  - `ml_brain_snapshots`: `1594`
+  - `ml_poll_sequences`: `0`
+  - `ml_evaluation_outcomes`: `9076`
+  - `ml_recommendation_outcomes`: `1545`
+  - `historical_option_candles`: `874325`
+- Recent saved snapshot day counts observed:
+  - `2026-06-25`: `25`
+  - `2026-06-24`: `77`
+  - `2026-06-23`: `85`
+  - `2026-06-22`: `79`
+  - `2026-06-19`: `76`
+  - `2026-06-18`: `58`
+
+### Recent session completeness checks
+
+- `2026-06-24`
+  - `77` snapshots for the day
+  - reevaluation persisted `411` total teacher rows:
+    - `44 primary`
+    - `367 secondary`
+  - same-day `ml_option_chain_snapshots` count observed: `52052`
+  - spot-check of first `25` snapshot rows:
+    - `23` had primary candidate present
+    - `23` had generated candidates present
+    - `23` had rejected candidates present
+    - `21` were `is_labelable = true`
+- `2026-06-23`
+  - snapshots: `85`
+  - primary present: `53`
+  - generated present: `53`
+  - rejected present: `83`
+  - labelable: `33`
+  - persisted teacher rows:
+    - `527` total
+    - `53 primary`
+    - `474 secondary`
+  - same-day `ml_option_chain_snapshots`: `50490`
+- `2026-06-22`
+  - snapshots: `79`
+  - primary present: `74`
+  - generated present: `74`
+  - rejected present: `76`
+  - labelable: `66`
+  - recommendation table still reflects older persistence shape:
+    - `ml_recommendation_outcomes`: `74` rows, `primary` only
+    - `ml_evaluation_outcomes`: `1000` rows with `61 primary`, `939 secondary`
+  - same-day `ml_option_chain_snapshots`: `46332`
+- `2026-06-19`
+  - snapshots: `76`
+  - primary present: `67`
+  - generated present: `67`
+  - rejected present: `74`
+  - labelable: `39`
+  - `ml_recommendation_outcomes`: `67` rows, `primary` only
+  - `ml_evaluation_outcomes`: `0`
+
+### Updated strategic conclusion from the live audit
+
+- For recent saved live sessions, Supabase already contains enough for **Class A** teacher analysis without immediate Upstox backfill:
+  - `ml_brain_snapshots`
+  - `ml_recommendation_outcomes` / `ml_evaluation_outcomes`
+  - `ml_option_chain_snapshots`
+- Recent Class A saved-live days are therefore sufficient for:
+  - correctness checks
+  - artifact verification
+  - saved-menu teacher measurement
+- But they are **not enough** to honestly quantify forward strategy weights by bucket.
+- The problem is not total candidate rows; the problem is insufficient **day / regime diversity**.
+- Therefore:
+  - recent Class A days are enough for Stage `0.2` correctness + artifact validation
+  - they are **not enough** to claim a meaningful Stage `1.2` strategy-weight baseline by themselves
+
+### Claude Stage 1 architecture reply - accepted direction with one correction
+
+- Claude's 2026-06-25 reply was assessed against the current verified state.
+- Accepted architecture direction:
+  - evolve `historical_replay_harness.py`
+  - do **not** build a separate emulator right now
+  - separate the work into three lanes:
+    1. correctness
+    2. Class A measurement
+    3. Class B reconstruction later
+  - boundary between Class A and Class B is:
+    - **saved menu exists** -> Class A
+    - **menu must be regenerated** -> Class B
+  - Upstox backfill should wait
+- One correction to Claude's note:
+  - he treated `historical_option_candles` OI presence as still unconfirmed
+  - project knowledge had already confirmed `historical_option_candles.open_interest` exists
+  - so the Class B blocker is not raw OI existence alone
+  - the real Class B blocker is broader reconstruction fidelity of the live brain inputs / chain-dict / context contract
+
+### Local Stage 1 harness preparation completed on 2026-06-25
+
+- `historical_replay_harness.py` was extended locally to align with the 3-lane model:
+  - explicit snapshot classification:
+    - `class_a` = saved generated menu present
+    - `class_b` = saved menu missing
+  - new SQLite table:
+    - `historical_snapshot_inventory`
+  - `historical_outcomes` now stores `snapshot_class`
+  - walk mode now supports:
+    - `--walk-mode class_a`
+    - `--walk-mode all`
+  - default walk mode is `class_a`
+  - aggregation now uses only `snapshot_class = 'class_a'`
+  - walk / aggregate summaries now print:
+    - class A vs class B counts
+    - skipped snapshot counts
+    - distinct Class A session count
+- Local verification completed:
+  - `python3 -m py_compile historical_replay_harness.py` passed
+  - `python3 historical_replay_harness.py --help` passed with `--walk-mode {class_a,all}`
+- This Stage 1 harness preparation is still **local only** and not pushed yet.
+
+### Current working rule as of 2026-06-25
+
+- Do **not** spend time on LLM integration / wiring yet.
+- Priority order is now:
+  1. validate `b293` post-close artifact baseline after auto evaluation
+  2. close Stage `0.2` correctness gate
+  3. evolve the harness into the real Class A measurement engine
+  4. only then decide whether broader Class B reconstruction is worth extending
+  5. teacher-fed ranking before any Stage 3 reasoner work
+
 ## 2026-06-24 Intraday Live Check + Stage 1 Scaffold
 
 - Intraday validation at `09:54` on `v2.4.56 / b287` showed the live engine is healthy after `9/9` polls:
@@ -5038,3 +5202,358 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `SupabaseClient.fetchEvaluationSnapshots(...)` now pages evaluation snapshot fetches with small pages
   - tested against `2026-06-24`: paged fetch returned all `77` rows without timeout
   - version bumped to `v2.4.58 / b289` in both repos
+
+## 2026-06-25 release chain and current baseline
+
+- Releases pushed in sync after the `b289` timeout fix:
+  - `v2.4.60 / b291`
+    - fixed evaluation input fetch/prep OOM by streaming snapshot/chain preparation instead of loading the entire response path into memory
+  - `v2.4.61 / b292`
+    - fixed the later aggregation/report OOM path by removing full snapshot-array reload during aggregation
+  - `v2.4.62 / b293`
+    - added teacher-research artifact rebuild on demand
+    - stale negative report-cache bypass
+    - historical snapshot diagnostics fallback to saved local snapshot file
+    - PWA refresh now force-refreshes teacher report/lane summary/brain snapshots
+- Repo sync state currently locked:
+  - `Marketapp` commit `8beee0b`
+  - `MarketVivi` commit `e46711e`
+  - version `2.4.62 / b293`
+- Important runtime milestone now confirmed from phone reevaluation:
+  - on `v2.4.61 / b292`, historical reevaluation for `2026-06-24` reached:
+    - `Day evaluation: DONE`
+    - `Outcomes persisted: 411`
+    - `Produced: 411`
+    - `Progress: 77/77 snapshots`
+    - `Session Done`
+- Interpretation:
+  - the main reevaluation crash / OOM baseline is materially fixed
+  - the remaining issue is no longer "evaluation cannot finish"
+  - the remaining issue is the post-evaluation artifact/publication layer:
+    - `Daily Teacher Research`
+    - `Class A Correctness Gate`
+    - `Historical Snapshot Diagnostics`
+
+## 2026-06-25 live Supabase audit for teacher-analysis readiness
+
+- Direct service-role audit performed today to decide whether teacher analysis needs Upstox backfill now.
+- Current row counts observed:
+  - `ml_brain_snapshots`: `1594`
+  - `ml_poll_sequences`: `0`
+  - `ml_evaluation_outcomes`: `9076`
+  - `ml_recommendation_outcomes`: `1545`
+  - `historical_option_candles`: `874325`
+- Recent session snapshot counts:
+  - `2026-06-25`: `25`
+  - `2026-06-24`: `77`
+  - `2026-06-23`: `85`
+  - `2026-06-22`: `79`
+  - `2026-06-19`: `76`
+  - `2026-06-18`: `58`
+- Recent session completeness checks:
+  - `2026-06-23`
+    - primary present `53`
+    - generated present `53`
+    - rejected present `83`
+    - labelable `33`
+    - outcomes `527` with `53 primary` and `474 secondary`
+  - `2026-06-22`
+    - primary present `74`
+    - generated present `74`
+    - rejected present `76`
+    - labelable `66`
+    - recommendation table still reflects older persistence shape
+  - `2026-06-19`
+    - primary present `67`
+    - generated present `67`
+    - rejected present `74`
+    - labelable `39`
+  - `2026-06-24`
+    - `77` snapshots total
+    - spot check of first `25` rows showed `23` with primary/generated/rejected
+    - outcomes `411` with `44 primary` and `367 secondary`
+    - chain coverage `52052` in `ml_option_chain_snapshots`
+- Working conclusion:
+  - recent saved live sessions are enough for Class A teacher analysis without Upstox right now
+  - they are enough for correctness/parity/artifact validation
+  - they are not enough by themselves to justify a meaningful long-horizon teacher baseline or `strategy_weights`
+  - therefore:
+    - no immediate Upstox pull is required for current Class A work
+    - Upstox backfill should wait until after Stage `0.2 / 1.x` measurement foundation is stable
+
+## 2026-06-25 Class A / Class B interpretation and Stage 1 direction
+
+- Current architectural understanding is now:
+  - `Class A` = snapshot already has saved generated candidate menu
+  - `Class B` = menu is missing and would need regeneration/reconstruction
+- This is now treated as the real boundary, not simply "recent days vs old days".
+- Claude’s Stage 1 direction was reviewed and accepted with one correction:
+  - correct:
+    - evolve `historical_replay_harness.py`
+    - keep 3 lanes:
+      - correctness
+      - Class A measurement
+      - Class B reconstruction later
+    - do not build a separate emulator yet
+    - do not pull Upstox history yet
+  - correction:
+    - `historical_option_candles.open_interest` was already verified earlier
+    - so the Class B blocker is not raw OI existence alone
+    - the real blocker is broader reconstruction fidelity
+- Local-only harness preparation completed in `Marketapp-git/historical_replay_harness.py`:
+  - explicit snapshot classification:
+    - `class_a` = saved generated menu present
+    - `class_b` = saved generated menu missing
+  - new SQLite inventory table `historical_snapshot_inventory`
+  - `historical_outcomes` now carries `snapshot_class`
+  - walk mode now supports:
+    - `--walk-mode class_a`
+    - `--walk-mode all`
+  - default walk restricted to Class A
+  - local aggregation restricted to `snapshot_class = 'class_a'`
+  - local validation passed:
+    - `python3 -m py_compile historical_replay_harness.py`
+    - `python3 historical_replay_harness.py --help`
+- These harness changes are local only and not pushed yet.
+
+## 2026-06-25 FII Short% trend check
+
+- Code review performed for the `FII Short% Trend` section shown in the OI tab.
+- Files traced:
+  - `Marketapp-git/app/src/main/python/brain.py`
+  - `MarketVivi-git/app.js`
+  - `Marketapp-git/app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `Marketapp-git/app/src/main/java/com/marketradar/app/SupabaseClient.kt`
+- Current conclusion:
+  - the trend formula itself is not wrong
+  - example `81.0 -> 85.0` correctly becomes:
+    - `BUILDING`
+    - `bearish`
+    - `AGGRESSIVE` because latest move is `>= 3`
+- Real risk area identified:
+  - the live brain uses generic `premium_history` as `yesterdayHistory`
+  - so the weak point is historical-input contract quality/ordering, not the trend math
+- Working note:
+  - patch later if needed by normalizing the history input contract for FII/VIX/DII morning-context use
+  - do this together with after-hours ML evaluation/artifact checks, not as a standalone market-hours patch
+
+## 2026-06-25 detailed brain signal study and Claude consultation
+
+- A full code-level study of the current brain signal architecture was completed.
+- Study file created:
+  - `BRAIN_SIGNAL_STUDY_20260625.md`
+- Claude consultation file created:
+  - `CONSULT_CLAUDE_BRAIN_SIGNAL_VALIDITY_20260625.md`
+- Core findings from the study:
+  - the app does not have one brain; it has layered deterministic stages:
+    - thesis/context brain
+    - intraday drift/effective bias layer
+    - strategy-family selection
+    - candidate generation
+    - candidate ranking
+    - verdict-to-execution alignment
+    - notification contract
+  - strongest components:
+    - candidate generation
+    - rejected-candidate capture
+    - ranking waterfall
+    - notification stability logic
+    - effective bias architecture
+  - weakest / most heuristic components:
+    - the final confidence number
+    - threshold-heavy morning/context heuristics
+    - overloading generic `premium_history` for multiple signal families
+    - thesis/execution blending without preserving both states separately
+- Most important architectural insight now recorded:
+  - there are at least two truths per poll:
+    - pre-alignment thesis truth
+    - post-alignment executable truth
+  - if evaluation artifacts preserve only the final surfaced output, teacher analysis will mix thesis failure with execution/ranking substitution and we will not know what actually failed
+- Current recommendation now recorded:
+  - preserve both pre-alignment and post-alignment verdict states in future evaluation artifacts
+  - treat current confidence as a policy-readiness score, not a probability
+  - use the deterministic brain as a structured policy baseline and candidate generator
+  - let teacher measurement quantify and reweight the system before any LLM/Edge reasoning layer is promoted
+- Current working rule remains:
+  - no LLM wiring yet
+  - first stabilize:
+    - post-evaluation artifact layer
+    - Stage `0.2` correctness
+    - Stage `1.x` measurement foundation
+
+## 2026-06-25 Stage 1 harness implementation progress
+
+- Local-only Stage 1 implementation files created:
+  - `STAGE1_IMPLEMENTATION_CHECKLIST_20260625.md`
+- `Marketapp-git/historical_replay_harness.py` was extended locally with the first real Stage 1 measurement layer.
+- New local harness capabilities now include:
+  - persistence of thesis vs execution fields from saved snapshots
+    - `thesis_action`
+    - `thesis_strategy`
+    - `execution_action`
+    - `execution_strategy`
+    - `execution_candidate_id`
+    - `execution_candidate_index`
+    - `execution_aligned`
+    - `dominant_lane`
+    - `dominant_count`
+    - `has_pre_alignment_fields`
+    - `thesis_equals_execution`
+  - automatic SQLite schema migration for existing local DBs via `ALTER TABLE`
+  - `candidate_source` tagging in local outcome rows
+    - `primary`
+    - `generated`
+    - `rejected_counterfactual`
+  - Stage 1 aggregate tables:
+    - `stage1_snapshot_metrics`
+    - `stage1_metric_summary`
+- Current Stage 1 aggregates are designed to separate:
+  - chosen candidate vs best available candidate
+  - chosen candidate vs best candidate inside execution family
+  - thesis family vs best available family
+  - whether thesis and execution agreed or diverged
+- Validation completed locally:
+  - `python3 -m py_compile historical_replay_harness.py`
+  - `python3 historical_replay_harness.py --help`
+- These harness changes are local only and not pushed yet.
+
+## 2026-06-25 Stage 1 failure-mode classifier extension
+
+- Claude’s `Candidate Failure-Mode Classifier` directive was accepted as a valid Stage 1 extension.
+- Local-only harness work now includes:
+  - per-snapshot failure classification into exactly one bin:
+    - `NO_VIABLE`
+    - `GATE_BLOCKED`
+    - `RANK_WRONG`
+    - `EXIT_DESTROYED`
+  - new local table:
+    - `stage1_failure_modes`
+  - new aggregate tables:
+    - `stage1_failure_mode_breakdown`
+    - `stage1_rejection_reason_summary`
+- Key implementation rules preserved:
+  - no generator changes
+  - no gate changes
+  - no ranking changes
+  - no exit changes
+  - rejected candidate R is kept as a separate counterfactual / lower-confidence series
+- Current local limitation before the next patch:
+  - older snapshots only preserved a compact rejected-candidate sample, which was insufficient to reconstruct rejected 4-leg structures reliably
+
+## 2026-06-25 full rejected 4-leg capture fix for future snapshots
+
+- Root cause identified:
+  - the live brain already had full rejected candidate data in memory, including 4-leg structures
+  - but `take_poll_snapshot()` compacted rejected candidates into a reduced sample shape
+  - that compact form dropped enough leg detail that historical replay could not reliably score rejected `IRON_CONDOR` / `IRON_BUTTERFLY` rows later
+- Local fix implemented in `Marketapp-git/app/src/main/python/brain.py`:
+  - existing compact field remains:
+    - `snapshot_rejected_candidates`
+  - new full-fidelity field added for future snapshots:
+    - `snapshot_rejected_candidates_full`
+  - this preserves:
+    - `sellStrike2`
+    - `buyStrike2`
+    - `sellType2`
+    - `buyType2`
+    - full `legs`
+    - rejection metadata and economics
+- Local harness was updated to prefer `snapshot_rejected_candidates_full` when present.
+- Result:
+  - future saved Class A snapshots will preserve rejected 4-leg candidates properly for teacher replay
+  - older already-saved snapshots remain limited by the older compact capture
+- Validation completed locally:
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m py_compile historical_replay_harness.py`
+- This rejected-4-leg capture fix is local only and not pushed yet.
+
+## 2026-06-25 post-close UI state before day evaluation actually runs
+
+- Phone screenshots at about `15:42` on `v2.4.62 / b293` show:
+  - session complete
+  - service stopped
+  - `Day evaluation: RETRYABLE`
+  - `Waiting for post-close evaluation for 25 Jun`
+  - all teacher/artifact sections still zero or pending
+  - `Daily Teacher Research` pending
+  - `Class A Correctness Gate` pending
+  - `Candidate Pipeline Diagnostics` all zero
+  - live brain output `WAIT`
+  - `All candidates rejected by the gate waterfall`
+- Current interpretation:
+  - this does **not** look like the earlier OOM/fetch-prep crash state
+  - it looks like a pre-evaluation / not-yet-run post-close state
+  - at this screenshot time, the app had not yet completed the post-close day evaluation for `2026-06-25`
+- Log evidence from the attached CSV supports that interpretation:
+  - latest poll completion shown around `15:15`
+  - `Poll #76 complete, candidates=0`
+  - `BRAIN_RESULT ... generated=0 watchlist=0`
+  - `BRAIN_NOTIFICATION_CONTRACT: type=WAIT`
+  - `ML_CHAIN_SAVE: rows=682 saved=true`
+  - no OOM stack, no evaluation crash, no `DAY_EVAL_ACTION_FAIL` visible in the examined tail
+- One UI inconsistency is visible:
+  - top banner shows `polls 76/76`
+  - bottom footer shows `Polls: 79`
+  - this appears to be a display/state-sync discrepancy, not evidence of evaluation failure
+- Working conclusion at this point:
+  - wait for the actual post-close ML evaluation run / retry before calling today a failure
+  - the screenshot state alone is not the same as the earlier broken `411/0/OOM` pattern
+
+## 2026-06-25 confirmed post-close evaluation blocker on no-candidate day
+
+- New log after manual `Refresh Status` / `Retry Eval` proved that the post-close handoff actually fired:
+  - `15:31:12.629` `DAY_EVAL_HANDOFF: launched post-close evaluation for 2026-06-25`
+- The real failure is now explicit and is not the old OOM:
+  - `15:31:37.678` `EVAL_FAIL[PREPARING]: EVAL_NO_LEGKEYS: no candidate option legs found across 80 snapshots`
+  - repeated again at `15:58:33.127`
+- Meaning:
+  - post-close evaluation started
+  - evaluation preparation aborted because the day had effectively zero generated/watchlist candidates and therefore no evaluable option-leg keys
+- This matches the live UI state for the day:
+  - `Action: WAIT`
+  - `Watchlist: 0`
+  - `Candidates: 0`
+  - `All candidates rejected by the gate waterfall`
+- Current interpretation:
+  - this is a new logic/contract failure mode, not the earlier fetch/prep/aggregation memory crash
+  - on a no-candidate day, the evaluator currently throws and leaves the session `RETRYABLE`
+  - instead, it should handle "no evaluable leg keys for the day" as a valid empty-result outcome and publish a clean zero-row / no-trade session state
+- Important UI/state note:
+  - top banner still shows `polls 76/76`
+  - bottom footer shows `Polls: 79`
+  - evaluator log refers to `80 snapshots`
+  - this suggests separate counting domains (scheduled slots vs actual poll rows/snapshots), not necessarily a crash by itself
+
+## 2026-06-25 local fix for no-candidate-day evaluation contract
+
+- Local-only patch implemented in `Marketapp-git/app/src/main/java/com/marketradar/app/MarketMLService.kt`
+- Root cause location:
+  - `ensureEvaluationInputFiles()` previously threw `EVAL_NO_LEGKEYS` whenever snapshots existed but no candidate option-leg keys were present
+  - this forced a valid no-candidate / all-rejected session into `RETRYABLE`
+- Local fix:
+  - introduced `EvaluationInputPreparation` return contract
+  - prep now recognizes the case:
+    - snapshots exist
+    - leg-key count is `0`
+  - instead of throwing, it:
+    - writes the snapshots file
+    - writes an empty chain file
+    - writes prepare metadata with:
+      - `snapshot_count`
+      - `leg_key_count = 0`
+      - `empty_reason = EVAL_NO_LEGKEYS...`
+  - `runDayEvaluation()` now detects that empty-prep contract and completes cleanly without calling Python batch evaluation
+- Intended runtime behavior after push:
+  - no-candidate day should become:
+    - `DONE`
+    - zero produced outcomes
+    - zero persisted outcomes
+    - no fatal retry loop
+    - clean message indicating no evaluable candidate legs were captured for the session
+- Cache behavior also adjusted:
+  - the prepare-cache path now accepts a cached zero-leg-key / empty-evaluation prep state
+  - earlier logic required a non-empty chain file and would have invalidated this case
+- Validation status:
+  - source patch reviewed locally with diff/inspection
+  - Android Gradle compile could not be run in this environment because `java` / `JAVA_HOME` is unavailable
+- This fix is local only and not pushed yet.
