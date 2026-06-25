@@ -3033,6 +3033,8 @@ async function triggerDayEvaluation() {
         setTimeout(() => {
             getMLModelStatusCached(true);
             getMLEvaluationOutcomesCached(true);
+            getMLEvaluationLaneSummaryCached(true);
+            getMLTeacherResearchReportCached(true);
             getMLBrainSnapshotsCached(true);
             renderAll();
         }, 3000);
@@ -3047,6 +3049,7 @@ function triggerRefreshMLStatus() {
         getMLModelStatusCached(true);
         getMLEvaluationOutcomesCached(true);
         getMLEvaluationLaneSummaryCached(true);
+        getMLTeacherResearchReportCached(true);
         getMLBrainSnapshotsCached(true);
         STATE.mlStatusRefreshAt = Date.now();
         renderAll();
