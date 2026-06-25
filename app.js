@@ -4662,10 +4662,18 @@ function renderML() {
     const comparisonTeacherRows = Number(summaryComparison?.teacherPrimaryRows || 0);
     const comparisonLegacyRows = Number(summaryComparison?.legacyPrimaryLabeled || 0);
     const comparisonWinRateDeltaPts = Number(summaryComparison?.winRateDeltaPts || 0);
+    const evaluationEmptySession = Boolean(
+        evaluationDone &&
+        !postCloseArtifactsPending &&
+        Number(evaluationProducedCount || 0) === 0 &&
+        Number(evaluationOutcomeCount || 0) === 0
+    );
     const researchOk = teacherResearchReport?.ok === true;
     const researchPendingMessage = postCloseArtifactsPending
         ? 'Session research report is pending for today. It is produced only after the post-close day evaluation completes.'
-        : 'Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.';
+        : (evaluationEmptySession
+            ? 'No teacher research report was generated because this session ended with no evaluable candidate legs and zero teacher outcome rows.'
+            : 'Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.');
     const researchPvb = safeParseNB(teacherResearchReport?.primary_vs_best, teacherResearchReport?.primary_vs_best || {});
     const researchMarket = safeParseNB(teacherResearchReport?.market, teacherResearchReport?.market || {});
     const researchBrain = safeParseNB(teacherResearchReport?.brain_behavior, teacherResearchReport?.brain_behavior || {});
@@ -4692,12 +4700,12 @@ function renderML() {
     const classAGate = safeParseNB(teacherResearchReport?.class_a_gate, teacherResearchReport?.class_a_gate || {});
     const classAGateHasData = Boolean(classAGate?.status) && !postCloseArtifactsPending;
     const classAGateStatus = String(
-        postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : 'FAIL')
+        postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : (evaluationEmptySession ? 'N/A' : 'FAIL'))
     ).toUpperCase();
     const classAGateColor =
         classAGateStatus === 'PASS'
             ? 'var(--green)'
-            : (classAGateStatus === 'PENDING' ? 'var(--accent)' : 'var(--warn)');
+            : ((classAGateStatus === 'PENDING' || classAGateStatus === 'N/A') ? 'var(--accent)' : 'var(--warn)');
     const classAGateBlocked = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
     const classAGateReady = classAGateHasData && classAGateStatus === 'PASS' && classAGateBlocked.length === 0;
     const targetLabels = 500;
@@ -4791,7 +4799,7 @@ function renderML() {
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${classAGateHasData ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${evaluationEmptySession ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">

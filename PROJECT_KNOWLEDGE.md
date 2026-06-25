@@ -5557,3 +5557,34 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - source patch reviewed locally with diff/inspection
   - Android Gradle compile could not be run in this environment because `java` / `JAVA_HOME` is unavailable
 - This fix is local only and not pushed yet.
+
+## 2026-06-25 b294 validation result for no-candidate / all-rejected day
+
+- Synced release pushed:
+  - `Marketapp` `9128080`
+  - `MarketVivi` `7675a5c`
+  - shared version `v2.4.63 / b294`
+- Phone validation on `b294` confirmed the runtime fix worked for the exact no-candidate-day failure mode.
+- Verified UI state after retry / refresh:
+  - `Day evaluation: DONE`
+  - `Session: 25 Jun`
+  - `Outcomes persisted: 0`
+  - `Produced: 0`
+  - `Progress: 80/80 snapshots`
+  - message indicates:
+    - no evaluable candidate legs were captured for the session
+- Meaning:
+  - the earlier `EVAL_NO_LEGKEYS` path is no longer fatal
+  - no-candidate / all-rejected post-close sessions now complete cleanly
+  - the previous bad state (`RETRYABLE` loop) is resolved
+- Runtime baseline now considered fixed for:
+  - post-close evaluation handoff
+  - evaluation completion on empty-candidate days
+  - zero-row persistence contract
+- Remaining presentation / artifact issue:
+  - `Class A Correctness Gate` still shows `FAIL`
+  - `Daily Teacher Research` still shows not available
+  - for a genuine zero-candidate day this should eventually become a clean `N/A` / empty-session semantic rather than a failure semantic
+- Current interpretation:
+  - core evaluation engine baseline is fixed
+  - artifact/reporting semantics baseline still needs cleanup for empty sessions
