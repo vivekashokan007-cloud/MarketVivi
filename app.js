@@ -3125,6 +3125,23 @@ function setNotificationTransportModeFromUI(mode) {
     }
 }
 
+function setStage2AGuardModeFromUI(mode) {
+    try {
+        if (!window.NativeBridge?.setStage2AGuardMode) {
+            alert('Native bridge not available.');
+            return;
+        }
+        const ok = window.NativeBridge.setStage2AGuardMode(String(mode || 'shadow'));
+        if (!ok) {
+            alert('Could not update Stage 2A mode.');
+            return;
+        }
+        renderAll();
+    } catch (e) {
+        alert('Could not update Stage 2A mode: ' + e.message);
+    }
+}
+
 async function checkMLDecisions() {
     try {
         const { data, error } = await DB.supabase
@@ -4576,6 +4593,8 @@ function renderML() {
     const brainNotification = brain?.brain_notification || {};
     const brainNotificationMeta = brain?.brain_notification_meta || {};
     const notificationMode = String((typeof NativeBridge !== 'undefined' ? NativeBridge.getNotificationTransportMode?.() : null) || brainNotificationMeta.mode || 'live');
+    const stage2aMode = String((typeof NativeBridge !== 'undefined' ? NativeBridge.getStage2AGuardMode?.() : null) || 'shadow');
+    const stage2a = safeParseNB(brain?.stage2a, brain?.stage2a || {});
     const notificationDispatched = brainNotificationMeta.dispatched === true;
     const notificationNotify = brainNotification.notify_user === true;
     const notificationDecisionType = String(brainNotification.decision_type || 'WAIT');
@@ -4678,6 +4697,7 @@ function renderML() {
     const researchMarket = safeParseNB(teacherResearchReport?.market, teacherResearchReport?.market || {});
     const researchBrain = safeParseNB(teacherResearchReport?.brain_behavior, teacherResearchReport?.brain_behavior || {});
     const researchTeacher = safeParseNB(teacherResearchReport?.teacher_outcomes, teacherResearchReport?.teacher_outcomes || {});
+    const researchStage2A = safeParseNB(teacherResearchReport?.stage2a_shadow, teacherResearchReport?.stage2a_shadow || {});
     const researchPrimary = safeParseNB(researchTeacher?.primary, researchTeacher?.primary || {});
     const researchByStrategy = safeParseNB(researchTeacher?.by_strategy, researchTeacher?.by_strategy || {});
     const researchVix = safeParseNB(researchMarket?.vix, researchMarket?.vix || {});
@@ -4697,6 +4717,36 @@ function renderML() {
         .slice(0, 3)
         .map(([key, row]) => `${key} ${Number(row?.rows || 0)} @ ${researchFmt(row?.avg_r, 2, 'R')}`)
         .join(' · ') || '--';
+    const researchStage2AModeCounts = safeParseNB(researchStage2A?.mode_counts, researchStage2A?.mode_counts || {});
+    const researchStage2AChosenCoverage = safeParseNB(researchStage2A?.chosen_coverage_counts, researchStage2A?.chosen_coverage_counts || {});
+    const researchStage2AModeLine = Object.entries(researchStage2AModeCounts || {})
+        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+        .map(([key, count]) => `${key} ${count}`)
+        .join(' · ') || '--';
+    const researchStage2ACoverageLine = Object.entries(researchStage2AChosenCoverage || {})
+        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+        .map(([key, count]) => `${key} ${count}`)
+        .join(' · ') || '--';
+    const stage2aAuditReady = researchOk && Number(researchStage2A.snapshot_count || 0) > 0;
+    const stage2aAuditChangeRateText = researchStage2A.shadow_change_rate_pct != null
+        ? researchFmt(researchStage2A.shadow_change_rate_pct, 1, '%')
+        : '--';
+    const stage2aAuditAvgBucketText = researchStage2A.chosen_avg_teacher_bucket_n != null
+        ? researchFmt(researchStage2A.chosen_avg_teacher_bucket_n, 1)
+        : '--';
+    const stage2aAuditAvgTeacherRText = researchStage2A.chosen_avg_teacher_r != null
+        ? researchFmt(researchStage2A.chosen_avg_teacher_r, 3, 'R')
+        : '--';
+    const stage2aAuditStatus = String(researchStage2A.audit_status || (stage2aAuditReady ? 'COLLECT_MORE_SHADOW' : 'NO_EVIDENCE')).toUpperCase();
+    const stage2aAuditColor = stage2aAuditStatus === 'READY_FOR_MANUAL_REVIEW'
+        ? 'var(--green)'
+        : (stage2aAuditStatus === 'NO_EVIDENCE' ? 'var(--warn)' : 'var(--accent)');
+    const stage2aAuditBlocked = Array.isArray(researchStage2A?.blocked_reasons) ? researchStage2A.blocked_reasons : [];
+    const stage2aAuditPendingMessage = postCloseArtifactsPending
+        ? 'Stage 2A shadow audit is pending until the post-close teacher research artifact is generated.'
+        : (researchOk
+            ? 'No Stage 2A snapshot evidence was found in the current research artifact.'
+            : 'Stage 2A shadow audit becomes available from the daily teacher research artifact after evaluation completes.');
     const classAGate = safeParseNB(teacherResearchReport?.class_a_gate, teacherResearchReport?.class_a_gate || {});
     const classAGateHasData = Boolean(classAGate?.status) && !postCloseArtifactsPending;
     const classAGateStatus = String(
@@ -4721,6 +4771,12 @@ function renderML() {
     const diagnosticIndexText = candidateDiagnostics.indexSummaries.length > 0
         ? candidateDiagnostics.indexSummaries.map(row => `${row.index} accepted ${row.accepted}/${row.total}`).join(' · ')
         : '--';
+    const stage2aTableReady = stage2a.table_ready === true;
+    const stage2aShadowTop = String(stage2a.shadow_top_candidate_id || '--');
+    const stage2aDetTop = String(stage2a.deterministic_top_candidate_id || '--');
+    const stage2aCoverageText = stage2aTableReady
+        ? `covered ${Number(stage2a.covered_count || 0)} · positive ${Number(stage2a.positive_count || 0)} · thin ${Number(stage2a.thin_count || 0)} · unseen ${Number(stage2a.unseen_count || 0)}`
+        : (stage2a.table_error ? `table unavailable: ${escapeHtml(String(stage2a.table_error))}` : 'table not loaded yet');
 
     let html = '';
     html += `
@@ -4783,6 +4839,8 @@ function renderML() {
                         Chosen: <b>${researchCountPairs(researchPrimaryCounts)}</b> · Full menu: <b>${researchCountPairs(researchGeneratedCounts)}</b><br>
                         Chosen teacher: <b>${Number(researchPrimary.rows || 0)}</b> rows · <b>${researchFmt(researchPrimary.avg_r, 2, 'R')}</b> avg · Success <b>${researchFmt(researchPrimary.success_rate_pct, 1, '%')}</b><br>
                         Best available: chosen best <b>${Number(researchPvb.primary_was_best || 0)}/${Number(researchPvb.snapshots_compared || 0)}</b> · Better candidate <b>${Number(researchPvb.better_candidate_available || 0)}</b> · Uplift <b>${researchFmt(researchPvb.avg_best_minus_primary_r, 3, 'R')}</b><br>
+                        Stage 2A shadow: compared <b>${Number(researchStage2A.shadow_compared || 0)}</b> · top changed <b>${Number(researchStage2A.shadow_top_changed || 0)}</b>${researchStage2A.shadow_change_rate_pct != null ? ` (${researchFmt(researchStage2A.shadow_change_rate_pct, 1, '%')})` : ''} · covered snapshots <b>${Number(researchStage2A.covered_snapshot_count || 0)}</b><br>
+                        Stage 2A chosen coverage: <b>${researchStage2ACoverageLine}</b> · modes <b>${researchStage2AModeLine}</b><br>
                         Best family: <b>${researchCountPairs(researchBestCounts)}</b><br>
                         Strategy outcomes: <b>${researchStrategyLine}</b>
                     ` : `
@@ -4799,7 +4857,26 @@ function renderML() {
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${evaluationEmptySession ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                </div>
+            </div>
+            <div class="brain-card" style="border-left-color:${stage2aAuditColor}">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧭</span>
+                    <span class="brain-label">Stage 2A Shadow Audit</span>
+                </div>
+                <div class="brain-detail">
+                    ${stage2aAuditReady ? `
+                        Session: <b>${formatSessionDateLabel(teacherResearchReport.session_date) || teacherResearchReport.session_date || '--'}</b> · Status: <b style="color:${stage2aAuditColor}">${escapeHtml(stage2aAuditStatus)}</b><br>
+                        Snapshots: <b>${Number(researchStage2A.snapshot_count || 0)}</b> · Table-ready: <b>${Number(researchStage2A.table_ready_count || 0)}</b><br>
+                        Shadow compared: <b>${Number(researchStage2A.shadow_compared || 0)}</b> · Top changed: <b>${Number(researchStage2A.shadow_top_changed || 0)}</b> · Change rate: <b>${stage2aAuditChangeRateText}</b><br>
+                        Covered snapshots: <b>${Number(researchStage2A.covered_snapshot_count || 0)}</b> · Positive snapshots: <b>${Number(researchStage2A.positive_snapshot_count || 0)}</b> · Hard WAITs: <b>${Number(researchStage2A.hard_wait_count || 0)}</b><br>
+                        Chosen coverage: <b>${researchStage2ACoverageLine}</b><br>
+                        Avg chosen teacher bucket n: <b>${stage2aAuditAvgBucketText}</b> · Avg chosen teacher R: <b>${stage2aAuditAvgTeacherRText}</b><br>
+                        Modes seen: <b>${researchStage2AModeLine}</b>${stage2aAuditBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${stage2aAuditBlocked.map(x => escapeHtml(String(x))).join(' · ')}</span>` : ''}
+                    ` : `
+                        ${stage2aAuditPendingMessage}
+                    `}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--warn)">
@@ -5046,8 +5123,27 @@ function renderML() {
                     </div>
                 </div>
             </div>
+            <div class="brain-card" style="border-left-color:var(--accent);margin-top:8px">
+                <div class="brain-card-header">
+                    <span class="brain-icon">🧭</span>
+                    <span class="brain-label">Stage 2A Teacher Guard</span>
+                </div>
+                <div class="brain-detail">
+                    Ranking mode is controlled here. Shadow computes teacher ranking and logs the comparison; live lets teacher expectancy drive ranking with hard WAIT preserved.
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+                        <button onclick="setStage2AGuardModeFromUI('off')" class="btn-paper" style="padding:7px 10px;font-size:11px;${stage2aMode === 'off' ? '' : 'opacity:.75'}">Off</button>
+                        <button onclick="setStage2AGuardModeFromUI('shadow')" class="btn-primary" style="padding:7px 10px;font-size:11px;${stage2aMode === 'shadow' ? '' : 'opacity:.75'}">Shadow</button>
+                        <button onclick="setStage2AGuardModeFromUI('live')" class="btn-paper" style="padding:7px 10px;font-size:11px;${stage2aMode === 'live' ? '' : 'opacity:.75'}">Live</button>
+                    </div>
+                    <div style="margin-top:6px;color:var(--text-muted)">
+                        Current mode: <b>${escapeHtml(stage2aMode.toUpperCase())}</b> · Table: <b>${stage2aTableReady ? 'READY' : 'WAIT'}</b> · ${stage2aCoverageText}
+                        ${stage2a.shadow_changes_top === true ? `<br>Shadow top changed: <b>${escapeHtml(stage2aDetTop)}</b> → <b>${escapeHtml(stage2aShadowTop)}</b>` : ''}
+                        ${stage2a.hard_wait_triggered === true ? `<br><span style="color:var(--warn)">Teacher guard forced WAIT: ${escapeHtml(String(stage2a.hard_wait_reason || 'no_positive_teacher_bucket'))}</span>` : ''}
+                    </div>
+                </div>
+            </div>
             <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
-                ML is downstream-only. It records snapshots and evaluates outcomes, but it does not change live trade selection.
+                Stage 2A defaults to shadow. Do not switch to live until the logged shadow changes are reviewed against post-close teacher evidence.
             </div>
         </section>
     `;

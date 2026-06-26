@@ -5588,3 +5588,648 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
 - Current interpretation:
   - core evaluation engine baseline is fixed
   - artifact/reporting semantics baseline still needs cleanup for empty sessions
+
+## 2026-06-25 Stage 1 first measured evidence from local Class A harness walk
+
+- Local-only Stage 1 work in `Marketapp-git/historical_replay_harness.py` is now operational against Supabase.
+- This harness work is **not pushed yet** and remains intentionally local until the measurement direction is stable.
+- Important local-only improvements made before the first successful walk:
+  - per-day snapshot fetch instead of one broad date-range query
+  - filtered same-day chain fetch using actual candidate leg keys
+  - longer configurable HTTP timeout
+  - explicit Class A vs Class B snapshot classification
+  - thesis vs execution tracking
+  - failure-mode classifier
+  - session-level summary tables
+
+### First measured Class A session set
+
+- The first real measured Stage 1 walk was completed on these saved-menu sessions:
+  - `2026-06-19`
+  - `2026-06-22`
+  - `2026-06-23`
+  - `2026-06-24`
+- Combined aggregate scope:
+  - `238` Class A snapshots measured
+  - `79` Class B snapshots inventoried separately but not used for this first Class A aggregate
+
+### Dominant measured failure mode
+
+- The strongest measured result so far is that failure is dominated by **ranking / wrong candidate choice**, not by a lack of viable setups and not mainly by gate blocking.
+- Aggregate failure breakdown from the first four Class A sessions:
+  - `RANK_WRONG`: `206 / 238` snapshots = `86.55%`
+  - `NO_VIABLE`: `28 / 238` snapshots = `11.76%`
+  - `GATE_BLOCKED`: `4 / 238` snapshots = `1.68%`
+- Current interpretation:
+  - the market is **not** mainly failing us by having no setups
+  - the gate is **not** mainly blocking good setups
+  - the strongest current evidence says the brain is usually selecting the wrong candidate among available evaluated choices
+
+### Per-session Stage 1 findings
+
+- `2026-06-19`
+  - snapshots: `67`
+  - labelable: `39`
+  - chosen avg R: `-0.1343`
+  - best available avg R: `0.1129`
+  - best execution-family avg R: `-0.0247`
+  - better-candidate count: `67`
+  - ranking misses: `56`
+  - thesis-family misses: `0`
+- `2026-06-22`
+  - snapshots: `74`
+  - labelable: `66`
+  - chosen avg R: `-1.2764`
+  - best available avg R: `0.2405`
+  - best execution-family avg R: `-0.2009`
+  - better-candidate count: `71`
+  - ranking misses: `67`
+  - thesis-family misses: `41`
+- `2026-06-23`
+  - snapshots: `53`
+  - labelable: `33`
+  - chosen avg R: `-0.2779`
+  - best available avg R: `0.0951`
+  - best execution-family avg R: `-0.1447`
+  - better-candidate count: `51`
+  - ranking misses: `36`
+  - thesis-family misses: `4`
+- `2026-06-24`
+  - snapshots: `44`
+  - labelable: `36`
+  - chosen avg R: `-1.0795`
+  - best available avg R: `-0.1651`
+  - best execution-family avg R: `-0.8993`
+  - better-candidate count: `44`
+  - ranking misses: `39`
+  - thesis-family misses: `2`
+
+### Rejection-reason evidence from the same first aggregate
+
+- Rejected reason `sigma_otm < 0.5` is not cleanly safe to keep as-is:
+  - positive-R counterfactual rate observed: `55.92%`
+  - but average R if taken is still slightly negative: `-0.0852`
+- Rejected reason `sigma_otm > max_sigma` remains clearly bad on average:
+  - average R if taken: `-0.8556`
+- Current interpretation:
+  - some rejection rules may be over-constraining useful candidates
+  - but the dominant measured problem is still ranking, not gate policy overall
+
+### Current Stage 1 conclusion
+
+- This is still only a recent Class A sample and is **not** enough to finalize strategy weights.
+- But it is now measured evidence, not speculation.
+- The most important directional conclusion is:
+  - the next high-value architecture target is likely **ranking / candidate selection**, not broad gate loosening
+- Immediate next use of this evidence:
+  - inform Claude with the measured results
+  - decide whether Stage `2` should begin with ranking-first teacher injection rather than gate-first changes
+
+## 2026-06-25 Claude audit of RANK_WRONG finding and corrected classifier rerun
+
+- Claude challenged the first `86.55% RANK_WRONG` finding and requested direct classifier-code verification.
+- The challenge was valid.
+- Local code review found three real issues in the first classifier:
+  - `best_available` was selected by realized honest `r_multiple`, which is hindsight-only
+  - `RANK_WRONG` had no meaningful margin, so tiny realized-R differences counted as failures
+  - `EXIT_DESTROYED` was checked after better-candidate comparison, so some exit failures could be absorbed into the ranking bin
+
+### Local classifier correction
+
+- Local-only patch applied to `Marketapp-git/historical_replay_harness.py`.
+- New harness constants:
+  - `HARNESS_STAGE1_R_MARGIN`, default `0.10R`
+  - `HARNESS_STAGE1_POSITIVE_R_FLOOR`, default `0.10R`
+  - `HARNESS_STAGE1_EXIT_LOSS_FLOOR`, default `-0.10R`
+- Corrected classifier behavior:
+  - exit-policy failure is checked before hindsight-best comparison
+  - tiny realized-R gaps below `0.10R` no longer count as meaningful failure
+  - pure hindsight ranking result is renamed to `RANK_WRONG_HINDSIGHT`
+  - the output no longer pretends that hindsight winner selection is entry-time proof
+- Old SQLite DB was preserved as:
+  - `Marketapp-git/historical_outcomes.pre_classifier_audit_20260625.sqlite`
+- Corrected walk was rebuilt cleanly into:
+  - `Marketapp-git/historical_outcomes.sqlite`
+
+### Corrected aggregate after rerunning same four Class A sessions
+
+- Same sessions rerun:
+  - `2026-06-19`
+  - `2026-06-22`
+  - `2026-06-23`
+  - `2026-06-24`
+- Same total Class A snapshot count:
+  - `238`
+- Corrected failure breakdown:
+  - `RANK_WRONG_HINDSIGHT`: `124 / 238` = `52.10%`
+  - `NO_VIABLE`: `111 / 238` = `46.64%`
+  - `GATE_BLOCKED`: `3 / 238` = `1.26%`
+  - `EXIT_DESTROYED`: `0 / 238` with the current strict `premium_edge > 0` criterion
+
+### Corrected interpretation
+
+- The previous `86.55% RANK_WRONG` number should be retired.
+- It was materially inflated by hindsight-best selection and missing margin.
+- Ranking / candidate selection is still a serious issue:
+  - `52.10%` of snapshots still had a better generated candidate by at least `0.10R` in hindsight
+- But the corrected evidence is no longer enough to say ranking alone dominates all failure:
+  - `NO_VIABLE` is now nearly as large at `46.64%`
+- Gate blocking remains small in this sample:
+  - `1.26%`
+- Stage 2 should therefore **not** jump directly to ranking-only injection.
+- Better next direction:
+  - continue Stage 1 measurement
+  - separate hindsight-best analysis from entry-actionable ranking evidence
+  - improve exit-policy classification because `premium_edge` is currently too weak/sparse to identify `EXIT_DESTROYED` reliably
+  - treat broad gate loosening as unsupported by current evidence
+
+### Corrected per-session failure modes
+
+- `2026-06-19`
+  - `RANK_WRONG_HINDSIGHT`: `36`
+  - `NO_VIABLE`: `31`
+- `2026-06-22`
+  - `RANK_WRONG_HINDSIGHT`: `58`
+  - `NO_VIABLE`: `16`
+- `2026-06-23`
+  - `NO_VIABLE`: `45`
+  - `RANK_WRONG_HINDSIGHT`: `5`
+  - `GATE_BLOCKED`: `3`
+- `2026-06-24`
+  - `RANK_WRONG_HINDSIGHT`: `25`
+  - `NO_VIABLE`: `19`
+
+### Corrected Stage 1 conclusion
+
+- Claude's audit improved the quality of the evidence.
+- Current state:
+  - ranking is still a major problem
+  - no-viable-market/session state is also major
+  - gate blocking is not the main problem in this sample
+  - exit-policy failure is still under-instrumented
+- Before Stage 2 live ranking changes, we need one more Stage 1 batch:
+  - entry-actionable score reconstruction from saved candidate fields
+  - cleaner exit-destroyed detection
+  - wider Class A run if data allows
+
+## 2026-06-25 Stage 1 entry-actionable ranking and exit marker batch
+
+- Claude's verdict on the corrected classifier was accepted.
+- Local-only harness was extended again in `Marketapp-git/historical_replay_harness.py`.
+- New aggregate-stage logic:
+  - builds `stage1_candidate_prior_scores`
+  - computes prior-session bucket expectancy for every Class A primary/generated candidate
+  - uses only sessions **before** the candidate's own session date
+  - requires a minimum prior bucket count through `HARNESS_STAGE1_MIN_PRIOR_BUCKET_N`, default `5`
+  - creates `stage1_entry_actionable_metrics`
+  - creates `stage1_corrected_failure_modes`
+  - creates corrected failure breakdown tables
+- This implements Claude's contamination guard:
+  - day D is not allowed to use day D's own realized outcomes to score day D candidates
+- After inspecting the first `RANK_WRONG_ENTRY_ACTIONABLE` rows, the condition was tightened further:
+  - an alternative must not only beat chosen by prior bucket score and realized R
+  - it must also realize at least `+0.10R`
+  - this prevents loss-reduction-only rows from being mislabeled as profitable/fixable ranking wins
+
+### New corrected failure split after entry-actionable logic
+
+- Same four Class A sessions:
+  - `2026-06-19`
+  - `2026-06-22`
+  - `2026-06-23`
+  - `2026-06-24`
+- Same total snapshots:
+  - `238`
+- Corrected failure split:
+  - `NO_VIABLE`: `110 / 238` = `46.22%`
+  - `RANK_WRONG_HINDSIGHT`: `99 / 238` = `41.60%`
+  - `EXIT_DESTROYED`: `26 / 238` = `10.92%`
+  - `GATE_BLOCKED`: `3 / 238` = `1.26%`
+  - `RANK_WRONG_ENTRY_ACTIONABLE`: `0 / 238` = `0.00%` under the stricter profitable-alternative definition
+
+### Interpretation after entry-actionable batch
+
+- The fixable ranking bin is much smaller than the hindsight ceiling:
+  - hindsight ceiling: `41.60%`
+  - profitable entry-actionable ranking miss: `0.00%`
+- This means the current four-day sample does not prove that prior-bucket ranking would have created profitable alternatives.
+- Some rejected intermediate rows showed loss reduction, but not profitable alternatives, so they were kept in `NO_VIABLE`.
+- `EXIT_DESTROYED` is now non-zero:
+  - `26` snapshots
+  - all currently appear on `2026-06-24`
+  - this is the first evidence that exit policy may be a real contributor, not merely ranking
+- Current strongest practical conclusion:
+  - do **not** move to ranking-only Stage 2
+  - next direction is mixed:
+    - continue measuring prior-bucket entry-actionable ranking
+    - inspect `2026-06-24` exit-destroyed rows
+    - improve exit-policy analysis before changing live ranking
+
+### Caveats
+
+- The prior bucket table is still tiny:
+  - only four Class A sessions
+  - first sessions naturally have little or no prior data
+  - `RANK_WRONG_ENTRY_ACTIONABLE` may be undercounted until more sessions exist
+- The `EXIT_DESTROYED` definition now uses positive prior bucket expectancy, which is better than sparse `premium_edge`, but still depends on small prior data.
+- Current outputs are suitable for architecture direction, not final strategy weights.
+
+## 2026-06-25 wider saved-menu Class A walk after Claude starvation verdict
+
+- Claude reviewed the `RANK_WRONG_ENTRY_ACTIONABLE = 0` result and correctly identified it as prior-bucket starvation, not a real finding.
+- Supabase saved-menu coverage was then sized locally through paged REST reads.
+- Coverage found:
+  - `1650` total `ml_brain_snapshots` rows
+  - `23` dates
+  - about `20` dates with some saved menu / primary candidate coverage
+- Notable saved-menu dates:
+  - `2026-05-29`: `61` snapshots, `59` menu rows, `44` labelable
+  - `2026-06-01`: `61`, `56`, `39`
+  - `2026-06-02`: `71`, `66`, `40`
+  - `2026-06-03`: `87`, `85`, `56`
+  - `2026-06-04`: `77`, `69`, `46`
+  - `2026-06-05`: `73`, `63`, `52`
+  - `2026-06-08`: `72`, `69`, `50`
+  - `2026-06-15`: `82`, `80`, `57`
+  - plus smaller saved-menu days from `2026-06-09` through `2026-06-18`
+  - recent days `2026-06-19`, `2026-06-22`, `2026-06-23`, `2026-06-24`
+- `2026-06-16` and `2026-06-25` had no saved menu rows and are not useful for Class A measurement.
+
+### Wider walk execution
+
+- Local harness was rerun cleanly across:
+  - `2026-05-25` through `2026-06-24`
+  - `--walk-mode class_a`
+- Previous DBs were preserved locally:
+  - `historical_outcomes.pre_classifier_audit_20260625.sqlite`
+  - `historical_outcomes.4day_entry_actionable_20260625.sqlite`
+- Current wider DB:
+  - `Marketapp-git/historical_outcomes.sqlite`
+- Wider aggregate scope:
+  - `18` Class A sessions
+  - `847` Class A snapshots
+  - `723` Class B snapshots inventoried separately
+  - `14240` outcome rows
+  - `9544` walk error rows, mostly candidate/path evaluation misses from older/sparse snapshots
+
+### Prior-bucket coverage after widening
+
+- `stage1_candidate_prior_scores`:
+  - total candidate rows: `11989`
+  - rows with usable prior bucket score: `8909`
+- `stage1_entry_actionable_metrics`:
+  - snapshots: `847`
+  - chosen rows with usable prior score: `522`
+- This means the starvation problem is no longer total.
+- The wider run is now the first usable Stage 1 measurement pass, though still not a final production strategy-weight table.
+
+### Wider corrected failure split
+
+- Corrected failure split after widening:
+  - `NO_VIABLE`: `410 / 847` = `48.41%`
+  - `RANK_WRONG_ENTRY_ACTIONABLE`: `234 / 847` = `27.63%`
+  - `RANK_WRONG_HINDSIGHT`: `164 / 847` = `19.36%`
+  - `EXIT_DESTROYED`: `36 / 847` = `4.25%`
+  - `GATE_BLOCKED`: `3 / 847` = `0.35%`
+
+### Wider-run interpretation
+
+- The `RANK_WRONG_ENTRY_ACTIONABLE` bin is no longer zero.
+- With enough saved-menu history, prior teacher bucket expectancy identifies a meaningful set of fixable ranking misses:
+  - `234` snapshots
+  - `27.63%` of measured Class A snapshots
+- `NO_VIABLE` remains the largest bin:
+  - `48.41%`
+  - meaning many snapshots still had no candidate clearing the current profitable/meaningful threshold
+- `RANK_WRONG_HINDSIGHT` remains a ceiling / irreducible-or-not-yet-knowable bucket:
+  - `19.36%`
+- `EXIT_DESTROYED` is now smaller and no longer only a single-day artifact:
+  - `4.25%`
+- `GATE_BLOCKED` remains negligible:
+  - `0.35%`
+- Current architecture implication:
+  - broad gate loosening is not supported
+  - ranking repair is now supported as a real Stage 2 candidate, but alongside `WAIT` discipline because `NO_VIABLE` remains the largest bin
+  - exit-policy repair is secondary in the wider run, not primary
+
+### Current decision state
+
+- The Stage 1 instrument has now produced a non-starved first measurement.
+- Suggested next consultation point for Claude:
+  - confirm whether this wider split is sufficient to start Stage `2A` ranking repair design
+  - preserve `NO_VIABLE` as a hard `WAIT` discipline
+  - avoid gate loosening
+  - keep exit-policy review as secondary
+
+### Prior-floor sensitivity check
+
+- User raised a valid question:
+  - should we also check lower prior-count floors so we do not later wonder whether `n>=5` hid important evidence?
+- Sensitivity check was run locally.
+- Preserved DB copies:
+  - `Marketapp-git/historical_outcomes.wide_n5_20260625.sqlite`
+  - `Marketapp-git/historical_outcomes.wide_n3_20260625.sqlite`
+  - `Marketapp-git/historical_outcomes.wide_n1_20260625.sqlite`
+- Result:
+  - lowering from `n>=5` to `n>=3` or `n>=1` did **not** change the corrected failure split on the wider dataset
+- Corrected split remained:
+  - `NO_VIABLE`: `410 / 847` = `48.41%`
+  - `RANK_WRONG_ENTRY_ACTIONABLE`: `234 / 847` = `27.63%`
+  - `RANK_WRONG_HINDSIGHT`: `164 / 847` = `19.36%`
+  - `EXIT_DESTROYED`: `36 / 847` = `4.25%`
+  - `GATE_BLOCKED`: `3 / 847` = `0.35%`
+- Coverage context:
+  - candidate rows with prior score at `n>=5`: `8909 / 11989`
+  - candidate rows with prior score at `n>=3`: `8926 / 11989`
+  - candidate rows with prior score at `n>=1`: `8992 / 11989`
+- Interpretation:
+  - after widening to 18 Class A sessions, prior-score coverage is already high
+  - lowering the floor adds only a small number of candidate rows
+  - the main architecture conclusion is stable across these thresholds
+  - official evidence should still use `n>=5`, while `n>=3` / `n>=1` remain sensitivity checks only
+
+## 2026-06-25 Claude Stage 2A verdict and verification
+
+- Claude reviewed the wider 18-session Class A result and approved the Stage `2A` direction with caveats.
+- Approved direction:
+  - inject teacher prior-bucket expectancy into live ranking
+  - preserve hard `WAIT` when candidates are negative or have insufficient prior expectancy
+  - do not broadly loosen gates
+  - keep exit-policy review as secondary Stage `2B`
+  - keep measuring bucket coverage and outcomes daily
+- Claude requested two confirmations before treating the result as stable:
+  1. confirm that `n>=5`, `n>=3`, and `n>=1` sensitivity splits were truly recomputed
+  2. quantify regime/VIX breadth of the wider walk
+
+### Sensitivity recomputation confirmation
+
+- Confirmed through separate DB files:
+  - `historical_outcomes.wide_n5_20260625.sqlite`
+  - `historical_outcomes.wide_n3_20260625.sqlite`
+  - `historical_outcomes.wide_n1_20260625.sqlite`
+- All three DBs have the same corrected failure counts:
+  - `NO_VIABLE`: `410`
+  - `RANK_WRONG_ENTRY_ACTIONABLE`: `234`
+  - `RANK_WRONG_HINDSIGHT`: `164`
+  - `EXIT_DESTROYED`: `36`
+  - `GATE_BLOCKED`: `3`
+- Chosen prior-score coverage check:
+  - total snapshots: `847`
+  - chosen rows with prior score: `536`
+  - chosen rows with `n>=5`: `522`
+  - chosen rows with `n>=3`: `527`
+  - chosen rows with `n>=1`: `536`
+- Interpretation:
+  - the identical split is plausible and now verified
+  - lowering the floor changes only a small number of chosen rows and does not flip failure assignments
+
+### Regime/VIX breadth check
+
+- Wider walk is broader than the original four sessions but still not a high-VIX/event-regime sample.
+- VIX bucket coverage from walked Class A outcomes:
+  - `VIX_16_18`: `8` sessions, `5508` outcome rows
+  - `VIX_12_14`: `7` sessions, `5130` outcome rows
+  - `VIX_14_16`: `12` sessions, `3602` outcome rows
+- Regime bucket coverage:
+  - `VIX_NORMAL`: `8` sessions, `5450` rows
+  - `VIX_VERY_LOW`: `7` sessions, `5130` rows
+  - `VIX_LOW`: `12` sessions, `3660` rows
+- Interpretation:
+  - evidence is not restricted to a single VIX bucket
+  - however, it remains low-to-normal VIX only
+  - Stage `2A` must abstain or use neutral scoring for unseen/high-VIX buckets
+  - runtime must log teacher bucket coverage so new regimes can be measured as they arrive
+
+### Stage 2A implementation boundary
+
+- The next product-code batch should not be a blind ranking rewrite.
+- It should implement a guarded teacher score:
+  - load prior `strategy_weights` / local equivalent at session start or refresh
+  - attach `teacher_r_score`, `teacher_bucket_n`, and coverage state to each candidate
+  - rank with teacher score only when bucket coverage is adequate
+  - force/allow `WAIT` when every candidate has negative or insufficient teacher expectancy
+  - log score, bucket, and coverage into snapshots for continued OODA measurement
+- Gate loosening is explicitly not supported by current evidence.
+
+## 2026-06-25 older / high-VIX data check
+
+- User asked whether the app's older runtime data, including the US/Iran conflict timeline, can be checked for higher-VIX behaviour before finalizing Stage `2A`.
+- Result:
+  - older/high-VIX data exists, but it is **not** the same evidence tier as current Class `A` saved-menu snapshots.
+
+### Evidence tiers confirmed
+
+- Current Class `A` saved snapshot coverage:
+  - `ml_brain_snapshots`: starts around `2026-05-25`, runs through `2026-06-25`
+  - `ml_option_chain_snapshots`: starts around `2026-05-25`, runs through `2026-06-25`
+  - therefore current saved-menu teacher evidence is recent only
+- Historical Class `B` reconstruction coverage:
+  - `historical_option_candles` exists
+  - earliest observed `bar_ts`: `2024-09-26T03:45:00+00:00`
+  - latest observed `bar_ts`: `2026-06-16T09:55:00+00:00`
+  - row count tracked earlier: about `874,325`
+  - `open_interest` column exists
+  - this can support future reconstructed historical replay, but only after Class `B` parity is proven
+- Local training/backtest asset:
+  - `Marketapp-git/app/src/main/assets/backtest_trades.csv`
+  - `8372` rows
+  - date range: `2024-01-01` to `2026-03-27`
+  - VIX range: `10.195` to `24.6025`
+
+### Backtest high-VIX distribution
+
+- Unique-date VIX buckets from `backtest_trades.csv`:
+  - `VIX_LT_12`: `11`
+  - `VIX_12_14`: `82`
+  - `VIX_14_16`: `86`
+  - `VIX_16_18`: `14`
+  - `VIX_18_20`: `4`
+  - `VIX_20_24`: `258`
+  - `VIX_24_PLUS`: `4`
+- Caveat:
+  - `4802` CSV rows have exactly `VIX = 20.0`
+  - this looks like a placeholder / coarse default in part of the historical training asset
+  - so it is useful for hypothesis generation, but not strong enough as final live-ranking evidence
+
+### Decision boundary from the check
+
+- Current Stage `2A` evidence remains Class `A`, low-to-normal VIX only:
+  - `VIX_12_14`
+  - `VIX_14_16`
+  - `VIX_16_18`
+- Stage `2A` must therefore:
+  - use guarded teacher ranking only where bucket coverage is adequate
+  - abstain / neutral-score unseen high-VIX buckets
+  - preserve hard `WAIT`
+  - avoid gate loosening
+- Older/high-VIX work becomes a separate Class `B` replay/parity track:
+  - reconstruct candidate menus from `historical_option_candles`
+  - first prove parity on known Class `A` days
+  - then walk event/high-VIX periods
+  - only then allow high-VIX bucket weights to influence live ranking
+
+- Claude handoff created:
+  - `RESPONSE_CLAUDE_HIGH_VIX_DATA_CHECK_20260625.md`
+
+## 2026-06-26 guarded Stage 2A implementation checkpoint
+
+- Implemented the approved guarded Stage `2A` product-code batch locally.
+- No push has been done yet.
+- Scope remains Class `A` only:
+  - current teacher ranking table is derived from recent saved-menu Class `A` evidence
+  - high-VIX / older data remains separate Class `B` replay/parity research
+  - live high-VIX buckets must abstain until Class `B` parity is proven
+
+### Marketapp implementation
+
+- Added packaged Stage `2A` teacher table:
+  - `Marketapp-git/app/src/main/assets/teacher_table_stage2a.json`
+  - generated from local `historical_outcomes.sqlite::strategy_weights_local`
+  - row count: `46`
+  - minimum prior bucket floor: `5`
+- Android now copies `teacher_table_stage2a.json` from assets into app files on update.
+- Runtime context passed into Python now includes:
+  - `stage2a_mode`
+  - `stage2a_min_prior_bucket_n`
+  - `stage2a_teacher_table_path`
+- Added native bridge controls:
+  - `getStage2AGuardMode()`
+  - `setStage2AGuardMode(mode)`
+  - valid modes: `off`, `shadow`, `live`
+  - default mode: `shadow`
+
+### Python brain changes
+
+- Added Stage `2A` teacher-table load/cache and candidate annotation.
+- Every generated candidate can now receive:
+  - `teacher_bucket_key`
+  - `teacher_bucket_n`
+  - `teacher_r_score`
+  - `teacher_success_rate_pct`
+  - `teacher_coverage`
+  - `teacher_recommendable`
+  - `deterministic_rank`
+  - `teacher_shadow_rank`
+  - `stage2a_live_rank`
+- Coverage states distinguish:
+  - covered positive bucket
+  - covered negative bucket
+  - thin bucket
+  - unseen bucket
+  - table unavailable
+- `rank_candidates(...)` can optionally use teacher expectancy ranking.
+- `shadow` mode:
+  - computes teacher ranking
+  - stamps shadow rank
+  - logs top-candidate comparison
+  - does not drive live decision
+- `live` mode:
+  - allows teacher expectancy ranking to drive ordering
+  - preserves hard `WAIT`
+  - forces `WAIT` if no candidate has positive covered teacher expectancy
+  - uses `TEACHER_ONLY` decision source for the guarded teacher path
+- Gate thresholds were not loosened.
+- Confidence semantics were not changed.
+
+### Snapshot and notification contract logging
+
+- Saved snapshot context now includes `snapshot_stage2a`.
+- Primary candidate and candidate views now preserve Stage `2A` rank/coverage metadata.
+- Brain notification contract now includes:
+  - `teacher_r_score`
+  - `teacher_bucket_n`
+  - `teacher_coverage`
+- This is required so post-close review can compare deterministic ranking versus teacher shadow ranking.
+
+### Daily teacher research artifact changes
+
+- `session_teacher_research_report(...)` now aggregates Stage `2A` shadow evidence from saved snapshots:
+  - snapshot count
+  - mode counts
+  - table-ready count
+  - shadow compared count
+  - shadow top-changed count and rate
+  - live compared count
+  - live top-changed count and rate
+  - hard-WAIT count
+  - covered / positive / thin / unseen snapshot counts
+  - chosen candidate coverage mix
+  - average chosen teacher bucket size
+  - average chosen teacher R
+- Added report-level audit status:
+  - `READY_FOR_MANUAL_REVIEW`
+  - `COLLECT_MORE_SHADOW`
+  - `NO_EVIDENCE`
+- Added explicit Stage `2A` `blocked_reasons` so the app can explain why the shadow audit is not review-ready.
+- Genuine zero-candidate / no-evaluable-leg sessions now report Class `A` gate status as `N/A` instead of false `FAIL`.
+
+### PWA implementation
+
+- Added Stage `2A` mode control in ML controls:
+  - `Off`
+  - `Shadow`
+  - `Live`
+- Added live Stage `2A` runtime display:
+  - table ready / unavailable
+  - coverage counts
+  - deterministic top versus shadow top when changed
+  - hard-WAIT reason when triggered
+- Added dedicated `Stage 2A Shadow Audit` card from the daily teacher research artifact:
+  - audit status
+  - blockers
+  - table readiness
+  - shadow top-change rate
+  - coverage counts
+  - hard-WAIT count
+  - chosen coverage
+  - average teacher bucket size and R
+  - modes observed
+- `Daily Teacher Research` also shows the summarized Stage `2A` shadow comparison.
+- Class `A Correctness Gate` now treats genuine empty sessions as `N/A`.
+
+### Tests and verification
+
+- Added focused tests:
+  - `Marketapp-git/app/src/main/python/tests/test_stage2a_guarded_ranking.py`
+- Tests cover:
+  - unseen high-VIX bucket abstains
+  - live guard forces `WAIT` when all teacher buckets are non-positive
+  - live ranking prefers a positive covered teacher bucket
+  - teacher research report aggregates Stage `2A` shadow evidence
+  - zero-evidence / no-candidate session reports `NO_EVIDENCE` and Class `A` `N/A`
+- Verification run:
+  - `python3 -m unittest app/src/main/python/tests/test_stage2a_guarded_ranking.py` -> `OK`
+  - `python3 -m unittest app/src/main/python/tests/test_unified_brain_notification.py` -> `OK`
+  - `python3 -m py_compile app/src/main/python/brain.py app/src/main/python/tests/test_stage2a_guarded_ranking.py` -> `OK`
+  - `node --check app.js` -> `OK`
+
+### Current boundary and next decision
+
+- Stage `2A` is implemented locally but not pushed.
+- The app should remain in `shadow` until the post-close artifact shows enough evidence for manual review.
+- `live` mode exists as a guarded switch, but should not be treated as approved for real decision use until shadow evidence is reviewed.
+- Next clean work options:
+  1. push both repos with synchronized version bump and signed Android release when user confirms
+  2. start separate Class `B` parity harness work
+  3. continue rejected-candidate / failure-mode evidence preservation
+
+## 2026-06-26 release prep for guarded Stage 2A checkpoint
+
+- User chose to push the completed guarded Stage `2A` checkpoint before starting Class `B` parity work.
+- Release target prepared:
+  - Android / brain / PWA version: `v2.4.67`
+  - build code: `b298`
+- Version surfaces updated:
+  - `Marketapp-git/app/build.gradle.kts`
+  - `Marketapp-git/app/src/main/python/brain.py`
+  - `MarketVivi-git/index.html`
+- PWA cache-bust advanced:
+  - `app.js?v=1223`
+- Signed Android release should trigger after `Marketapp` push because `app/build.gradle.kts` changed.
+- Local SQLite research artifacts remain uncommitted and should not be pushed:
+  - `historical_outcomes.sqlite`
+  - `historical_outcomes.pre_classifier_audit_20260625.sqlite`
+  - `historical_outcomes.4day_entry_actionable_20260625.sqlite`
+  - `historical_outcomes.wide_n1_20260625.sqlite`
+  - `historical_outcomes.wide_n3_20260625.sqlite`
+  - `historical_outcomes.wide_n5_20260625.sqlite`
