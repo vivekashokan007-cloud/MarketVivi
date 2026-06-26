@@ -6233,3 +6233,23 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `historical_outcomes.wide_n1_20260625.sqlite`
   - `historical_outcomes.wide_n3_20260625.sqlite`
   - `historical_outcomes.wide_n5_20260625.sqlite`
+
+### 2026-06-26 b298 CI failure and b299 retry
+
+- Initial push completed:
+  - `Marketapp`: `ebce89d`
+  - `MarketVivi`: `d57d0e6`
+- GitHub Debug APK Validation failed before APK build in the Python brain-mode validation step.
+- Failure:
+  - `brain.analyze()` returned `candidate_error = "Object of type set is not JSON serializable"`
+  - generated candidates were `0`, causing the CI assertion to fail
+- Root cause:
+  - new Stage `2A` annotation used `json.dumps(ctx)` to resolve VIX
+  - existing brain context may contain Python `set` values such as learned branch allow/block sets
+  - serializing the full context was unsafe
+- Fix:
+  - Stage `2A` now reads VIX directly from known context keys instead of serializing the full context
+- Retry release target:
+  - Android / brain / PWA version: `v2.4.68`
+  - build code: `b299`
+  - PWA cache-bust: `app.js?v=1224`
