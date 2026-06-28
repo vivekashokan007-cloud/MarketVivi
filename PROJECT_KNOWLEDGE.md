@@ -1,3 +1,79 @@
+## 2026-06-28 Stage 2A teacher rebuild locked; shadow ship release prep
+
+- Release target for the next synchronized push is:
+  - Android / brain / PWA version: `v2.4.69`
+  - build code: `b300`
+  - PWA cache-bust: `app.js?v=1225`
+- Scope locked for this release:
+  - verified `teacher_table_stage2a.json` shipped as app asset
+  - Stage `2A` runtime remains `shadow` only
+  - no teacher live cutover
+  - no verdict / ranking / notification behavior change from the teacher path
+
+### Teacher table rebuild outcome
+
+- Corrected the Stage `2A` bucket success-rate bug:
+  - teacher-table bucket wins are now counted from `realized_r > 0`
+  - they are no longer tied to teacher `is_success` / TP-only semantics
+- Added a permanent build-time math-consistency gate in `historical_replay_harness.py`:
+  - fail if `avg_r > 0` with `success_rate_pct == 0`
+  - fail if `avg_r < 0` with `success_rate_pct == 100`
+  - fail if `success_rate_pct` falls outside `0..100`
+- Verified anchor bucket after the fix:
+  - `IRON_CONDOR | VIX_NORMAL | VIX_16_18 | DTE_1`
+  - `n = 1067`
+  - `avg_r = +0.0324`
+  - `success_rate_pct = 83.88`
+- Verified impossible bucket pairings remaining after rebuild:
+  - `0`
+- Teacher-table loader proof:
+  - `_stage2a_load_teacher_table(...)` returns `row_count = 46`
+  - loader `error = None`
+  - `min_prior_bucket_n = 5`
+
+### Shadow-ship proof
+
+- Runtime wiring was already present and verified:
+  - `MainActivity.kt` copies `teacher_table_stage2a.json` from assets into `filesDir`
+  - `MarketWatchService.kt` injects:
+    - `stage2a_teacher_table_path = File(filesDir, "teacher_table_stage2a.json").absolutePath`
+    - `stage2a_mode`
+    - `stage2a_min_prior_bucket_n = 5`
+- Explicit mode target for shipping remains:
+  - `stage2a_mode = shadow`
+- Verified with a real saved snapshot replay:
+  - `session_date = 2026-06-24`
+  - `snapshot_id = 1496`
+  - `poll_ts = 2026-06-24T03:55:08+00:00`
+- Side-by-side proof:
+  - `off` verdict: `BUY PREMIUM / BEAR_PUT / confidence 45`
+  - `shadow` verdict: `BUY PREMIUM / BEAR_PUT / confidence 45`
+  - top candidate unchanged: `BEAR_PUT_BNF_56900_57500_W600`
+  - `stage2a.mode = shadow`
+  - `stage2a.table_ready = true`
+- Operational conclusion:
+  - the teacher table is now live in the build as a measured asset
+  - tomorrow's market still sees zero teacher influence on actual trade choice
+  - the teacher path is observable but not active
+
+### Local verification status before push
+
+- `python3 -m py_compile historical_replay_harness.py app/src/main/python/brain.py` -> OK
+- `git diff --check` -> OK
+- The large local diagnostic artifacts remain intentionally unpushed:
+  - Claude consultation notes
+  - `matrix_report.txt`
+  - `teacher_table_stage2a_candidates.jsonl`
+  - `parity_data/`
+  - `reingest_checkpoint.db`
+- Intended pushed runtime payload is limited to:
+  - `Marketapp-git/app/src/main/python/brain.py`
+  - `Marketapp-git/historical_replay_harness.py`
+  - `Marketapp-git/app/src/main/assets/teacher_table_stage2a.json`
+  - `Marketapp-git/app/build.gradle.kts`
+  - `MarketVivi-git/index.html`
+  - `MarketVivi-git/PROJECT_KNOWLEDGE.md`
+
 ## 2026-06-25 Reevaluation Baseline Recovery + Stage 1 Architecture Lock
 
 - Release progression across both repos is now:
@@ -6253,3 +6329,152 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - Android / brain / PWA version: `v2.4.68`
   - build code: `b299`
   - PWA cache-bust: `app.js?v=1224`
+
+## 2026-06-28 Class B historical replay / candle reingest status
+
+- Class `B` objective is now defined as a structural historical validator, not an economic teacher:
+  - expected to validate ATM, strike universe, walls, PCR, max pain, OI-derived structure, sigma gates, and candidate-family enumeration
+  - not expected to reproduce exact bid/ask-derived credit, credit/width, R, or P&L from candle close data
+  - every Class `B` economic number must remain labeled approximate because historical candles do not contain live bid/ask
+- Supabase had transient `521` / timeout behavior during Class `B` probing after a Disk IO budget warning.
+  - heavy Class `B` reads were paused
+  - tiny health checks later recovered enough to continue bounded extraction
+  - future historical pulls must stay bounded/checkpointed and newest-first
+
+### Reingest and data coverage
+
+- Created standalone local script:
+  - `Marketapp-git/reingest_historical_candles.py`
+- Script behavior:
+  - uses Upstox option contract catalog
+  - newest-first expiry order
+  - phase-gated runs: `A`, `B`, `C`, `full`
+  - checkpointed SQLite state in `reingest_checkpoint.db`
+  - rate-limited Upstox fetches
+  - small Supabase insert batches
+  - dry-run / audit support
+- Dry-run proof:
+  - `BNF 2026-05-26`: about `44k` reachable candle rows
+  - `NF 2026-05-26`: about `45k` reachable candle rows
+  - filter audit confirmed `102` contracts = `51` strikes x `2` option types
+- Phase `A` reingest completed through the `2026-05-01` boundary.
+- A stale local checkpoint falsely marked `NF 2026-06-16` as done with zero rows.
+  - cleared only that stale checkpoint state
+  - re-ran `NF 2026-06-16`
+  - inserted `43,278` rows
+  - Supabase coverage for `2026-06-15` / `NF 2026-06-16` became:
+    - rows: `7,710`
+    - strike min: `22600`
+    - strike max: `25150`
+    - distinct strikes: `52`
+- `BNF` is still blocked for the tested Class `B` day because local extracted BNF candle rows are absent.
+
+### Class B parity harness changes
+
+- `Marketapp-git/historical_replay_harness.py` now has Class `B` local extract/replay tooling:
+  - local `parity_data/` artifacts
+  - structural-only bid/ask approximation from candle close
+  - menu divergence diagnostics
+  - BNF absence classified as `BLOCKED`, not replay failure
+  - skipped-expiry and data-coverage checks
+- ATM anchor was tested after the skipped-expiry fix and is already correct on snapshot `937`:
+  - saved `nfSpot`: `23964.15`
+  - reconstructed `nfSpot`: `23964.15`
+  - saved `nfChain.atm`: `23950`
+  - reconstructed `nfChain.atm`: `23950`
+- Menu divergence before bar fix:
+  - snapshot: `2026-06-15T03:46:55+00:00`, id `937`
+  - saved generated: `27`
+  - replay generated: `23`
+  - actual set delta was not merely four missing:
+    - missing from replay: `10`
+    - replay-only: `6`
+  - five missing candidates were rejected by replay as `credit_ratio_below_floor`
+  - five missing candidates were not in replay-generated or replay-rejected
+- Claude then identified the bar-alignment issue:
+  - Class `B` reconstruction was effectively using late-session / last candle prices for some strike rows
+  - root local cause: Class `B` used `_outcome_poll_ts`, which can prefer `snapshot_latest_poll.t` values such as `09:16` instead of the database ISO `poll_ts`
+- Bar-alignment fix implemented:
+  - Class `B` reconstruction now anchors on snapshot row `poll_ts`
+  - floors to the correct 5-minute bar
+  - selects exact `bar_ts`
+  - falls back only to the latest bar at or before poll time
+  - never uses future bars
+- Verification on snapshot `937`:
+  - `NF 24100 CE`
+  - poll: `2026-06-15T03:46:55+00:00`
+  - target bar: `2026-06-15T03:45:00+00:00`
+  - selected bar: `2026-06-15T03:45:00+00:00`
+  - close: `39.6`
+  - approximated bid/ask: `39.01 / 40.19`
+- After bar fix:
+  - saved generated: `27`
+  - replay generated: `25`
+  - missing from replay: `7`
+  - replay-only: `5`
+  - rejected sample still matched
+  - remaining explicit economic reject:
+    - `BEAR_CALL_NF_24100_24500_W400`
+    - saved credit/width: `0.1031`
+    - replay candle-close approximate credit/width: `0.0876`
+
+### Current Class B boundary
+
+- Bar-alignment bug is fixed locally.
+- Class `B` parity is improved but not exact.
+- Final feasibility decision on `2026-06-28`: exact Class `B` candidate-menu parity cannot be achieved from the current Upstox `historical_option_candles` dataset alone.
+- Controlled proof:
+  - saved live chain at `2026-06-15`, snapshot `959` generated `23` current-brain NF candidates
+  - reconstructed Upstox candle chain generated `25`
+  - forcing reconstructed `atmIv` from saved chain removed false Iron Butterfly passes but did not restore exact parity
+  - degrading the saved live chain to synthetic candle-style bid/ask changed the menu even without reconstruction
+- Root data boundary:
+  - brain candidate generation uses live bid, ask, and `atmIv`
+  - Upstox historical candle rows provide OHLC, volume, OI, and instrument key
+  - historical bid/ask and IV are absent, so exact economic gates cannot be replayed
+- Contract change:
+  - old Upstox data can support structural / simulated Class `B` research only
+  - it must not be used for exact live menu parity, exact teacher R calibration, or exact expectancy claims
+  - future exact Class `B` replay requires persisting full live quote snapshots with bid/ask/IV at poll time
+- Class `B` should not be used for real expectancy / teacher R calibration.
+- Class `A` saved live bid/ask remains the source of truth for teacher training and economic scoring.
+- Existing Class `B` artifacts for Claude:
+  - `CLASS_B_MENU_DIVERGENCE_FOR_CLAUDE_20260628.md`
+  - `CLASS_B_BAR_ALIGNMENT_AND_CEILING_FOR_CLAUDE_20260628.md`
+  - `CLASS_B_RANGE_DETECTED_ROOTCAUSE_FOR_CLAUDE_20260628.md`
+  - `CLASS_B_FINAL_FEASIBILITY_DECISION_20260628.md`
+
+### 2026-06-28 Supabase live-data replay audit
+
+- User asked whether the app's own live-collected Supabase data can be used instead of Upstox historical candles for parity / replay.
+- Direct Supabase audit found:
+  - `ml_brain_snapshots`: `1650` rows
+    - first: `2026-05-25T07:44:31+00:00`
+    - last: `2026-06-25T10:00:08+00:00`
+  - `ml_option_chain_snapshots`: about `340k` rows
+    - first: `2026-05-25T07:57:04+00:00`
+    - last: `2026-06-25T10:00:07+00:00`
+    - columns include real `ltp`, `bid`, `ask`
+  - `chain_snapshots`: `56` rows
+    - date span: `2026-03-20` to `2026-04-28`
+    - summary-level only; no full per-strike bid/ask/IV chain dictionaries
+- Replayability conclusion:
+  - strong usable exact-replay window: `2026-06-01` through `2026-06-25`
+  - partial usable day: `2026-05-29` from later chain-rich rows
+  - weak / not exact replayable: `2026-05-25` through `2026-05-27` sampled rows had no full chain in `context_json`
+  - older March/April `chain_snapshots` are summary-only and not enough for exact brain candidate replay
+- Important distinction:
+  - app-collected `ml_brain_snapshots.context_json` can replay the current brain on saved live market state because it preserves full `nfChain` / `bnfChain` with bid/ask/IV/greeks/OI/instrument keys
+  - it does not guarantee old-code parity because the historical APK brain version may differ from current `brain.py`
+- Recommended direction:
+  - abandon Upstox candle data for exact parity
+  - use saved app live snapshots for exact replay / current-brain counterfactuals in the usable window
+  - keep Class `A` as economic truth source
+  - ensure future snapshots persist full generated candidates and full rejected candidates (`snapshot_rejected_candidates_full`) so daily parity accumulates correctly
+- Audit artifact:
+  - `Marketapp-git/SUPABASE_LIVE_DATA_REPLAY_AUDIT_20260628.md`
+- Local verification completed:
+  - `python3 -m py_compile historical_replay_harness.py` -> OK
+  - `git diff --check` -> OK
+  - `python3 -m unittest app.src.main.python.tests.test_stage2a_guarded_ranking` -> OK
+- No push has been done for these Class `B` local changes.
