@@ -653,6 +653,9 @@ const DB = {
 
 function sanitizeTradeForInsert(trade = {}) {
     const clone = { ...trade };
+    const entrySnapshot = clone.entry_snapshot && typeof clone.entry_snapshot === 'object'
+        ? clone.entry_snapshot
+        : {};
     const marginSnapshot = {
         real_margin: clone.real_margin ?? null,
         upstox_required_margin: clone.upstox_required_margin ?? null,
@@ -661,9 +664,16 @@ function sanitizeTradeForInsert(trade = {}) {
         margin_quote_source: clone.margin_quote_source ?? null
     };
     clone.entry_snapshot = {
-        ...(clone.entry_snapshot && typeof clone.entry_snapshot === 'object' ? clone.entry_snapshot : {}),
+        ...entrySnapshot,
+        lot_size: entrySnapshot.lot_size ?? entrySnapshot.lotSize ?? clone.lot_size ?? clone.lotSize ?? null,
+        sell_oi2: entrySnapshot.sell_oi2 ?? clone.entry_sell_oi2 ?? null,
         margin_quote: marginSnapshot
     };
+    // Current trades_v2 schema lacks top-level lot_size / entry_sell_oi2. Persist
+    // through entry_snapshot until the database schema is widened.
+    delete clone.lot_size;
+    delete clone.lotSize;
+    delete clone.entry_sell_oi2;
     delete clone.real_margin;
     delete clone.upstox_required_margin;
     delete clone.upstox_final_margin;
@@ -1144,7 +1154,8 @@ function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthCo
     const indexKey = String(tradeLike.index_key || tradeLike.indexKey || 'BNF').toUpperCase() === 'NF' ? 'NF' : 'BNF';
     const strategyType = String(tradeLike.strategy_type || tradeLike.strategyType || '').toUpperCase();
     const legCount = Number(tradeLike.leg_count || tradeLike.legCount || ((strategyType === 'IRON_CONDOR' || strategyType === 'IRON_BUTTERFLY') ? 4 : 2)) || 2;
-    const lotSize = Number(tradeLike.lot_size || tradeLike.lotSize || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT)) || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT);
+    const snap = tradeLike.entry_snapshot && typeof tradeLike.entry_snapshot === 'object' ? tradeLike.entry_snapshot : {};
+    const lotSize = Number(tradeLike.lot_size || tradeLike.lotSize || snap.lot_size || snap.lotSize || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT)) || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT);
     const rates = teacherChargeRates(tradeLike, config);
     const sellLtp = tradeLegPrice(tradeLike, 'sellLTP');
     const buyLtp = tradeLegPrice(tradeLike, 'buyLTP');
@@ -2220,6 +2231,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         entry_futures_premium: isBNF ? latestPoll.futuresPremBnf : (latestPoll.futuresPremNf || (JSON.parse(NativeBridge.getNfChain() || '{}'))?.futuresPremium),
         entry_max_pain: isBNF ? (latestPoll.maxPainBnf ?? (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? (JSON.parse(NativeBridge.getBaseline() || '{}'))?.maxPainNf),
         entry_sell_oi: strikeLeg(cand.sellStrike, cand.sellType).oi ?? null,
+        entry_sell_oi2: cand.sellStrike2 ? (strikeLeg(cand.sellStrike2, cand.sellType2).oi ?? null) : null,
+        lot_size: entryLotSize,
         entry_bias: latestPoll.bias?.label,
         entry_bias_net: latestPoll.bias?.net,
         entry_regime: bd.institutionalRegime?.regime || null,
@@ -2565,6 +2578,8 @@ async function logManualTrade() {
             const ch = indexKey === 'BNF' ? safeParseNB(NativeBridge.getBnfChain(), {}) : safeParseNB(NativeBridge.getNfChain(), {});
             return ch?.strikes?.[sellStrike]?.[sellType]?.oi ?? null;
         })(),
+        entry_sell_oi2: null,
+        lot_size: lotSize,
         entry_bias: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.label || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.label,
         entry_bias_net: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.net || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.net,
         entry_regime: bd.institutionalRegime?.regime || null,
@@ -2599,6 +2614,11 @@ async function logManualTrade() {
             bias_signals: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
             morning_bias: bd.morningBias?.label || null,
             bias_drift: STATE.biasDrift ?? 0,
+            sell_oi: (() => {
+                const ch = indexKey === 'BNF' ? safeParseNB(NativeBridge.getBnfChain(), {}) : safeParseNB(NativeBridge.getNfChain(), {});
+                return ch?.strikes?.[sellStrike]?.[sellType]?.oi ?? null;
+            })(),
+            sell_oi2: null,
             regime: bd.institutionalRegime?.regime || null,
             bnf_breadth_pct: safeParseNB(NativeBridge.getBnfBreadth(), {})?.pct ?? null,
             dow_close: (JSON.parse(NativeBridge.getGlobalDirection() || '{}'))?.dowClose ?? null,
@@ -4344,6 +4364,15 @@ function renderTradeCard(t, isPaper) {
     const dots = alignmentDots(forces.aligned);
 
     const ci = t.controlIndex;
+    const livePosition = bd.position_live?.[String(t.id)] || {};
+    const valuationQuality = t.valuation_quality || t.valuationQuality || livePosition.valuation_quality || 'unknown';
+    const legsRequired = t.legs_required ?? livePosition.legs_required ?? null;
+    const legsQuoted = t.legs_quoted ?? livePosition.legs_quoted ?? null;
+    const fallbackLegs = t.legs_intrinsic_fallback ?? livePosition.legs_intrinsic_fallback ?? null;
+    const lotAssumed = t.lot_size_assumed ?? livePosition.lot_size_assumed ?? false;
+    const controlMeta = t.controlIndexMeta || t.control_index_meta || bd.positions?.[String(t.id)]?.controlIndexMeta || {};
+    const signalPct = controlMeta.signal_completeness_pct ?? null;
+    const dataDegraded = valuationQuality !== 'unknown' && valuationQuality !== 'full';
     let ciColor = 'var(--text-muted)', ciLabel = 'Calculating...';
     if (ci !== null && ci !== undefined) {
         ciColor = ci > 20 ? 'var(--green)' : ci < -20 ? 'var(--danger)' : 'var(--warn)';
@@ -4401,6 +4430,9 @@ function renderTradeCard(t, isPaper) {
             </div>
             ${t.wallDrift ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.wallDrift.severity >= 2 ? 'var(--danger)' : 'var(--warn)'}">
                 ${t.wallDrift.warning}
+            </div>` : ''}
+            ${(dataDegraded || lotAssumed || signalPct !== null) ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${dataDegraded || lotAssumed ? 'var(--warn)' : 'var(--text-muted)'};border-top:1px solid var(--border)">
+                🧪 Mark quality: <b>${valuationQuality.toUpperCase()}</b>${legsRequired !== null ? ` · quotes ${legsQuoted ?? 0}/${legsRequired}` : ''}${fallbackLegs ? ` · intrinsic fallback ${fallbackLegs}` : ''}${lotAssumed ? ' · lot assumed' : ''}${signalPct !== null ? ` · CI signals ${signalPct}%` : ''}
             </div>` : ''}
             ${t.vixSpike && t.vixSpike.change >= 0.5 ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.vixSpike.change >= 2.0 ? 'var(--danger)' : t.vixSpike.change >= 1.0 ? 'var(--warn)' : 'var(--text-muted)'}">
                 🌡️ VIX ${t.vixSpike.entryVix.toFixed(1)}→${t.vixSpike.currentVix.toFixed(1)} (${t.vixSpike.change > 0 ? '+' : ''}${t.vixSpike.change}${t.vixSpike.change >= 2.0 ? ' ⚠️ SPIKE — EXIT' : t.vixSpike.change >= 1.0 ? ' — rising' : ''})

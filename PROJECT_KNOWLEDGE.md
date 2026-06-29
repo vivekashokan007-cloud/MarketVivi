@@ -1,3 +1,30 @@
+## 2026-06-29 Live position integrity OODA fix
+
+- Release target for the synchronized push is:
+  - Android / brain / PWA version: `v2.4.74`
+  - build code: `b305`
+  - PWA cache-bust: `app.js?v=1229`
+- Scope:
+  - live position safety only
+  - no teacher replay / teacher table logic changed
+- Fixes:
+  - candidate and manual trade runtime objects now capture `lot_size` and `entry_sell_oi2` forward-only
+  - current `trades_v2` schema still lacks top-level `lot_size` and `entry_sell_oi2`, so PWA insert sanitization mirrors them into `entry_snapshot` and strips unsupported top-level columns to avoid repeating schema-cache insert failures
+  - `brain.compute_control_index(...)` now supports detailed output with `signals_available`, `signal_completeness_pct`, unknown signal names, and component metadata
+  - missing `entry_max_pain` no longer self-falls back to current max pain; it is marked UNKNOWN instead of falsely stable
+  - `entry_sell_oi2` consumer now reads top-level or `entry_snapshot.sell_oi2`
+  - `brain.compute_position_live(...)` now returns `legs_required`, `legs_quoted`, `legs_intrinsic_fallback`, `fallback_legs`, `valuation_quality`, `lot_size_assumed`, and `lot_size_source`
+  - degraded live marks are logged as `POSITION_VALUATION_DEGRADED`
+  - strong position alerts are suppressed when live valuation is degraded or CI signal completeness is below `60%`
+  - position verdict reasons now carry an explicit incomplete-data warning if a BOOK/EXIT action is produced under degraded data
+  - positions UI shows mark quality, quote count, intrinsic fallback count, lot-size assumption, and CI signal completeness when available
+- Lot-size resolution:
+  - app/brain constants remain `BNF=30`, `NF=65`
+  - new trades should carry explicit `lot_size`; fallback path now exposes `lot_size_assumed=true`
+- Relationship to previous pending batch:
+  - includes the earlier `v2.4.73/b304` pre-poll position monitor honesty fix
+  - supersedes release target to `v2.4.74/b305` before push
+
 ## 2026-06-29 Position monitor pre-poll honesty fix
 
 - Release target for the synchronized push is:
