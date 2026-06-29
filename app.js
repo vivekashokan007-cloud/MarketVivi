@@ -603,7 +603,8 @@ const DB = {
         try {
             const sb = this.supabase;
             if (!sb) throw new Error('Supabase client unavailable');
-            const { data, error } = await sb.from('trades_v2').insert(trade).select('id').single();
+            const dbTrade = sanitizeTradeForInsert(trade);
+            const { data, error } = await sb.from('trades_v2').insert(dbTrade).select('id').single();
             if (error) throw error;
             return data || { id: trade.id };
         } catch (e) {
@@ -649,6 +650,27 @@ const DB = {
         }
     }
 };
+
+function sanitizeTradeForInsert(trade = {}) {
+    const clone = { ...trade };
+    const marginSnapshot = {
+        real_margin: clone.real_margin ?? null,
+        upstox_required_margin: clone.upstox_required_margin ?? null,
+        upstox_final_margin: clone.upstox_final_margin ?? null,
+        margin_quote_status: clone.margin_quote_status ?? null,
+        margin_quote_source: clone.margin_quote_source ?? null
+    };
+    clone.entry_snapshot = {
+        ...(clone.entry_snapshot && typeof clone.entry_snapshot === 'object' ? clone.entry_snapshot : {}),
+        margin_quote: marginSnapshot
+    };
+    delete clone.real_margin;
+    delete clone.upstox_required_margin;
+    delete clone.upstox_final_margin;
+    delete clone.margin_quote_status;
+    delete clone.margin_quote_source;
+    return clone;
+}
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -1796,7 +1818,10 @@ function realMarginValue(c) {
         'upstoxRequiredMargin',
         'upstox_required_margin',
         'marginQuote.final_margin',
-        'marginQuote.required_margin'
+        'marginQuote.required_margin',
+        'entry_snapshot.margin_quote.real_margin',
+        'entry_snapshot.margin_quote.upstox_final_margin',
+        'entry_snapshot.margin_quote.upstox_required_margin'
     );
 }
 
@@ -2420,11 +2445,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             buy_ltp: trade.buy_ltp,
             max_profit: trade.max_profit,
             max_loss: trade.max_loss,
-            real_margin: trade.real_margin ?? null,
-            upstox_required_margin: trade.upstox_required_margin ?? null,
-            upstox_final_margin: trade.upstox_final_margin ?? null,
-            margin_quote_status: trade.margin_quote_status ?? null,
-            margin_quote_source: trade.margin_quote_source ?? null,
+            entry_snapshot: trade.entry_snapshot,
             is_credit: trade.is_credit,
             force_alignment: trade.force_alignment,
             entry_bias: trade.entry_bias,

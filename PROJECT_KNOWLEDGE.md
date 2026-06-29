@@ -1,3 +1,26 @@
+## 2026-06-29 Trade insert schema-cache fix
+
+- Release target for the synchronized push is:
+  - Android / brain / PWA version: `v2.4.72`
+  - build code: `b303`
+  - PWA cache-bust: `app.js?v=1227`
+- Reason:
+  - `v2.4.71/b302` fixed paper charge display and real margin display
+  - but paper trade Supabase insert failed because new margin fields were sent as top-level `trades_v2` columns
+  - Supabase error: `Could not find the 'margin_quote_source' column of 'trades_v2' in the schema cache`
+- Fix:
+  - `DB.insertTrade(...)` sanitizes trade payload before inserting into `trades_v2`
+  - margin quote evidence is preserved under existing `entry_snapshot.margin_quote`
+  - top-level transient margin fields are stripped from the DB insert payload
+  - essential retry insert also keeps only schema-safe fields
+  - position display can read margin from either local top-level fields or persisted `entry_snapshot.margin_quote`
+- Verification:
+  - log confirmed Upstox margin quote API continued returning final margin ~`₹73.6K`
+  - screenshot confirmed corrected paper round-trip cost showed `₹233` and net `₹-215`
+  - `node --check MarketVivi-git/app.js` passed
+  - `python3 -m py_compile Marketapp-git/app/src/main/python/brain.py` passed
+  - `git diff --check` passed in both repos
+
 ## 2026-06-29 Margin UI + paper charge correction release
 
 - Release target for the synchronized push is:
