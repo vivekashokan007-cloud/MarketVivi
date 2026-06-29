@@ -1,3 +1,37 @@
+## 2026-06-29 Read-only Upstox margin quote ship
+
+- Release target for the synchronized push is:
+  - Android / brain / PWA version: `v2.4.70`
+  - build code: `b301`
+- Scope added in this release:
+  - Upstox read-only margin quote integration for the top surfaced candidate
+  - endpoint used: `POST https://api.upstox.com/v2/charges/margin`
+  - no order placement path added
+  - no ranking, gating, sizing, or notification behavior change
+- Runtime behavior:
+  - sends the candidate's full leg basket together as one margin request
+  - uses live bearer token already present in `MarketWatchService`
+  - caches per poll cycle / basket key
+  - annotates result with:
+    - `realMargin`
+    - `upstoxRequiredMargin`
+    - `upstoxFinalMargin`
+    - `upstoxSpanMargin`
+    - `upstoxExposureMargin`
+    - `upstoxNetBuyPremium`
+  - logs side-by-side:
+    - brain max loss
+    - Upstox required margin
+    - Upstox final margin
+    - span / exposure / net buy premium
+- Snapshot persistence:
+  - margin annotation fields are preserved in Python candidate snapshot views
+  - this keeps the data visible for post-close teacher review
+- Verification completed locally:
+  - `python3 -m py_compile app/src/main/python/brain.py` passed
+  - `git diff --check` passed
+  - Kotlin compile could not be run in Codex container because `JAVA_HOME` / `java` were unavailable
+
 ## 2026-06-28 Stage 2A teacher rebuild locked; shadow ship release prep
 
 - Release target for the next synchronized push is:
