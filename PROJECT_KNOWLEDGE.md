@@ -1,3 +1,28 @@
+## 2026-06-29 v2.4.74/b305 live validation
+
+- User confirmed Android update arrived and app header shows `v2.4.74 · b305`.
+- Uploaded live log `marketapp-logs-2026-06-29T09-01-27-803Z.csv` and screenshots around `14:29-14:30 IST` were checked.
+- Confirmed good:
+  - no error-level log rows
+  - no `Trade Insert Failed`
+  - no Supabase schema-cache insert failure
+  - no `POSITION_VALUATION_DEGRADED`
+  - live position path processed open trades: `POSITION_LIVE_APPLIED: live=2 open=2 updated=2`
+  - UI shows `2/2 tracked`
+  - UI shows mark quality line: `FULL · quotes 2/2 · CI signals 45%`
+  - Upstox margin endpoint is working with HTTP `200`
+  - candidate/trade margin display is using Upstox final margin, e.g. around `₹44.5K`
+  - ML generated candidates and brain snapshots are saving
+- Observed but not urgent:
+  - many warning rows are overlap/self-refresh noise, e.g. `SERVICE_START_IGNORED`, `POLL_SKIPPED_OVERLAP`, `LEASE_RESULT self_refresh`
+  - duplicate `ML_GENERATED_CANDIDATES` / `ML_BRAIN_SNAPSHOT_SAVE` rows appear for some same poll timestamps
+  - local evaluation cache is growing fast (`LOCAL_SNAPSHOT_APPEND` bytes increased from ~88.5MB to ~98.1MB during the checked window)
+- Future cleanup task:
+  - implement duplicate poll/save suppression so each slot/poll timestamp writes one canonical brain snapshot and one generated-candidate batch
+  - reduce warning noise from overlapping service starts without weakening the lease protection
+  - add a visible/loggable counter for skipped duplicate writes
+  - consider local snapshot cache compaction/retention because cache size is now large
+
 ## 2026-06-29 Live position integrity OODA fix
 
 - Release target for the synchronized push is:
