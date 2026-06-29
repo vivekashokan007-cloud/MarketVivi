@@ -1,3 +1,22 @@
+## 2026-06-29 Position monitor pre-poll honesty fix
+
+- Release target for the synchronized push is:
+  - Android / brain / PWA version: `v2.4.73`
+  - build code: `b304`
+  - PWA cache-bust: `app.js?v=1228`
+- Finding from live test:
+  - screenshots showed two BNF paper trades visible in PWA after entry
+  - uploaded log showed latest background brain poll at `11:20:12` had `POSITION_LIVE_APPLIED: live=0 open=0 updated=0`
+  - this means the trades were opened after that poll snapshot, so the brain had not processed them yet
+  - old UI was misleading because each trade card said the paper position was "being tracked" even when `bd.positions[trade_id]` was absent
+- Fix:
+  - position card fallback now says `queued for brain poll` until a real per-trade brain position verdict exists
+  - Position Monitor now shows tracked count plus awaiting-first-post-entry-poll count
+  - no change to trade creation, Supabase insert sanitization, paper cost model, Upstox margin quote, ranking, or notification dispatch
+- Expected live behavior:
+  - immediately after entry, Position Monitor can show `0/N tracked` with awaiting count
+  - after the next market poll, Kotlin should pass `open_trades` into `brain.py`, `POSITION_LIVE_APPLIED` should show `open=N updated=N`, and UI should move to `N/N tracked`
+
 ## 2026-06-29 Trade insert schema-cache fix
 
 - Release target for the synchronized push is:

@@ -2931,12 +2931,12 @@ function renderBrainForTrade(tradeId) {
             return `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`;
         })() : '--';
         return `<div class="brain-section" style="margin:6px 0 2px;border-left:3px solid var(--border)">
-            <div style="font-size:12px;font-weight:700;color:var(--text-muted);padding:4px 0">🧠 ${trackedKind} position is being tracked</div>
+            <div style="font-size:12px;font-weight:700;color:var(--text-muted);padding:4px 0">🧠 ${trackedKind} position queued for brain poll</div>
             <div style="font-size:11px;color:var(--text-secondary)">
                 ${trade.strategy_type ? `${friendlyType(trade.strategy_type)} · ` : ''}${trade.index_key || '--'} · Held ${heldFor}
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
-                No active exit / book / risk alert on the latest poll. The brain will surface a position alert only on a state change.
+                The latest brain result has not processed this position yet. It should attach on the next market poll; alerts appear only after brain tracking starts and state changes.
             </div>
         </div>`;
     }
@@ -4497,17 +4497,22 @@ function renderPosition() {
     }
 
     if (realTrades.length > 0 || paperTrades.length > 0) {
-        const trackedHitCount = trackedPositionIds.filter(id => [...realTrades, ...paperTrades].some(t => String(t.id || '') === String(id))).length;
+        const allOpenTrades = [...realTrades, ...paperTrades];
+        const trackedHitCount = trackedPositionIds.filter(id => allOpenTrades.some(t => String(t.id || '') === String(id))).length;
+        const waitingForBrainCount = Math.max(0, allOpenTrades.length - trackedHitCount);
+        const trackingDetail = waitingForBrainCount > 0
+            ? `<br>Awaiting first post-entry brain poll: <b>${waitingForBrainCount}</b>. New trades can show here locally before the background service has processed them.`
+            : '';
         html += `
             <div class="brain-card" style="margin-bottom:10px;border-left-color:var(--accent)">
                 <div class="brain-card-header">
                     <span class="brain-icon">🧭</span>
                     <span class="brain-label">Position Monitor</span>
-                    <span class="brain-strength" style="color:var(--accent)">${trackedHitCount}/${realTrades.length + paperTrades.length} tracked</span>
+                    <span class="brain-strength" style="color:var(--accent)">${trackedHitCount}/${allOpenTrades.length} tracked</span>
                 </div>
                 <div class="brain-detail">
                     Real positions: <b>${realTrades.length}</b> · Paper positions: <b>${paperTrades.length}</b> · Brain tracked: <b>${trackedHitCount}</b><br>
-                    Setup WAIT does not notify. Open positions remain tracked and will show exit / book / risk alerts when state changes.
+                    Setup WAIT does not notify. Open positions show exit / book / risk alerts after the brain processes them and state changes.${trackingDetail}
                 </div>
             </div>
         `;
