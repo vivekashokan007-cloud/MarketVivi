@@ -1,3 +1,33 @@
+## 2026-06-29 Margin UI + paper charge correction release
+
+- Release target for the synchronized push is:
+  - Android / brain / PWA version: `v2.4.71`
+  - build code: `b302`
+  - PWA cache-bust: `app.js?v=1226`
+- Reason for this release:
+  - live logs proved Upstox margin quote API was returning real margin successfully
+  - UI still displayed old estimated SPAN margin, e.g. ~`₹14.5K` instead of Upstox final margin ~`₹73K`
+  - paper position tab still subtracted stale fixed BNF 4-leg slippage, causing inflated round-trip cost around `₹1,281`
+- Fixes:
+  - PWA candidate card now prefers `realMargin` / `upstoxFinalMargin` / `upstoxRequiredMargin`
+  - candidate `EV/₹1K` uses real Upstox margin as denominator when available
+  - Paper trade creation persists margin quote fields into the saved trade record
+  - Positions tab displays saved Upstox final margin when available
+  - PWA paper cost estimator now uses the corrected teacher charge model:
+    - brokerage per executed order
+    - date-aware STT
+    - turnover-based exchange fee
+    - GST on brokerage + exchange + IPFT
+    - stamp duty on buy side
+    - SEBI/IPFT
+    - fallback slippage `0.25` points, not stale fixed BNF 4-leg `₹4/point` table
+  - Kotlin `TeacherTruthConfig` now exports the same corrected charge-model fields to JS
+- Verification:
+  - `node --check MarketVivi-git/app.js` passed
+  - `git diff --check` passed in both repos
+  - screenshot BNF IC legs estimated paper cost recalculates to about `₹233`, not `₹1,281`
+  - Kotlin/Gradle compile still unavailable in Codex container because Java/JDK is missing
+
 ## 2026-06-29 Read-only Upstox margin quote ship
 
 - Release target for the synchronized push is:

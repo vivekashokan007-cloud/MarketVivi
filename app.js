@@ -1056,17 +1056,16 @@ function defaultTeacherTruthConfig() {
         config_version: '2026-06-15',
         tp_capture_pct: 0.50,
         sl_loss_multiple: 1.00,
-        stt_options: 0.0015,
         brokerage_per_order: 20,
-        exchange_per_leg: 15,
         gst_rate: 0.18,
-        fixed_buffer: 3,
-        slippage: {
-            NF_2LEG: 1.0,
-            NF_4LEG: 2.0,
-            BNF_2LEG: 2.0,
-            BNF_4LEG: 4.0
-        }
+        stamp_duty_buy_rate: 0.00003,
+        sebi_rate: 0.000001,
+        ipft_rate: 0.000000001,
+        exchange_options_rate_pre_2026_03_01: 0.0003503,
+        exchange_options_rate_from_2026_03_01: 0.0003553,
+        stt_options_rate_pre_2026_04_01: 0.0010,
+        stt_options_rate_from_2026_04_01: 0.0015,
+        bid_ask_slippage_fallback_points: 0.25
     };
 }
 
@@ -1082,10 +1081,41 @@ function getTeacherTruthConfigCached(force = false) {
         : '{}';
     const parsed = safeParseNB(raw, fallback);
     STATE.teacherTruthConfig = parsed && typeof parsed === 'object'
-        ? { ...fallback, ...parsed, slippage: { ...fallback.slippage, ...(parsed.slippage || {}) } }
+        ? { ...fallback, ...parsed }
         : fallback;
     STATE.teacherTruthConfigAt = now;
     return STATE.teacherTruthConfig;
+}
+
+function teacherChargeRates(tradeLike = {}, config = getTeacherTruthConfigCached()) {
+    const rawDate = tradeLike.entry_date || tradeLike.entryDate || tradeLike.date || tradeLike.poll_ts || null;
+    const tradeDate = rawDate ? new Date(rawDate) : new Date('2026-04-01T00:00:00Z');
+    const usePostStt = !Number.isNaN(tradeDate.getTime()) && tradeDate >= new Date('2026-04-01T00:00:00Z');
+    const usePostExchange = !Number.isNaN(tradeDate.getTime()) && tradeDate >= new Date('2026-03-01T00:00:00Z');
+    return {
+        sttRate: Number(usePostStt ? config.stt_options_rate_from_2026_04_01 : config.stt_options_rate_pre_2026_04_01) || 0.0015,
+        exchangeRate: Number(usePostExchange ? config.exchange_options_rate_from_2026_03_01 : config.exchange_options_rate_pre_2026_03_01) || 0.0003553,
+        gstRate: Number(config.gst_rate) || 0.18,
+        stampDutyBuyRate: Number(config.stamp_duty_buy_rate) || 0.00003,
+        sebiRate: Number(config.sebi_rate) || 0.000001,
+        ipftRate: Number(config.ipft_rate) || 0.000000001,
+        brokeragePerOrder: Number(config.brokerage_per_order) || 20,
+        slippageFallbackPoints: Number(config.bid_ask_slippage_fallback_points) || 0.25
+    };
+}
+
+function tradeLegPrice(tradeLike = {}, baseName) {
+    const keyMap = {
+        sellLTP: ['sell_ltp', 'sellLTP'],
+        buyLTP: ['buy_ltp', 'buyLTP'],
+        sellLTP2: ['sell_ltp2', 'sellLTP2'],
+        buyLTP2: ['buy_ltp2', 'buyLTP2']
+    };
+    for (const key of (keyMap[baseName] || [baseName])) {
+        const num = Number(tradeLike[key]);
+        if (Number.isFinite(num)) return num;
+    }
+    return 0;
 }
 
 function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthConfigCached()) {
@@ -1093,23 +1123,28 @@ function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthCo
     const strategyType = String(tradeLike.strategy_type || tradeLike.strategyType || '').toUpperCase();
     const legCount = Number(tradeLike.leg_count || tradeLike.legCount || ((strategyType === 'IRON_CONDOR' || strategyType === 'IRON_BUTTERFLY') ? 4 : 2)) || 2;
     const lotSize = Number(tradeLike.lot_size || tradeLike.lotSize || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT)) || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT);
-    const sellLtp = Number(tradeLike.sell_ltp ?? tradeLike.sellLTP ?? 0) || 0;
-    const sellLtp2 = Number(tradeLike.sell_ltp2 ?? tradeLike.sellLTP2 ?? 0) || 0;
-    const sellPrem = legCount === 4 ? (sellLtp + sellLtp2) * lotSize : sellLtp * lotSize;
-    const slipKey = `${indexKey}_${legCount}LEG`;
-    const slipPerUnit = Number(config?.slippage?.[slipKey] ?? 0) || 0;
-    const sttRate = Number(config?.stt_options ?? 0.0015) || 0.0015;
-    const brokerage = Number(config?.brokerage_per_order ?? 20) || 20;
-    const exchange = Number(config?.exchange_per_leg ?? 15) || 15;
-    const gstRate = Number(config?.gst_rate ?? 0.18) || 0.18;
-    const fixedBuffer = Number(config?.fixed_buffer ?? 3) || 3;
-    return Math.round(
-        sellPrem * sttRate * 2 +
-        brokerage * legCount * 2 +
-        exchange * legCount * 2 * (1 + gstRate) +
-        slipPerUnit * lotSize * legCount * 2 +
-        fixedBuffer
-    );
+    const rates = teacherChargeRates(tradeLike, config);
+    const sellLtp = tradeLegPrice(tradeLike, 'sellLTP');
+    const buyLtp = tradeLegPrice(tradeLike, 'buyLTP');
+    const sellLtp2 = tradeLegPrice(tradeLike, 'sellLTP2');
+    const buyLtp2 = tradeLegPrice(tradeLike, 'buyLTP2');
+    const entryTurnover = Math.max(0, sellLtp + buyLtp + sellLtp2 + buyLtp2) * lotSize;
+    const entryCredit = Number(tradeLike.entry_premium ?? tradeLike.entryPremium ?? 0) * lotSize;
+    const grossMtm = Number(tradeLike.current_pnl || 0) || 0;
+    const estimatedCloseTurnover = Math.max(0, entryTurnover - (entryCredit ? grossMtm : 0));
+    const shortSellPremium = Math.max(0, sellLtp + sellLtp2) * lotSize;
+    const longEntryPremium = Math.max(0, buyLtp + buyLtp2) * lotSize;
+    const estimatedShortClosePremium = Math.max(0, shortSellPremium - grossMtm);
+    const buySidePremium = longEntryPremium + estimatedShortClosePremium;
+    const slippage = (rates.slippageFallbackPoints / 2) * lotSize * legCount * 2;
+    const brokerage = rates.brokeragePerOrder * legCount * 2;
+    const exchange = (entryTurnover + estimatedCloseTurnover) * rates.exchangeRate;
+    const ipft = (entryTurnover + estimatedCloseTurnover) * rates.ipftRate;
+    const gst = (brokerage + exchange + ipft) * rates.gstRate;
+    const stt = shortSellPremium * rates.sttRate;
+    const stamp = buySidePremium * rates.stampDutyBuyRate;
+    const sebi = (entryTurnover + estimatedCloseTurnover) * rates.sebiRate;
+    return Math.round(brokerage + exchange + gst + stt + stamp + sebi + ipft + slippage);
 }
 
 function buildPaperPnlBreakdown(tradeLike = {}) {
@@ -1741,6 +1776,46 @@ function peakCash(c) {
     return Math.round(buyLeg * (c.lotSize || 30));
 }
 
+function numericField(obj, ...keys) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (const key of keys) {
+        const value = key.split('.').reduce((acc, part) => (acc && acc[part] !== undefined ? acc[part] : undefined), obj);
+        const num = Number(value);
+        if (Number.isFinite(num) && num > 0) return num;
+    }
+    return null;
+}
+
+function realMarginValue(c) {
+    return numericField(
+        c,
+        'realMargin',
+        'real_margin',
+        'upstoxFinalMargin',
+        'upstox_final_margin',
+        'upstoxRequiredMargin',
+        'upstox_required_margin',
+        'marginQuote.final_margin',
+        'marginQuote.required_margin'
+    );
+}
+
+function marginDisplay(c) {
+    const real = realMarginValue(c);
+    if (real) {
+        const required = numericField(c, 'upstoxRequiredMargin', 'upstox_required_margin', 'marginQuote.required_margin');
+        const detail = required && Math.abs(required - real) >= 1
+            ? ` <span style="font-size:9px;color:var(--text-muted)">(Upstox final; req ₹${Math.round(required).toLocaleString()})</span>`
+            : ' <span style="font-size:9px;color:var(--green)">(Upstox final)</span>';
+        return { value: Math.round(real), label: detail, source: 'UPSTOX' };
+    }
+    return {
+        value: Math.round(estimateBrokerMargin(c) || 0),
+        label: candidateLegCount(c) === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : '',
+        source: 'ESTIMATE'
+    };
+}
+
 // b91: Broker margin estimate — real SPAN margin, not just maxLoss
 // 2-leg spreads: margin ≈ maxLoss (spread benefit applies)
 // 4-leg IC/IB: SPAN on 2 short legs, ~90% after spread benefit from long legs
@@ -2106,6 +2181,11 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         buy_instrument_key2: cand.buyInstrumentKey2 ?? null,
         max_profit: cand.maxProfit,
         max_loss: cand.maxLoss,
+        real_margin: realMarginValue(cand),
+        upstox_required_margin: numericField(cand, 'upstoxRequiredMargin', 'marginQuote.required_margin'),
+        upstox_final_margin: numericField(cand, 'upstoxFinalMargin', 'realMargin', 'marginQuote.final_margin'),
+        margin_quote_status: cand.marginQuoteStatus ?? null,
+        margin_quote_source: cand.marginQuoteSource ?? null,
         is_credit: cand.isCredit,
         force_alignment: forces.aligned,
         force_f1: forces.f1,
@@ -2164,6 +2244,14 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             risk_reward: cand.riskReward || null,
             target_profit: cand.targetProfit ?? null,
             stop_loss: cand.stopLoss ?? null,
+            real_margin: realMarginValue(cand),
+            upstox_required_margin: numericField(cand, 'upstoxRequiredMargin', 'marginQuote.required_margin'),
+            upstox_final_margin: numericField(cand, 'upstoxFinalMargin', 'realMargin', 'marginQuote.final_margin'),
+            upstox_span_margin: numericField(cand, 'upstoxSpanMargin', 'marginQuote.span_margin'),
+            upstox_exposure_margin: numericField(cand, 'upstoxExposureMargin', 'marginQuote.exposure_margin'),
+            upstox_net_buy_premium: numericField(cand, 'upstoxNetBuyPremium', 'marginQuote.net_buy_premium'),
+            margin_quote_status: cand.marginQuoteStatus ?? null,
+            margin_quote_source: cand.marginQuoteSource ?? null,
             sell_oi: strikeLeg(cand.sellStrike, cand.sellType).oi ?? null,
             sell_oi2: cand.sellStrike2 ? (strikeLeg(cand.sellStrike2, cand.sellType2).oi ?? null) : null,
             buy_oi: strikeLeg(cand.buyStrike, cand.buyType).oi ?? null,
@@ -2332,6 +2420,11 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             buy_ltp: trade.buy_ltp,
             max_profit: trade.max_profit,
             max_loss: trade.max_loss,
+            real_margin: trade.real_margin ?? null,
+            upstox_required_margin: trade.upstox_required_margin ?? null,
+            upstox_final_margin: trade.upstox_final_margin ?? null,
+            margin_quote_status: trade.margin_quote_status ?? null,
+            margin_quote_source: trade.margin_quote_source ?? null,
             is_credit: trade.is_credit,
             force_alignment: trade.force_alignment,
             entry_bias: trade.entry_bias,
@@ -4066,6 +4159,8 @@ function renderCandidateCard(cand, atm, rank) {
     if (cand.isCredit && rrValue != null && rrValue < 0.10) weakEconomicsReasons.push(`R:R ${rrValue.toFixed(2)} < 0.10`);
     const weakEconomics = cand.isCredit && weakEconomicsReasons.length > 0;
     const economicallyStrong = !weakEconomics;
+    const marginInfo = marginDisplay(cand);
+    const evCapitalBase = marginInfo.source === 'UPSTOX' ? marginInfo.value : peakCash(cand);
     const alignLabel = backendBlocked ? '⛔ BLOCKED BY BRAIN' :
         forces.aligned === 3 && economicallyStrong ? '🟢 ALIGNED — Entry Ready' :
         forces.aligned === 3 ? '🟡 STRUCTURE OK — Review Edge' :
@@ -4159,8 +4254,8 @@ function renderCandidateCard(cand, atm, rank) {
             ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · ${cand.varsityTier === 'PRIMARY' ? '<span style="color:var(--green)">PRIMARY</span>' : '<span style="color:var(--warn)">ALLOWED</span>'}${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
         </div>
         <div class="v1-footer">
-            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${estimateBrokerMargin(cand).toLocaleString()}${candidateLegCount(cand) === 4 ? ' <span style="font-size:9px;color:var(--warn)">(est. SPAN)</span>' : ''}
-            · EV/₹1K: ₹${(cand.ev / (peakCash(cand) / 1000 || 1)).toFixed(0)}
+            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${marginInfo.value.toLocaleString()}${marginInfo.label}
+            · EV/₹1K ${marginInfo.source === 'UPSTOX' ? 'margin' : 'cash'}: ₹${(cand.ev / (evCapitalBase / 1000 || 1)).toFixed(0)}
         </div>
         ${weakEconomics ? `<div style="font-size:10px;color:var(--warn);margin-top:4px">⚠️ Economics weak: ${weakEconomicsReasons.join(' · ')}</div>` : ''}
         <div style="font-size:10px;margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -4239,6 +4334,10 @@ function renderTradeCard(t, isPaper) {
     const icon = isPaper ? '📋' : '📌';
     const paperClass = isPaper ? ' paper-card' : '';
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
+    const savedMargin = realMarginValue(t);
+    const savedMarginLine = savedMargin
+        ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-2px;margin-bottom:4px">Upstox margin: ₹${Math.round(savedMargin).toLocaleString()} <span style="color:var(--green)">(final)</span></div>`
+        : '';
     // Entry time + elapsed
     const entryTime = t.entry_date ? new Date(t.entry_date).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '--';
     const entryDateShort = t.entry_date ? new Date(t.entry_date).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' }) : '';
@@ -4265,6 +4364,7 @@ function renderTradeCard(t, isPaper) {
             ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ₹${paperPnl.estimatedRoundTripCost.toLocaleString()}</span></div>`
             : ''
         }
+        ${savedMarginLine}
         <div class="control-section">
             ${t.max_profit || t.max_loss ? `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--border)">
                 <span style="color:var(--green)">🎯 Max: ₹${(t.max_profit || 0).toLocaleString()}</span>
