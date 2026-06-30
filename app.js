@@ -281,6 +281,7 @@ function switchChartIndex(nextIndex) {
 // downstream code can read bd.effective_bias, bd.candidates, etc. without
 // having to call getBrainData() repeatedly per render.
 let bd = {};
+let CURRENT_RENDER_SNAPSHOT = null;
 
 // F.2.7 — Safe parser for NativeBridge JSON returns. Handles the literal
 // "null" string from Kotlin prefs defaults and JSON null payloads.
@@ -296,12 +297,80 @@ function safeParseNB(rawValue, fallback) {
     }
 }
 
-function latestPollData() {
-    if (typeof NativeBridge === 'undefined') return {};
-    const l = safeParseNB(NativeBridge.getLatestPoll?.(), {});
+function nativeBridge() {
+    if (typeof NativeBridge !== 'undefined') return NativeBridge;
+    return window.NativeBridge || window.AndroidBridge || null;
+}
+
+function readNativeJson(methodName, fallback, ...args) {
+    try {
+        const bridge = nativeBridge();
+        if (!bridge || typeof bridge[methodName] !== 'function') return fallback;
+        return safeParseNB(bridge[methodName](...args), fallback);
+    } catch (e) {
+        return fallback;
+    }
+}
+
+function readNativeValue(methodName, fallback = '', ...args) {
+    try {
+        const bridge = nativeBridge();
+        if (!bridge || typeof bridge[methodName] !== 'function') return fallback;
+        const value = bridge[methodName](...args);
+        return value == null ? fallback : value;
+    } catch (e) {
+        return fallback;
+    }
+}
+
+function normalizeLatestPoll(poll) {
+    const l = poll && typeof poll === 'object' ? { ...poll } : {};
     if (l.bnfSpot == null && l.bnf != null) l.bnfSpot = l.bnf;
     if (l.nfSpot == null && l.nf != null) l.nfSpot = l.nf;
     return l;
+}
+
+function renderSnapshot(snapshot) {
+    return snapshot || CURRENT_RENDER_SNAPSHOT || null;
+}
+
+function latestPollData(snapshot = null) {
+    const snap = renderSnapshot(snapshot);
+    if (snap && snap.latestPoll) return normalizeLatestPoll(snap.latestPoll);
+    return normalizeLatestPoll(readNativeJson('getLatestPoll', {}));
+}
+
+function pullRenderSnapshot() {
+    const serviceStatus = readNativeJson('getServiceStatus', {});
+    const pollHistoryRaw = readNativeJson('getPollHistory', []);
+    const pollHistory = Array.isArray(pollHistoryRaw) ? pollHistoryRaw : [];
+    const latestPoll = latestPollData({ latestPoll: readNativeJson('getLatestPoll', {}) });
+    const baseline = readNativeJson('getBaseline', {});
+    const snapshot = {
+        serviceStatus,
+        pollHistory,
+        latestPoll,
+        baseline,
+        brainResult: readNativeJson('getBrainResult', {}),
+        openTrades: readNativeJson('getOpenTrades', []),
+        bnfChain: readNativeJson('getBnfChain', {}),
+        nfChain: readNativeJson('getNfChain', {}),
+        signalStats: readNativeJson('getSignalAccuracyStats', {}),
+        executionInfraStatus: readNativeJson('getExecutionInfraStatus', {}),
+        orderProxyUrl: readNativeValue('getOrderProxyUrl', ''),
+        notificationTransportMode: readNativeValue('getNotificationTransportMode', ''),
+        stage2aGuardMode: readNativeValue('getStage2AGuardMode', ''),
+        yesterdayHistory7: readNativeJson('getYesterdayHistory', [], 7),
+        morningSnapshotToday: readNativeJson('getMorningSnapshot', {}, API.todayIST()),
+        bnfBreadth: readNativeJson('getBnfBreadth', {}),
+        nf50Breadth: readNativeJson('getNf50Breadth', {}),
+        premiumHistory7: readNativeJson('getPremiumHistory', [], 7),
+        crashReport: readNativeJson('getLastCrashReport', {})
+    };
+    if (!Array.isArray(snapshot.openTrades)) snapshot.openTrades = [];
+    if (!Array.isArray(snapshot.yesterdayHistory7)) snapshot.yesterdayHistory7 = [];
+    if (!Array.isArray(snapshot.premiumHistory7)) snapshot.premiumHistory7 = [];
+    return snapshot;
 }
 
 function validDateOrBlank(value) {
@@ -376,20 +445,26 @@ function isTodayRecord(record) {
     return !!record && record.date === API.todayIST();
 }
 
-function getTodayNativeBaseline() {
-    if (typeof NativeBridge === 'undefined') return null;
-    const baseline = safeParseNB(NativeBridge.getBaseline?.(), {});
+function getTodayNativeBaseline(snapshot = null) {
+    if (!nativeBridge() && !snapshot) return null;
+    const snap = renderSnapshot(snapshot);
+    const baseline = snap?.baseline || readNativeJson('getBaseline', {});
     return isTodayRecord(baseline) ? baseline : null;
 }
 
-function todayNativeSessionActive(serviceStatus = safeParseNB(NativeBridge?.getServiceStatus?.(), {}), latestPoll = latestPollData(), pollHistory = safeParseNB(NativeBridge?.getPollHistory?.(), [])) {
+function todayNativeSessionActive(serviceStatus = null, latestPoll = null, pollHistory = null, baseline = null) {
+    const snap = renderSnapshot();
+    serviceStatus = serviceStatus || snap?.serviceStatus || readNativeJson('getServiceStatus', {});
+    latestPoll = latestPoll || snap?.latestPoll || latestPollData(snap);
+    pollHistory = pollHistory || snap?.pollHistory || readNativeJson('getPollHistory', []);
+    baseline = baseline || snap?.baseline || null;
     const latestPollToday = latestPoll && latestPoll.date === API.todayIST();
     return !!(
         serviceStatus?.sessionActive ||
         serviceStatus?.polls > 0 ||
         latestPollToday ||
         (Array.isArray(pollHistory) && pollHistory.length > 0) ||
-        getTodayNativeBaseline()
+        getTodayNativeBaseline({ baseline })
     );
 }
 
@@ -408,9 +483,10 @@ function nextAutoStartText(serviceStatus) {
     }
 }
 
-function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServiceStatus?.(), {})) {
+function updateWatchStatusHint(serviceStatus = null) {
     const watchEl = document.getElementById('watch-status');
     if (!watchEl) return;
+    serviceStatus = serviceStatus || renderSnapshot()?.serviceStatus || readNativeJson('getServiceStatus', {});
     const polls = Number.isFinite(serviceStatus?.polls) ? serviceStatus.polls : (STATE.pollCount || 0);
     const expectedByNow = Number.isFinite(serviceStatus?.expectedPollsByNow) ? serviceStatus.expectedPollsByNow : 0;
     const expectedFullDay = Number.isFinite(serviceStatus?.expectedPollsFullDay) ? serviceStatus.expectedPollsFullDay : 76;
@@ -457,7 +533,8 @@ function updateWatchStatusHint(serviceStatus = safeParseNB(NativeBridge?.getServ
     }
 }
 
-function isLiveRecommendationWindow(serviceStatus = safeParseNB(NativeBridge?.getServiceStatus?.(), {})) {
+function isLiveRecommendationWindow(serviceStatus = null) {
+    serviceStatus = serviceStatus || renderSnapshot()?.serviceStatus || readNativeJson('getServiceStatus', {});
     return serviceStatus?.marketReason === 'OPEN';
 }
 
@@ -926,13 +1003,11 @@ function requireFilledInputs(fields) {
     if (missing.length) throw new Error(`Missing required input: ${missing.join(', ')}`);
 }
 
-function getBrainData() {
+function getBrainData(snapshot = null) {
     try {
-        if (typeof NativeBridge === 'undefined') return {};
-        const raw = NativeBridge.getBrainResult();
-        if (!raw || raw === 'null') return {};
-        const parsed = JSON.parse(raw);
-        return parsed || {};
+        const snap = renderSnapshot(snapshot);
+        if (snap && snap.brainResult && typeof snap.brainResult === 'object') return snap.brainResult;
+        return readNativeJson('getBrainResult', {});
     } catch (e) {
         console.error('getBrainData failed:', e);
         return {};
@@ -1471,16 +1546,19 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
     };
 }
 
-function refreshBrainData() {
-    if (typeof NativeBridge !== 'undefined') {
-        const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
-        const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
-        if (!todayNativeSessionActive(serviceStatus, latestPoll) && !serviceStatus.running) {
+function refreshBrainData(snapshot = null) {
+    const snap = renderSnapshot(snapshot);
+    if (nativeBridge() || snap) {
+        const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
+        const latestPoll = snap?.latestPoll || latestPollData(snap);
+        const pollHistory = snap?.pollHistory || readNativeJson('getPollHistory', []);
+        const baseline = snap?.baseline || readNativeJson('getBaseline', {});
+        if (!todayNativeSessionActive(serviceStatus, latestPoll, pollHistory, baseline) && !serviceStatus.running) {
             clearSessionDerivedState();
             return bd;
         }
     }
-    adoptBrainResult(getBrainData());
+    adoptBrainResult(getBrainData(snap));
     return bd;
 }
 
@@ -1491,15 +1569,16 @@ function applyBrainRangeSigma(brainResult) {
 }
 
 function pullNativeState() {
-    if (typeof NativeBridge === 'undefined') return {};
-    const status = safeParseNB(NativeBridge.getServiceStatus?.(), {});
-    const pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
-    const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
-    if (!todayNativeSessionActive(status, latestPoll, pollHistory) && !status.running) {
+    if (!nativeBridge()) return {};
+    const status = readNativeJson('getServiceStatus', {});
+    const pollHistory = readNativeJson('getPollHistory', []);
+    const latestPoll = latestPollData({ latestPoll: readNativeJson('getLatestPoll', {}) });
+    const baseline = readNativeJson('getBaseline', {});
+    if (!todayNativeSessionActive(status, latestPoll, pollHistory, baseline) && !status.running) {
         clearSessionDerivedState();
         return { status, pollHistory: [], latestPoll: {}, brainResult: {} };
     }
-    const brainResult = safeParseNB(NativeBridge.getBrainResult?.(), {});
+    const brainResult = readNativeJson('getBrainResult', {});
 
     if (Array.isArray(pollHistory)) {
         STATE.pollHistory = pollHistory;
@@ -3011,12 +3090,13 @@ function restoreOpenDetailsState(state) {
     });
 }
 
-function updateLockScanUi() {
+function updateLockScanUi(snapshot = null) {
     const btnLock = document.getElementById('btn-lock');
     const statusEl = document.getElementById('status');
     if (!btnLock && !statusEl) return;
 
-    const baseline = getTodayNativeBaseline();
+    const snap = renderSnapshot(snapshot);
+    const baseline = getTodayNativeBaseline(snap);
     let localBaseline = null;
     try {
         localBaseline = safeParseNB(localStorage.getItem('mr2_morning_baseline'), null);
@@ -3026,10 +3106,10 @@ function updateLockScanUi() {
     const lockedToday = !!baseline || isTodayRecord(localBaseline);
     if (!lockedToday) return;
 
-    const serviceStatus = callNativeJson('getServiceStatus', {}, {});
+    const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
     const pollCount = Number.isFinite(serviceStatus.polls)
         ? serviceStatus.polls
-        : (STATE.pollCount || safeParseNB(NativeBridge.getPollHistory?.(), []).length || 0);
+        : (STATE.pollCount || (Array.isArray(snap?.pollHistory) ? snap.pollHistory.length : 0) || 0);
     const isRunning = !!serviceStatus.running || !!STATE.isWatching;
 
     document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
@@ -3045,20 +3125,31 @@ function updateLockScanUi() {
     collapseMorning();
 }
 
-function renderAll() {
+function renderAll(snapshot = null) {
     const openDetailsState = captureOpenDetailsState();
-    refreshBrainData();  // F.2: keep bd fresh for all render functions
-    renderTicker();
-    renderMarket();
-    renderOI();
-    renderWatchlist();
-    renderPosition();
-    renderML();
-    renderDebug();
-    renderFooter();
-    updateLockScanUi();
-    restoreOpenDetailsState(openDetailsState);
-    updateStickyLayout();
+    const snap = snapshot || pullRenderSnapshot();
+    CURRENT_RENDER_SNAPSHOT = snap;
+    try {
+        if (Array.isArray(snap.pollHistory)) {
+            STATE.pollHistory = snap.pollHistory;
+            STATE.pollCount = Math.max(Number(snap.serviceStatus?.polls || 0), snap.pollHistory.length, STATE.pollCount || 0);
+        }
+        if (snap.latestPoll && Object.keys(snap.latestPoll).length) STATE.live = snap.latestPoll;
+        refreshBrainData(snap);  // F.2: keep bd fresh for all render functions
+        renderTicker(snap);
+        renderMarket(snap);
+        renderOI(snap);
+        renderWatchlist(snap);
+        renderPosition(snap);
+        renderML(snap);
+        renderDebug(snap);
+        renderFooter(snap);
+        updateLockScanUi(snap);
+        restoreOpenDetailsState(openDetailsState);
+        updateStickyLayout();
+    } finally {
+        CURRENT_RENDER_SNAPSHOT = null;
+    }
 }
 
 function updateStickyLayout() {
@@ -3083,11 +3174,12 @@ function updateStickyLayout() {
     });
 }
 
-function renderTicker() {
+function renderTicker(snapshot = null) {
     const ticker = document.getElementById('live-ticker');
     if (!ticker) return;
 
-    const l = latestPollData();
+    const snap = renderSnapshot(snapshot);
+    const l = latestPollData(snap);
     if (!l) {
         ticker.style.display = 'none';
         updateStickyLayout();
@@ -3112,8 +3204,9 @@ function renderTicker() {
     const marginEl = document.getElementById('tk-margin');
     const pnlEl = document.getElementById('tk-pnl');
 
+    const openTrades = Array.isArray(snap?.openTrades) ? snap.openTrades : readNativeJson('getOpenTrades', []);
     let marginUsed = 0;
-    for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
+    for (const t of openTrades) {
         if (!t.paper) marginUsed += estimateTradeMargin(t); // b92: real broker margin
     }
     const available = C.CAPITAL - marginUsed;
@@ -3121,9 +3214,9 @@ function renderTicker() {
     if (capEl) capEl.textContent = `₹${(C.CAPITAL / 1000).toFixed(1)}K`;
     if (marginEl) marginEl.textContent = marginUsed > 0 ? `Blocked: ₹${(marginUsed / 1000).toFixed(1)}K · Free: ₹${(available / 1000).toFixed(1)}K` : `Free: ₹${(C.CAPITAL / 1000).toFixed(1)}K`;
 
-    if (pnlEl && (JSON.parse(NativeBridge.getOpenTrades() || '[]')).length > 0) {
-        const realTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => !t.paper);
-        const paperTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper);
+    if (pnlEl && openTrades.length > 0) {
+        const realTrades = openTrades.filter(t => !t.paper);
+        const paperTrades = openTrades.filter(t => t.paper);
         let pnlText = '';
         if (realTrades.length > 0) {
             const realPnl = realTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
@@ -3337,10 +3430,11 @@ async function checkMLDecisions() {
     }
 }
 
-function renderDebug() {
+function renderDebug(snapshot = null) {
     const el = document.getElementById('debug-log');
     if (!el) return;
-    const crashReport = safeParseNB(window.NativeBridge?.getLastCrashReport?.(), {});
+    const snap = renderSnapshot(snapshot);
+    const crashReport = snap?.crashReport || readNativeJson('getLastCrashReport', {});
     const crashCard = crashReport && (crashReport.message || crashReport.stack || crashReport.tag) ? `
         <div style="background:var(--surface);border-radius:8px;padding:8px 10px;margin-bottom:8px;border-left:3px solid var(--warn)">
             <div style="font-size:11px;font-weight:600;color:var(--warn);margin-bottom:6px">
@@ -3357,25 +3451,16 @@ function renderDebug() {
         </div>` : '';
 
     // ── b105: ML status + manual retrain button ─────────────────────────
-    const mlReady = window.NativeBridge?.isMLModelReady?.() === true;
+    const mlStatus = getMLModelStatusCached();
+    const mlReady = mlStatus.ok === true;
     const mlSection = `
         <div style="background:var(--surface);border-radius:8px;padding:8px 10px;margin-bottom:8px;border-left:3px solid ${mlReady ? 'var(--green)' : 'var(--text-muted)'}">
             <div style="font-size:11px;font-weight:600;color:var(--text-primary);margin-bottom:6px">
                 🧠 ML Engine — ${mlReady ? '<span style="color:var(--green)">Model loaded</span>' : '<span style="color:var(--text-muted)">Model not loaded</span>'}
             </div>
-            ${mlReady ? (() => {
-                try {
-                    let s = safeParseNB(window.NativeBridge.getMLModelStatus(), {});
-                    if (typeof s === 'string') s = safeParseNB(s, {});
-                    const version = s.version || s.ver || 'unknown';
-                    const nTrain = s.n_train ?? s.nTrain ?? 0;
-                    const thrTake = s.thr_take ?? s.thrTake ?? 0;
-                    const baseWr = s.base_wr ?? s.baseWr ?? 0;
-                    return `<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">
-                        v${version} · n=${nTrain} · TAKE≥${thrTake} · base WR=${(baseWr * 100).toFixed(1)}%
-                    </div>`;
-                } catch(e) { return ''; }
-            })() : '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Install APK and open fresh to load model</div>'}
+            ${mlReady ? `<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">
+                        v${mlStatus.version || 'unknown'} · n=${mlStatus.nTrain || 0} · TAKE≥${mlStatus.thrTake || 0} · base WR=${(Number(mlStatus.baseWr || 0) * 100).toFixed(1)}%
+                    </div>` : '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Install APK and open fresh to load model</div>'}
             <div style="display:flex;gap:8px;flex-wrap:wrap">
                 ${mlReady ? `<button onclick="triggerMLRetrain()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">📊 ML Status</button>` : ''}
                 ${mlReady ? `<button onclick="checkMLDecisions()" style="background:transparent;color:var(--accent);border:1.5px solid var(--accent);border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer">📊 Calibration</button>` : ''}
@@ -3389,16 +3474,17 @@ function renderDebug() {
 
     // Also add app-level state debug
     const stateInfo = [];
-    if ((JSON.parse(NativeBridge.getBaseline() || '{}'))) {
+    const baseline = snap?.baseline || readNativeJson('getBaseline', {});
+    if (baseline && Object.keys(baseline).length) {
         stateInfo.push({
             time: '', label: 'APP_STATE',
             baseline: 'SET',
             candidates: (bd.generated_candidates || []).length,
             watchlist: (bd.watchlist || []).length,
-            openTrades: (JSON.parse(NativeBridge.getOpenTrades() || '[]')).length,
-            premiumHistoryDays: (JSON.parse(NativeBridge.getPremiumHistory(7) || '[]')).length,
-            ivPercentile: (JSON.parse(NativeBridge.getBaseline() || '{}')).ivPercentile,
-            isWatching: (JSON.parse(NativeBridge.getServiceStatus() || '{}').running),
+            openTrades: (Array.isArray(snap?.openTrades) ? snap.openTrades : readNativeJson('getOpenTrades', [])).length,
+            premiumHistoryDays: (Array.isArray(snap?.premiumHistory7) ? snap.premiumHistory7 : readNativeJson('getPremiumHistory', [], 7)).length,
+            ivPercentile: baseline.ivPercentile,
+            isWatching: !!(snap?.serviceStatus || readNativeJson('getServiceStatus', {})).running,
             pollCount: STATE.pollCount
         });
     }
@@ -3445,8 +3531,9 @@ function renderDebug() {
 }
 
 // ═══ INTRADAY CHART — SVG spot + VIX from poll history (b68) ═══
-function renderIntradayChart(index = 'NF') {
-    const polls = STATE.pollHistory || [];
+function renderIntradayChart(index = 'NF', snapshot = null) {
+    const snap = renderSnapshot(snapshot);
+    const polls = Array.isArray(snap?.pollHistory) ? snap.pollHistory : (STATE.pollHistory || []);
     if (!polls || polls.length < 2) return '<div style="text-align:center;font-size:11px;color:var(--text-muted);padding:8px">Chart appears after 2+ polls</div>';
 
     const spotKey = index === 'NF' ? 'nf' : 'bnf';
@@ -3505,7 +3592,8 @@ function renderIntradayChart(index = 'NF') {
 
     // Sell strike reference lines (from open trades)
     let strikeLines = '';
-    for (const t of (JSON.parse(NativeBridge.getOpenTrades() || '[]'))) {
+    const openTrades = Array.isArray(snap?.openTrades) ? snap.openTrades : readNativeJson('getOpenTrades', []);
+    for (const t of openTrades) {
         if (t.index_key !== index) continue;
         const strike = t.sell_strike;
         if (strike >= yMin && strike <= yMax) {
@@ -3521,7 +3609,7 @@ function renderIntradayChart(index = 'NF') {
         const last3 = spots.slice(-3);
         const range3 = Math.max(...last3) - Math.min(...last3);
         const spot = spots[spots.length - 1];
-        const dailySigma = spot * (((safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix || 20) / 100) / 15.8745  /* √252 */;
+        const dailySigma = spot * (((latestPollData(snap))?.vix || 20) / 100) / 15.8745  /* √252 */;
         const rangeSigma = range3 / dailySigma;
         if (rangeSigma < 0.3) {
             rangeIndicator = `<rect x="${xScale(spots.length - 3).toFixed(1)}" y="${PAD_T}" width="${(xScale(spots.length - 1) - xScale(spots.length - 3)).toFixed(1)}" height="${plotH}" fill="var(--green)" opacity="0.06" rx="3"/>`;
@@ -3581,15 +3669,16 @@ function renderIntradayChart(index = 'NF') {
     </div>`;
 }
 
-function renderMarket() {
+function renderMarket(snapshot = null) {
     const el = document.getElementById('market-content');
     if (!el) return;
 
-    const l = latestPollData();
+    const snap = renderSnapshot(snapshot);
+    const l = latestPollData(snap);
     if (!Object.keys(l).length) return;
-    const b = (JSON.parse(NativeBridge.getBaseline() || '{}'));
-    const bnfChain = safeParseNB(NativeBridge.getBnfChain?.(), {});
-    const nfChain = safeParseNB(NativeBridge.getNfChain?.(), {});
+    const b = snap?.baseline || readNativeJson('getBaseline', {});
+    const bnfChain = snap?.bnfChain || readNativeJson('getBnfChain', {});
+    const nfChain = snap?.nfChain || readNativeJson('getNfChain', {});
     const bnfCand = firstCandidateFor('BNF');
     const nfCand = firstCandidateFor('NF');
     const dteFromExpiry = (expiry) => {
@@ -3651,17 +3740,19 @@ function renderMarket() {
     }
 
     // Yesterday's data for comparisons
-    const yday = (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.length > 0 ? (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0] : null;
+    const ydayHistory = Array.isArray(snap?.yesterdayHistory7) ? snap.yesterdayHistory7 : readNativeJson('getYesterdayHistory', [], 7);
+    const morningSnapshot = snap?.morningSnapshotToday || readNativeJson('getMorningSnapshot', {}, API.todayIST());
+    const yday = ydayHistory.length > 0 ? ydayHistory[0] : null;
     let ydayComparisons = '';
     if (yday) {
         const items = [];
-        if (yday.fii_cash != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiCash) {
-            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiCash) - yday.fii_cash;
-            items.push(`FII: ₹${yday.fii_cash}→₹${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        if (yday.fii_cash != null && morningSnapshot?.fiiCash) {
+            const diff = parseFloat(morningSnapshot.fiiCash) - yday.fii_cash;
+            items.push(`FII: ₹${yday.fii_cash}→₹${morningSnapshot.fiiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
-        if (yday.fii_short_pct != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiShortPct) {
-            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiShortPct) - yday.fii_short_pct;
-            items.push(`Short%: ${yday.fii_short_pct}→${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiShortPct} (${diff > 0 ? '+' : ''}${diff.toFixed(1)})`);
+        if (yday.fii_short_pct != null && morningSnapshot?.fiiShortPct) {
+            const diff = parseFloat(morningSnapshot.fiiShortPct) - yday.fii_short_pct;
+            items.push(`Short%: ${yday.fii_short_pct}→${morningSnapshot.fiiShortPct} (${diff > 0 ? '+' : ''}${diff.toFixed(1)})`);
         }
         if (yday.pcr != null && l.pcr) {
             const diff = l.pcr - yday.pcr;
@@ -3671,13 +3762,13 @@ function renderMarket() {
             const diff = l.bnfSpot - yday.bnf_spot;
             items.push(`BNF: ${yday.bnf_spot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
-        if (yday.dii_cash != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.diiCash) {
-            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).diiCash) - yday.dii_cash;
-            items.push(`DII: ₹${yday.dii_cash}→₹${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).diiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        if (yday.dii_cash != null && morningSnapshot?.diiCash) {
+            const diff = parseFloat(morningSnapshot.diiCash) - yday.dii_cash;
+            items.push(`DII: ₹${yday.dii_cash}→₹${morningSnapshot.diiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
-        if (yday.fii_stk_fut != null && (JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiStkFut) {
-            const diff = parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiStkFut) - yday.fii_stk_fut;
-            items.push(`FII Stk Fut: ₹${yday.fii_stk_fut}→₹${(JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}')).fiiStkFut} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
+        if (yday.fii_stk_fut != null && morningSnapshot?.fiiStkFut) {
+            const diff = parseFloat(morningSnapshot.fiiStkFut) - yday.fii_stk_fut;
+            items.push(`FII Stk Fut: ₹${yday.fii_stk_fut}→₹${morningSnapshot.fiiStkFut} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
         }
         ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
     }
@@ -3693,7 +3784,7 @@ function renderMarket() {
         <div class="section-timestamp">Scanned: ${scanTime}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
 
         <!-- INTRADAY CHART — spot + VIX from poll history (b68) -->
-        ${renderIntradayChart(STATE._chartIndex || 'NF')}
+        ${renderIntradayChart(STATE._chartIndex || 'NF', snap)}
 
         <!-- VERDICT -->
         <div class="env-verdict ${verdictClass}">${verdict}</div>
@@ -3863,14 +3954,16 @@ function renderMarket() {
     `;
 }
 
-function renderOI() {
+function renderOI(snapshot = null) {
     const el = document.getElementById('oi-content');
-    if (!el || !(safeParseNB(NativeBridge.getLatestPoll(), {}))) return;
+    const snap = renderSnapshot(snapshot);
+    const l = latestPollData(snap);
+    if (!el || !Object.keys(l).length) return;
 
-    const l = safeParseNB(NativeBridge.getLatestPoll(), {});
-    const b = safeParseNB(NativeBridge.getBaseline(), {});
-    const bnfChain = safeParseNB(NativeBridge.getBnfChain(), {});
-    const nfc = safeParseNB(NativeBridge.getNfChain(), {});
+    const b = snap?.baseline || readNativeJson('getBaseline', {});
+    const bnfChain = snap?.bnfChain || readNativeJson('getBnfChain', {});
+    const nfc = snap?.nfChain || readNativeJson('getNfChain', {});
+    const signalStats = snap?.signalStats || readNativeJson('getSignalAccuracyStats', {});
 
     if (!b) {
         el.innerHTML = '<div class="empty-state">Scan to see OI structure & institutional positioning</div>';
@@ -3985,7 +4078,7 @@ function renderOI() {
         <!-- BREADTH -->
         <div class="env-section-title">📊 Market Breadth</div>
         ${(() => {
-            const breadth = safeParseNB(NativeBridge.getBnfBreadth(), {});
+            const breadth = snap?.bnfBreadth || readNativeJson('getBnfBreadth', {});
             if (typeof breadth.weightedPct !== 'number') return '';
             return `
         <div class="env-row">
@@ -4000,7 +4093,7 @@ function renderOI() {
         `;
         })()}
         ${(() => {
-            const nf50 = safeParseNB(NativeBridge.getNf50Breadth(), {});
+            const nf50 = snap?.nf50Breadth || readNativeJson('getNf50Breadth', {});
             if (typeof nf50.scaled !== 'number') return '';
             const adv = Number.isFinite(nf50.advancing) ? nf50.advancing : 0;
             const total = Number.isFinite(nf50.total) && nf50.total > 0 ? nf50.total : 50;
@@ -4075,7 +4168,7 @@ function renderOI() {
             return `<div class="env-section-title">📡 Yesterday's Signal</div>
             <div class="traj-alert ${sv.correct ? '' : 'warn'}">
                 ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
-                ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')) ? ` · Accuracy: ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).correct}/${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).total} (${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).pct}%)` : ''}
+                ${signalStats && Object.keys(signalStats).length ? ` · Accuracy: ${signalStats.correct}/${signalStats.total} (${signalStats.pct}%)` : ''}
             </div>`;
         })() : ''}
 
@@ -4083,9 +4176,14 @@ function renderOI() {
     `;
 }
 
-function renderWatchlist() {
+function renderWatchlist(snapshot = null) {
     const el = document.getElementById('watchlist');
     if (!el) return;
+    const snap = renderSnapshot(snapshot);
+    const latestPoll = latestPollData(snap);
+    const baseline = snap?.baseline || readNativeJson('getBaseline', {});
+    const bnfChain = snap?.bnfChain || readNativeJson('getBnfChain', {});
+    const nfChain = snap?.nfChain || readNativeJson('getNfChain', {});
 
     function renderModeActionRow() {
         return `
@@ -4097,7 +4195,7 @@ function renderWatchlist() {
             </div>`;
     }
 
-    if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
+    if (nativeBridge() && !getTodayNativeBaseline(snap)) {
         el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
@@ -4125,8 +4223,8 @@ function renderWatchlist() {
         return;
     }
 
-    const bnfAtm = (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.atm || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bnfAtm || 0;
-    const nfAtm = (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atm || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.nfAtm || 0;
+    const bnfAtm = bnfChain?.atm || baseline?.bnfAtm || 0;
+    const nfAtm = nfChain?.atm || baseline?.nfAtm || 0;
 
     // Display-only: Python/Kotlin brain owns candidate generation, ranking, and watchlist selection.
     const brainWatchlist = Array.isArray(bd.watchlist) ? bd.watchlist : [];
@@ -4134,8 +4232,8 @@ function renderWatchlist() {
     const total = (bd.generated_candidates || []).length;
 
     // ═══ GO VERDICT BANNER ═══
-    const biasLabel = bd.effective_bias?.label || (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.label || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.bias?.label || 'NEUTRAL';
-    const vix = (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix || (JSON.parse(NativeBridge.getBaseline() || '{}'))?.vix || 0;
+    const biasLabel = bd.effective_bias?.label || latestPoll?.bias?.label || baseline?.bias?.label || 'NEUTRAL';
+    const vix = latestPoll?.vix || baseline?.vix || 0;
     const modeLabel = STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING';
     const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
     const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
@@ -4160,7 +4258,7 @@ function renderWatchlist() {
             const color = stale ? 'var(--danger)' : ageMin >= 15 ? 'var(--warn)' : 'var(--text-muted)';
             return `<div class="go-detail" style="font-size:11px;color:${color}">${stale ? '⚠️' : '⏱️'} Scanned ${ageMin}m ago${stale ? ' — tap Rescan for fresh candidates' : ''}</div>`;
         })()}
-        ${bd.morningBias && (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias ? (() => {
+        ${bd.morningBias && latestPoll?.bias ? (() => {
             const drift = STATE.biasDrift || 0;
             const driftColor = Math.abs(drift) >= 2 ? 'var(--danger)' : Math.abs(drift) >= 1 ? 'var(--warn)' : 'var(--green)';
             const driftIcon = STATE.driftOverridden ? '⚠️' : Math.abs(drift) >= 1 ? '🔄' : '✅';
@@ -4302,18 +4400,21 @@ function renderCandidateCard(cand, atm, rank) {
         <div class="v1-prem">${premLabel} ₹${cand.netPremium}/share · W:${cand.width}</div>
         ${(() => {
             if (cand.beUpper && cand.beLower) {
-                const spot = cand.index === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfSpot;
+                const lp = latestPollData();
+                const spot = cand.index === 'BNF' ? lp?.bnfSpot : lp?.nfSpot;
                 const upperCush = spot ? Math.round(cand.beUpper - spot) : null;
                 const lowerCush = spot ? Math.round(spot - cand.beLower) : null;
                 const cushStr = (upperCush != null && lowerCush != null)
                     ? ` <span style="color:var(--text-muted);font-size:9px">(↑${upperCush}pts / ↓${lowerCush}pts)</span>` : '';
                 return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()} ↔ ${cand.beUpper.toLocaleString()}</span>${cushStr}</div>`;
             } else if (cand.beUpper) {
-                const spot = cand.index === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfSpot;
+                const lp = latestPollData();
+                const spot = cand.index === 'BNF' ? lp?.bnfSpot : lp?.nfSpot;
                 const cush = spot ? Math.round(cand.beUpper - spot) : null;
                 return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beUpper.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
             } else if (cand.beLower) {
-                const spot = cand.index === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfSpot;
+                const lp = latestPollData();
+                const spot = cand.index === 'BNF' ? lp?.bnfSpot : lp?.nfSpot;
                 const cush = spot ? Math.round(spot - cand.beLower) : null;
                 return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
             }
@@ -4483,7 +4584,8 @@ function renderTradeCard(t, isPaper) {
             ${(() => {
                 const beU = t.be_upper ?? t.beUpper ?? null;
                 const beL = t.be_lower ?? t.beLower ?? null;
-                const curSpot = t.index_key === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfSpot : (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfSpot;
+                const lp = latestPollData();
+                const curSpot = t.index_key === 'BNF' ? lp?.bnfSpot : lp?.nfSpot;
                 if (!curSpot || (!beU && !beL)) return '';
                 let beText = '', cushionPts = null, danger = false;
                 if (beU && beL) {
@@ -4540,30 +4642,33 @@ function renderTradeCard(t, isPaper) {
     </div>`;
 }
 
-function renderPosition() {
+function renderPosition(snapshot = null) {
     const el = document.getElementById('position');
     if (!el) return;
 
     let html = '';
-    const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+    const snap = renderSnapshot(snapshot);
+    const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
+    const signalStats = snap?.signalStats || readNativeJson('getSignalAccuracyStats', {});
+    const openTrades = Array.isArray(snap?.openTrades) ? snap.openTrades : readNativeJson('getOpenTrades', []);
     const lastUpdate = formatServiceLastPoll(serviceStatus.lastPoll);
 
     // ═══ SIGNAL ACCURACY — compact, collapsible ═══
     if (bd.signalValidation) {
         const sv = bd.signalValidation;
         html += `<details>
-            <summary style="cursor:pointer;font-size:12px;padding:4px 0;user-select:none">📡 Yesterday: ${sv.predicted} → ${sv.correct ? '✅' : '❌'} ${sv.actualDir} (${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts)${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')) ? ` · ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).pct}% accuracy` : ''} ▸</summary>
+            <summary style="cursor:pointer;font-size:12px;padding:4px 0;user-select:none">📡 Yesterday: ${sv.predicted} → ${sv.correct ? '✅' : '❌'} ${sv.actualDir} (${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts)${signalStats && Object.keys(signalStats).length ? ` · ${signalStats.pct}% accuracy` : ''} ▸</summary>
             <div class="signal-accuracy-card">
                 <div class="env-row"><span class="env-row-label">Predicted</span><span class="env-row-value">${sv.predicted} (${sv.strength}/5)</span></div>
                 <div class="env-row"><span class="env-row-label">Actual Gap</span><span class="env-row-value" style="color:${sv.correct ? 'var(--green)' : 'var(--danger)'}">${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts → ${sv.actualDir} ${sv.correct ? '✅' : '❌'}</span></div>
-                ${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')) ? `<div class="env-row"><span class="env-row-label">Accuracy</span><span class="env-row-value" style="color:var(--accent)">${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).correct}/${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).total} (${(JSON.parse(NativeBridge.getSignalAccuracyStats() || '{}')).pct}%)</span></div>` : ''}
+                ${signalStats && Object.keys(signalStats).length ? `<div class="env-row"><span class="env-row-label">Accuracy</span><span class="env-row-value" style="color:var(--accent)">${signalStats.correct}/${signalStats.total} (${signalStats.pct}%)</span></div>` : ''}
             </div>
         </details>`;
     }
 
     // ═══ OPEN TRADES — split real vs paper ═══
-    const realTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => !t.paper);
-    const paperTrades = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper);
+    const realTrades = openTrades.filter(t => !t.paper);
+    const paperTrades = openTrades.filter(t => t.paper);
     const trackedPositions = bd && typeof bd === 'object' && bd.positions && typeof bd.positions === 'object' ? bd.positions : {};
     const trackedPositionIds = Object.keys(trackedPositions);
 
@@ -4709,19 +4814,20 @@ function renderPosition() {
     el.innerHTML = html;
 }
 
-function renderML() {
+function renderML(snapshot = null) {
     const el = document.getElementById('ml-content');
     if (!el) return;
 
-    const service = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getServiceStatus?.() : null, {});
+    const snap = renderSnapshot(snapshot);
+    const service = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
     maybeAutoRefreshMlStatus(service);
     const status = getMLModelStatusCached();
-    const brain = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getBrainResult?.() : null, {});
-    const infra = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getExecutionInfraStatus?.() : null, {});
-    const pollHistory = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getPollHistory?.() : null, []);
-    const signalStats = safeParseNB(typeof NativeBridge !== 'undefined' ? NativeBridge.getSignalAccuracyStats?.() : null, {});
+    const brain = snap?.brainResult || readNativeJson('getBrainResult', {});
+    const infra = snap?.executionInfraStatus || readNativeJson('getExecutionInfraStatus', {});
+    const pollHistory = Array.isArray(snap?.pollHistory) ? snap.pollHistory : readNativeJson('getPollHistory', []);
+    const signalStats = snap?.signalStats || readNativeJson('getSignalAccuracyStats', {});
     const decisions = getMLDecisionsCached();
-    const proxyUrl = typeof NativeBridge !== 'undefined' ? (NativeBridge.getOrderProxyUrl?.() || '') : '';
+    const proxyUrl = snap?.orderProxyUrl || readNativeValue('getOrderProxyUrl', '');
     const evaluationTargetDate = String(service.evaluationTargetDate || '');
     const evaluationTargetIsToday = service.evaluationTargetIsToday !== false;
     const evaluationTargetLabel = evaluationTargetDate ? formatSessionDateLabel(evaluationTargetDate) : '';
@@ -4804,8 +4910,8 @@ function renderML() {
     const decisionReason = brain.decisionReason || brain.decision_reason || verdict.decisionReason || verdict.decision_reason || '';
     const brainNotification = brain?.brain_notification || {};
     const brainNotificationMeta = brain?.brain_notification_meta || {};
-    const notificationMode = String((typeof NativeBridge !== 'undefined' ? NativeBridge.getNotificationTransportMode?.() : null) || brainNotificationMeta.mode || 'live');
-    const stage2aMode = String((typeof NativeBridge !== 'undefined' ? NativeBridge.getStage2AGuardMode?.() : null) || 'shadow');
+    const notificationMode = String(snap?.notificationTransportMode || brainNotificationMeta.mode || 'live');
+    const stage2aMode = String(snap?.stage2aGuardMode || 'shadow');
     const stage2a = safeParseNB(brain?.stage2a, brain?.stage2a || {});
     const notificationDispatched = brainNotificationMeta.dispatched === true;
     const notificationNotify = brainNotification.notify_user === true;
@@ -5458,11 +5564,12 @@ function renderML() {
     el.innerHTML = html;
 }
 
-function renderFooter() {
+function renderFooter(snapshot = null) {
     const el = document.getElementById('footer-status');
     if (!el) return;
     const time = API.istNow();
-    const serviceStatus = safeParseNB(NativeBridge.getServiceStatus?.(), {});
+    const snap = renderSnapshot(snapshot);
+    const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
     const watching = serviceStatus.running ? '🟢' : '⏹';
     const nativePolls = Number.isFinite(serviceStatus.polls) ? serviceStatus.polls : 0;
     const polls = Math.max(nativePolls, STATE.pollCount || 0);
