@@ -4055,6 +4055,16 @@ function renderWatchlist() {
     const el = document.getElementById('watchlist');
     if (!el) return;
 
+    function renderModeActionRow() {
+        return `
+            <div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-top:10px;flex-wrap:wrap">
+                <button onclick="toggleTradeMode()" style="padding:6px 14px;font-size:12px;font-weight:600;border:2px solid ${STATE.tradeMode === 'intraday' ? 'var(--warn)' : 'var(--accent)'};background:${STATE.tradeMode === 'intraday' ? 'var(--warn)' : 'var(--accent)'};color:white;border-radius:var(--radius-sm);cursor:pointer;">
+                    ${STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING'}
+                </button>
+                <button onclick="rescanStrategies()" style="padding:6px 14px;font-size:12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;">🔄 Rescan</button>
+            </div>`;
+    }
+
     if (typeof NativeBridge !== 'undefined' && !getTodayNativeBaseline()) {
         el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
@@ -4063,7 +4073,7 @@ function renderWatchlist() {
     if (!(bd.watchlist || []).length && !(bd.generated_candidates || []).length) {
         if (STATE.brainRefreshPending) {
             const modeLabel = STATE.tradeMode === 'intraday' ? 'intraday' : 'swing';
-            el.innerHTML = `<div class="empty-state">Refreshing ${modeLabel} strategies from native brain...</div>`;
+            el.innerHTML = `<div class="empty-state">Refreshing ${modeLabel} strategies from native brain...${renderModeActionRow()}</div>`;
             return;
         }
         if (STATE.brainReady && hasBrainPayload(bd)) {
@@ -4075,6 +4085,7 @@ function renderWatchlist() {
                     No ${STATE.tradeMode} strategies ready right now
                     ${reason ? `<div style="margin-top:6px;font-size:12px;color:var(--text-muted)">${reason}</div>` : ''}
                     ${conflicts.length ? `<div style="margin-top:6px;font-size:11px;color:var(--warn)">⚠️ ${conflicts.join(' · ')}</div>` : ''}
+                    ${renderModeActionRow()}
                 </div>`;
             return;
         }
