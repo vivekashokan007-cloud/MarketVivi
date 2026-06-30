@@ -3178,6 +3178,32 @@ async function triggerDayEvaluation() {
     }
 }
 
+async function triggerDayEvaluationForce() {
+    if (!window.NativeBridge?.triggerDayEvaluationForce) {
+        alert('Force evaluation is not available in this APK yet.');
+        return;
+    }
+    const proceed = confirm(
+        'Force evaluation on an incomplete session?\n\n' +
+        'Use this only for advisory analysis. The result will be excluded from promotion gates and should not be treated as baseline-quality evidence.'
+    );
+    if (!proceed) return;
+    try {
+        const response = safeParseNB(window.NativeBridge.triggerDayEvaluationForce(), {});
+        setTimeout(() => {
+            getMLModelStatusCached(true);
+            getMLEvaluationOutcomesCached(true);
+            getMLEvaluationLaneSummaryCached(true);
+            getMLTeacherResearchReportCached(true);
+            getMLBrainSnapshotsCached(true);
+            renderAll();
+        }, 3000);
+        alert(response.message || `Forced day evaluation started${response?.target_date ? ` for ${response.target_date}` : ''}. Refresh ML status in a few seconds.`);
+    } catch (e) {
+        alert('Forced day evaluation trigger failed: ' + e.message);
+    }
+}
+
 function triggerRefreshMLStatus() {
     try {
         getMLModelStatusCached(true);
@@ -4715,6 +4741,11 @@ function renderML() {
         : getMLBrainSnapshotsCached();
     const evaluationBlockedReason = service.evaluationBlockedReason || '';
     const evaluationPhase = String(service.evaluationPhase || '');
+    const coverageIntegrity = String(service.coverageIntegrity || '');
+    const coverageIntegrityIssue = String(service.coverageIntegrityIssue || '');
+    const evaluationPromotionEligible = service.evaluationPromotionEligible === true;
+    const evaluationForceAllowed = service.evaluationForceAllowed === true;
+    const incompleteSession = evaluationPhase === 'INCOMPLETE_SESSION' || coverageIntegrity === 'INTEGRITY_BROKEN';
     const evaluationProgressCurrent = Number(service.evaluationProgressCurrent || 0);
     const evaluationProgressTotal = Number(service.evaluationProgressTotal || 0);
     const evaluationPhaseLabel = evaluationPhase ? evaluationPhase.replace(/_/g, ' ') : '';
@@ -4727,7 +4758,9 @@ function renderML() {
     const evaluationMessage = service.lastEvaluationMessage || (evaluationDone ? `Evaluation done for ${evaluationScopeLabel}.` : '');
     const evaluationOutcomeCount = (!postCloseArtifactsPending && Number.isFinite(service.lastEvaluationOutcomeCount)) ? service.lastEvaluationOutcomeCount : null;
     const evaluationProducedCount = (!postCloseArtifactsPending && Number.isFinite(service.lastEvaluationProducedCount)) ? service.lastEvaluationProducedCount : null;
-    const evaluationButtonText = (evaluationDone && !evaluationRetryable)
+    const evaluationButtonText = incompleteSession && evaluationForceAllowed
+        ? '⚠ Force Eval'
+        : (evaluationDone && !evaluationRetryable)
         ? `✅ ${evaluationTargetIsToday ? 'Today' : 'Session'} Done`
         : (evaluationRunning
             ? `⏳ ${evaluationPhaseLabel || 'Evaluating'}`
@@ -4738,10 +4771,12 @@ function renderML() {
                     ? '⏳ Auto After Close'
                     : evaluationBlockedReason === 'SESSION_PARTIAL'
                         ? '⏳ Await Full Close Data'
+                        : evaluationBlockedReason === 'INCOMPLETE_SESSION'
+                            ? '⛔ Incomplete Session'
                         : '⛔ Not Ready')
                 : `📋 Evaluate ${evaluationTargetIsToday ? 'Today' : (evaluationTargetLabel || 'Session')}`)));
-    const evaluationButtonDisabled = evaluationRunning || ((evaluationDone && !evaluationRetryable) || !evaluationReady);
-    const evaluationButtonAction = 'triggerDayEvaluation()';
+    const evaluationButtonDisabled = evaluationRunning || (incompleteSession ? !evaluationForceAllowed : ((evaluationDone && !evaluationRetryable) || !evaluationReady));
+    const evaluationButtonAction = incompleteSession && evaluationForceAllowed ? 'triggerDayEvaluationForce()' : 'triggerDayEvaluation()';
     const mlStatusRefreshText = STATE.mlStatusRefreshAt > 0
         ? new Date(STATE.mlStatusRefreshAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
         : '';
@@ -4858,15 +4893,20 @@ function renderML() {
         Number(evaluationProducedCount || 0) === 0 &&
         Number(evaluationOutcomeCount || 0) === 0
     );
+    const evaluationIncompleteMessage = incompleteSession
+        ? `Session integrity is broken${coverageIntegrityIssue ? ` (${coverageIntegrityIssue})` : ''}. Normal teacher evaluation is blocked for this session.`
+        : '';
     const researchOk = teacherResearchReport?.ok === true;
     const researchArtifactMissing = evaluationDone && !postCloseArtifactsPending && Number(evaluationProducedCount || 0) > 0 && !researchOk;
     const researchPendingMessage = postCloseArtifactsPending
         ? 'Session research report is pending for today. It is produced only after the post-close day evaluation completes.'
+        : (incompleteSession
+            ? 'No teacher research report was generated because this session failed integrity checks before normal post-close evaluation.'
         : (researchArtifactMissing
             ? 'Teacher research artifact is unavailable for this completed evaluation. Outcome summaries are present, but the session research report could not be loaded.'
         : (evaluationEmptySession
             ? 'No teacher research report was generated because this session ended with no evaluable candidate legs and zero teacher outcome rows.'
-            : 'Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.'));
+            : 'Session research report is not available yet. It is produced after a completed day evaluation and compares the chosen candidate against the full generated candidate menu.')));
     const researchPvb = safeParseNB(teacherResearchReport?.primary_vs_best, teacherResearchReport?.primary_vs_best || {});
     const researchMarket = safeParseNB(teacherResearchReport?.market, teacherResearchReport?.market || {});
     const researchBrain = safeParseNB(teacherResearchReport?.brain_behavior, teacherResearchReport?.brain_behavior || {});
@@ -4918,15 +4958,17 @@ function renderML() {
     const stage2aAuditBlocked = Array.isArray(researchStage2A?.blocked_reasons) ? researchStage2A.blocked_reasons : [];
     const stage2aAuditPendingMessage = postCloseArtifactsPending
         ? 'Stage 2A shadow audit is pending until the post-close teacher research artifact is generated.'
+        : (incompleteSession
+            ? 'Stage 2A shadow audit is not applicable because this session failed integrity checks before normal post-close evaluation.'
         : (researchArtifactMissing
             ? 'Stage 2A shadow audit is unavailable because the teacher research artifact could not be loaded for this completed evaluation.'
         : (researchOk
             ? 'No Stage 2A snapshot evidence was found in the current research artifact.'
-            : 'Stage 2A shadow audit becomes available from the daily teacher research artifact after evaluation completes.'));
+            : 'Stage 2A shadow audit becomes available from the daily teacher research artifact after evaluation completes.')));
     const classAGate = safeParseNB(teacherResearchReport?.class_a_gate, teacherResearchReport?.class_a_gate || {});
     const classAGateHasData = Boolean(classAGate?.status) && !postCloseArtifactsPending;
     const classAGateStatus = String(
-        postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : (researchArtifactMissing ? 'UNAVAILABLE' : (evaluationEmptySession ? 'N/A' : 'FAIL')))
+        postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : (incompleteSession ? 'N/A' : (researchArtifactMissing ? 'UNAVAILABLE' : (evaluationEmptySession ? 'N/A' : 'FAIL'))))
     ).toUpperCase();
     const classAGateColor =
         classAGateStatus === 'PASS'
@@ -5001,7 +5043,7 @@ function renderML() {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)'))}">${evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}
+                    Day evaluation: <b style="color:${incompleteSession ? 'var(--warn)' : (evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)')))}">${incompleteSession ? 'INCOMPLETE_SESSION' : (evaluationDone ? 'DONE' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING')))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${incompleteSession ? `<br><span style="color:var(--warn)">${escapeHtml(evaluationIncompleteMessage)}</span>${evaluationForceAllowed ? `<br><span style="color:var(--accent)">Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.</span>` : ''}` : ''}${teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : ''}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 && !incompleteSession ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${researchOk ? 'var(--accent)' : 'var(--warn)'}">
@@ -5034,7 +5076,7 @@ function renderML() {
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${stage2aAuditColor}">
@@ -5062,7 +5104,10 @@ function renderML() {
                     <span class="brain-label">${historicalMlView ? 'Historical Snapshot Diagnostics' : 'Candidate Pipeline Diagnostics'}</span>
                 </div>
                 <div class="brain-detail">
-                    ${((historicalMlView || evaluatedSessionView) && candidateDiagnostics.source === 'live_brain_result') ? `
+                    ${incompleteSession ? `
+                        Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b><br>
+                        Candidate diagnostics are advisory only because this session failed integrity checks before normal evaluation.
+                    ` : ((historicalMlView || evaluatedSessionView) && candidateDiagnostics.source === 'live_brain_result') ? `
                         Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b><br>
                         Saved snapshot diagnostics were not available for this evaluated session.<br>
                         Current live candidate diagnostics are hidden here to avoid mixing closed-market live state with evaluated-session evidence.
