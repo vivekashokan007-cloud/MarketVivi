@@ -3158,12 +3158,13 @@ async function triggerMLRetrain() {
 }
 
 async function triggerDayEvaluation() {
-    if (!window.NativeBridge?.triggerDayEvaluation) {
+    const bridge = window.NativeBridge || window.AndroidBridge;
+    if (!bridge?.triggerDayEvaluation) {
         alert('Native bridge not available. Use APK version.');
         return;
     }
     try {
-        const response = safeParseNB(window.NativeBridge.triggerDayEvaluation(), {});
+        const response = safeParseNB(bridge.triggerDayEvaluation(), {});
         setTimeout(() => {
             getMLModelStatusCached(true);
             getMLEvaluationOutcomesCached(true);
@@ -3179,7 +3180,8 @@ async function triggerDayEvaluation() {
 }
 
 async function triggerDayEvaluationForce() {
-    if (!window.NativeBridge?.triggerDayEvaluationForce) {
+    const bridge = window.NativeBridge || window.AndroidBridge;
+    if (!bridge?.triggerDayEvaluationForce) {
         alert('Force evaluation is not available in this APK yet.');
         return;
     }
@@ -3189,7 +3191,7 @@ async function triggerDayEvaluationForce() {
     );
     if (!proceed) return;
     try {
-        const response = safeParseNB(window.NativeBridge.triggerDayEvaluationForce(), {});
+        const response = safeParseNB(bridge.triggerDayEvaluationForce(), {});
         setTimeout(() => {
             getMLModelStatusCached(true);
             getMLEvaluationOutcomesCached(true);
@@ -3234,11 +3236,12 @@ function triggerRefreshMLStatus() {
 
 function setExecutionSandboxFromUI(enabled) {
     try {
-        if (!window.NativeBridge?.setExecutionSandboxEnabled) {
+        const bridge = window.NativeBridge || window.AndroidBridge;
+        if (!bridge?.setExecutionSandboxEnabled) {
             alert('Native bridge not available.');
             return;
         }
-        const ok = window.NativeBridge.setExecutionSandboxEnabled(!!enabled);
+        const ok = bridge.setExecutionSandboxEnabled(!!enabled);
         if (!ok) {
             alert('Could not update sandbox mode.');
             return;
@@ -3251,13 +3254,14 @@ function setExecutionSandboxFromUI(enabled) {
 
 function saveOrderProxyUrlFromUI() {
     try {
-        if (!window.NativeBridge?.setOrderProxyUrl) {
+        const bridge = window.NativeBridge || window.AndroidBridge;
+        if (!bridge?.setOrderProxyUrl) {
             alert('Native bridge not available.');
             return;
         }
         const input = document.getElementById('execution-proxy-url');
         const value = (input?.value || '').trim();
-        const ok = window.NativeBridge.setOrderProxyUrl(value);
+        const ok = bridge.setOrderProxyUrl(value);
         if (!ok) {
             alert('Could not save proxy URL.');
             return;
@@ -3270,11 +3274,12 @@ function saveOrderProxyUrlFromUI() {
 
 function setNotificationTransportModeFromUI(mode) {
     try {
-        if (!window.NativeBridge?.setNotificationTransportMode) {
+        const bridge = window.NativeBridge || window.AndroidBridge;
+        if (!bridge?.setNotificationTransportMode) {
             alert('Native bridge not available.');
             return;
         }
-        const ok = window.NativeBridge.setNotificationTransportMode(String(mode || 'live'));
+        const ok = bridge.setNotificationTransportMode(String(mode || 'live'));
         if (!ok) {
             alert('Could not update notification routing mode.');
             return;
@@ -3287,11 +3292,12 @@ function setNotificationTransportModeFromUI(mode) {
 
 function setStage2AGuardModeFromUI(mode) {
     try {
-        if (!window.NativeBridge?.setStage2AGuardMode) {
+        const bridge = window.NativeBridge || window.AndroidBridge;
+        if (!bridge?.setStage2AGuardMode) {
             alert('Native bridge not available.');
             return;
         }
-        const ok = window.NativeBridge.setStage2AGuardMode(String(mode || 'shadow'));
+        const ok = bridge.setStage2AGuardMode(String(mode || 'shadow'));
         if (!ok) {
             alert('Could not update Stage 2A mode.');
             return;
