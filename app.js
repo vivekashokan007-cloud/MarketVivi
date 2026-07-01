@@ -6709,7 +6709,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch(e) {
                 console.warn('[Phase 4] Kotlin pull failed:', e.message);
             }
-            updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), serviceStatus));
+            updateWatchStatusHint(readNativeJson('getServiceStatus', serviceStatus));
             renderAll();
             return; // No lightFetch in native mode
         }
