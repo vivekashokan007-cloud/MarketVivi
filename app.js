@@ -452,6 +452,19 @@ function getTodayNativeBaseline(snapshot = null) {
     return isTodayRecord(baseline) ? baseline : null;
 }
 
+function getTodayLocalBaseline() {
+    try {
+        const baseline = safeParseNB(localStorage.getItem('mr2_morning_baseline'), null);
+        return isTodayRecord(baseline) ? baseline : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function hasLockedMorningForToday(snapshot = null) {
+    return !!getTodayNativeBaseline(snapshot) || !!getTodayLocalBaseline();
+}
+
 function todayNativeSessionActive(serviceStatus = null, latestPoll = null, pollHistory = null, baseline = null) {
     const snap = renderSnapshot();
     serviceStatus = serviceStatus || snap?.serviceStatus || readNativeJson('getServiceStatus', {});
@@ -486,13 +499,29 @@ function nextAutoStartText(serviceStatus) {
 function updateWatchStatusHint(serviceStatus = null) {
     const watchEl = document.getElementById('watch-status');
     if (!watchEl) return;
-    serviceStatus = serviceStatus || renderSnapshot()?.serviceStatus || readNativeJson('getServiceStatus', {});
+    const snap = renderSnapshot();
+    serviceStatus = serviceStatus || snap?.serviceStatus || readNativeJson('getServiceStatus', {});
+    const lockedToday = hasLockedMorningForToday(snap);
     const polls = Number.isFinite(serviceStatus?.polls) ? serviceStatus.polls : (STATE.pollCount || 0);
     const expectedByNow = Number.isFinite(serviceStatus?.expectedPollsByNow) ? serviceStatus.expectedPollsByNow : 0;
     const expectedFullDay = Number.isFinite(serviceStatus?.expectedPollsFullDay) ? serviceStatus.expectedPollsFullDay : 76;
     const missed = Number.isFinite(serviceStatus?.missedPollsToday) ? serviceStatus.missedPollsToday : Math.max(expectedByNow - polls, 0);
     const coverage = serviceStatus?.pollCoverageState || '';
     const coverageLabel = expectedByNow > 0 ? ` · polls ${polls}/${expectedByNow} slots` : '';
+    if (!lockedToday) {
+        if (!serviceStatus?.tokenReady) {
+            watchEl.textContent = '🟠 Paste Upstox token to enable 9:15 auto polling';
+            return;
+        }
+        if (serviceStatus?.marketReason === 'OPEN') {
+            watchEl.textContent = '🔒 Lock & Scan to start auto polling';
+            return;
+        }
+        const nextText = nextAutoStartText(serviceStatus);
+        const suffix = nextText ? ` · Next ${nextText}` : '';
+        watchEl.textContent = `🔒 Enter morning data and scan${suffix}`;
+        return;
+    }
     if (serviceStatus?.running) {
         const missLabel = missed > 0 ? ` · missed ${missed}` : '';
         watchEl.textContent = `🟢 Auto polling${coverageLabel}${missLabel}`;
@@ -541,6 +570,18 @@ function isLiveRecommendationWindow(serviceStatus = null) {
 function maybeAutoStartNativeIngestion(reason = 'ui') {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.getServiceStatus !== 'function') return false;
     const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+    if (!hasLockedMorningForToday()) {
+        if (serviceStatus.running && typeof NativeBridge.stopMarketService === 'function') {
+            try {
+                NativeBridge.stopMarketService();
+            } catch (e) {
+                console.warn(`[auto-ingestion] stop without baseline failed from ${reason}:`, e.message);
+            }
+        }
+        STATE.isWatching = false;
+        updateWatchStatusHint({ ...serviceStatus, running: false, sessionActive: false, polls: 0 });
+        return false;
+    }
     updateWatchStatusHint(serviceStatus);
     if (serviceStatus.running) {
         STATE.isWatching = true;
