@@ -6542,7 +6542,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (typeof DB !== 'undefined' && DB.getSignalAccuracyStats) {
             STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
         } else {
-            STATE.signalAccuracyStats = safeParseNB(NativeBridge.getSignalAccuracyStats(), {});
+            STATE.signalAccuracyStats = readNativeJson('getSignalAccuracyStats', {});
         }
     } catch (e) {
         console.warn('[boot] getSignalAccuracyStats skipped:', e.message);
@@ -6550,7 +6550,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // If open trades exist, show positions tab
-    if (safeParseNB(NativeBridge.getOpenTrades(), []).length > 0) {
+    if (readNativeJson('getOpenTrades', []).length > 0) {
         switchTab('positions');
     }
 
@@ -6569,8 +6569,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // when token/schedule conditions are met, even if Lock & Scan is never pressed.
     maybeAutoStartNativeIngestion('boot');
     const todayBaseline = getTodayNativeBaseline();
-    if (todayBaseline && safeParseNB(NativeBridge.getServiceStatus(), {}).running) {
-        console.log(`[b162] Restored active service: ${safeParseNB(NativeBridge.getPollHistory(), []).length} polls restored`);
+    if (todayBaseline && readNativeJson('getServiceStatus', {}).running) {
+        console.log(`[b162] Restored active service: ${readNativeJson('getPollHistory', []).length} polls restored`);
         STATE.morningExpandedAfterLock = false;
         collapseMorning({ force: true });
         const lockBtn = document.getElementById('btn-lock');
@@ -6583,7 +6583,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (watchEl) watchEl.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
         updateLockScanUi();
     } else {
-        updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), {}));
+        updateWatchStatusHint(readNativeJson('getServiceStatus', {}));
     }
 
     // Native Kotlin+Chaquopy runtime owns all analysis.
@@ -6639,7 +6639,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // This ensures immediate poll + brain run instead of waiting for next 5-min interval.
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
-        const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+        const serviceStatus = readNativeJson('getServiceStatus', {});
         maybeAutoStartNativeIngestion('resume');
         try { await loadApprovedBranchProposals(true); } catch (e) { console.warn('[resume] loadApprovedBranchProposals failed:', e.message); }
         if (STATE.evaluatorJob?.job_id) {
