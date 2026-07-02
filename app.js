@@ -514,7 +514,9 @@ function updateWatchStatusHint(serviceStatus = null) {
             return;
         }
         if (serviceStatus?.marketReason === 'OPEN') {
-            watchEl.textContent = '🔒 Lock & Scan to start auto polling';
+            watchEl.textContent = serviceStatus?.running
+                ? '🟢 Passive capture running · Lock & Scan to arm brain'
+                : '🟢 Auto capture starting · Lock & Scan to arm brain';
             return;
         }
         const nextText = nextAutoStartText(serviceStatus);
@@ -569,19 +571,8 @@ function isLiveRecommendationWindow(serviceStatus = null) {
 
 function maybeAutoStartNativeIngestion(reason = 'ui') {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.getServiceStatus !== 'function') return false;
-    const serviceStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
-    if (!hasLockedMorningForToday()) {
-        if (serviceStatus.running && typeof NativeBridge.stopMarketService === 'function') {
-            try {
-                NativeBridge.stopMarketService();
-            } catch (e) {
-                console.warn(`[auto-ingestion] stop without baseline failed from ${reason}:`, e.message);
-            }
-        }
-        STATE.isWatching = false;
-        updateWatchStatusHint({ ...serviceStatus, running: false, sessionActive: false, polls: 0 });
-        return false;
-    }
+    const serviceStatus = readNativeJson('getServiceStatus', {});
+    const lockedToday = hasLockedMorningForToday();
     updateWatchStatusHint(serviceStatus);
     if (serviceStatus.running) {
         STATE.isWatching = true;
@@ -589,7 +580,7 @@ function maybeAutoStartNativeIngestion(reason = 'ui') {
         return true;
     }
     if (!serviceStatus.tokenReady || !serviceStatus.marketOpen) return false;
-    console.log(`[auto-ingestion] starting native service from ${reason}`);
+    console.log(`[auto-ingestion] starting native service from ${reason}${lockedToday ? '' : ' (passive pre-scan capture)'}`);
     startWatchLoop();
     try {
         if (typeof NativeBridge.requestImmediatePoll === 'function') {
@@ -598,7 +589,7 @@ function maybeAutoStartNativeIngestion(reason = 'ui') {
     } catch (e) {
         console.warn(`[auto-ingestion] immediate poll request failed from ${reason}:`, e.message);
     }
-    updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), serviceStatus));
+    updateWatchStatusHint(readNativeJson('getServiceStatus', serviceStatus));
     return true;
 }
 
@@ -667,10 +658,7 @@ function callNativeJson(methodName, ...args) {
 
 function currentOpenTrades() {
     if (Array.isArray(STATE.openTrades) && STATE.openTrades.length) return STATE.openTrades;
-    if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.getOpenTrades === 'function') {
-        return safeParseNB(NativeBridge.getOpenTrades(), []);
-    }
-    return [];
+    return readNativeJson('getOpenTrades', []);
 }
 
 function syncToNative() {
@@ -4898,7 +4886,8 @@ function renderML(snapshot = null) {
     const coverageIntegrityIssue = String(service.coverageIntegrityIssue || '');
     const evaluationPromotionEligible = service.evaluationPromotionEligible === true;
     const evaluationForceAllowed = service.evaluationForceAllowed === true;
-    const incompleteSession = evaluationPhase === 'INCOMPLETE_SESSION' || coverageIntegrity === 'INTEGRITY_BROKEN';
+    const sessionIsLiveMarket = service?.marketReason === 'OPEN';
+    const incompleteSession = !sessionIsLiveMarket && (evaluationPhase === 'INCOMPLETE_SESSION' || coverageIntegrity === 'INTEGRITY_BROKEN');
     const evaluationProgressCurrent = Number(service.evaluationProgressCurrent || 0);
     const evaluationProgressTotal = Number(service.evaluationProgressTotal || 0);
     const evaluationPhaseLabel = evaluationPhase ? evaluationPhase.replace(/_/g, ' ') : '';
@@ -6715,7 +6704,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // BROWSER MODE — existing recovery logic
-        const resumeStatus = safeParseNB(NativeBridge.getServiceStatus(), {});
+        const resumeStatus = readNativeJson('getServiceStatus', {});
         const sinceLastPoll = (resumeStatus.lastPoll) ? (Date.now() - resumeStatus.lastPoll) / 60000 : 999;
         if (sinceLastPoll >= 4) {
             console.log(`[b108] App returned from background. Last poll ${sinceLastPoll.toFixed(1)}min ago. Immediate recovery.`);
@@ -6723,10 +6712,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (el) el.textContent = '🔄 Recovering from background...';
             try {
                 await lightFetch();
-                updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), resumeStatus));
+                updateWatchStatusHint(readNativeJson('getServiceStatus', resumeStatus));
             } catch(e) {
                 console.warn('[b108] Recovery poll failed:', e.message);
-                updateWatchStatusHint(safeParseNB(NativeBridge.getServiceStatus(), resumeStatus));
+                updateWatchStatusHint(readNativeJson('getServiceStatus', resumeStatus));
             }
         }
     });
