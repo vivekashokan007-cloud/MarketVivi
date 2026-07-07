@@ -1,3 +1,28 @@
+## 2026-07-07 Synchronized `v2.5.0 / b331` release pushed; signed Android release succeeded
+
+- Both repos were pushed to `main` for the synchronized BUILD 3 release.
+- Final pushed SHAs:
+  - `Marketapp` `main`: `5a59992dd0fdec208a49b224ddf26d61b3980fb5`
+  - `MarketVivi` `main`: `0db3a5e3b9dd0e757d747b7e886b21aff8687a60`
+- Final synchronized visible version:
+  - Android `versionName=2.5.0`
+  - Android `versionCode=331`
+  - Python `BRAIN_VERSION=2.5.0`
+  - PWA visible label `v2.5.0 · b331`
+  - PWA cache-bust `app.js?v=1249`
+- `Marketapp` signed release workflow fired from the `main` push because `app/build.gradle.kts` changed.
+- Signed release workflow result:
+  - run URL: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/28851827319`
+  - conclusion: `success`
+- GitHub release confirmation:
+  - tag: `v2.5.0`
+  - release URL: `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.0`
+  - asset: `app-release.apk`
+- Note:
+  - `Marketapp` debug APK validation on the same `main` push failed
+  - signed release still completed successfully
+  - if future follow-up is needed, inspect the failed debug workflow separately; it did not block this signed release
+
 ## 2026-07-07 BUILD 3 release prep moved to synchronized `v2.5.0 / b331`
 
 - Release target is now synchronized across both repos:
