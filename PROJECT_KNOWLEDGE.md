@@ -1,3 +1,212 @@
+## 2026-07-07 BUILD 3 release prep moved to synchronized `v2.5.0 / b331`
+
+- Release target is now synchronized across both repos:
+  - Android / brain / PWA visible version: `v2.5.0`
+  - Android build code: `b331`
+  - PWA cache-bust: `app.js?v=1249`
+- `Marketapp` BUILD 3 branch `build3-a8-nf-calm-ab` was merged locally into `main` for this release path:
+  - local merge commit before push: `5a59992dd0fdec208a49b224ddf26d61b3980fb5`
+- BUILD 3 actor scope in this release:
+  - post-generation A8 EV gate with frozen `1.10` floor
+  - calm intraday NF-lane restriction
+  - paired old-vs-new logger `build3_ab`
+  - Stage `2A` shadow remains active
+  - Stage `2A` live teacher ranking remains inactive
+- Before shipping, local checks passed:
+  - `test_build3_a8_nf_ab.py`
+  - `test_gate3_structural_counts.py`
+  - `test_gate5_trace_smoke.py`
+  - `test_teacher_v1_shadow_labels.py`
+  - `test_stage2a_guarded_ranking.py`
+  - `node --check MarketVivi-git/app.js`
+  - `git diff --check` in both repos
+- Local Android compile still could not run in Codex container because Android SDK path is missing; GitHub Actions remains the compile/sign gate.
+- This release requires:
+  - `Marketapp` push to `main` so `.github/workflows/release.yml` fires the signed APK release
+  - `MarketVivi` push to `main` so the visible web version and cache-bust stay synchronized
+
+## 2026-07-07 BUILD 3 branch pushed for Claude verification; not shipped
+
+- Current shipped Android build is still:
+  - `v2.4.99 / b330`
+  - `Marketapp` `main` SHA: `a0a3d52b9ba5a79650a66275f226a40d5883965b`
+- BUILD 3 is pushed only on a feature branch:
+  - branch: `build3-a8-nf-calm-ab`
+  - pushed HEAD SHA: `f0cfc8993c289213d15af5a8b2693210d1b17927`
+  - commit message: `Implement BUILD 3 A8 gate and NF lane logger`
+- Explicitly not done yet:
+  - no version bump
+  - no merge to `main`
+  - no Android OTA / signed release trigger
+  - no synchronized `MarketVivi` visible-version update
+
+### BUILD 3 scope now implemented on branch
+
+- BUILD 3 is the re-scoped WEEK-1 experiment after Claude removed teacher-first ranking from live actor scope.
+- Implemented actor changes:
+  - A8 EV gate is now post-generation, not inside candidate construction
+  - old picker uses the untouched original generated menu
+  - new picker uses:
+    - A8 EV filtering with the frozen `1.10` EV floor
+    - calm-regime NF-lane gate
+  - calm-regime rule is:
+    - `tradeMode == intraday`
+    - and (`regime.type == range` or `rangeSigma <= 0.30`)
+    - and `VIX < IV_HIGH`
+  - calm-regime outcome:
+    - if NF intraday survives, remove BNF intraday from the new actor pool
+    - if only BNF intraday survives, actor returns `WAIT` with `CALM_NF_ONLY_WAIT`
+- Attribution guard:
+  - rank tuple itself was not changed
+  - teacher-first was not reintroduced
+  - old arm and new arm differ only by the BUILD 3 gates
+
+### Stage 2A / teacher status after BUILD 3 correction
+
+- During local BUILD 3 review Claude found that Stage `2A` shadow had been silently disabled.
+- This was corrected before push:
+  - Stage `2A` shadow annotations remain active
+  - Stage `2A` live teacher ranking remains inactive for BUILD 3 actor logic
+- Meaning:
+  - teacher shadow observability is still available
+  - teacher ranking is still not part of the live BUILD 3 actor path
+  - BUILD 3 remains a gate-only experiment, not a teacher-first experiment
+
+### BUILD 3 logger / Supabase contract
+
+- New paired old-vs-new logger is added:
+  - result payload key: `build3_ab`
+  - experiment name: `week1_a8_nf_calm_gate`
+- Persistence behavior:
+  - local JSONL fallback writes to app local cache
+  - Supabase write is best-effort only and must not crash polling
+- Supabase table prepared in migration:
+  - `supabase/migrations/20260707_ab_week1_decisions.sql`
+- Idempotent key confirmed:
+  - unique key: `(snapshot_poll_ts, experiment_name)`
+  - app writer uses `on_conflict=snapshot_poll_ts,experiment_name`
+
+### BUILD 3 validation status
+
+- Passed locally before push:
+  - `test_build3_a8_nf_ab.py`
+  - `test_gate3_structural_counts.py`
+  - `test_gate5_trace_smoke.py`
+  - `test_teacher_v1_shadow_labels.py`
+  - `test_stage2a_guarded_ranking.py`
+  - `git diff --check`
+- Local Android compile still blocked in Codex container:
+  - `./gradlew assembleDebug` could not run because Android SDK path is not configured in this environment
+  - compile gate still needs CI on GitHub after branch push
+
+### Claude checkpoint state
+
+- BUILD 3 Checkpoint B verdict became conditional approval.
+- Required deltas were resolved before push:
+  - Stage `2A` shadow disablement fixed and disclosed
+  - old-pool ranking snapshot refactor disclosed
+  - logger unique key confirmed
+- Claude verification request artifact created outside repo:
+  - `CLAUDE_BUILD3_PUSH_VERIFICATION_REQUEST_20260707.txt`
+- Local review artifacts created outside repo:
+  - `BUILD3_REVIEW_BUNDLE_20260707.zip`
+  - `CLAUDE_BUILD3_CHECKPOINT_B_DELTA_20260707.txt`
+- Current expected next step:
+  - Claude verifies the pushed branch tree
+  - only after that should user decide on commit-to-main / version bump / release path
+
+### Release-process reminder after BUILD 3
+
+- Pushing a feature branch does not ship the app.
+- User-facing release still requires synchronized visible-version work on both repos:
+  - `Marketapp/app/build.gradle.kts`
+  - `MarketVivi` visible version label and cache-bust
+- If BUILD 3 is later approved for ship:
+  - Android version target agreed in directives is `v2.5.0 / b331`
+  - `BRAIN_VERSION` must move in lockstep with Android version
+  - `MarketVivi` must also be updated so the app/PWA visible versions stay synchronized
+
+## 2026-07-06 Build 1 stability release completed (`v2.4.98 / b329`)
+
+- Build 1 was released only after correcting the process back to the project rule:
+  - feature branches/PRs were used only for validation
+  - final user-facing update required synchronized `main` pushes in both repos
+  - `Marketapp/app/build.gradle.kts` changed so the signed Android release workflow could publish the APK
+  - `MarketVivi/index.html` changed so the hosted PWA version/cache-bust shipped
+- Final synchronized version:
+  - Android `versionName=2.4.98`
+  - Android `versionCode=329`
+  - PWA visible label `v2.4.98 · b329`
+  - PWA cache-bust `app.js?v=1248`
+- GitHub main commits:
+  - `Marketapp`: `dd1791a` (`Stabilize build 1 polling and candidate persistence`)
+  - `MarketVivi`: `336fd30` (`Update build 1 stability UI`)
+- PR validation path:
+  - `Marketapp` PR #1 debug APK validation passed on branch `build1-stability`
+  - `MarketVivi` PR #1 had no checks and was clean
+  - both PRs were merged to `main`
+- GitHub Actions after `main` push:
+  - `Marketapp` debug APK validation on `main` passed
+  - `Marketapp` signed release workflow on `main` passed
+  - GitHub release created:
+    - tag `v2.4.98`
+    - release name `Market Radar v2.4.98`
+    - asset `app-release.apk`
+    - APK SHA256 `c71d8eed1e7a17da7e2472d27517b754a229de1b67b58f823fec193a99841688`
+    - release URL `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.4.98`
+- Build 1 scope actually shipped:
+  - duplicate poll dispatch hardening:
+    - `dispatchPollIfDue(...)` now uses an in-memory synchronized in-flight reservation for concurrent duplicate suppression
+    - existing successful-slot marker remains the sequential completed-slot guard
+    - failed slots remain retryable because completion is not marked on attempt
+  - force/manual poll path now routes through the same dispatch guard
+  - ML persistence de-duplication:
+    - persist key is now `date|slotKey`
+    - in-flight ML persistence reservation blocks concurrent duplicates
+    - successful key is committed only after brain snapshot save and generated-candidate save success/no-op
+    - failure/timeout releases the reservation for retry
+  - generated candidates now write with:
+    - `on_conflict=snapshot_poll_ts,candidate_id`
+    - `Prefer: resolution=merge-duplicates,return=minimal`
+  - NF futures premium display/persistence:
+    - Android writes only `poll.futuresPremNf`
+    - existing BNF fields `fp` / `futuresPremBnf` remain unchanged
+    - `nfChain.futuresPremium` is not mutated because `brain.py` reads chain `futuresPremium` as a live input
+    - PWA OI tab reads `latestPoll.futuresPremNf` with old `nfc.futuresPremium` as display fallback only
+  - teacher research UI truth:
+    - when post-close artifacts are pending and `LOCAL_REPORT_NOT_AVAILABLE` is the only failure reason, UI now says teacher research is pending instead of failed
+- Explicitly not shipped in Build 1:
+  - no `brain.py` changes
+  - no teacher-ruler / CHANGE 1 logic
+  - no ranking / probability / strategy-selection changes
+  - no `BRAIN_VERSION` bump, because `brain.py` was intentionally unchanged
+- Guardrails before release:
+  - `git diff --check` passed in both repos
+  - `node --check MarketVivi-git/app.js` passed
+  - `brain.py` had zero diff
+  - grep found zero `futuresPremNf`, `futures_prem_nf`, and CHANGE 1 markers in `brain.py`
+  - local Android compile could not complete because the Codex container is `aarch64` and Android AAPT2 binaries are `x86-64`; GitHub Actions x86-64 runner became the compile gate and passed
+- Live evidence that motivated the duplicate fix:
+  - latest logs showed same-slot duplicate poll execution from loop/alarm timing, not only force/manual
+  - earlier logs showed force/token-update could also create duplicate pressure
+  - original force-only routing was insufficient; final fix hardened `dispatchPollIfDue(...)` itself
+- Supabase index note:
+  - local schema patch defines `idx_ml_generated_candidates_poll_candidate` as unique on `(snapshot_poll_ts, candidate_id)`
+  - anon REST could read `ml_generated_candidates`
+  - anon REST could not read `pg_indexes` (`PGRST205`)
+  - still recommended: run the Supabase SQL editor query to confirm the live unique index is exactly `(snapshot_poll_ts, candidate_id)` and that no other unique constraint can fire first
+- CHANGE 1 status after Build 1:
+  - CHANGE 1 teacher-ruler work remains gated for Build 2
+  - local stash preserved it in `Marketapp-git` as `gated-change1-local-20260706`
+  - local patch backup exists outside repo as `CHANGE1_LOCAL_PATCH_20260706.diff`
+  - when CHANGE 1 is later unstashed, `BRAIN_VERSION` must bump in the same commit as the ruler change
+- Operational reminder:
+  - a feature branch/PR does not deliver the app update
+  - for user-facing releases, both repos must be pushed/merged to `main` with synchronized visible versions
+  - `Marketapp/app/build.gradle.kts` must change for signed release automation
+  - `MarketVivi/index.html` version label and `app.js?v=...` must change for PWA cache refresh
+  - revoke/rotate any GitHub PAT pasted into chat after the release workflow is complete
+
 ## 2026-06-29 v2.4.74/b305 live validation
 
 - User confirmed Android update arrived and app header shows `v2.4.74 · b305`.
