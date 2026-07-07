@@ -18,7 +18,8 @@
   - no Android version bump in this hotfix
   - still `v2.5.0 / b331`
   - `app/build.gradle.kts` was not changed, so the signed release workflow should not fire from this push
-  - debug validation may run because `app/**` changed
+  - debug validation did run for `c8f7b4534696ca18eb020511be7ab8d3eca19d09` and passed:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/28858108716`
 
 ## 2026-07-07 Synchronized `v2.5.0 / b331` release pushed; signed Android release succeeded
 
