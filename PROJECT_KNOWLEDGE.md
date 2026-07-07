@@ -1,11 +1,15 @@
-## 2026-07-07 BUILD 3 hotfix pushed after live RLS verification
+## 2026-07-07 BUILD 3 hotfix and CI validation update pushed after live RLS verification
 
 - `Marketapp` hotfix pushed to `main`:
   - SHA: `d9181b8cbcaa0c908d05ea769d4a27d2c63740b2`
   - commit: `Fix BUILD 3 wait wording and AB RLS policy`
+- `Marketapp` CI follow-up pushed to `main`:
+  - SHA: `c8f7b4534696ca18eb020511be7ab8d3eca19d09`
+  - commit: `Update debug validation for BUILD 3 gate`
 - Scope:
   - clarified BUILD 3 forced-`WAIT` Copilot/conflict text so stale pre-gate "Execution aligned to top candidate" wording is removed when the new actor correctly returns `WAIT`
   - recorded the production `ab_week1_decisions` RLS fix in the migration file
+  - updated the debug APK workflow's inline Python validation so it checks BUILD 3 old-vs-new counterfactual fields instead of expecting post-gate `generated_candidates` to stay non-empty
 - Production database status:
   - manual Supabase SQL fix succeeded
   - fresh app log confirmed `BUILD3_AB_SAVE: saved=true` at `14:50` and `14:55`
