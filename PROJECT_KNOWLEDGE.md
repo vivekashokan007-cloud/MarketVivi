@@ -1,3 +1,21 @@
+## 2026-07-07 BUILD 3 hotfix pushed after live RLS verification
+
+- `Marketapp` hotfix pushed to `main`:
+  - SHA: `d9181b8cbcaa0c908d05ea769d4a27d2c63740b2`
+  - commit: `Fix BUILD 3 wait wording and AB RLS policy`
+- Scope:
+  - clarified BUILD 3 forced-`WAIT` Copilot/conflict text so stale pre-gate "Execution aligned to top candidate" wording is removed when the new actor correctly returns `WAIT`
+  - recorded the production `ab_week1_decisions` RLS fix in the migration file
+- Production database status:
+  - manual Supabase SQL fix succeeded
+  - fresh app log confirmed `BUILD3_AB_SAVE: saved=true` at `14:50` and `14:55`
+  - `ab_week1_decisions` cloud rows are now being written for `week1_a8_nf_calm_gate`
+- Version/release status:
+  - no Android version bump in this hotfix
+  - still `v2.5.0 / b331`
+  - `app/build.gradle.kts` was not changed, so the signed release workflow should not fire from this push
+  - debug validation may run because `app/**` changed
+
 ## 2026-07-07 Synchronized `v2.5.0 / b331` release pushed; signed Android release succeeded
 
 - Both repos were pushed to `main` for the synchronized BUILD 3 release.
