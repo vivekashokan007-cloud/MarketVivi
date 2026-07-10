@@ -1,3 +1,256 @@
+## 2026-07-10 Day-4 post-close window and freeze-base verification
+
+- Claude requested a read-only window legitimacy and freeze-base audit.
+- Response artifact created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_WINDOW_AND_FREEZE_BASE_REPLY_20260710.txt`
+- Active Week-1 A/B verdict window is confirmed as Days 2-6:
+  - Day 2: `2026-07-08`
+  - Day 3: `2026-07-09`
+  - Day 4: `2026-07-10`
+  - Day 5: `2026-07-13`
+  - Day 6: `2026-07-14`
+- The original `2026-07-06` directive said `5 sessions`; the active amendment is the `2026-07-07` re-anchor plus `2026-07-08` roadmap, which explicitly defines Days 2-6 and the Tue Jul 14 verdict letter.
+- `HANDOFF_MARKET_RADAR_20260708` was not found locally or in uploaded files; the available roadmap source is `DIRECTIVE_OC_MASTER_ROADMAP_TO_SATURDAY_20260708.md`.
+
+### Day-4 K3 arithmetic
+
+- Date checked: `2026-07-10`.
+- Persisted A/B rows:
+  - max poll number: `75`
+  - expected rows: `75 - 2 = 73`
+  - actual distinct poll numbers: `73`
+  - actual A/B rows: `73`
+  - rows minus expected: `0`
+  - poll numbers persisted contiguously from `3` through `75`
+  - first A/B poll: `2026-07-10T09:25:00+0530`
+  - last A/B poll: `2026-07-10T15:30:00+0530`
+- Morning check was partial-day only:
+  - `ab_rows=16`
+  - `max_ab_poll_number=18`
+- Device UI showed `76/76`, but persisted A/B max poll number is `75`; logcat showed duplicate final `Poll #76` start/complete and duplicate `15:30` `BUILD3_AB_SAVE` lines. Supabase retained one final `15:30` row by upsert, so K3 is clean by persisted logger formula.
+
+### Day-4 zero-evaluable close
+
+- Supabase post-close result:
+  - `ml_evaluation_outcomes`: `0`
+  - `ml_recommendation_outcomes`: `0`
+  - `ab_week1_decisions`: `73`
+  - gate distribution: `ALL_NEGATIVE_EV = 73`
+  - lane pair: `BNF_intraday -> __null__ = 73`
+- Day 4 is a true zero-evaluable session, not a save failure.
+- The earlier UI issue remains classified as local reporting/state noise:
+  - zero-evaluable session is correctly terminal, but `repairStaleResearchStateIfNeeded()` can flip `DONE -> FAILED_RESEARCH` when no teacher report file exists.
+  - This needs a later reporting-path fix, not a Week-1 logic change.
+
+### Freeze-base status
+
+- Freeze-base tag is blocked right now.
+- Expected SHAs from Claude's query do not match current local `main` heads:
+  - `Marketapp` expected `5a59992dd0fdec208a49b224ddf26d61b3980fb5`
+  - `Marketapp` actual `c8f7b4534696ca18eb020511be7ab8d3eca19d09`
+  - `MarketVivi` expected `0db3a5e3b9dd0e757d747b7e886b21aff8687a60`
+  - `MarketVivi` actual `dc42e25b221d9fb3033ef675ae49ba9f7803a05b`
+- Commits after the expected `Marketapp` SHA:
+  - `d9181b8cbcaa0c908d05ea769d4a27d2c63740b2` - `Fix BUILD 3 wait wording and AB RLS policy`
+  - `c8f7b4534696ca18eb020511be7ab8d3eca19d09` - `Update debug validation for BUILD 3 gate`
+- Commits after the expected `MarketVivi` SHA:
+  - `217c7a4b6079037bd918653e23fad882aef85eac` - `Record v2.5.0 synchronized release`
+  - `1f4eb72e1c22174bef9efc98c210038a4337e87d` - `Update project knowledge after BUILD 3 hotfix`
+  - `daec61ec010d8c4a488f61c2fbeb5241ffe56b59` - `Update project knowledge after BUILD 3 CI fix`
+  - `dc42e25b221d9fb3033ef675ae49ba9f7803a05b` - `Record BUILD 3 CI hotfix validation`
+- Worktree cleanliness:
+  - `Marketapp-main-worktree`: clean
+  - `MarketVivi-git`: dirty due to local `PROJECT_KNOWLEDGE.md`
+- Do not tag until Claude/Vivek explicitly accept the actual heads as the new freeze base and the worktree is clean.
+
+### Freeze constants confirmed
+
+- `brain.py`:
+  - SHA-256: `dfabf17f7515b04a58f84702b93007ac2cede1999470088934b7ef5e40840772`
+  - line count: `11608`
+  - `BRAIN_VERSION = "2.5.0"`
+  - `BUILD3_EV_FLOOR_MULT = 1.10`
+  - `BUILD3_CALM_RANGE_SIGMA_MAX = 0.30`
+  - `IV_HIGH = 20`
+- Android:
+  - `versionCode = 331`
+  - `versionName = "2.5.0"`
+- PWA:
+  - visible label `v2.5.0 · b331`
+  - cache-bust `app.js?v=1249`
+- Live persisted threshold payload matched source:
+  - `{"iv_high":20,"ev_floor_mult":1.1,"calm_range_sigma_max":0.3}`
+
+### Teacher config version caveat
+
+- Local cached `ml_evaluation_outcomes` extraction for `2026-06-12` through `2026-07-09` showed `teacher_config_version = null` on all cached rows.
+- Offline replay studies should not claim config-version stratification from that column.
+- R-unit segregation must be justified from other known source/version boundaries or rerun after explicit teacher config stamping exists.
+
+## 2026-07-10 Day-4 morning check and offline replay validation
+
+### Day-4 morning lock/scan telemetry
+
+- Morning read-only Supabase check was run using:
+  - `SUPABASE_QUERY_DAY4_MORNING_LOCK_SCAN_20260710.txt`
+- Result for `session_date = 2026-07-10`:
+  - `snapshot_rows_today = 18`
+  - latest snapshot id `2377`
+  - latest poll `10:40 IST`
+  - latest action `WAIT`
+  - latest generated count `0`
+  - latest watchlist count `0`
+  - latest rejected count `20`
+  - latest rejected full count `320`
+- A/B integrity result:
+  - `ab_rows = 16`
+  - `expected_ab_rows = 16`
+  - `ab_rows_minus_expected = 0`
+  - no K3 / RLS / write-gap issue in the morning path
+- BUILD 3 gate telemetry result:
+  - `picks_differ_rows = 16`
+  - `old_would_have_taken_rows = 16`
+  - `old_pick_rows = 16`
+  - `new_pick_rows = 0`
+  - gate reason distribution: `{"ALL_NEGATIVE_EV":16}`
+  - old lane distribution: `{"BNF_intraday":16}`
+  - new lane distribution: `{"NONE":16}`
+- Operational conclusion:
+  - BUILD 3 old-vs-new logger is healthy
+  - warm-up accounting is exact
+  - morning BUILD 3 behavior is forced `WAIT` because all new-arm candidates are below the frozen EV floor
+
+### Safe Supabase research architecture established
+
+- Manual Supabase SQL editor research was too slow and fragile for nested JSON mining.
+- New local-only extractor was created outside app code:
+  - `research_supabase_profit_attribution_extract.py`
+- Safety properties:
+  - read-only Supabase REST
+  - no writes
+  - rate-limited paging
+  - retries/backoff
+  - day-by-day snapshot fetch
+  - local JSONL cache so repeated analysis does not re-hit Supabase
+- Full extraction completed for:
+  - `2026-06-12` through `2026-07-09`
+- Cached locally:
+  - `ml_evaluation_outcomes`: `5,853` rows
+  - `ml_brain_snapshots`: `1,502` rows
+- Output artifacts:
+  - `research_cache/profit_attribution_20260612_20260709/raw/`
+  - `research_cache/profit_attribution_20260612_20260709/primary_vs_best_feature_matrix.csv`
+  - `research_cache/profit_attribution_20260612_20260709/summary.json`
+  - `LOCAL_PROFIT_ATTRIBUTION_FULL_WINDOW_ANALYSIS_20260709.txt`
+  - `LOCAL_BRANCH_CLUSTER_ANALYSIS_20260709.txt`
+  - `OFFLINE_PROFIT_CANDIDATE_ATTRIBUTION_STUDY_20260709.txt`
+
+### Structural finding from full-window offline attribution study
+
+- Across the full local extraction, the best later-performing candidate was already being generated.
+- Failure point is downstream of generation:
+  - generated but not watchlisted: `271`
+  - watchlisted but not top: `218`
+- Full miss-matrix scope:
+  - `489` primary-vs-best miss rows
+  - `11` trading days
+  - average best-vs-primary uplift about `+1321.99`
+- Gap mix:
+  - `STRATEGY_FAMILY_GAP = 249`
+  - `WIDTH_GAP = 237`
+  - `SAME_FAMILY_OTHER_GAP = 3`
+- Directional implication:
+  - generator is not the main failure
+  - surfacing and final ranking are the main failure points
+
+### Claude survivorship challenge closed with full-menu replay
+
+- Claude correctly challenged the winner-only study as vulnerable to survivorship bias.
+- Local full-menu replay was built to answer that challenge:
+  - script: `research_full_menu_ranker_replay.py`
+  - output CSV: `research_cache/profit_attribution_20260612_20260709/full_menu_ranker_replay.csv`
+  - output summary: `research_cache/profit_attribution_20260612_20260709/full_menu_ranker_replay_summary.json`
+  - text report: `FULL_MENU_RANKER_REPLAY_20260710.txt`
+- Replay method:
+  - no new Supabase calls
+  - uses cached raw data only
+  - compares actual primary pick vs alternate top-1 chosen from the full generated menu using ex-ante generated-candidate fields
+- Main alternate tested:
+  - `ml_edge_first_ready`
+  - ordering:
+    - `mlEdge desc`
+    - `p_ml desc`
+    - `netPremium desc`
+    - `maxLoss asc`
+    - `candidate_id`
+  - ready filter:
+    - `executionReady != false`
+    - `capitalBlocked != true`
+
+### Full-menu replay verdict
+
+- Replay denominator:
+  - `535` snapshot rows
+  - `532` paired realized alternate outcomes for ML-edge-first
+  - generated-menu outcome coverage about `99.94%`
+- ML-edge-first result vs actual primary:
+  - alternate beats primary on `390 / 532` paired rows
+  - beat rate `73.31%`
+  - average delta `R = +0.2709`
+  - median delta `R = +0.0237`
+  - average delta P&L about `+540.51`
+- Current primary vs ML-edge alternate:
+  - primary avg `R = -0.3071`
+  - alternate avg `R = -0.0363`
+  - primary p10 `R = -1.4799`
+  - alternate p10 `R = -0.1031`
+  - primary min `R = -2.6122`
+  - alternate min `R = -2.1837`
+- Honest interpretation:
+  - survivorship challenge did not collapse the ML-signal finding
+  - deterministic ranking is overriding useful ML signal
+  - but ML-edge-first is still not production-ready
+  - alternate avg `R` remains slightly negative
+  - some days still fail materially
+
+### Critical caution from replay
+
+- ML-edge-first failed on later live-window days:
+  - `2026-07-07`:
+    - average delta `R = -0.0702`
+    - beat rate `38.60%`
+  - `2026-07-08`:
+    - average delta `R = -0.0248`
+    - beat rate `0.00%`
+- Therefore:
+  - do not switch live ranker to ML-edge-first
+  - do not treat the offline branch rules as production-ready
+  - correct next step is audit-shadow replay, not live ranking replacement
+
+### Updated CHANGE 4 direction
+
+- This work is outside the Week-1 frozen app path and remains offline-only.
+- It does, however, give CHANGE 4 a stronger technical basis:
+  - ranking/surfacing is the right problem
+  - generator/gate is not the main problem
+  - ML signal appears useful but regime-sensitive
+- Safe future implementation direction after freeze:
+  - add an audit-only shadow ranker
+  - log alternate ML-edge-first top-1 beside current primary
+  - teacher-score both on the same live days
+  - require proof across multiple regimes, including non-calm/tail days, before any production switch
+
+### Current frozen-program status
+
+- No app code was changed during this research pass.
+- No BUILD 3 thresholds were changed.
+- No live ranking key was changed.
+- No retrain/live teacher switch was performed.
+- Real-money path remains closed pending:
+  - live-exit unification
+  - `position_exit_audit`
+  - paper audit proof
+
 ## 2026-07-07 BUILD 3 hotfix and CI validation update pushed after live RLS verification
 
 - `Marketapp` hotfix pushed to `main`:
@@ -6893,3 +7146,229 @@ v2: b46(6234) → b50(3954) → b51(4033) → b52(4052) → b53(4106) → b53b(4
   - `git diff --check` -> OK
   - `python3 -m unittest app.src.main.python.tests.test_stage2a_guarded_ranking` -> OK
 - No push has been done for these Class `B` local changes.
+
+## 2026-07-08 Week-1 BUILD 3 verdict window / exit auditability ruling
+
+### Current frozen production state
+
+- Active app build:
+  - `v2.5.0 / b331`
+- Active Week-1 A/B verdict window:
+  - Day 2: `2026-07-08`
+  - Day 3: `2026-07-09`
+  - Day 4: `2026-07-10`
+  - Day 5: `2026-07-13`
+  - Day 6: `2026-07-14`
+- Freeze remains active through the verdict window:
+  - no app code change
+  - no build push
+  - no threshold change
+  - no EV-floor change
+  - no calm-predicate change
+  - no ML model or retrain change
+  - no production Edge Function / LLM wiring change that can affect live app behavior
+- Continue only the daily evidence loop unless a kill switch fires.
+
+### Expected A/B row formula
+
+- Kotlin persists an `ab_week1_decisions` row whenever `brain.analyze()` returns `result.build3_ab`.
+- Python `brain.analyze()` returns before `build3_ab` exists while `len(polls) < 3`.
+- Once poll count reaches `3`, `build3_ab` is emitted for both candidate-present and no-candidate paths.
+- Therefore:
+
+```text
+expected_ab_rows = max(max(poll_number) - 2, 0)
+```
+
+- K3 fires only when actual distinct A/B poll numbers are lower than this expected count after poll `3`.
+
+### Day-2 A/B integrity result
+
+- Day-2 session date: `2026-07-08`
+- A/B row integrity:
+  - `n_ab_rows`: `74`
+  - `distinct_poll_timestamps`: `74`
+  - `distinct_poll_numbers`: `74`
+  - `expected_ab_rows`: `74`
+  - `rows_minus_expected`: `0`
+  - first poll timestamp: `2026-07-08T09:25:00+0530`
+  - last poll timestamp: `2026-07-08T15:30:00+0530`
+  - first poll number: `3`
+  - max poll number: `76`
+- Day-2 K3 verdict:
+  - clean.
+- Day-2 A/B telemetry:
+  - `n_differ`: `51`
+  - `old_would_have_taken_count`: `74`
+  - `old_pick_count`: `74`
+  - `new_pick_count`: `23`
+  - `k1_suspect_rows`: `0`
+  - gate distribution: `{"NONE":23,"ALL_NEGATIVE_EV":51}`
+  - new lanes: `{"NONE":51,"NF_intraday":1,"BNF_intraday":22}`
+  - old lanes: `{"NF_intraday":1,"BNF_intraday":73}`
+  - threshold payloads stayed stable: `[{"iv_high":20,"ev_floor_mult":1.1,"calm_range_sigma_max":0.3}]`
+
+### Day-2 exit-parity investigation
+
+- Two actual paper trades were recovered from `trades_v2`:
+
+1. W1000 BNF Bear Put
+   - trade id: `166`
+   - candidate structure: `BEAR_PUT_BNF_56900_57900_W1000`
+   - strikes: sell `56900`, buy `57900`
+   - entry UTC: `2026-07-08T04:33:09.191+00:00`
+   - exit UTC: `2026-07-08T08:08:19.119+00:00`
+   - exit reason: `Stop loss`
+   - max profit: `19056`
+   - max loss: `10944`
+   - actual / net-if-closed P&L: `-155`
+
+2. W800 BNF Bear Put
+   - trade id: `167`
+   - candidate structure: `BEAR_PUT_BNF_57100_57900_W800`
+   - strikes: sell `57100`, buy `57900`
+   - entry UTC: `2026-07-08T04:33:15.164+00:00`
+   - exit UTC: `2026-07-08T08:08:16.799+00:00`
+   - exit reason: `Stop loss`
+   - max profit: `14786`
+   - max loss: `9214`
+   - actual / net-if-closed P&L: `-504`
+
+### Teacher-side recovery
+
+- Direct join from `trades_v2.candidate_id` to `ml_evaluation_outcomes.candidate_id` failed because `trades_v2.candidate_id` appeared to contain trade row ids (`166` / `167`), not brain candidate ids.
+- Teacher outcomes were recovered by searching `ml_evaluation_outcomes` with session date + `BNF` + `BEAR_PUT` + strike/width candidate tokens.
+
+Exact teacher matches:
+
+1. W1000 `BEAR_PUT_BNF_56900_57900_W1000`
+   - teacher exit: `EOD`
+   - teacher exit UTC: `2026-07-08T10:00:07+00:00`
+   - teacher R: `0.4889`
+   - teacher managed P&L: `5350.03`
+   - role: `primary`
+   - `snapshot_id`: `2218`
+   - `sl_threshold`: `10944`
+   - `tp_threshold`: `9450.69`
+
+2. W800 `BEAR_PUT_BNF_57100_57900_W800`
+   - primary teacher row:
+     - teacher exit: `EOD`
+     - teacher exit UTC: `2026-07-08T10:00:07+00:00`
+     - teacher R: `0.4711`
+     - teacher managed P&L: `4254.45`
+     - role: `primary`
+     - `snapshot_id`: `2217`
+     - `sl_threshold`: `9031.5`
+     - `tp_threshold`: `7405.2`
+   - secondary teacher row:
+     - teacher exit: `EOD`
+     - teacher R: `0.4417`
+     - teacher managed P&L: `4070.36`
+     - role: `secondary`
+     - `snapshot_id`: `2218`
+     - `sl_threshold`: `9214.5`
+     - `tp_threshold`: `7313.65`
+
+### Tracker-side auditability gap
+
+- Supabase search for live tracker Column A evidence did not recover a per-poll `BOOK` / `HOLD` / `EXIT` chronology.
+- Snapshot search returned `86` rows, but the returned prefixes did not contain:
+  - `position_live`
+  - `positions`
+  - `verdict`
+  - `BOOK`
+  - `HOLD`
+  - `EXIT`
+  - `danger`
+  - `controlIndex`
+  - `wallDrift`
+  - `tracker`
+  - `notification`
+  - `position`
+- `trades_v2.journey_stats.timeline` exists but is empty for both actual trades:
+  - trade `166`: `timeline_len = 0`
+  - trade `167`: `timeline_len = 0`
+- Final Day-2 exit-parity classification:
+  - Column C actual: database-native from `trades_v2`
+  - Column B honest teacher: database-native / recoverable from `ml_evaluation_outcomes` by candidate token search
+  - Column A tracker: not reconstructable from current Supabase data
+- Material divergence observed:
+  - actual trades exited stop-loss around `13:38 IST`
+  - teacher exact-structure rows held to `EOD` around `15:30 IST` and were profitable
+  - missing evidence is the live tracker advice at each poll between entry and stop exit
+
+### Claude ruling on exit auditability
+
+- Claude confirmed this is a valid architecture flaw.
+- It does not break the current Week-1 A/B entry-gate experiment.
+- It does weaken downstream exit-parity / BUILD 4 live-exit proof unless fixed after the freeze.
+- Claude explicitly ruled:
+  - do not change app code during Week-1
+  - do not build or deploy the audit table during the frozen window
+  - design it Saturday as part of BUILD 4
+  - build it only after the Day-6 verdict
+
+### BUILD 4 requirement 4.B.6
+
+- `position_exit_audit` is mandatory for BUILD 4.
+- It is not merely a logging table.
+- It must be a paired exit-rule A/B instrument, structurally similar to `ab_week1_decisions` for entry.
+- One row per open position per poll.
+- The same row must capture both systems on the same mark:
+  - live tracker verdict
+  - honest-rule verdict
+- `teacher_rule_*` fields are mandatory, not optional.
+- Required teacher-rule group:
+  - `teacher_rule_action`
+  - `teacher_rule_exit_type`
+  - `teacher_rule_reason`
+  - `teacher_rule_net_r`
+  - teacher-rule threshold / basis fields
+- Reason:
+  - if tracker and teacher are reconstructed separately, they may be compared on different marks
+  - same-row, same-mark capture makes exit divergence falsifiable at the instant it happens
+
+### Real-money rule
+
+- Real money remains closed until all three are true:
+  1. live-exit unification ships
+  2. `position_exit_audit` ships
+  3. paper audit rows prove near-100% tracker-vs-honest-rule exit-category agreement
+- The audit table is the proof instrument for BUILD 4, not just a feature.
+
+### Saturday study provenance
+
+- Saturday exit-parity study must label evidence provenance explicitly:
+  - Column B teacher: database-native
+  - Column C actual: database-native
+  - Column A tracker: event-sampled / reconstructed only, not poll-complete
+- Absence of tracker divergence inside gaps must not be treated as proof of agreement.
+
+### Supabase Edge Function / LLM architecture status
+
+- Existing Supabase evaluator function scaffold is present:
+  - `supabase/functions/evaluator-jobs-create/index.ts`
+  - `supabase/functions/evaluator-jobs-run/index.ts`
+  - `supabase/functions/evaluator-jobs-status/index.ts`
+  - `supabase/functions/evaluator-jobs-proposals/index.ts`
+  - shared helpers under `supabase/functions/_shared/`
+- Current `evaluator-jobs-run` is still a stub:
+  - writes `gemini_response_stub`
+  - does not call Gemini / LLM
+  - returns advisory-only zero-proposal output
+- Freeze-safe before Saturday:
+  - local prompt-bundle design
+  - local one-day simulation packet
+  - local-only report output
+  - no production deployment
+  - no writes to live decision / evaluation tables
+- Not freeze-safe before Saturday:
+  - deploying a production Edge Function used by the app
+  - changing existing Edge Functions that can affect live measurement
+  - adding DB triggers/jobs that write to live experiment tables
+  - wiring any LLM output into app decisions, notifications, evaluation, or branch/ranking state
+- Recommended path:
+  - simulate one day locally first
+  - validate prompt/output contract offline
+  - convert the proven local flow into Supabase Edge Function architecture after the frozen verdict window
