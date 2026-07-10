@@ -3,6 +3,18 @@
 - Claude requested a read-only window legitimacy and freeze-base audit.
 - Response artifact created:
   - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_WINDOW_AND_FREEZE_BASE_REPLY_20260710.txt`
+- Vivek accepted the corrected freeze base on `2026-07-10`.
+- Local docs-only commit created in `MarketVivi` after acceptance:
+  - `5ff06582156802f2c4a9e14a8b02488d52c66b21` - `Record Day 4 freeze verification`
+- Local freeze tags created; no push was done:
+  - tag name: `freeze-week1-b331`
+  - `Marketapp` tag object: `689a070ab9c1f0da3cc45c4767f74399eef3bf33`
+  - `Marketapp` tag target: `c8f7b4534696ca18eb020511be7ab8d3eca19d09`
+  - `MarketVivi` tag object: `ed8a0c3a633c417f9d3cc06bbfbb645b4d0d2ca8`
+  - `MarketVivi` tag target: `dc42e25b221d9fb3033ef675ae49ba9f7803a05b`
+- Important tagging note:
+  - `MarketVivi` has docs-only commits after the freeze target.
+  - The freeze tag intentionally points at accepted runtime/documentation base `dc42e25`, not the later project-knowledge commit.
 - Active Week-1 A/B verdict window is confirmed as Days 2-6:
   - Day 2: `2026-07-08`
   - Day 3: `2026-07-09`
@@ -86,6 +98,22 @@
 - Local cached `ml_evaluation_outcomes` extraction for `2026-06-12` through `2026-07-09` showed `teacher_config_version = null` on all cached rows.
 - Offline replay studies should not claim config-version stratification from that column.
 - R-unit segregation must be justified from other known source/version boundaries or rerun after explicit teacher config stamping exists.
+
+### Current lot-size verification
+
+- Lot-size question checked on `2026-07-10`.
+- Current external-source consensus for 2026 index derivatives:
+  - Nifty 50: `65`
+  - Bank Nifty: `30`
+- Sources checked:
+  - NSE product/spec pages state that the latest applicable lot size is governed by the current `NSE_FO_contract_ddmmyyyy.csv.gz` contract file and reference NSE circulars.
+  - Upstox / broker update pages and current F&O lot-size trackers report the 2026 revision as:
+    - Nifty 50 `75 -> 65`
+    - Bank Nifty `35 -> 30`
+- Operational interpretation:
+  - For current July 2026 Nifty/BankNifty option contracts, use `NF lot = 65`, `BNF lot = 30`.
+  - The app must not hard-code old lot-size assumptions in future sizing/margin work.
+  - Final authority for automated runtime sizing should be the broker/NSE instrument contract metadata, not a static value in code.
 
 ## 2026-07-10 Day-4 morning check and offline replay validation
 
