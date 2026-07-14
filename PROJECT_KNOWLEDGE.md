@@ -1,3 +1,349 @@
+## 2026-07-14 S1 merge-readiness blocker resolution - local
+
+- Claude reviewed `S1_MERGE_READINESS_PACKAGE_20260714` and blocked merge on three items:
+  - historical `price_integrity` backfill
+  - triage of three red tests
+  - live blast-radius confirmation for `p_ml` / `mlEdge` / OOD/UNSURE
+- Local blocker-resolution handoff created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/S1_MERGE_BLOCKER_RESOLUTION_20260714.txt`
+- No push/release/OTA was performed.
+
+### Backfill blocker
+
+- Updated local migration:
+  - `Marketapp-main-worktree/supabase/migrations/20260714_s1_h2_price_integrity.sql`
+- Added historical quarantine backfill:
+  - `price_integrity = 'LEGACY_PRE_S1'`
+  - `h2_price_integrity_reason = 'COMPUTED_WITH_BROKEN_DEBIT_RULER'`
+  - applies to rows where `price_integrity is null`
+- Production status:
+  - Supabase schema DDL was already applied and verified earlier.
+  - Historical backfill DML is prepared locally but **not yet applied**.
+  - This is a data update, so it requires explicit user approval before execution.
+
+### Red-test triage
+
+- Re-ran the three Claude-blocking tests individually and fixed root causes.
+- `test_d1_12e_debit_candidate_uses_buy_ask_and_sell_bid`:
+  - failure was a stale test call to `_build_candidate()` missing the current `atm` argument.
+  - classification: test bug, not production debit pricing bug.
+  - fixed test call; confirms debit candidate still uses buy ask and sell bid.
+- `test_d1_23_missing_chain_data`:
+  - failure was production code returning a degraded pure-intrinsic fallback valuation when zero required legs were quoted.
+  - classification: code bug / unsafe missing-data behavior.
+  - fixed `compute_position_live()` to fail closed when `legs_required > 0` and `legs_quoted == 0`.
+  - new log marker:
+    - `POSITION_VALUATION_FAIL_CLOSED: trade=<id> quoted=0/<n> reason=missing_required_chain_quotes`
+- `test_ic_rejects_far_wall_strike_anchor`:
+  - failure was a stale test assumption that `generate_candidates()` returns a flat list.
+  - current function returns `(candidates, rejected_candidates)`.
+  - classification: test bug.
+  - fixed test to unpack the tuple.
+
+### Test results after blocker fixes
+
+- Blocking tests:
+  - `Ran 3 tests`
+  - `OK`
+- Full `test_phase_d` module:
+  - `Ran 82 tests`
+  - `OK`
+- Full `test_explanation_agent` module:
+  - `Ran 9 tests`
+  - `OK`
+- S1 focused tests:
+  - `Ran 9 tests`
+  - `OK`
+- Full Python test discovery:
+  - command: `python -m unittest discover app/src/main/python/tests`
+  - `Ran 156 tests in 0.312s`
+  - `OK`
+  - non-failing warning printed: `GEMINI_API_KEY environment variable not set`
+
+### p_ml / mlEdge / OOD blast-radius confirmation
+
+- Current live Python ranking path uses `p_ml` as terminal tie-break only.
+- Evidence:
+  - `brain.py:7926` defines `rank_candidates(...)`.
+  - `brain.py:7934-7972` applies deterministic sort terms before ML:
+    - direction safety
+    - varsity tier
+    - teacher rank/score/sample size
+    - brain verdict alignment
+    - calibration win rate
+    - force alignment/against
+    - context score
+    - gamma risk
+    - wall score
+    - premium edge
+    - probability
+  - `brain.py:7973-7978` explicitly treats ML as tiebreaker and zeroes `p_ml` when `mlUnsure`, `mlAction == 'UNSURE'`, or weak OOD confidence.
+  - `brain.py:7980+` places `-p_ml` last in the sort tuple.
+  - `rank_candidates()` filters only `capitalBlocked`, not `p_ml`, `mlEdge`, `mlOodBlocked`, or `mlAction`.
+  - `brain.py:8627-8685` ML enriches already-generated candidates and then recomputes ranking; UNSURE changes decision source/reason to fallback but does not reject.
+  - `ml_engine.py:1222-1233` may output `BLOCKED`/`UNSURE`/`WATCH`, but caller does not use those as hard candidate gates in `rank_candidates()`.
+  - Kotlin paths `MarketWatchService.kt:2559-2570` and `NativeBridge.kt:674-688` copy ML fields into JSON; no filter found there on `mlEdge`, `mlOodBlocked`, or `mlAction`.
+- Interpretation:
+  - live blast radius is small in current code.
+  - research blast radius remains large.
+  - p_ml-first research and O3-G2 branch evidence remain void until clean label regeneration, clean retrain, and re-validation.
+
+## 2026-07-14 S1 Supabase migration applied
+
+- Approved by user and applied the S1 price-integrity Supabase migration with throttling discipline:
+  - no bulk table scans
+  - no historical data pull
+  - only one DDL migration call and two small catalog verification reads
+- Migration file applied from local app worktree:
+  - `Marketapp-main-worktree/supabase/migrations/20260714_s1_h2_price_integrity.sql`
+- Supabase CLI path used:
+  - authenticated with project PAT
+  - linked project ref `fdynxkfxohbnlvayouje`
+  - ran `supabase db query --linked --file supabase/migrations/20260714_s1_h2_price_integrity.sql`
+- Migration execution result:
+  - success
+  - no data rows returned
+  - no bulk data read/write beyond schema DDL
+- Verified new columns exist on both outcome tables:
+  - `public.ml_evaluation_outcomes`
+  - `public.ml_recommendation_outcomes`
+- Verified columns on both tables:
+  - `price_integrity text`
+  - `h2_price_integrity_reason text`
+  - `h2_later_value_points numeric`
+  - `h2_entry_basis_points numeric`
+  - `h2_bound_width_points numeric`
+  - `h2_formula text`
+- Verified indexes exist:
+  - `idx_ml_eval_outcomes_price_integrity`
+  - `idx_ml_reco_outcomes_price_integrity`
+- Removed local `supabase/.temp/` CLI link metadata after applying migration so it does not become an accidental untracked repo artifact.
+- Remaining Claude gate:
+  - after S1-patched app/build writes fresh rows, confirm `price_integrity` is non-null on new `ml_evaluation_outcomes` / `ml_recommendation_outcomes` rows.
+  - Until fresh post-migration rows exist, this final production confirmation is pending, not failed.
+- Push/release status:
+  - no push
+  - no release
+  - no OTA
+
+## 2026-07-14 S1 verification result - Week-1 ruler audit
+
+- Claude's Week-1 consolidated verdict was accepted as binding input:
+  - Week-1 verdict: `VACUOUS`
+  - valid window: Days 2-6 only (`2026-07-08`, `2026-07-09`, `2026-07-10`, `2026-07-13`, `2026-07-14`)
+  - freeze lifted only for Track B
+  - S1 verification blocks all build/code/CHANGE-2/sandbox/ranker/LLM work until complete
+- S1 read-only verification completed locally on `2026-07-14`.
+- Handoff/result artifact created outside git:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/S1_VERIFICATION_RESULT_20260714.txt`
+- No app code was changed.
+- No Supabase writes were made.
+- No push was made.
+
+### S1 verdict
+
+- S1 is confirmed: the Week-1 legacy H2/evaluation ruler is broken for debit spreads.
+- The reproduced mechanism is debit-spread sign inversion in the legacy H2 evaluator, not primarily expiry contamination in the checked rows.
+- Active frozen source inspected:
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+  - SHA-256 `dfabf17f7515b04a58f84702b93007ac2cede1999470088934b7ef5e40840772`
+- Problem source:
+  - `_eval_single_candidate()` computes `later_net_credit = sell_ltp_h2 - buy_ltp_h2` for all two-leg structures.
+  - For debit spreads (`BEAR_PUT`, `BULL_CALL`), correct later value is `buy_ltp_h2 - sell_ltp_h2`.
+  - Current debit path then applies `(later_net_credit - entry_premium) * lot_size`, producing impossible negative spread values and phantom losses.
+- Teacher managed-exit path is structurally closer to correct:
+  - `_teacher_execution_basis()` separates credit and debit basis correctly.
+  - Still, S1 should unify valuation to avoid future divergence.
+
+### S1 evidence
+
+- Local evidence directory:
+  - `research_cache/s1_verification_20260714/`
+- Data pulled read-only:
+  - 132 `ml_evaluation_outcomes` rows for Days 2-6
+  - 29 matching source `ml_brain_snapshots`
+  - 54 unique relevant option legs
+  - 4,085 relevant option-chain rows
+- Arbitrage-bound audit:
+  - matched candidates: `132 / 132`
+  - checked rows: `118`
+  - insufficient rows: `14`
+  - physical-bound violations: `116`
+  - violations by strategy: `BEAR_PUT = 112`, `BULL_CALL = 4`
+  - violations by credit/debit: `debit = 116`
+  - worst reconstructed later spread value: `-551.85`
+- Expiry multiplicity audit:
+  - relevant leg keys checked: `54`
+  - keys with multiple expiries: `0`
+- Candidate expiry sample:
+  - samples: `60`
+  - candidate expiry populated: `60`
+  - candidate expiry missing: `0`
+- Day-2 exact-expiry recompute:
+  - Day-2 eval rows: `97`
+  - recomputed rows: `87`
+  - recorded legacy H2 on recomputed rows: `0 wins / 87 losses / -14827.6034 mean P&L`
+  - corrected debit-sign exact-expiry result: `38 wins / 49 losses / +71.0316 mean P&L`
+  - corrected arbitrage-bound violations: `0`
+
+### S1 fix direction
+
+- Implement a narrow evaluator/ruler fix before CHANGE-2, sandbox wiring, LLM observer wiring, or ranking changes.
+- Required behavior:
+  - unified structure valuation helper
+  - strict expiry match; missing candidate/leg expiry fails closed
+  - missing or non-positive leg price fails closed
+  - `price_integrity` persisted/reported
+  - vertical bound guard: `0 <= spread_value <= width`
+  - correct credit formula: `(entry_credit - close_cost) * lot`
+  - correct debit formula: `(close_value - entry_debit) * lot`
+  - conservative bounded guard for four-leg structures
+  - re-score Days 2-6 after fix
+- Authorized sequence remains:
+  - `S1 fix -> B1 -> CHANGE-2 -> B2 -> B3 -> B4 sandbox -> B5 LLM observer -> B6 live-exit unification -> S7 lineage rider`
+
+## 2026-07-14 S1 implementation - local unpushed
+
+- Proceeded with narrow S1 evaluator/ruler fix only.
+- No push was made.
+- App code modified locally in `Marketapp-main-worktree`.
+- Files changed:
+  - `app/src/main/python/brain.py`
+  - `app/src/main/python/tests/test_teacher_v1_shadow_labels.py`
+  - `app/src/main/java/com/marketradar/app/SupabaseClient.kt`
+  - `supabase/migrations/20260714_s1_h2_price_integrity.sql`
+- Core fix:
+  - legacy H2 now uses a unified structure valuation helper instead of hardcoding `sell - buy` for every structure.
+  - debit spreads now use `long/buy - short/sell`.
+  - credit spreads continue to use `short/sell - long/buy` as close-cost basis.
+  - H2 result carries `price_integrity`, `h2_price_integrity_reason`, `h2_later_value_points`, `h2_entry_basis_points`, `h2_bound_width_points`, and `h2_formula`.
+- Safety guards added:
+  - H2 price lookup now requires candidate expiry.
+  - option-chain row expiry must exactly match candidate expiry.
+  - missing/non-positive H2 leg price fails closed.
+  - vertical structure value must satisfy `0 <= value <= width`.
+  - teacher path candidate walk now also refuses missing/mismatched expiry rows.
+- Persistence:
+  - Android Supabase payload includes the new integrity fields on the first write attempt.
+  - fallback stripping includes those fields so post-close save does not fail if Supabase has not yet been migrated.
+  - idempotent migration added for `ml_evaluation_outcomes` and `ml_recommendation_outcomes` integrity columns/indexes.
+- Regression tests added:
+  - S1 debit vertical test reproduces `BEAR_PUT_NF_23450_23850_W400` style case:
+    - corrected later value: `121.4`
+    - entry debit: `125.5`
+    - corrected H2 P&L: `-266.5`, not the phantom `-15710.5`
+  - strict-expiry test confirms wrong-expiry H2 rows are rejected instead of cross-matched.
+- Verification:
+  - `python -m unittest app/src/main/python/tests/test_teacher_v1_shadow_labels.py` passed: `7 tests`.
+  - `python -m py_compile app/src/main/python/brain.py` passed.
+  - `./gradlew :app:compileDebugKotlin` could not run Kotlin compilation because the workspace lacks Android SDK configuration:
+    - missing `ANDROID_HOME` or `local.properties` `sdk.dir`
+    - failure occurred before Kotlin compilation
+  - full Python discovery still has unrelated pre-existing failures:
+    - `test_explanation_agent.ExplanationAuditAgentTests.test_ic_rejects_far_wall_strike_anchor`
+    - `test_phase_d.TestPhaseD.test_d1_12e_debit_candidate_uses_buy_ask_and_sell_bid`
+    - `test_phase_d.TestPhaseD.test_d1_23_missing_chain_data`
+- Next required before CHANGE-2:
+  - run/apply Supabase migration or accept fallback stripping until migration is applied.
+  - run post-fix Days 2-6 re-score to generate corrected Week-1 verdict evidence.
+
+### S1 local re-score result
+
+- Local re-score was completed from existing cached JSON only; Supabase was not touched again.
+- Re-score artifact:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/research_cache/s1_verification_20260714/s1_post_fix_days2_6_rescore.json`
+- Downloadable implementation/result packet:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/S1_IMPLEMENTATION_AND_RESCORE_RESULT_20260714.txt`
+- Coverage:
+  - snapshots: `29`
+  - option-chain rows: `4085`
+  - old rows: `132`
+  - new rows: `132`
+  - matched rows: `132`
+  - missing after re-score: `0`
+  - errors: `0`
+  - price integrity: `OK = 132`
+- Old legacy H2 on matched rows:
+  - count: `132`
+  - wins: `2`
+  - losses: `130`
+  - mean P&L: `-13684.7330`
+- Corrected S1 H2 on matched rows:
+  - count: `132`
+  - wins: `85`
+  - losses: `47`
+  - mean P&L: `+992.7557`
+- By-day corrected result:
+  - `2026-07-08`: `54 / 97` wins, mean `+735.4175`
+  - `2026-07-09`: `0 / 4` wins, mean `-1981.6875`
+  - `2026-07-13`: `2 / 2` wins, mean `+46.5`
+  - `2026-07-14`: `29 / 29` wins, mean `+2329.0345`
+- Interpretation:
+  - S1 materially reverses the H2 label base.
+  - The original Week-1 verdict remains valid as an assessment of the old broken ruler.
+  - A corrected Week-1 verdict packet must be generated after the S1 patch is accepted/applied.
+
+## 2026-07-14 S1 implementation review response
+
+- Claude reviewed `S1_IMPLEMENTATION_AND_RESCORE_RESULT_20260714`.
+- Verdict from Claude:
+  - core S1 fix is correct and approved for merge after one latent bug/fallback issue is fixed.
+  - result is a repaired ruler, not proof of strategy edge.
+  - Week-1 verdict remains `VACUOUS`.
+- Local review-response artifact:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/S1_REVIEW_RESPONSE_20260714.txt`
+
+### Review corrections applied
+
+- `_candidate_entry_premium` fallback fixed:
+  - removed `maxProfit / lot` fallback.
+  - missing `netPremium` now fails closed with `MISSING_ENTRY_PREMIUM_OR_INVALID_LOT`.
+  - reason: `maxProfit / lot` is valid for credit entry but wrong for debit entry.
+- `_structure_value_bound` fallback fixed:
+  - removed fallback to `maxLoss` / `maxProfit` for incomplete four-leg structures.
+  - incomplete/ambiguous bound now returns `None` and H2 fails closed.
+  - reason: `maxLoss` / `maxProfit` are currency quantities, while spread bounds are points-domain quantities.
+- Kotlin fallback visibility added:
+  - if Supabase persistence falls back to stripped rows, app logs:
+    - `S1_PRICE_INTEGRITY_FALLBACK_STRIPPED`
+  - warning includes table, fallback mode, row count, and `migration_required_before_release`.
+  - production requirement remains: run migration before release; fallback rows must not be accepted as production-normal.
+
+### p_ml training answer
+
+- `p_ml` training path can consume `outcome_h2` / `won`.
+- Source:
+  - `app/src/main/python/ml_train.py`
+- Evidence:
+  - `_row_label_value(row)` reads `canonical_won`, then `outcome_h2`, then `won`.
+  - `_load_canonical_eval_rows(...)` loads evaluator-backed primary rows.
+  - `_snapshot_candidate_to_row(...)` converts evaluator rows into training rows using `sim_pnl_h2` / resolved labels.
+  - evaluator-backed rows have `EVAL_OUTCOME_WEIGHT = 4`.
+- Current caveat:
+  - `run()` currently exits early with `RETRAIN_DISABLED_REASON = retrain_disabled_pending_canonical_won_unification`.
+  - So current nightly retraining is disabled in this source.
+- Operational decision:
+  - treat deployed `p_ml` provenance as suspect unless independently proven clean.
+  - retrain only after corrected S1 label-base regeneration.
+
+### Post-review verification
+
+- Focused tests:
+  - `python -m unittest app/src/main/python/tests/test_teacher_v1_shadow_labels.py`
+  - result: `9 tests`, `OK`
+- Python compile:
+  - `python -m py_compile app/src/main/python/brain.py`
+  - result: OK
+- Kotlin compile remains blocked locally due missing Android SDK configuration:
+  - missing `ANDROID_HOME` or `local.properties sdk.dir`
+- Post-review cached Days 2-6 re-score:
+  - artifact: `research_cache/s1_verification_20260714/s1_post_review_rescore.json`
+  - matched rows: `132`
+  - price integrity: `OK = 132`
+  - old H2: `2 wins / 130 losses`, mean `-13684.7330`
+  - corrected S1 H2: `85 wins / 47 losses`, mean `+992.7557`
+  - unchanged from prior S1 re-score because all matched rows had `netPremium` and complete bounds.
+
 ## 2026-07-10 Day-4 post-close window and freeze-base verification
 
 - Claude requested a read-only window legitimacy and freeze-base audit.
@@ -7400,3 +7746,1627 @@ Exact teacher matches:
   - simulate one day locally first
   - validate prompt/output contract offline
   - convert the proven local flow into Supabase Edge Function architecture after the frozen verdict window
+
+## Update - 2026-07-11 - Gemini / Oracle Historical Usage Audit and Replacement Architecture
+
+### User observation
+
+- User opened Google AI Studio usage for project `Market Radar NSE`.
+- Screenshots showed:
+  - Gemini API usage exists over the last 28 days
+  - total Gemini API cost shown around `₹623.04`
+  - model usage visible for `Gemini 2.5 Flash`
+  - API errors visible:
+    - `429 TooManyRequests`
+    - `503 ServiceUnavailable`
+    - `504 GatewayTimeout`
+- User asked whether the app was actually using Gemini API.
+
+### Code-path finding
+
+- The phone app does not call Gemini directly.
+- The app ecosystem had an indirect Gemini path:
+  - Android app
+  - `https://marketradar-oracle.online/elephant`
+  - Oracle VM `oracle_server/evaluator_app.py`
+  - Gemini API
+  - Supabase `elephant_assessments`
+- Evidence in Android:
+  - `MarketWatchService.kt`
+  - `ELEPHANT_BASE_URL = "https://marketradar-oracle.online"`
+  - `handoffElephantObserveOnly(...)` posts to `/elephant`
+  - `launchElephantObserveOnly(...)` sends lane-level candidate payloads when `elephant_fact_pack.observe_only` exists
+- Evidence in Oracle server:
+  - `oracle_server/evaluator_app.py`
+  - reads `GEMINI_API_KEY`
+  - initializes:
+    - `gemini-2.5-flash`
+    - `gemini-2.5-pro`
+  - `/elephant` calls `flash_model.generate_content(...)`
+  - `/monthly_eval` calls `pro_model.generate_content(...)`
+  - persists results to Supabase `elephant_assessments`
+
+### Supabase confirmation
+
+- User ran the compact audit query:
+
+```sql
+select
+  count(*) as rows,
+  min(poll_timestamp) as first_poll,
+  max(poll_timestamp) as last_poll
+from public.elephant_assessments;
+```
+
+- Result:
+  - rows: `655`
+  - first_poll: `2026-06-08 07:25:28.282162+00`
+  - last_poll: `2026-07-09 04:00:00+00`
+- Interpretation:
+  - historical app/oracle Gemini handoff was real
+  - AI Studio cost/usage is consistent with the old Oracle Gemini path
+  - this does not prove direct phone-to-Gemini usage
+  - it proves app ecosystem usage through Oracle
+
+### Local audit pull
+
+- Codex pulled compact rows using Supabase REST pagination:
+  - selected only `poll_timestamp,lane,assessments`
+  - no heavy aggregation query
+  - total rows fetched: `655`
+- Local artifacts created outside repo commit scope:
+  - `research_cache/elephant_audit_20260711/elephant_assessments_compact.json`
+  - `research_cache/elephant_audit_20260711/elephant_audit_summary.json`
+  - `O3_ELEPHANT_GEMINI_AUDIT_20260711.txt`
+
+### Audit results
+
+- Row count:
+  - `655`
+- Date range:
+  - first persisted poll: `2026-06-08T07:25:28.282162+00:00`
+  - last persisted poll: `2026-07-09T04:00:00+00:00`
+- Lane distribution:
+  - `BNF_intraday`: `452`
+  - `NF_intraday`: `191`
+  - `BNF_swing`: `12`
+- Status distribution:
+  - `WAIT`: `636`
+  - `ok`: `19`
+- Failure / wait reasons:
+  - `elephant_timeout`: `396`
+  - `internal_error`: `197`
+  - `Read timed out`: `39`
+  - `timeout`: `2`
+  - DNS failure for `marketradar-oracle.online`: `1`
+- Candidate count stats:
+  - rows with candidate count: `655`
+  - minimum candidates: `0`
+  - maximum candidates: `27`
+  - mean candidates: `8.84`
+  - median candidates: `9`
+  - zero-candidate rows: `2`
+  - positive-candidate rows: `653`
+- Current O3 normalized qualitative fields found:
+  - `normalized_distribution_signal`: none
+  - `normalized_coherence_read`: none
+  - `normalized_anomaly_flag`: none
+
+### Schema finding
+
+- The `19` successful rows are not useful for the current O3 contract.
+- Successful verdict key groups:
+  - `NO_CANDIDATES`: `1`
+  - `judgments`: `18`
+- The old successful Gemini output used the earlier approval/judgment shape:
+  - `approved`
+  - `reasoning`
+  - `confidence`
+  - `sellStrike`
+- This is materially different from the current O3 observe-only schema:
+  - `distribution_signal`
+  - `coherence_read`
+  - `anomaly_flag`
+  - `anomaly_reason`
+  - `brief`
+  - `candidate_notes`
+- Conclusion:
+  - old `elephant_assessments` can be used for architecture/cost/failure audit
+  - old `elephant_assessments` should not be treated as a reliable current-contract LLM signal dataset
+
+### Operational conclusion
+
+- Gemini wiring is not new.
+- The old path proved connectivity.
+- The old path must not be reused as-is because it was:
+  - too chatty
+  - timeout-prone
+  - mostly `WAIT`
+  - schema-drifted
+  - not ground-truth-scoreable under the current O3 contract
+- Historical Gemini usage likely burned quota/cost without producing enough validated advisory value.
+
+### Replacement architecture packet
+
+- Codex created:
+  - `O3_LLM_REPLACEMENT_ARCHITECTURE_20260711.txt`
+- Purpose:
+  - replace uncontrolled per-poll LLM usage with:
+    - trigger-gated calls
+    - packet hash caching
+    - daily budgets
+    - provider circuit breakers
+    - strict schema validation
+    - ground-truth-scoreable outputs
+    - no live brain mutation
+- Key design decision:
+  - retire default per-poll lane-level Gemini calls
+  - only call Gemini when a material trigger fires
+
+### Proposed trigger policy
+
+- Allow live Flash only when at least one trigger fires:
+  - regime transition
+  - strategy family flip
+  - signal conflict
+  - candidate-quality anomaly
+  - manual user trigger
+  - post-close research trigger
+- Suppress calls when:
+  - same market-state fingerprint already evaluated
+  - daily budget exhausted
+  - provider returned repeated `429`, `503`, or `504`
+  - schema validation failed repeatedly
+  - packet lacks enough context
+  - call would change frozen app behavior
+
+### Proposed new storage
+
+- Prefer a new `llm_observations` table instead of reusing legacy `elephant_assessments`.
+- Suggested columns include:
+  - `session_date`
+  - `poll_timestamp`
+  - `lane`
+  - `index_key`
+  - `use_case`
+  - `provider`
+  - `model_name`
+  - `schema_version`
+  - `prompt_version`
+  - `prompt_hash`
+  - `packet_hash`
+  - `request_payload`
+  - `raw_response`
+  - `normalized_response`
+  - `validation_status`
+  - `validation_errors`
+  - `latency_ms`
+  - `provider_status`
+  - `provider_error`
+  - `token_usage`
+  - `downstream_use`
+- Suggested companion table:
+  - `llm_daily_budget`
+
+### Freeze decision
+
+- No app code changed.
+- No repo code changed for this audit/design step.
+- No deploy.
+- No push.
+- `Marketapp-main-worktree` status checked clean.
+- `MarketVivi-git` was clean before this knowledge update.
+- Week-1 freeze still stands:
+  - do not alter live ranker
+  - do not alter candidate generation
+  - do not alter EV/calm gates
+  - do not retrain
+  - do not reactivate per-poll Gemini calls
+
+### Forward decision
+
+- Continue offline/backend design without asking Claude at every step.
+- Ask Claude only when a post-freeze behavior/storage proposal is concrete.
+- Suggested future Claude question:
+  - old Oracle/Gemini path produced `655` rows but only `19 ok`, mostly old `judgments` schema and zero O3 normalized fields
+  - propose replacing it with trigger-gated, cached, validator-enforced, budget-limited LLM observations stored in `llm_observations`
+  - no ranker mutation
+  - no live execution authority
+  - approve Phase 1 schema/storage after Week-1 freeze?
+
+### O3-G2 Gemini resume attempt
+
+- User asked to proceed with the next step: resume O3-G2 Gemini scoring.
+- Codex attempted to resume the existing local Gemini run:
+  - input: `research_cache/o3g2_20260711/o3g2_packets_blind.jsonl`
+  - output: `research_cache/o3g2_20260711/o3g2_gemini_flash_responses_20260711.jsonl`
+  - mode: `--resume`
+  - model: `gemini-2.5-flash`
+- No app code changed.
+- No Supabase writes.
+- No push/deploy.
+- Result:
+  - existing responses before resume: `7`
+  - remaining packets: `19`
+  - responses after resume: `7`
+  - resume blocked at packet `8`
+- Error:
+  - HTTP `429`
+  - status: `RESOURCE_EXHAUSTED`
+  - quota metric: `generativelanguage.googleapis.com/generate_content_free_tier_requests`
+  - quota id: `GenerateRequestsPerDayPerProjectPerModel-FreeTier`
+  - model: `gemini-2.5-flash`
+  - quota value: `20` requests/day/project/model
+- Blocked packet:
+  - packet_index: `8`
+  - session_date: `2026-06-22`
+  - snapshot_id: `1387`
+- Current Gemini partial score remains:
+  - completed: `7 / 26`
+  - validator pass: `7`
+  - validator fail: `0`
+  - scored correct so far: `7`
+  - high_on_zero_control: `0`
+  - high_on_adversarial_null: `0`
+- Important limitation:
+  - only `ranking_jun22` stratum is represented so far
+  - exit, zero-evaluable control, and adversarial/null strata remain untested by Gemini
+- Local blocker note created:
+  - `O3G2_GEMINI_RESUME_BLOCKED_20260711.txt`
+- Decision:
+  - stop further Gemini calls for now
+  - do not mix other Gemini model outputs into the current `gemini-2.5-flash` result file
+  - if another model is tested, label it as a separate experiment
+
+### O3-G2 background baseline audit while Gemini is blocked
+
+- Since Gemini quota remained blocked, Codex continued non-Gemini offline work.
+- No Gemini calls.
+- No app code changes.
+- No Supabase writes.
+- No push/deploy.
+- Joined:
+  - O3-G2 manifest with withheld labels
+  - O3-G2 blind packets
+  - Codex baseline responses
+  - partial Gemini Flash responses
+- Local artifacts created:
+  - `research_cache/o3g2_20260711/o3g2_joined_audit_rows.json`
+  - `research_cache/o3g2_20260711/o3g2_joined_audit_summary.json`
+  - `O3G2_BACKGROUND_BASELINE_AUDIT_20260711.txt`
+- Packet set:
+  - total packets: `26`
+  - `ranking_jun22`: `10`
+  - `exit_jul08`: `10`
+  - `zero_evaluable_control_jul09`: `5`
+  - `adversarial_null_ranking`: `1`
+- Codex baseline:
+  - validator pass: `26`
+  - validator fail: `0`
+  - no high call on zero-evaluable controls
+  - no high call on adversarial/null packet
+- Codex baseline by stratum:
+  - `adversarial_null_ranking`: ranking correct `1/1`, exit correct `1/1`
+  - `exit_jul08`: ranking correct `8/10`, ranking over_call `2/10`, exit correct `10/10`
+  - `ranking_jun22`: ranking correct `8/10`, ranking over_call `2/10`, exit correct `10/10`
+  - `zero_evaluable_control_jul09`: ranking correct `5/5`, exit correct `5/5`
+- Baseline weakness found:
+  - Codex did not under-call high-severity cases
+  - all errors were over-calls
+  - two low-uplift ranking packets were over-called:
+    - packet `9`, snapshot `1396`, expected `low`, actual_delta_r `0.0517`, Codex called `high`
+    - packet `10`, snapshot `1406`, expected `low`, actual_delta_r `0.0672`, Codex called `medium`
+  - two open-position exit packets over-called ranking suspicion when ranking should abstain:
+    - packet `11`, snapshot `2219`, expected ranking `abstain`, expected exit `low`, Codex ranking `medium`, Codex exit `low`
+    - packet `13`, snapshot `2228`, expected ranking `abstain`, expected exit `high`, Codex ranking `medium`, Codex exit `high`
+- Interpretation:
+  - Codex baseline is conservative rather than reckless
+  - useful comparator for Gemini:
+    - Gemini must pass schema
+    - Gemini must catch true high ranking/exit cases
+    - Gemini must avoid over-calling low-uplift and exit-only packets
+- Gemini still untested on:
+  - packet `8` and remaining ranking rows
+  - low-uplift over-call challenge rows `9` and `10`
+  - all exit rows `11-20`
+  - all zero-evaluable controls `21-25`
+  - adversarial/null packet `26`
+
+## Update - 2026-07-11 - Sandbox Wiring Path Audit and Freeze-Safe Plan
+
+### User question
+
+- User asked whether we can move to wire the app to sandbox.
+- Decision:
+  - do not wire the running app during the Week-1 freeze
+  - proceed with safe audit/design only
+
+### Current code audit
+
+- Current app already has execution-mode UI/preferences:
+  - `Sandbox ON`
+  - `Sandbox OFF`
+  - order proxy URL input
+  - execution infra status display
+- PWA functions:
+  - `setExecutionSandboxFromUI(enabled)`
+  - `saveOrderProxyUrlFromUI()`
+- Native bridge functions:
+  - `setExecutionSandboxEnabled(enabled)`
+  - `getExecutionSandboxEnabled()`
+  - `setOrderProxyUrl(url)`
+  - `getOrderProxyUrl()`
+  - `getExecutionInfraStatus()`
+- Native prefs:
+  - `execution_sandbox_enabled`
+  - `order_proxy_url`
+  - derived `execution_mode`
+- Current mode derivation:
+  - sandbox if sandbox flag enabled
+  - live if proxy URL starts with `https://`
+  - paper otherwise
+- Current infra status reports:
+  - instrument key flow
+  - token readiness
+  - sandbox readiness
+  - live readiness
+  - proxy status
+- `brain.py` has `check_execution_readiness(...)`:
+  - verifies instrument keys
+  - verifies token readiness
+  - verifies sandbox flag for sandbox mode
+  - verifies proxy for live mode
+  - verifies NSE market hours for sandbox/live
+- Candidate UI uses `executionReadiness`:
+  - if sandbox/live and not ready, button shows `EXEC WAIT`
+  - if ready, existing `REAL TRADE` button still calls `takeTrade(candidate_id, false)`
+- Important finding:
+  - current `REAL TRADE` does not place a broker order
+  - it records/logs a real-trade row in `trades_v2`
+  - no active code path currently places, modifies, cancels, or monitors Upstox orders
+- Current broker API use is read/check only:
+  - market quotes
+  - option chain
+  - option contracts / expiry
+  - margin quote via `POST https://api.upstox.com/v2/charges/margin`
+
+### Official Upstox docs rechecked on 2026-07-11
+
+- Current official docs confirm:
+  - sandbox environment supports place/modify/cancel order APIs
+  - sandbox-enabled APIs include:
+    - Place Order
+    - Place Order V3
+    - Place Multi Order
+    - Modify Order
+    - Modify Order V3
+    - Cancel Order
+    - Cancel Order V3
+  - Place Order V3 endpoint exists:
+    - `POST https://api-hft.upstox.com/v3/order/place`
+  - Place Multi Order endpoint documented:
+    - `POST https://api.upstox.com/v2/order/multi/place`
+  - Multi Order docs state BUY orders execute before SELL orders
+  - this aligns with the app's spread safety principle:
+    - BUY protection before SELL credit
+- Known broker risks remain:
+  - static IP restriction can block order APIs
+  - market orders may be blocked
+  - limit order policy should be used for first implementation
+
+### Sandbox wiring plan created
+
+- Local design artifact:
+  - `SANDBOX_WIRING_PLAN_20260711.txt`
+- Scope:
+  - freeze-safe design only
+  - no app code change
+  - no deploy
+  - no push
+  - no broker call
+
+### Recommended architecture
+
+- Add a separate execution adapter after freeze:
+  - recommended class: `UpstoxOrderClient.kt`
+- Do not mix order placement into:
+  - `MarketWatchService` polling loop
+  - `brain.py` ranker
+  - candidate generation
+  - ML/evaluator path
+- PWA should request execution through `NativeBridge`.
+- Android/Kotlin should own broker execution because it already owns:
+  - Upstox token
+  - network access
+  - native lifecycle
+
+### Proposed post-freeze NativeBridge methods
+
+- `previewSandboxOrder(candidateJson)`
+  - local validation only
+  - no broker call
+- `placeSandboxOrder(candidateJson, confirmationToken)`
+  - sandbox broker call only
+- `getSandboxOrderStatus(orderIdsJson)`
+- `cancelSandboxOrder(orderIdsJson)`
+- later only:
+  - `placeLiveOrder(...)`
+
+### Safety gates before any sandbox order call
+
+- Manual user tap required.
+- Confirmation modal required.
+- Candidate freshness gate required.
+- Mode must be `sandbox`.
+- Sandbox flag must be enabled.
+- Token must be present.
+- All leg instrument keys must be present.
+- Quantity must be a valid lot multiple.
+- Defined-risk spread only.
+- No naked SELL leg.
+- Candidate must not be blocked by brain gate.
+- Execution readiness must be `READY`.
+- Margin quote should exist or explicit override must be shown.
+- Confirmation nonce/token must be generated just before broker call.
+- Response must persist with `execution_mode = sandbox`.
+
+### Post-freeze implementation sequence
+
+1. Schema/lifecycle storage prep.
+2. Native dry-run payload builder.
+3. UI preview modal only.
+4. One explicitly approved sandbox API call.
+5. Sandbox spread lifecycle test.
+6. Live-readiness review only after:
+   - sandbox passes
+   - exit audit table exists
+   - paper exit agreement is stable
+   - static IP/proxy is confirmed
+   - kill switch is verified
+   - user explicitly approves
+
+### Open questions before implementation
+
+- Does the current Upstox account/API key have sandbox order permission?
+- Does sandbox require a special header or environment selector for this account?
+- Which product value is correct for NSE F&O option intraday sandbox orders?
+- Does Place Multi Order return per-leg order IDs consistently in sandbox?
+- Should sandbox route direct from Android or through Oracle relay for live parity?
+- What exact order-status endpoint/version should be used for V3 lifecycle?
+- Should first sandbox test be non-market-hours no-risk sandbox, or market-hours with live instrument keys?
+
+### Current decision boundary
+
+- Sandbox wiring is not a current live-app task.
+- It is a post-freeze execution infrastructure task.
+- Freeze-safe work completed:
+  - code audit
+  - official docs recheck
+  - design packet
+  - knowledge update
+
+### Claude ruling on sandbox architecture
+
+- Source:
+  - `RULING_SANDBOX_ARCHITECTURE_20260711.md`
+- Claude approved the architecture with corrections.
+- Freeze remains binding:
+  - no app code
+  - no build
+  - no broker call
+  - no sandbox wiring before the Day-6 letter
+- Codex recommendation accepted:
+  - approve S1-S3 as post-freeze prep
+  - no S4 until storage and preview exist
+  - no live execution until BUILD 4 gates pass
+- Critical finding must be preserved:
+  - current `REAL TRADE` places no broker order
+  - it only logs to `trades_v2`
+  - every `real trade` row in `trades_v2` to date is a logged intention, not broker-confirmed execution
+  - fill realism remains unmeasured
+
+### Binding corrections from Claude
+
+- `UpstoxOrderClient.kt` remains the right direction, but:
+  - endpoint separation must be structural
+  - sandbox and live must not be runtime branches of the same method
+  - `placeSandboxOrder` must be physically incapable of constructing a live URL
+  - sandbox and live base URLs must be separate constants
+  - future live path must be a separate method behind separate gates
+- Client must be stateless about strategy:
+  - receives legs
+  - validates structure
+  - places
+  - reports
+  - never decides strategy
+- `execution_order_events` is mandatory before first sandbox call.
+- Expanded `trades_v2` alone is not enough because fill realism is a time-series per leg.
+- Keep thin `trades_v2` summary fields for display, but events table is Tier-1 evidence.
+- Every event row must include:
+  - `app_version`
+  - `execution_mode`
+  - `order_tag`
+  - local event timestamp
+  - broker event timestamp where available
+  - full raw broker response JSON
+  - `teacher_config_version`
+- `previewSandboxOrder(...)` is mandatory before `placeSandboxOrder(...)`.
+- `placeSandboxOrder(...)` must require a confirmation token:
+  - issued only by successful preview on same candidate
+  - TTL <= 60 seconds
+  - single use
+- Sandbox transport:
+  - direct Android -> Upstox HTTPS
+  - Oracle relay is forbidden for order traffic until TLS is deployed
+  - broker credentials must not pass over cleartext transport
+- First sandbox test sequence:
+  1. single BUY leg
+  2. two-leg defined-risk spread with manual BUY protection -> SELL credit sequencing
+  3. multi-order defined-risk spread to verify Upstox BUY-before-SELL behavior
+  - do not compress stages into one approval/session
+
+### Additional required gates
+
+- Limit-price sanity band:
+  - within ±2% or 5 ticks of current quoted mid, whichever is larger
+- Candidate freshness:
+  - quote age <= 2 poll cycles / <= 10 minutes
+- Daily sandbox order cap:
+  - proposed cap: 10 sandbox orders/day
+- Idempotency:
+  - every order has unique `order_tag`
+  - before send, check no non-terminal row with same tag
+  - `unknown` status = full stop on that tag
+  - never resend on unknown
+- Market-hours and trading-day check must exist inside `UpstoxOrderClient`, not only in readiness.
+- Kill switch:
+  - persisted flag `execution_kill_switch`
+  - checked before every broker call
+  - default ON/blocking after any unknown status or partial-failure branch
+  - clearable manually from UI
+- Static-IP empirical check is a named S4 deliverable:
+  - record source-IP behavior and any IP-restriction-like 4xx in events table
+- Token scope + expiry check must happen at preview time.
+- Margin quote must come from live margin API:
+  - no flat constants
+  - no explicit override path in v1
+  - if B2 margin fix has not shipped, S4 cannot honestly pass
+- Write-ahead persistence:
+  - insert `sending` event row before HTTP call
+  - startup recovery resolves non-terminal rows before any new broker action
+- Secrets discipline:
+  - credentials only in env/secret storage
+  - no token/key in chat, repo, event raw payload, or persisted order payload
+  - redact token fields before persistence
+
+### Sandbox sequencing ruling
+
+- S1-S3 are app builds and must ship between measurement windows, not during one.
+- Recommended sequence:
+  1. Day-6 letter first.
+  2. B1 repair fix + stamping.
+  3. CHANGE-2 directive drafted.
+  4. S1-S3 ship while CHANGE-2 is under review and no measurement window is running.
+  5. CHANGE-2 ships and its measurement window runs.
+  6. S4 first sandbox call may run during CHANGE-2 window only if S1-S3 already shipped and no new app build is needed.
+  7. B2 margin fix in next window gap.
+  8. S5 only after B2.
+- Approved/deferred:
+  - S0 audit/design: done, accepted
+  - S1 events schema, S2 dry-run builder, S3 preview UI: approved post-freeze, between windows
+  - S4 first sandbox call: conditional on S1-S3 complete, B2 shipped, kill switch live, all added gates present
+  - S5 spread lifecycle: conditional on S4 pass
+  - S6 live-readiness review: deferred
+  - Oracle relay for order traffic: forbidden until TLS
+  - live order placement: not on the table
+
+### 2026-07-11 10:21 UTC - Sandbox ruling reconciled into local plan
+
+- Uploaded ruling processed:
+  - `RULING_SANDBOX_ARCHITECTURE_20260711.md`
+- Local artifact reconciled:
+  - `SANDBOX_WIRING_PLAN_20260711.txt`
+- No app source code changed.
+- No build files changed.
+- No broker call made.
+- No push/deploy performed.
+- Corrections applied to the plan:
+  - removed the old margin override path
+  - clarified that B2 live-margin fix is prerequisite before S4 can honestly pass
+  - changed candidate freshness to Claude's bound:
+    - quote age <= 2 poll cycles
+    - absolute cap <= 10 minutes
+  - made `execution_order_events` mandatory before any sandbox call
+  - kept `trades_v2` as thin display summary only
+  - added write-ahead persistence requirement:
+    - insert `sending` event before broker HTTP call
+    - resolve non-terminal rows on startup before any new broker action
+  - clarified sandbox transport:
+    - direct Android -> Upstox HTTPS
+    - Oracle relay forbidden until TLS
+  - clarified live execution:
+    - not on the table
+    - requires separate S6 review and explicit written approval
+
+### Current next step after sandbox ruling
+
+- Wait for Day-6 verdict letter first.
+- Until then, allowed work is freeze-safe only:
+  - schema draft text
+  - S1-S3 directive/checklist draft
+  - O3/O3-G2 offline analysis
+  - Gemini comparison only after quota/billing reset
+- Do not implement sandbox code, create app builds, push releases, or make broker calls before the freeze lifts.
+
+## Update - 2026-07-12 - O3/O3-G2 Offline Dynamic Branch Analysis
+
+### Scope
+
+- User selected Option 3:
+  - continue offline O3/O3-G2 analysis while the app remains frozen
+- Work performed:
+  - local-only analysis
+  - no app source code change
+  - no build file change
+  - no Gemini call
+  - no Supabase call/write
+  - no broker call
+  - no push/deploy
+
+### Local artifact created
+
+- `O3G2_OFFLINE_DYNAMIC_BRANCH_ANALYSIS_20260712.txt`
+
+### Source files used
+
+- `research_cache/o3g2_20260711/o3g2_packets_blind.jsonl`
+- `research_cache/o3g2_20260711/o3g2_manifest_with_ground_truth.csv`
+- `research_cache/o3g2_20260711/o3g2_codex_baseline_responses.jsonl`
+- `research_cache/o3g2_20260711/o3g2_gemini_flash_responses_20260711.jsonl`
+- `research_cache/o3g2_20260711/o3g2_joined_audit_summary.json`
+- `research_cache/profit_attribution_20260612_20260709/primary_vs_best_feature_matrix.csv`
+- `research_cache/profit_attribution_20260612_20260709/full_menu_ranker_replay_summary.json`
+- `research_cache/profit_attribution_20260612_20260709/cluster_analysis.json`
+
+### O3-G2 current status
+
+- Packet set:
+  - total packets: `26`
+  - `ranking_jun22`: `10`
+  - `exit_jul08`: `10`
+  - `zero_evaluable_control_jul09`: `5`
+  - `adversarial_null_ranking`: `1`
+- Codex baseline:
+  - validator pass: `26/26`
+  - validator fail: `0`
+  - no high call on zero-evaluable controls
+  - no high call on adversarial/null packet
+- Gemini Flash:
+  - completed: `7/26`
+  - all completed packets are `ranking_jun22`
+  - remaining hard strata are still untested by Gemini:
+    - low-uplift over-call challenge rows
+    - exit packets
+    - zero-evaluable controls
+    - adversarial/null packet
+  - still blocked by Gemini quota/billing until reset or billing correction
+
+### Codex baseline weaknesses
+
+- Codex baseline errors are over-calls, not missed danger.
+- Over-called packets:
+  - packet `9`, snapshot `1396`, expected low, actual delta_R `0.0517`, Codex called high
+  - packet `10`, snapshot `1406`, expected low, actual delta_R `0.0672`, Codex called medium
+  - packet `11`, exit-only snapshot `2219`, ranking should abstain, Codex called medium, exit severity correct low
+  - packet `13`, exit-only snapshot `2228`, ranking should abstain, Codex called medium, exit severity correct high
+- Future validator rule:
+  - exit-only packets should force ranking-suspicion abstain unless candidate-comparison evidence exists
+  - actual delta_R below `0.10` should not be high severity unless a separate structural defect exists
+
+### Dynamic branch finding
+
+- Local evidence supports branching, not one universal ranker rule.
+- Feature matrix rows where local best beat primary:
+  - rows: `489`
+  - average uplift: `Rs 1,321.99`
+  - median uplift: `Rs 736.64`
+  - p90 uplift: `Rs 2,672.82`
+  - average delta_R: `0.3753`
+  - median delta_R: `0.0414`
+- Two different failure modes:
+  - best generated but not watchlisted: `271`
+  - best in watchlist but not top: `218`
+
+### Branch 1 - strategy-family/admission gap
+
+- Strategy-family gap:
+  - rows: `249`
+  - average uplift: `Rs 2,110.17`
+  - median uplift: `Rs 1,452.70`
+  - p90 uplift: `Rs 4,406.52`
+  - average delta_R: `0.7133`
+  - best generated but not watchlisted: `220`
+- Interpretation:
+  - largest profit pocket
+  - mostly construction/admission failure, not just final sort failure
+  - better family existed in generated candidates but often did not survive into watchlist/top display
+
+### Branch 2 - width/ranking gap
+
+- Width gap:
+  - rows: `237`
+  - average uplift: `Rs 506.45`
+  - median uplift: `Rs 380.82`
+  - p90 uplift: `Rs 1,036.46`
+  - average delta_R: `0.0241`
+  - best in watchlist but not top: `186`
+- Interpretation:
+  - mostly final ranking/top-selection problem
+  - lower value than strategy-family gap
+  - should be handled cautiously to avoid low-uplift churn
+
+### Strategy pair pockets
+
+- Largest pockets with at least 3 rows:
+  - `BEAR_PUT -> BEAR_CALL`:
+    - rows `31`
+    - average uplift `Rs 6,843.78`
+    - median uplift `Rs 6,983.31`
+    - median delta_R `1.0848`
+  - `IRON_CONDOR -> IRON_BUTTERFLY`:
+    - rows `19`
+    - average uplift `Rs 2,263.36`
+    - median uplift `Rs 2,145.61`
+    - median delta_R `1.8590`
+  - `IRON_CONDOR -> BEAR_CALL`:
+    - rows `65`
+    - average uplift `Rs 1,487.49`
+    - median uplift `Rs 1,577.06`
+    - median delta_R `1.5101`
+  - `BEAR_CALL -> BULL_PUT`:
+    - rows `89`
+    - average uplift `Rs 1,412.56`
+    - median uplift `Rs 949.88`
+    - median delta_R `0.0956`
+- Interpretation:
+  - these are regime/family pockets, not universal rules
+  - do not hard-code strategy switches
+
+### Width/risk findings
+
+- Wider alternatives often explain hindsight improvement:
+  - `>2.5x` wider:
+    - rows `71`
+    - average uplift `Rs 1,990.75`
+    - median uplift `Rs 1,824.94`
+    - median delta_R `0.3574`
+  - `1.6x-2.5x` wider:
+    - rows `276`
+    - average uplift `Rs 1,195.80`
+    - median uplift `Rs 764.11`
+- Risk ratio evidence:
+  - `1.25x-2.5x` risk:
+    - rows `224`
+    - average uplift `Rs 1,470.22`
+  - `>2.5x` risk:
+    - rows `215`
+    - average uplift `Rs 1,311.12`
+- Interpretation:
+  - many profitable alternatives used more risk/capital
+  - this reinforces B2 margin fix and sandbox fill-realism prerequisites
+  - do not deploy a naive "choose wider" rule
+
+### Market-regime finding
+
+- VIX bucket behavior:
+  - `VIX < 12.5`:
+    - rows `107`
+    - average uplift `Rs 471.47`
+    - median uplift `Rs 359.81`
+    - average delta_R `0.0237`
+    - mostly watchlist/top-ranking issue
+  - `12.5 <= VIX < 13.2`:
+    - rows `135`
+    - average uplift `Rs 1,155.14`
+    - median uplift `Rs 1,237.72`
+    - average delta_R `0.8115`
+  - `13.2 <= VIX < 14`:
+    - rows `235`
+    - average uplift `Rs 1,803.48`
+    - median uplift `Rs 895.50`
+    - best generated but not watchlisted `162`
+- Interpretation:
+  - low VIX appears more like conservative width/ranking-churn terrain
+  - mid-VIX/higher-IV regimes show larger family/admission errors
+  - future branch selector must be regime-aware
+
+### Current answer to special assignment
+
+- Strategy-family/admission failures made the most money in the past window.
+- Width/ranking refinements also made money, but usually less and with greater churn/slippage/risk sensitivity.
+- Individual leg trading cannot be fairly concluded from the current dataset because evidence is candidate/strategy-outcome shaped, not broker-fill/leg-lifecycle shaped.
+- The brain did not pick many winners because it either:
+  - did not admit better generated candidates into watchlist
+  - ranked a watchlisted alternate below primary
+  - over-weighted one family/width under a regime where another branch was better
+
+### Recommended next offline step
+
+- Build a local branch-label dataset:
+  - `FAMILY_ADMISSION_MISS`
+  - `WIDTH_RANKING_MISS`
+  - `LOW_UPLIFT_WIDTH_CHURN`
+  - `HIGH_IV_FAMILY_ALTERNATE`
+  - `HIGH_RISK_UPLIFT_NEEDS_MARGIN`
+- Then score a shadow-only branch selector against:
+  - uplift captured
+  - risk increase
+  - false switches
+  - low-uplift churn avoided
+  - generated-not-watchlist recovery
+- This remains offline research only and must not touch frozen app behavior.
+
+## Update - 2026-07-13 - Claude Directive: Agent Skill, Friction Constant, LLM/ML Rulings
+
+### Source
+
+- Uploaded directive:
+  - `DIRECTIVE_OC_AGENT_SKILL_FRICTION_LLM_RULINGS_20260713.md`
+- Date processed:
+  - `2026-07-13 08:05 UTC`
+- Scope:
+  - offline research environment only
+  - freeze holds
+  - no app code
+  - no build
+  - no push
+  - no live order
+  - no Supabase live-table write
+- Day-6 verdict letter remains the gate.
+- Nothing in this directive opens Track B before the Day-6 letter.
+
+### New confirmed brokerage constant
+
+```text
+BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-verify Oct 2026)
+```
+
+- Source per Claude directive:
+  - Upstox email to Vivek received around `2026-07-10`
+- Current modeling gap:
+  - brain currently models zero transaction cost
+  - A8 gate, teacher R, `premiumEdge`, `ev`, and branch/replay numbers to date are gross of friction
+- Conservative model until measured:
+  - 2-leg spread round trip:
+    - 4 orders
+    - brokerage = `₹40`
+  - 4-leg IC/IB round trip:
+    - 8 orders
+    - brokerage = `₹80`
+  - statutory charges remain unmodeled:
+    - STT
+    - exchange transaction charges
+    - SEBI fees
+    - GST
+    - stamp duty
+- Empirical open question:
+  - Is `₹10` charged per order or per leg?
+  - If multi-leg basket is billed under one order ID, actual cost may differ.
+  - Must be measured from broker response/contract note during sandbox study.
+  - Until measured, model conservative case:
+    - `₹10 × legs × 2`
+
+### Analytical consequence for branch research
+
+- All branch/selector tables must report:
+  - gross uplift
+  - friction-adjusted uplift
+  - assumed brokerage model
+  - statutory-charge status:
+    - estimated
+    - measured
+    - unavailable
+- Prior O3-G2 branch finding:
+  - width-gap branch median uplift was roughly `₹256-₹380`
+  - against `₹40-₹80` brokerage plus statutory charges, a large part of width-churn may be economically weak or dead
+  - strategy-family/admission branch median uplift around `₹1,197-₹1,453` survives friction more comfortably
+- Practical priority update:
+  - family/admission branch remains highest-value research path
+  - width/ranking branch must include friction before it is treated as worth implementing
+  - low-uplift width churn must be penalized or suppressed
+- This strengthens first-real-trade staging:
+  - 2-leg only first
+  - 4-leg structures cost more, have more fill risk, and may partial-fill into unwanted positions
+
+### Upstox Agent Skill ruling
+
+- Claude authorized Upstox Agent Skill for offline fill-realism study only.
+- It is not part of Market Radar app architecture.
+- It must not be wired into the phone app.
+- App sandbox architecture remains unchanged:
+  - Kotlin `UpstoxOrderClient`
+  - structural endpoint separation
+  - preview-token coupling
+  - `execution_order_events`
+  - kill switch
+  - direct Android -> Upstox HTTPS for app sandbox path
+- Agent Skill purpose:
+  - decouple fill-realism exploration from the app build train
+  - run sandbox study from offline/laptop environment after Day-6 letter
+  - produce Tier-1 raw broker lifecycle evidence without app builds
+
+### Agent Skill safety boundaries
+
+- Live token must never enter the environment.
+- `UPSTOX_ACCESS_TOKEN` must be absent from:
+  - machine
+  - shell
+  - config file
+  - process environment
+- Only sandbox token may be present:
+  - `UPSTOX_SANDBOX_ACCESS_TOKEN`
+- No `config.json` containing live token.
+- No live order under any circumstance.
+- Every sandbox order must be:
+  - sandbox only
+  - 1 lot
+  - LIMIT
+  - defined-risk when multi-leg
+  - fully logged with raw broker response JSON
+- Broker-side kill switch must be understood before first order:
+  - SDK exposes `UserApi.update_kill_switch(...)`
+- App-side kill switch from sandbox architecture still remains required later.
+- Agent narration is Tier-2 evidence.
+- Raw broker JSON is Tier-1 evidence.
+- Secrets discipline:
+  - no token in chat
+  - no token in repo
+  - no token in artifact
+  - no token in persisted payload
+  - redact before writing any order payload/response
+
+### Agent Skill timing
+
+- Authorized now:
+  - prepare only
+  - read docs / skill instructions
+  - obtain sandbox-only token
+  - write study plan
+  - write capture schema
+  - environment attestation plan
+- Not authorized before Day-6 verdict letter:
+  - first sandbox order
+  - any broker-side execution experiment
+- First sandbox order timing:
+  - Wednesday `2026-07-15` or later
+  - only after Day-6 verdict letter
+
+### SANDBOX_FILL_REALISM_STUDY_v1 deliverable
+
+- Required single artifact after execution:
+  - environment attestation
+  - proof live token absent
+  - order-by-order log
+  - intent
+  - legs
+  - limits
+  - timestamps
+  - raw responses
+  - fills
+  - rejections
+  - charges
+  - answer each empirical question or mark `UNANSWERED`
+  - measured friction model
+  - `SELF-AUDIT — DEVIATIONS FROM DIRECTIVE`
+
+### Sandbox empirical questions to answer
+
+1. 4-leg complete-fill rate for IC/IB at 1 lot.
+2. Per-leg slippage versus assumed mid:
+   - median
+   - p90
+3. Time-to-complete-fill distribution.
+4. 2-leg versus 4-leg fill-reliability gap.
+5. Whether broker actually enforces BUY-before-SELL in multi-leg basket.
+6. Whether `₹10` is charged per order or per leg.
+7. Whether static-IP restriction fires from non-static IP on sandbox order endpoints.
+8. Whether BNF lot size is empirically `30` or `35`.
+
+### Sandbox test order remains A -> B -> C
+
+1. A:
+   - single BUY leg
+   - proves auth, request/response lifecycle, rejection shape
+   - zero naked-sell risk
+2. B:
+   - 2-leg defined-risk
+   - protection BUY first
+   - credit SELL second
+   - verifies sequencing/failure branches
+3. C:
+   - multi-leg basket
+   - verifies broker-side BUY-before-SELL claim
+   - verifies multi-leg fill and charge behavior
+- No skipping.
+- No compressing stages.
+
+### Grok ruling
+
+- Grok rejected as primary LLM.
+- Reasons recorded by Claude:
+  - volume assumption wrong by `10x-25x`
+  - actual observer volume is about `75/day`, not `500-2,000/day`
+  - cost difference is not the deciding axis at real volume
+  - wrong axis:
+    - observer fills strict schema/enums
+    - schema enforcement is decisive, not broad reasoning depth
+  - fabrication:
+    - Grok referenced a Gemini path/history that does not match current O3-G2 evidence
+- LLM stack remains:
+  - Gemini 2.5 Flash paid Tier-1 primary with `responseSchema` mandatory
+  - DeepSeek V4 Flash fallback, separate failure domain
+  - Gemini 3.1 Pro month-end evaluator
+- Grok can be considered only as a fallback candidate later.
+- Settlement method if reopened:
+  - run same 26 O3-G2 packets through each model
+  - same validator
+  - same ground-truth scoring
+  - one output file per model
+  - no vendor self-grading
+
+### Google TabFM ruling
+
+- TabFM approved only as a Track-R baseline learner.
+- Role:
+  - offline shadow branch-selector study
+  - compare against simple rules
+  - ex-ante features only
+  - day-level train/test split
+  - capture-ratio versus oracle
+  - friction-adjusted scoring
+- Not approved for:
+  - phone runtime
+  - live path
+  - app component
+  - model upgrade priority over measurement repair
+- Limitations recorded:
+  - project bottleneck is data pathology, not model capacity
+  - small, biased, day-clustered labels can make a stronger model learn bias faster
+  - rows are time-series/regime-drifted, not exchangeable
+  - non-commercial license creates future product risk
+- Sequencing unchanged:
+  - Day-6 letter first
+  - CHANGE-2 / A8 gate fix
+  - B2 margin
+  - exit audit
+  - only then model-upgrade research can matter
+
+### Still frozen
+
+- No app source change.
+- No build.
+- No push.
+- No deploy.
+- No OTA.
+- No live order.
+- No live token on any machine.
+- No Supabase live-table write.
+- No ranker change.
+- No gate change.
+- No threshold change.
+- No retrain.
+- Day 6 runs untouched:
+  - daily K3 check
+  - kill switches K1-K4 only
+- Tuesday evening sequence:
+  - Antigravity independent recount from raw `ab_week1_decisions`
+  - Claude Day-6 verdict letter
+  - only then Track B may open
+
+### Action list after this directive
+
+- Now:
+  - record brokerage constant in project knowledge
+  - keep app frozen
+- Next research pass:
+  - add friction columns to branch/selector tables
+  - report gross and friction-adjusted uplift
+- Prep only before Day-6 letter:
+  - read Agent Skills documentation
+  - obtain sandbox-only token
+  - draft study plan and capture schema
+  - prepare environment attestation
+- Tuesday `2026-07-14`:
+  - Day-6 K3 check
+  - escalate only K1-K4
+  - Antigravity recount
+  - Day-6 verdict letter
+- Wednesday `2026-07-15` or later:
+  - first sandbox order only if verdict allows:
+    - single BUY leg first
+- After billing enabled:
+  - run all 26 O3-G2 packets using paid-tier Gemini with response schema
+  - one file per model
+  - no claims from partial runs
+
+### Self-audit for this knowledge update
+
+- App source changed:
+  - no
+- Build changed:
+  - no
+- Push/deploy:
+  - no
+- Supabase live-table write:
+  - no
+- Broker/Gemini call:
+  - no
+- Deviations:
+  - Agent Skills docs were not yet independently fetched/read in this step because user requested analysis and project-knowledge update only; implementation/prep is deferred until after tomorrow unless explicitly requested within freeze-safe bounds.
+
+## 2026-07-13 Day-5 post-close paper-trade reconciliation
+
+### Trigger
+
+- After market close, screenshots showed:
+  - v2.5.0 / b331
+  - session complete 76/76
+  - latest ML/candidate views with 0 generated / 0 watchlist / 0 session rows
+  - Day evaluation initially retryable, then Supabase evidence showed eval rows present after retry
+- User corrected the interpretation:
+  - two BNF paper trades were actually taken in the afternoon
+  - therefore "no candidate existed" could not be accepted as a session-level conclusion
+
+### Local read-only pull
+
+- Supabase REST was used read-only because browser SQL was getting stuck.
+- No Supabase writes were made.
+- No app files were changed except this knowledge note.
+- No push/deploy/OTA.
+- Local evidence saved under:
+  - `research_cache/day5_paper_recon_20260713/`
+- Detailed handoff file:
+  - `DAY5_PAPER_TRADE_RECONCILIATION_20260713.txt`
+
+### Supabase slices pulled
+
+- `trades_v2`
+  - ids 168 and 169
+- `ab_week1_decisions`
+  - session_date `2026-07-13`
+  - experiment `week1_a8_nf_calm_gate`
+  - 73 rows
+- `ml_brain_snapshots`
+  - session_date `2026-07-13`
+  - entry window `14:15-14:50 IST`
+  - snapshot ids 2494-2501
+  - 8 rows
+
+### Reconciliation result
+
+- The two paper trades were real and aligned with the 14:35 IST BNF Bear Call candidates.
+- The later zero-candidate UI state is a latest-snapshot/state issue, not proof that candidates never existed during the session.
+- At 14:35 IST:
+  - snapshot id 2498
+  - generated_count: 2
+  - watchlist_count: 2
+  - rejected_count: 293
+  - top_candidate_type: `BEAR_CALL`
+  - both BNF candidates had `executionGate: READY`
+- At 14:40 IST onward:
+  - the new path returned to WAIT because `CALM_NF_ONLY_WAIT` removed BNF intraday survivors
+
+### Paper trades
+
+- Trade 168:
+  - BNF intraday `BEAR_CALL`
+  - entry `14:36:13 IST`
+  - exit `15:08:32 IST`
+  - sell 58500 CE / buy 59000 CE
+  - width 500
+  - entry premium 219.05
+  - exit premium 224.15
+  - PnL `-317`
+  - entry snapshot rank 1
+  - `followed_app: true`
+  - ML: `p_ml=0.8988`, `ml_edge=0.311`, `ml_ood=true`, `ml_action=TAKE`, `ml_regime=CHOPPY`
+- Trade 169:
+  - BNF intraday `BEAR_CALL`
+  - entry `14:36:19 IST`
+  - exit `15:08:34 IST`
+  - sell 58500 CE / buy 58900 CE
+  - width 400
+  - entry premium 178.55
+  - PnL `-165`
+  - entry snapshot rank 2
+  - `followed_app: false`
+  - ML: `p_ml=0.8681`, `ml_edge=0.281`, `ml_ood=true`, `ml_action=TAKE`, `ml_regime=CHOPPY`
+
+### 14:35 IST candidate match
+
+- Candidate 1:
+  - id `BEAR_CALL_BNF_58500_59000_W500`
+  - lane `BNF_intraday`
+  - sellStrike 58500
+  - buyStrike 59000
+  - width 500
+  - netPremium 219.05
+  - maxProfit 6571
+  - maxLoss 8429
+  - premiumEdge 396
+  - sigmaOTM 0.7
+  - executionReady true
+  - matches trade 168
+- Candidate 2:
+  - id `BEAR_CALL_BNF_58500_58900_W400`
+  - lane `BNF_intraday`
+  - sellStrike 58500
+  - buyStrike 58900
+  - width 400
+  - netPremium 178.55
+  - maxProfit 5356
+  - maxLoss 6644
+  - premiumEdge 306
+  - sigmaOTM 0.7
+  - executionReady true
+  - matches trade 169
+
+### A/B gate behavior around entry
+
+- 14:15-14:30 IST:
+  - old actor repeatedly picked `BEAR_CALL_BNF_58500_59000_W500`
+  - new actor picked none
+  - gate reason `ALL_NEGATIVE_EV`
+- 14:35 IST:
+  - old pick `BEAR_CALL_BNF_58500_59000_W500`
+  - new pick `BEAR_CALL_BNF_58500_59000_W500`
+  - gate reason `NONE`
+  - candidate counts pre/a8/lane: `25 / 2 / 2`
+- 14:40-14:55 IST:
+  - old actor kept picking `BEAR_CALL_BNF_58500_59000_W500`
+  - new actor picked none
+  - gate reason `CALM_NF_ONLY_WAIT`
+  - A8 allowed candidates, but lane gate removed BNF intraday survivors
+
+### Issues raised
+
+- Attribution gap:
+  - `trades_v2.candidate_id` appears to be the trade row id, not the brain candidate id
+  - true candidate lineage currently has to be reconstructed from `entry_snapshot` and contemporaneous snapshot/A-B rows
+- UI/state gap:
+  - at 14:35, top-level snapshot action was `WAIT` and confidence `0`
+  - but verdict urgency was `READY`, generated_count was 2, watchlist_count was 2, and execution-ready candidates existed
+  - post-close/latest-snapshot views can therefore hide a brief actionable candidate window
+- Freeze implication:
+  - no fix before Day-6 verdict letter
+  - after freeze, candidate lineage should be explicit in trade rows:
+    - brain candidate id
+    - source snapshot id
+    - source poll number
+    - app-followed vs user-selected alternative vs manual override
+
+### Corrected interpretation
+
+- Do not state that Day-5 had no candidates.
+- Correct statement:
+  - Day-5 latest/post-close state showed zero candidates, but the 14:35 IST entry window had two generated/watchlist BNF Bear Call candidates; both paper trades were tied to those candidates.
+- Both paper trades lost money, so this is not a profit claim.
+- The value of this finding is attribution correctness and UI/state clarity.
+
+## 2026-07-14 Week-1 A/B final verdict letter
+
+### Source artifact
+
+- User supplied:
+  - `WEEK1_AB_VERDICT_LETTER_CONSOLIDATED_V2_20260714.md`
+- This supersedes prior Week-1 verdict drafts.
+- It is the authoritative Week-1 ruling unless amended after Antigravity recount.
+
+### Binding verdict
+
+- Verdict: `VACUOUS`
+- Window validity: `VALID`
+- Valid window:
+  - Day 2: `2026-07-08`
+  - Day 3: `2026-07-09`
+  - Day 4: `2026-07-10`
+  - Day 5: `2026-07-13`
+  - Day 6: `2026-07-14`
+- Day 1 / `2026-07-07` remains excluded because build actor was mixed mid-session.
+- Measurement was clean, but the result is uninformative because the new arm's coverage was structurally blocked.
+
+### Window facts accepted
+
+- A/B rows:
+  - `368 / 368`
+  - gap `0`
+- Snapshots:
+  - `377`
+- Freeze integrity:
+  - held throughout
+  - BUILD 3 / v2.5.0 / b331 unchanged
+- Day-6 retry:
+  - first eval attempt failed with `EVAL_CHAIN_TRUNCATED`
+  - retry succeeded
+  - 29 eval rows and 29 reco rows persisted
+
+### Week-1 behavior accepted
+
+- New arm:
+  - `ALL_NEGATIVE_EV`: `327 / 368`
+  - `CALM_NF_ONLY_WAIT`: `11 / 368`
+  - gate passed / pick existed: `30 / 368`
+  - `new_actor_verdict == TRADE`: `0 / 368`
+- Old arm:
+  - would have traded `368 / 368`
+
+### Root-cause ruling
+
+- A8 gate was structurally closed.
+- The gate used `probProfit`, derived from the implied-volatility/risk-neutral surface.
+- It demanded:
+  - `expected_win >= 1.10 * expected_loss`
+- Because the probability source is the market's own pricing measure, fair spreads cannot show the required positive edge under that same measure.
+- Therefore the new arm did not prove "no positive-EV trades existed."
+- Correct interpretation:
+  - the gate used the wrong probability measure for the project's variance-risk-premium thesis.
+
+### Loss-model ruling
+
+- There are three inconsistent loss models:
+  - A8 gate:
+    - full `maxLoss`, hold-to-expiry
+  - teacher_v1 and display stopLoss:
+    - `0.6 * maxLoss`
+  - live tracker:
+    - no hard stop-loss floor
+    - exits only through compound danger score
+- B6 live-exit unification remains mandatory before real-money eligibility.
+
+### S1 critical blocker
+
+- All `ml_evaluation_outcomes`, `ml_recommendation_outcomes`, `sim_pnl_h2`, `outcome_h2`, `canonical_won`, and the Week-1 `2/130` outcome number are flagged unverified.
+- Reason:
+  - recorded losses may exceed structural max loss for W400/W500 BNF credit spreads
+  - suspected cause is `get_price` expiry-lenient matching when candidate expiry is missing/empty
+- S1 verification is now first post-freeze task and blocks all builds / CHANGE-2 / sandbox wiring.
+- Local S1 plan created:
+  - `S1_VERIFICATION_PLAN_20260714.txt`
+
+### Mandatory S1 checks
+
+- Check 1:
+  - for every eval row Days 2-6, recover later net credit and assert `0 <= later_net_credit <= width`
+- Check 2:
+  - verify whether `ml_option_chain_snapshots` contains multiple expiries per strike in the relevant windows
+- Check 3:
+  - sample generated candidates and confirm whether `expiry` is populated
+- Check 4:
+  - recompute Day-2 H2 restricted to correct weekly expiry and compare to recorded Day-2 loss
+
+### Semantics ruling
+
+- `new_pick_candidate_id` means:
+  - gate survivor existed
+- `new_actor_verdict` means:
+  - final app/system action after downstream verdict logic
+- Future grading rule:
+  - `new_pick_rows` grades the gate
+  - `new_actor_verdict` grades the full system
+  - never collapse these fields
+
+### Additional binding findings
+
+- `capitalBlocked` is misnamed:
+  - it is not a true capital/margin affordability check
+  - it behaves like a gamma filter in limited cases
+  - B2 scope expands to include real margin admission with Upstox margin API and field rename / real `margin_blocked`
+- `EVAL_CHAIN_TRUNCATED` is fail-slow:
+  - should fail by page 1-2 with filter params logged, not after 200 pages
+  - add as B1 rider
+- `trades_v2` candidate lineage defect is endorsed:
+  - candidate id currently stores trade row id, not brain candidate id
+  - S7 rider must store brain candidate id, source snapshot id, source poll number, and selection source
+
+### Authorized post-freeze sequence
+
+- Track B freeze is lifted, but only in this order:
+  1. S1 verification, read-only
+  2. S1 fix if confirmed:
+     - expiry-strict `get_price`
+     - arbitrage-bound guard
+     - `price_integrity` flag
+     - re-score Days 2-6
+  3. B1:
+     - repair-logic exemption for zero-evaluable
+     - real `teacher_config_version` stamping
+     - pagination rider
+  4. CHANGE-2:
+     - A8 gate rectification
+     - honest probability/expectancy measure
+     - exit-policy-consistent loss model
+     - friction-aware
+     - fail closed on missing inputs
+     - EV quantity consolidation
+     - own measurement window
+  5. B2:
+     - live Upstox margin API
+     - true capital check
+     - `capitalBlocked` rename / real margin field
+  6. B3:
+     - `position_exit_audit`
+  7. B4:
+     - sandbox wiring
+     - offline fill-realism study allowed with sandbox token only
+  8. B5:
+     - LLM shadow observer
+  9. B6:
+     - live-exit unification
+  10. S7 rider:
+      - `trades_v2` candidate lineage
+
+### Antigravity status
+
+- Antigravity recount remains pending.
+- If Antigravity counts disagree with the verdict letter, the letter must be amended before CHANGE-2 proceeds.
+
+### Current next action
+
+- Do not start app code changes.
+- Do not start CHANGE-2.
+- Do not wire sandbox yet.
+- Start S1 verification using read-only local Supabase extraction.
+
+## 2026-07-14 — S1 Blocker Resolution Ruling and Local Implementation
+
+### Claude ruling received
+
+- File:
+  - `RULING_S1_BLOCKER_RESOLUTION_20260714.md`
+- Status:
+  - S1 remained merge-blocked until the live position valuation consumer boundary was fixed.
+- Key ruling:
+  - The producer-side fix in `compute_position_live()` was correct but incomplete.
+  - Returning `None` for zero quoted legs is only safe if the caller and `position_verdict()` also fail closed.
+  - Otherwise the system can silently continue with stale `current_pnl` or default missing P&L to zero.
+
+### Standing project law adopted
+
+- **NO SILENT DEFAULTS ON MISSING DATA**
+- Missing data must be visibly missing.
+- In decision, gate, valuation, and exit paths:
+  - missing values must fail closed with a stamped reason, or
+  - propagate as `None` and be explicitly checked.
+- `.get(x, 0)`, `.get(x, True)`, and null-as-clean are forbidden where the value affects trading decisions, valuation, exits, gates, or teacher labels.
+- Missing data must never be converted into a safe-looking value.
+
+### S1 scope reclassification
+
+- S1 is no longer evaluator-only.
+- S1 is now explicitly:
+  - legacy H2 evaluator ruler repair
+  - live position-valuation fail-closed fix
+- It touches the live position-tracking path because `compute_position_live()` feeds `position_verdict()`.
+- Future build notes and merge notes must not describe S1 as evaluator-only.
+
+### Local implementation completed
+
+- `brain.py`
+  - `compute_position_live()` still returns `None` when required legs exist but zero legs are quoted.
+  - New `_stamp_unavailable_position_valuation(...)` helper stamps the failure explicitly:
+    - `current_pnl = None`
+    - `valuation_quality = 'unavailable'`
+    - `positionDataDegraded = True`
+    - `legs_quoted = 0`
+    - `position_exit_audit.reason = DATA_UNAVAILABLE`
+  - The caller now invokes this helper when `compute_position_live()` returns no live mark.
+  - `position_verdict()` no longer defaults missing P&L to zero.
+  - If `valuation_quality == 'unavailable'` or `current_pnl is None`:
+    - no danger-score math is run
+    - no `BOOK` is emitted
+    - no `EXIT` is emitted
+    - verdict is `HOLD / DATA_UNAVAILABLE`
+    - `position_exit_audit` marks both `exit_allowed = False` and `book_allowed = False`
+  - If `legs_intrinsic_fallback > 0`:
+    - verdict is `HOLD / DATA_DEGRADED`
+    - no `BOOK` / `EXIT`
+    - `position_exit_audit.reason = PARTIAL_QUOTES_INTRINSIC_FALLBACK`
+
+### Regression tests added
+
+- `test_d1_23b_missing_chain_data_stamps_unavailable_and_blocks_exit`
+- `test_d1_23c_position_verdict_unavailable_never_defaults_pnl_to_zero`
+- `test_d1_23d_partial_quote_intrinsic_fallback_blocks_book_and_exit`
+
+### Verification completed locally
+
+- `python -m unittest app.src.main.python.tests.test_phase_d`
+  - `85 tests OK`
+- `python -m unittest app.src.main.python.tests.test_teacher_v1_shadow_labels`
+  - `9 tests OK`
+- `python -m unittest app.src.main.python.tests.test_explanation_agent`
+  - `9 tests OK`
+- `python -m unittest discover app/src/main/python/tests`
+  - `159 tests OK`
+  - non-failing warning remains:
+    - `GEMINI_API_KEY environment variable not set.`
+- `python -m py_compile app/src/main/python/brain.py`
+  - passed
+- Android/Kotlin compile:
+  - not verified in this environment because `ANDROID_HOME` is unset and no `local.properties` SDK path is present.
+
+### Still pending
+
+- Historical backfill DML was approved by the user and applied to production on 2026-07-14.
+- Actual Supabase project ref used from decoded service-role key:
+  - `fdynxkfxohbnlvayouje`
+- Backfill applied through Supabase REST with service-role authorization:
+  - `public.ml_evaluation_outcomes`
+    - patched `12061` rows
+  - `public.ml_recommendation_outcomes`
+    - patched `4155` rows
+- Post-backfill verification:
+  - `public.ml_evaluation_outcomes price_integrity IS NULL`
+    - `0`
+  - `public.ml_recommendation_outcomes price_integrity IS NULL`
+    - `0`
+  - `public.ml_evaluation_outcomes price_integrity = LEGACY_PRE_S1`
+    - `12061`
+  - `public.ml_recommendation_outcomes price_integrity = LEGACY_PRE_S1`
+    - `4155`
+- Note:
+  - Supabase Management API link failed because the old access token/project-ref pair was rejected.
+  - REST route was used only for the two approved targeted backfill updates and lightweight count checks.
+- `mlAction=BLOCKED` and `mlOodBlocked` remain deliberately inert.
+- Wiring either ML veto is a CHANGE-class modification after clean retrain and its own measurement window.
+
+## 2026-07-14 — S1 release prep moved to synchronized `v2.5.1 / b332`
+
+### Release target
+
+- Android:
+  - `versionName = "2.5.1"`
+  - `versionCode = 332`
+- Python brain:
+  - `BRAIN_VERSION = "2.5.1"`
+- PWA:
+  - title `Market Radar v2.5.1`
+  - visible label `v2.5.1 · b332`
+  - `app.js?v=1250`
+  - `log-viewer.js?v=1158`
+
+### Release scope
+
+- S1 price-integrity repair:
+  - expiry-strict H2 price lookup
+  - no non-positive H2 price acceptance
+  - physically bounded H2 structure valuation
+  - debit structures valued as long-minus-short instead of short-minus-long
+  - new H2 price-integrity fields persisted to Supabase rows
+- S1 live position valuation fail-closed:
+  - zero quoted required legs no longer fabricate intrinsic-only full-profit marks
+  - caller stamps unavailable valuation explicitly
+  - `position_verdict()` refuses BOOK/EXIT when valuation is unavailable or partially intrinsic-substituted
+- Historical backfill:
+  - production historical rows stamped `LEGACY_PRE_S1`
+  - post-backfill null `price_integrity` count verified as zero in both outcome tables
+
+### Local validation before commit/push
+
+- `python -m unittest discover app/src/main/python/tests`
+  - `159 tests OK`
+  - non-failing warning:
+    - `GEMINI_API_KEY environment variable not set.`
+- `python -m py_compile app/src/main/python/brain.py`
+  - passed
+- `node --check app.js`
+  - passed
+- `git diff --check`
+  - passed in `Marketapp-main-worktree`
+  - passed in `MarketVivi-git`
+
+### Remaining release checks
+
+- Android/Kotlin compile still must be verified by GitHub Actions because local environment has no Android SDK path.
+- Signed Android release should trigger from `Marketapp` push because `app/build.gradle.kts` changed.
+- Push must remain synchronized across `Marketapp` and `MarketVivi`.
