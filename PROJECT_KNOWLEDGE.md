@@ -9370,3 +9370,46 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 - Android/Kotlin compile still must be verified by GitHub Actions because local environment has no Android SDK path.
 - Signed Android release should trigger from `Marketapp` push because `app/build.gradle.kts` changed.
 - Push must remain synchronized across `Marketapp` and `MarketVivi`.
+
+## 2026-07-14 — Synchronized `v2.5.1 / b332` release pushed and signed
+
+### Push result
+
+- `Marketapp` pushed to `main`:
+  - `2d2f9d308870ba728a9db505891adc65f3f87175`
+  - commit message:
+    - `Release v2.5.1 S1 price integrity`
+- `MarketVivi` pushed to `main`:
+  - `6aa9ad776498d1e95cdb8178fe79a1c527f1b1bb`
+  - commit message:
+    - `Release v2.5.1 S1 web sync`
+
+### GitHub Actions result
+
+- `Marketapp` debug APK validation:
+  - run:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29342244875`
+  - conclusion:
+    - `success`
+- `Marketapp` signed release:
+  - run:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29342244846`
+  - conclusion:
+    - `success`
+
+### GitHub release result
+
+- Release:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.1`
+- Latest release now points to:
+  - `v2.5.1`
+- Asset:
+  - `app-release.apk`
+  - upload state:
+    - `uploaded`
+  - size:
+    - `63359442`
+
+### Post-release note
+
+- The fresh GitHub PAT used for this push should be revoked/rotated after verification, per standing credential hygiene.
