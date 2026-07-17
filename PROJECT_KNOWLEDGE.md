@@ -1,3 +1,600 @@
+## 2026-07-16 Claude ruling - full regeneration accepted pending Gate 8
+
+- Ruling received:
+  - `/tmp/codex-web-uploads/f-PPMnm4/RULING_FULL_REGEN_ACCEPTED_20260716.md`
+- Claude verdict:
+  - full S1 shadow regeneration is accepted as correctly executed.
+  - acceptance remains conditional on mandatory Antigravity independent recount, now called Gate 8.
+  - retrain/replay/O3-G2/CHANGE-2 remain blocked until Gate 8 passes.
+- Core accepted findings:
+  - `3,518 / 12,061 = 29.2%` of regenerated eval base failed closed.
+  - this is correct behavior, not regeneration failure.
+  - old labels silently fabricated outcomes on incomplete evidence; S1 now stamps those rows `FAIL`.
+  - fail split:
+    - `INSUFFICIENT_LABEL_WINDOW 2,821`
+    - `INSUFFICIENT_RAW_DATA 697`
+  - clean trainable base:
+    - `8,543 OK rows`
+    - across `17` days with at least `50` OK rows each.
+    - distribution is mildly late-leaning, not heavily skewed.
+    - real sample size for modeling is day/candidate-day level, not raw row count.
+- Claude accepted:
+  - execution correctness.
+  - unique source IDs and zero null source IDs.
+  - legacy tables untouched.
+  - Jul 8 value-drift guard passed.
+  - recommendation shadow split: `3,722` rows, all `DERIVED_FROM_EVAL_SHADOW`.
+  - early reco exclusions followed R0/R1; no invented reco formula.
+  - script pivot from monolithic `evening_evaluator` to batch `evaluation_job_prepare/run_batch/finalize`.
+- DDL fixes reconfirmed from local execution evidence:
+  - no anon UPDATE policy exists on either shadow table.
+  - no anon DELETE policy exists.
+  - `interpretation_guardrail` default exists on both shadow tables.
+  - null-source collision risk is absent because source IDs were present for every legacy row.
+- Gate 8 required Antigravity checks:
+  - eval row/source reconciliation: `12,061`, unique source IDs `12,061`, null source IDs `0`.
+  - reco row/source reconciliation: `3,722`, unique source IDs `3,722`, null source IDs `0`.
+  - integrity counts: OK `8,543`, FAIL `3,518`, window `2,821`, raw `697`.
+  - no OK row violates structural max-loss/arbitrage bound.
+  - Jul 8 97 rows byte-match the POC values.
+  - Jul 9 BULL_CALL 4 rows are present and individually valued.
+  - 06-21 has 665 FAIL rows, not dropped.
+  - 06-02 handled by regenerated coverage or fail-closed rows.
+  - every row carries `date_source`; created_at fallback count reconciles.
+  - no UPDATE policy exists on either shadow table.
+- Antigravity packet created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/ANTIGRAVITY_GATE8_RECOUNT_PACKET_20260716.txt`
+- Retrain constraints, if Gate 8 passes:
+  - train only on `new_price_integrity = OK`.
+  - exclude all `3,518` FAIL rows; never impute.
+  - document model-card base profile: `8,543` rows across `17` days, mild late-lean.
+  - split train/test by day or candidate-day discipline, not random row split.
+  - re-examine old `EVAL_OUTCOME_WEIGHT = 4`.
+  - compare clean model against poisoned frozen model, especially debit-spread predictions.
+  - shadow before cutover; `p_ml` remains dead-last tie-break until separately validated.
+- Current gate:
+  - Gate 8 Antigravity recount is the next mandatory action.
+  - no retrain, replay, O3-G2, corrected Week-1 packet, or CHANGE-2 until Gate 8 passes.
+
+## 2026-07-16 S1 shadow label regeneration executed and verified
+
+- Execution scope:
+  - shadow label regeneration only.
+  - no legacy table mutation.
+  - no app release or OTA.
+  - no retrain.
+- Batch id:
+  - `S1_FULL_REGEN_20260715_DRAFT1`
+- Shadow tables:
+  - `public.ml_evaluation_outcomes_s1`
+  - `public.ml_recommendation_outcomes_s1`
+- DDL state:
+  - both tables exist.
+  - RLS enabled on both.
+  - explicit anon SELECT and INSERT policies exist.
+  - no anon UPDATE or DELETE policy exists.
+  - `interpretation_guardrail` default exists on both tables.
+- Local execution tooling:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/full_label_regeneration_s1.py`
+  - script was patched to use the existing `brain.py` batch evaluator API:
+    - `evaluation_job_prepare`
+    - `evaluation_job_run_batch`
+    - `evaluation_job_finalize`
+  - reason:
+    - `2026-06-22` stalled when all snapshots and chain rows were passed through the monolithic `evening_evaluator`.
+  - batch checkpoint manifests are under:
+    - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_full_20260716/<session_date>/manifest.json`
+- Completed approved date set:
+  - `2026-06-02`, `2026-06-03`, `2026-06-04`, `2026-06-05`, `2026-06-08`, `2026-06-09`, `2026-06-12`, `2026-06-15`, `2026-06-17`, `2026-06-21`, `2026-06-22`, `2026-06-23`, `2026-06-24`, `2026-06-29`, `2026-07-01`, `2026-07-02`, `2026-07-03`, `2026-07-07`, `2026-07-08`, `2026-07-09`, `2026-07-13`, `2026-07-14`
+- Supabase verification:
+  - `ml_evaluation_outcomes_s1`
+    - rows: `12,061`
+    - unique `source_eval_id`: `12,061`
+    - null `source_eval_id`: `0`
+    - `new_price_integrity`: `OK 8,543`, `FAIL 3,518`
+    - `label_window_status`: `OK 8,543`, `INSUFFICIENT_LABEL_WINDOW 2,821`, `INSUFFICIENT_RAW_DATA 697`
+  - `ml_recommendation_outcomes_s1`
+    - rows: `3,722`
+    - unique `source_reco_id`: `3,722`
+    - null `source_reco_id`: `0`
+    - `new_price_integrity`: `OK 3,320`, `FAIL 402`
+    - `label_window_status`: `OK 3,320`, `INSUFFICIENT_LABEL_WINDOW 387`, `INSUFFICIENT_RAW_DATA 15`
+    - `reco_mapping_status`: `DERIVED_FROM_EVAL_SHADOW 3,722`
+- Key guardrails:
+  - FAIL rows are fail-closed label evidence rows, not automatically script failures.
+  - `2026-06-21` remains intentionally broken/no-coverage and all eval rows are `FAIL/INSUFFICIENT_RAW_DATA`.
+  - `2026-07-08` passed the POC value-drift guard before write.
+  - recommendation shadow rows were derived from matching evaluation shadow rows; no independent recommendation formula was invented.
+- Local report:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/FULL_REGEN_PROGRESS_20260716.txt`
+- Current gate:
+  - regenerated S1 shadow base is complete.
+  - next step is review/acceptance of shadow base by Claude/Antigravity before any retrain, CHANGE-2 promotion, or ranking change.
+
+## 2026-07-15 Claude ruling - post-close patch approval, cache blast radius, RLS Step 1
+
+- Claude ruling received:
+  - `/tmp/codex-web-uploads/f-TF4OZO/RULING_POSTCLOSE_APPROVAL_CACHE_RLS_20260715.md`
+- RLS Step 1 execution result:
+  - Vivek ran the approved SQL in Supabase SQL editor on `2026-07-15`.
+  - SQL executed:
+    - `alter table public.ml_evaluation_outcomes enable row level security;`
+    - `create policy anon_rw_ml_eval on public.ml_evaluation_outcomes for all to anon using (true) with check (true);`
+  - Supabase result:
+    - `Success. No rows returned`
+  - Meaning:
+    - `public.ml_evaluation_outcomes` is now policy-governed by RLS.
+    - current app anon writer is still explicitly allowed by policy.
+    - this is the approved interim label-base protection step, not full security.
+  - Next required verification:
+    - after the next post-close evaluation, confirm fresh rows still land in `ml_evaluation_outcomes`.
+    - do not proceed to Step 2 RLS until this write verification passes.
+- Patch status:
+  - Claude approved the local post-close patch in principle.
+  - Approved scopes:
+    - integrity label discipline
+    - FII/stale-context freshness sweep
+    - local cache cap increase
+  - Release remains gated:
+    - Android build and `testDebugUnitTest` must pass in an SDK-enabled environment.
+    - patch should ship as three separate attributed commits:
+      - integrity labels
+      - FII/stale-context freshness
+      - cache cap
+    - no push/OTA until explicit command and synchronized version bump.
+- Cache blast-radius ruling:
+  - `LOCAL_SNAPSHOT_TRIM` to about 3 rows hit multiple recent sessions, including A/B verdict-window days.
+  - Week-1 verdict remains safe because it was Supabase-sourced, not local-cache sourced.
+  - Any local post-close evaluation, Force Eval, or `DAY_EVAL_HANDOFF` output from `2026-07-06` through `2026-07-15` is evidence-limited/suspect if it depended on local cache.
+  - If such a local eval informed a decision, re-derive from Supabase evidence.
+  - Next full-session validation after cache-cap fix must confirm `LOCAL_SNAPSHOT_TRIM` no longer fires near the old 5 MB threshold.
+- RLS/security ruling:
+  - app writes to Supabase as `anon`.
+  - this means RLS cannot be tightened to deny anon writes until a proxy/Edge Function write path exists.
+  - Step 1 is allowed tonight for only `public.ml_evaluation_outcomes`:
+    - enable RLS.
+    - create an explicit `anon` read/write policy.
+    - then stop and verify next-session writes.
+  - This is policy-governance, not true security; real fix is app -> Supabase Edge Function with server-held service-role key, followed by removing direct anon write permissions.
+  - Do not use Supabase dashboard "Resolve issue" button because it may enable RLS without a matching policy and lock out app writes.
+- RLS table classification from source grep:
+  - `ml_evaluation_outcomes`
+    - phone/native writes post-close evaluation rows.
+    - phone/native reads counts, recent rows, date rows, and lane summaries.
+    - Step 1 target.
+  - `ml_brain_snapshots`
+    - phone/native writes brain snapshots.
+    - phone/native reads snapshots for evaluation/recovery/status.
+  - `chain_slices`
+    - phone/native reads it as chain evidence fallback.
+    - phone/native can also write it as a fallback target for `saveChainSlice()` and `saveChainRows()`.
+    - Important correction: do not treat `chain_slices` as read-only in Step 2.
+  - `trades`
+    - no normal app write/read path found for exact table `trades`.
+    - PWA export list reads it only during Export All Data.
+    - active trade CRUD uses `trades_v2`, not `trades`.
+  - `daily_data`
+    - no normal app write/read path found.
+    - PWA export list reads it only during Export All Data.
+  - `radar_inputs`
+    - no normal app write/read path found.
+    - PWA export list reads it only during Export All Data.
+  - `bhav_options`
+    - no normal app write/read path found.
+    - PWA export list reads it only during Export All Data.
+  - `straddle_ratios`
+    - no normal app write/read path found.
+    - PWA export list reads it only during Export All Data.
+- Operational consequence:
+  - execute RLS Step 1 only.
+  - defer Step 2 until Step 1 proves next-session writes still land.
+  - Step 2 policy design must use the verified table classification above, especially the `chain_slices` write fallback correction.
+
+## 2026-07-15 directive - S1 closed, label-base regeneration is next spine task
+
+- Directive received:
+  - `/tmp/codex-web-uploads/f-bO5Ia8/DIRECTIVE_OC_S1_CLOSURE_LABEL_REGEN_20260715.md`
+- S1 closure recorded from directive:
+  - `S1 decision-integrity: CLOSED`.
+  - Released `v2.5.1 / b332` S1 build is verified.
+  - Antigravity and Claude both confirmed released S1 `brain.py` byte identity at hash prefix `23f2808d` under their stated normalization checks.
+  - Signed-release CI succeeded, proving Kotlin compiled clean for the released build.
+  - Python test suite result from S1 verification:
+    - `159/159` tests passed.
+    - the three `test_d1_23*` live-position valuation tests are non-tautological.
+  - Python live-position path fails closed:
+    - zero quotes -> `compute_position_live` returns `None`.
+    - unavailable valuation is stamped explicitly.
+    - `position_verdict` blocks `BOOK` and `EXIT` with `DATA_UNAVAILABLE`.
+  - Kotlin does not decide on `current_pnl`; it passes/stores values for PWA/native display while Python owns stop/target/notification logic.
+  - Historical backfill remains:
+    - `16,216` rows stamped `LEGACY_PRE_S1`.
+    - `12,061` `ml_evaluation_outcomes`.
+    - `4,155` `ml_recommendation_outcomes`.
+    - still-null `price_integrity = 0` in both tables.
+  - RLS Step 1 is live on `public.ml_evaluation_outcomes`.
+- Cosmetic carryover logged, not implemented:
+  - MarketVivi/PWA may render `NaN` for unavailable `current_pnl` because `NaN ?? 0` remains `NaN`.
+  - Future display-only fix:
+    - render unavailable/non-finite P&L as `--` or `unavailable`.
+    - do not coerce to `0`.
+  - Priority low; no build/push for this session.
+- Next spine task:
+  - label-base regeneration design only.
+  - current 12,061 evaluation rows are quarantined as `LEGACY_PRE_S1`.
+  - no retrain, replay, O3-G2 rerun, or CHANGE-2 gate work until regenerated base is verified.
+- Deliverable created outside git:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/LABEL_REGENERATION_PLAN_v1_20260715.txt`
+- Regeneration plan headline:
+  - use a shadow table or new columns, not overwrite.
+  - preserve old rows for audit/diff.
+  - recompute from raw chain prices and saved candidate legs using corrected S1 valuation logic.
+  - fail closed on missing raw data.
+  - batch by `session_date`; no full-table scans.
+  - one-session proof-of-concept first, suggested date `2026-07-08` if pre-flight coverage supports it.
+- Status:
+  - no mass rescore executed.
+  - no Supabase large read/write executed.
+  - no app code changed for regeneration.
+  - no push/release.
+
+## 2026-07-15 Claude ruling - label regeneration plan v1 Phase 0
+
+- Ruling received:
+  - `/tmp/codex-web-uploads/f-sOgVn2/RULING_LABEL_REGEN_PLAN_V1_20260715.md`
+- Verdict:
+  - `GO` for Phase 0 pre-flight metadata only.
+  - `STOP` for re-approval before POC.
+  - This is not blanket approval for rescore, script execution, DDL, writes, retrain, or CHANGE-2.
+- Four conditions locked before any POC:
+  - Hindsight/labelability boundary:
+    - H2 uses later same-day prices.
+    - regenerate only when the full post-entry label window has raw price coverage.
+    - truncated windows fail closed with `new_price_integrity=FAIL`, `h2_price_integrity_reason=INSUFFICIENT_LABEL_WINDOW`, and `raw_data_status=FAIL`.
+  - POC date must exercise the debit fix:
+    - choose from Phase-0 evidence by BEAR_PUT/BULL_CALL debit rows plus full raw coverage.
+    - do not default to `2026-07-08` by convenience.
+    - POC date remains gated.
+  - Pre-flight throttle:
+    - recommendation dependency check must be bounded to one date first.
+    - one query/read step at a time if Supabase is slow.
+  - Shadow table RLS:
+    - any `ml_evaluation_outcomes_s1` DDL must enable RLS and create an explicit matching policy in the same migration.
+    - no RLS-off shadow table.
+    - no RLS-on/no-policy table.
+- Phase 0 executed locally:
+  - runner:
+    - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/phase0_label_regen_inventory_20260715.py`
+  - output directory:
+    - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_phase0_20260715`
+  - output report:
+    - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_phase0_20260715/PHASE0_LABEL_REGEN_INVENTORY_REPORT_20260715.txt`
+  - CSV artifacts:
+    - `phase0_a_eval_inventory_debit_counts.csv`
+    - `phase0_b_reco_dependency_local_metadata.csv`
+    - `phase0_c_d_raw_chain_and_snapshot_coverage.csv`
+    - `phase0_candidate_poc_dates_debit_sorted.csv`
+- Phase 0 scope:
+  - read-only metadata inventory.
+  - no Supabase writes.
+  - no raw JSON candidate payload download.
+  - no raw chain payload download.
+  - raw chain/snapshot coverage used exact counts and first/last `poll_ts`.
+  - because local anon REST could not execute grouped SQL/RPC, selected metadata columns were paginated and grouped locally.
+- Phase 0 counts:
+  - evaluation metadata rows pulled: `12,061`
+  - recommendation metadata rows pulled: `4,155`
+  - dates found: `22`
+  - bounded recommendation-dependency probe date: `2026-06-02`
+- Top debit-row inventory entries, evidence only:
+  - `2026-06-05`: debit `106`, eval `551`, chain `3273`, snapshots `73`
+  - `2026-07-08`: debit `97`, eval `97`, chain `41040`, snapshots `76`
+  - `2026-06-24`: debit `96`, eval `411`, chain `52052`, snapshots `77`
+  - `2026-06-04`: debit `89`, eval `753`, chain `3552`, snapshots `77`
+  - `2026-06-23`: debit `31`, eval `527`, chain `50490`, snapshots `85`
+  - `2026-06-09`: debit `29`, eval `74`, chain `2691`, snapshots `76`
+  - `2026-07-14`: debit `29`, eval `29`, chain `40650`, snapshots `76`
+  - `2026-07-02`: debit `25`, eval `625`, chain `42660`, snapshots `77`
+  - `2026-06-17`: debit `22`, eval `204`, chain `2875`, snapshots `77`
+  - `2026-06-15`: debit `17`, eval `406`, chain `3783`, snapshots `82`
+- Important observations:
+  - Highest debit count is `2026-06-05`, but its raw-chain row count is much smaller than modern full-chain days; full label-window coverage must be verified before any POC approval.
+  - `2026-07-08` and `2026-06-24` have high debit counts and much larger raw-chain coverage, but no POC date has been selected.
+  - many early rows before `2026-06-12` have null `session_date` and were grouped by `created_at` fallback; regeneration lineage must handle this explicitly.
+  - recommendation rows show 100% strict-key match to evaluation rows on many later dates, while early created_at-fallback dates show 0%; recommendation dependency handling needs date/key normalization before any recommendation shadow table.
+- Current gate:
+  - Phase 0 is complete.
+  - stop for re-approval before POC date selection, dry-run script build, shadow DDL, or any Supabase write.
+
+## 2026-07-15 Claude ruling - Jul 8 label-regeneration POC authorized and executed
+
+- Ruling received:
+  - `/tmp/codex-web-uploads/f-YtQiA5/RULING_PHASE0_POC_AUTHORIZATION_20260715.md`
+- Authorization:
+  - `GO` for one-session POC on `2026-07-08`.
+  - local recompute only.
+  - no Supabase writes.
+  - no shadow DDL.
+  - full regeneration remains gated on POC review.
+- Why Jul 8 was approved:
+  - `2026-07-08` is a pure debit stress test:
+    - `97` debit rows out of `97` eval rows.
+    - all are `BEAR_PUT`.
+    - raw chain coverage: `41,040` rows.
+    - snapshot coverage: `76/76`.
+    - clean raw span from `03:45` to `10:00 UTC`.
+- Conditions added to design before POC/full run:
+  - BULL_CALL carve-out:
+    - Jul 8 proves BEAR_PUT only.
+    - only `2026-07-09` has BULL_CALL rows (`4` rows).
+    - full-regeneration verification must report those four rows individually with old-vs-new values.
+  - date provenance stamping:
+    - early null-`session_date` rows must carry `date_source=session_date` or `date_source=created_at_fallback`.
+    - inferred-date rows must be segregatable downstream.
+  - recommendation strategy split:
+    - June 12+ matched evaluation rows at 100% on many dates.
+    - early June 2-9 rows show 0% strict-key match.
+    - `2026-06-19` appears in recommendation rows but not eval inventory and must be investigated.
+  - broken-coverage fail-closed handling:
+    - `2026-06-02` must refetch raw coverage successfully or be stamped `FAIL / INSUFFICIENT_RAW_DATA`.
+    - `2026-06-21` has `665` eval rows but `0` chain rows and `0` snapshots; these rows are unregenerable and must be stamped fail, not dropped.
+- Local POC script:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/research_label_regeneration_s1_poc.py`
+  - hard-gated to `2026-07-08`.
+  - calls `brain.evening_evaluator` from the S1 code path.
+  - writes local artifacts only.
+- POC artifacts:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_poc_20260715/2026-07-08/POC_2026_07_08_REPORT.txt`
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_poc_20260715/2026-07-08/poc_2026_07_08_old_vs_new_diff.csv`
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_poc_20260715/2026-07-08/poc_2026_07_08_regenerated_outcomes.jsonl`
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_poc_20260715/2026-07-08/poc_2026_07_08_rejected_or_unmatched.csv`
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_poc_20260715/2026-07-08/poc_2026_07_08_unmatched_new_outcomes.jsonl`
+- POC result:
+  - snapshots pulled: `76`
+  - chain rows pulled: `41,040`
+  - legacy eval rows pulled: `97`
+  - regenerated outcomes: `97`
+  - matched old/new rows: `97`
+  - rejected old rows: `0`
+  - unmatched regenerated rows: `0`
+  - strategy counts: `BEAR_PUT 97`
+  - role counts: `primary 22`, `secondary 75`
+  - new `price_integrity=OK`: `97`
+  - arbitrage bound `OK`: `97`
+- H2 phantom collapse evidence:
+  - old `sim_pnl_h2` min/max: `-27499.50 / -5138.25`
+  - new `sim_pnl_h2` min/max: `-894.00 / 5611.50`
+  - delta new-old min/max: `5330.00 / 33111.00`
+  - largest correction:
+    - legacy id `12064`, snapshot `2218`, `BEAR_PUT_BNF_56900_57900_W1000`, primary
+    - old `-27499.50` -> new `5611.50`, delta `33111.00`, bound `OK`
+- Current gate:
+  - Jul 8 POC supports S1 BEAR_PUT debit fix under full raw coverage.
+  - BULL_CALL remains unproven until the `2026-07-09` four-row carve-out is checked.
+  - full 12,061-row regeneration remains gated on Vivek + Claude + Antigravity review.
+  - no Supabase writes have been made.
+
+## 2026-07-15 Claude ruling applied locally - no commit/no push
+
+- Claude ruling received:
+  - `/tmp/codex-web-uploads/f-RuKeS5/RULING_POST_CLOSE_INTEGRITY_FII_PATCH_20260715.md`
+- Decisive new fact:
+  - Vivek confirmed a `15-20 minute internet outage` during the July 15 session.
+  - July 15 is therefore a normal mobile-network partial/retry session, not a corrupted session.
+- Required label discipline from Claude:
+  - `COMPLETE`: full distinct slot coverage, clean session.
+  - `COMPLETE_WITH_RETRIES`: full distinct slot coverage but raw local counter drifted due retry/re-entry.
+  - `PARTIAL`: missing distinct slots, usable/advisory, not promotion-clean.
+  - `INTEGRITY_BROKEN`: true duplicate/snapshot overrun/final-slot duplicate/final-slot missing.
+  - `PARTIAL` must not be blocked as corrupted, but must also not be promoted or summarized as `COMPLETE`.
+- Local patch state after ruling:
+  - `MarketWatchService.kt`
+    - canonical poll number uses slot ordinal where a slot key exists.
+    - same-slot dispatch marker is persisted before polling to prevent post-release re-entry.
+    - session integrity counts distinct slot ordinals from `poll_history`.
+    - raw counter drift maps to `COMPLETE_WITH_RETRIES`.
+    - missing distinct slots map to `PARTIAL`.
+    - true `SNAPSHOT_OVERRUN`, `FINAL_SLOT_DUPLICATE`, and `FINAL_SLOT_MISSING` remain `INTEGRITY_BROKEN`.
+  - `NativeBridge.kt`
+    - UI coverage derivation mirrors `COMPLETE` / `COMPLETE_WITH_RETRIES` / `PARTIAL` / `INTEGRITY_BROKEN`.
+    - `evaluationPromotionEligible` is true only for `COMPLETE`.
+    - legacy stored values `CLEAN` and `PARTIAL_COVERAGE` are normalized to `COMPLETE` and `PARTIAL`.
+  - `MarketMLService.kt`
+    - legacy stored values `CLEAN` and `PARTIAL_COVERAGE` are normalized before evaluation blocking checks.
+    - only `INTEGRITY_BROKEN` blocks normal evaluation; `PARTIAL` remains evaluable/advisory.
+  - `EvaluationLocalCache.kt`
+    - per-session brain snapshot cap remains raised from `5 MB` to `64 MB`.
+  - `brain.py`
+    - shared market-history freshness helper added for dated `premium_history` / `fiiHistory` / `yesterdayHistory` consumers.
+    - live dated context now rejects stale history outside the 1-7 day window.
+    - covered paths include `fii_short_trend`, morning FII-short comparison, VIX direction, DII/FII floor comparison, FII trend insight, verdict FII 5-day sum, VIX context penalties, institutional PCR context, and session trajectory.
+  - `test_phase_b.py`
+    - stale/fresh FII regression tests remain.
+- Supabase write-path change pulled out:
+  - `SupabaseClient.kt` was reverted to pre-existing behavior.
+  - `ml_poll_sequences` fallback removal is no longer part of this patch.
+  - that evidence-persistence change requires separate review before shipment.
+- RLS blocking answer:
+  - app authenticates to Supabase as `anon`.
+  - `SupabaseClient.kt` uses `BuildConfig.SUPABASE_ANON_KEY` for both `apikey` and `Authorization: Bearer <anon key>`.
+  - app does not use authenticated user JWT or service-role in the client.
+- Cache-trim read-only investigation from uploaded logs:
+  - Uploaded logs are incomplete history, not full 30 sessions, but they show repeated trims.
+  - `LOCAL_SNAPSHOT_TRIM` to 3 rows appears on July 6, 7, 10, 13, 14, and 15.
+  - Sessions with post-close handoff/eval markers after trimmed local cache:
+    - `2026-07-07`: trim to 3 rows; `DAY_EVAL_HANDOFF` launched; integrity was legacy `PARTIAL_COVERAGE`.
+    - `2026-07-10`: trim to 3 rows; `DAY_EVAL_HANDOFF` launched; integrity was legacy `CLEAN`.
+    - `2026-07-13`: trim to 3 rows; `DAY_EVAL_HANDOFF` launched; then `EVAL_FAIL[PREPARING]` due chain truncation.
+    - `2026-07-14`: trim to 3 rows; `DAY_EVAL_HANDOFF` launched; then `EVAL_FAIL[PREPARING]` due chain truncation.
+    - `2026-07-15`: trim to 3 rows; old app blocked on false `POLL_OVERRUN`.
+  - Blast-radius boundary:
+    - Supabase-side evidence is not capped by `EvaluationLocalCache`.
+    - The risk is local evaluation/retry/force-eval paths that use local trimmed JSONL evidence.
+    - Any trusted local evaluation from a trimmed-cache session must be flagged suspect and, if needed, rerun from Supabase evidence.
+- Verification after ruling patch:
+  - `python3 app/src/main/python/tests/test_phase_b.py` passed `50/50`.
+  - Android test/build still blocked locally because this Codex environment has no Android SDK (`ANDROID_HOME`/`sdk.dir` missing).
+- Push/release status:
+  - no commit.
+  - no push.
+  - no version bump.
+  - no release/OTA.
+- Post-ruling user observation:
+  - Vivek tried Force Eval on the currently installed phone app (`v2.5.1 / b332`).
+  - Force Eval did not complete/work.
+  - This is consistent with the already-known installed-build limitations:
+    - local cache had been trimmed to only 3 rows on b332.
+    - b332 still has old integrity/cache behavior because local fixes are not installed.
+    - previous uploaded logs show some eval paths also fail on chain preparation/page-cap errors.
+  - Classification: do not treat the failed Force Eval as new strategy evidence; treat it as further confirmation that July 15 local evaluation should not be trusted and must be rerun from Supabase/server evidence if needed.
+
+## 2026-07-15 post-close audit - poll overrun false blocker and local after-hours patch
+
+- App build observed after close:
+  - `v2.5.1 / b332`
+  - session UI: `Session complete · polls 76/76 slots · Next 16 Jul, 9:15 am`
+  - ML status UI: `Day evaluation: INCOMPLETE_SESSION`
+  - blocker text: `Session integrity is broken (POLL_OVERRUN). Normal teacher evaluation is blocked for this session. Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.`
+- Uploaded post-close log:
+  - `/tmp/codex-web-uploads/f-GzaCX1/marketapp-logs-2026-07-15T10-09-05-445Z.csv`
+  - 610 rows, visible window `15:10:05` to `15:38:08 IST`.
+- Evidence from log:
+  - `SESSION_INTEGRITY: date=2026-07-15 coverage=INTEGRITY_BROKEN issue=POLL_OVERRUN pollCount=77/76 finalSlotOccurrences=1 snapshots=3`
+  - `POST_CLOSE_EVAL_BLOCKED: date=2026-07-15 issue=POLL_OVERRUN`
+  - Local cache was repeatedly trimmed to only 3 rows:
+    - `LOCAL_SNAPSHOT_TRIM: date=2026-07-15 rows=3 bytes=4512099 rowCap=90 byteCap=5242880`
+  - Duplicate poll starts were present for the same late-session slots:
+    - slot `2026-07-15|72` started twice as `Poll #73`
+    - slot `2026-07-15|73` started twice as `Poll #74`
+    - slot `2026-07-15|74` started twice as `Poll #75`
+    - slot `2026-07-15|75` started twice as `Poll #76`
+    - slot `2026-07-15|76` started twice as `Poll #77`
+  - The dedup marker appeared, but after the first `performPoll()` returned, another trigger could still enter the same slot.
+- Read-only Supabase audit after close:
+  - `ml_brain_snapshots`: 71 rows for `2026-07-15`, no duplicate `(session_date,poll_ts)` rows.
+  - `ab_week1_decisions`: 70 rows for `2026-07-15`, no duplicate slots.
+  - `ml_generated_candidates`: 1300 rows for `2026-07-15`.
+  - `ml_evaluation_outcomes`: 0 rows for `2026-07-15`.
+  - `ml_recommendation_outcomes`: 0 rows for `2026-07-15`.
+  - Snapshot timeline had gaps, including `10:00 -> 10:10 IST` and a later app/interruption gap around `14:15 -> 14:40 IST`.
+  - Classification after Claude ruling:
+  - S1 price-integrity tables remain clean; outcome null-price fields remain `0`.
+  - The `POLL_OVERRUN` blocker is not evidence of duplicated Supabase final-slot rows.
+  - Confirmed root cause includes a `15-20 minute internet outage`; the session is partial/retry affected, not corrupted.
+  - Root cause is local evidence/session accounting:
+    - raw `poll_count` increments via reservation/counter drift instead of canonical slot identity.
+    - same slot can still execute again after the previous in-flight key is released.
+    - local evaluation cache byte cap `5 MB` is too small for full-day brain snapshots and leaves only 3 local rows.
+  - This is a correctness/evidence-integrity defect, not a strategy/ranking change.
+- Local after-hours code patch made in `Marketapp-main-worktree` only; not committed and not pushed:
+  - `MarketWatchService.kt`
+    - canonical poll number now comes from slot ordinal (`09:15=1 ... 15:30=76`) when a slot key exists.
+    - dispatch dedup now records `LAST_POLL_DISPATCH_SLOT_KEY` before polling so the same slot cannot re-enter after a prior trigger finishes.
+    - session integrity now uses distinct slot ordinals from `poll_history` rather than raw `poll_count`.
+    - raw counter drift above expected full-day slots becomes `COUNTER_DRIFT`, not fatal `POLL_OVERRUN`, while true `FINAL_SLOT_DUPLICATE`, `FINAL_SLOT_MISSING`, and `SNAPSHOT_OVERRUN` remain hard integrity blockers.
+  - `NativeBridge.kt`
+    - UI-side derived integrity issue now mirrors distinct-slot logic and `COUNTER_DRIFT`.
+  - `EvaluationLocalCache.kt`
+    - per-session brain snapshot cache cap raised from `5 MB` to `64 MB` so full-day local evidence is not trimmed to 3 rows.
+  - `SupabaseClient.kt`
+    - initial fallback cleanup was pulled out after Claude ruling and reverted locally.
+    - `ml_poll_sequences` write/read cleanup remains a separate-review item, not part of this patch.
+  - `brain.py`
+    - market-history consumers now enforce freshness when live context contains `today_ist/session_date`.
+    - dated historical rows must be within 1 to 7 days; stale April values cannot drive July trend labels, morning votes, session trajectory, or context penalties.
+  - `test_phase_b.py`
+    - added regression coverage for stale FII short history and fresh dated history.
+- Verification:
+  - `python3 app/src/main/python/tests/test_phase_b.py` passed `50/50`.
+  - Android Gradle verification was attempted with `./gradlew testDebugUnitTest` but blocked by environment:
+    - `SDK location not found. Define a valid SDK location with an ANDROID_HOME environment variable or by setting the sdk.dir path in local.properties.`
+- Push/release status:
+  - no commit.
+  - no push.
+  - no version bump.
+  - no release/OTA triggered.
+
+## 2026-07-15 live observation - FII short trend freshness defect
+
+- During live market observation on `v2.5.1 / b332`, Vivek flagged the OI tab `FII Short% Trend` display:
+  - UI showed `Building (81.0 -> 92.0) - bearish / AGGRESSIVE`.
+  - Concern: `81.0` was from many days before and should not be treated as a current 3-session trend.
+- Read-only Supabase verification confirmed the concern:
+  - today's latest `ml_brain_snapshots.context_json.morning_input.fiiShortPct` was `92`.
+  - `premium_history` latest row was `2026-06-29`, but `fii_short_pct` was `null`.
+  - latest non-null `premium_history.fii_short_pct` was `81` from `2026-04-28`.
+  - `chain_snapshots` recent rows also did not provide a current FII-short% history source.
+- Code path inspected:
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+    - `fii_short_trend(ctx)` reads current `morning_input.fiiShortPct`.
+    - then reads `ctx.yesterdayHistory[:2]` and accepts any non-null `fii_short_pct`.
+    - it does not enforce date freshness.
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+    - passes raw `premium_history` into `ctxObj.yesterdayHistory`.
+- Defect classification:
+  - market-context integrity bug.
+  - not an S1 price-integrity issue.
+  - not a live execution bug.
+  - can falsely create bearish/bullish institutional evidence from stale FII short history.
+- Expected safe behavior:
+  - if recent valid FII short history is unavailable, do not emit `BUILDING`, `COVERING`, `INFLECTION`, or `AGGRESSIVE`.
+  - show/record a stale-history or unavailable state instead.
+- After-hours fix direction:
+  - add date freshness guard in `fii_short_trend(ctx)`.
+  - only use historical rows with valid `date` and non-null `fii_short_pct`.
+  - reject stale rows older than a small freshness window, e.g. 7 calendar/trading days.
+  - if insufficient fresh history remains, return `None` or explicit stale/unavailable metadata.
+  - add regression tests proving old April values cannot drive a July trend.
+- Status:
+  - no code changed during market hours.
+  - after-hours FII freshness fix is local and uncommitted.
+  - `ml_poll_sequences` brain-snapshot fallback cleanup is held for separate review.
+
+## 2026-07-15 live observation - brain snapshot fallback mismatch
+
+- Morning read-only log/Supabase audit found one evidence gap around `10:05 IST`.
+- Log marker:
+  - `ML_BRAIN_SNAPSHOT_SAVE_FAIL`
+  - fallback table `ml_poll_sequences`
+  - error: missing `action` column.
+- Production schema probe:
+  - `ml_brain_snapshots` has the expected brain snapshot columns.
+  - `ml_poll_sequences` is empty/incompatible and lacks most current snapshot payload columns.
+- Supabase timeline confirmed:
+  - `ml_brain_snapshots` had a gap from `10:00 IST` to `10:10 IST`.
+  - later snapshots resumed successfully.
+- Defect classification:
+  - replay/evidence-integrity defect.
+  - not an S1 price-integrity issue.
+  - not a direct trading-action defect.
+- After-hours fix direction:
+  - stop treating `ml_poll_sequences` as equivalent fallback for brain snapshot writes/reads.
+  - keep `ml_brain_snapshots` canonical.
+  - improve failure logging so first-table failure details are visible.
+- Status:
+  - no code changed during market hours.
+
+## 2026-07-15 live read-only state after S1 release
+
+- App build observed:
+  - `v2.5.1 / b332`
+- Read-only Supabase state during live session:
+  - `ml_brain_snapshots`: active and saving current session rows.
+  - `ab_week1_decisions`: active and saving A/B shadow rows.
+  - `ml_generated_candidates`: active and saving generated candidate rows.
+  - `ml_evaluation_outcomes`: no same-day rows before post-close, expected.
+  - `ml_recommendation_outcomes`: no same-day rows before post-close, expected.
+- S1 production confirmation:
+  - all-time `price_integrity is null` counts were `0` in both outcome tables after the applied historical backfill.
+  - final confirmation still depends on fresh post-close outcome rows from the S1-patched app.
+- During the inspected live window:
+  - all brain snapshot actions were `WAIT`.
+  - A/B rows showed old actor frequently would have traded while new S1/A8 gate waited.
+  - generated candidates were present but rejected/not surfaced.
+- Working rule for rest of market session:
+  - read-only checks are allowed.
+  - no app code/schema/ranker/sandbox/LLM changes until after market close unless there is an explicit safety emergency.
+
 ## 2026-07-14 S1 merge-readiness blocker resolution - local
 
 - Claude reviewed `S1_MERGE_READINESS_PACKAGE_20260714` and blocked merge on three items:
@@ -9413,3 +10010,687 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 ### Post-release note
 
 - The fresh GitHub PAT used for this push should be revoked/rotated after verification, per standing credential hygiene.
+
+## 2026-07-15 — Label regeneration POC passed; full-regeneration design prepared, execution gated
+
+### Ruling
+
+- Source:
+  - `/tmp/codex-web-uploads/f-bGgr5D/RULING_POC_PASS_FULL_REGEN_DESIGN_20260715.md`
+- Claude verdict:
+  - Jul 8 POC passes.
+  - Full-regeneration design phase is authorized.
+  - Execution remains gated until Vivek explicitly accepts the DDL.
+- Claude independently verified:
+  - `28/97` OLD Jul 8 rows exceeded structural maximum possible loss.
+  - `0/97` NEW Jul 8 rows violated the arbitrage bound.
+  - `54/97` rows flipped from old-negative to new-positive.
+
+### Design artifacts created outside git root
+
+- `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/SHADOW_REGEN_DDL_PROPOSAL_20260715.sql`
+- `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/FULL_LABEL_REGEN_BATCH_PLAN_20260715.txt`
+- `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_FULL_REGEN_DESIGN_PACKET_20260715.txt`
+
+### Shadow DDL proposal
+
+- Proposed tables:
+  - `public.ml_evaluation_outcomes_s1`
+  - `public.ml_recommendation_outcomes_s1`
+- No DDL has been executed.
+- No table has been created.
+- Both proposed tables include:
+  - `regen_batch_id`
+  - `regen_code_version`
+  - source table and source row id
+  - `effective_session_date`
+  - `session_date`
+  - `date_source`
+  - old label fields
+  - new S1 label fields
+  - raw-data / label-window status
+  - `interpretation_guardrail`
+  - `audit_json`
+- RLS is enabled in the same DDL proposal.
+- Explicit `anon` select/insert/update policies are included.
+- Delete is intentionally not granted.
+- Proposed first-run writer role:
+  - `anon`
+- Governance note:
+  - `anon` write policy matches the current app/script operating path.
+  - this is interim governance, not final security.
+  - a later Edge/service-role writer can tighten policies after regeneration and verification.
+
+### Batch plan
+
+- Proposed `regen_batch_id`:
+  - `S1_FULL_REGEN_20260715_DRAFT1`
+- Phase-0 inventory basis:
+  - eval rows: `12,061`
+  - reco rows: `4,155`
+  - dates: `22`
+  - snapshot rows counted: `1,631`
+  - raw chain rows counted: `555,602`
+- Chunking:
+  - reads: 500 row pages for chain/eval/reco metadata.
+  - snapshots: 5 to 10 snapshots per request when payload-heavy.
+  - writes: 250 preferred; 500 maximum only if Supabase remains responsive.
+- Stop immediately on:
+  - `429`
+  - `503`
+  - `504`
+  - repeated timeout
+  - Supabase dashboard/API timeout pattern
+- Resume:
+  - by `regen_batch_id` plus source row id uniqueness.
+- Estimated controlled call envelope:
+  - about `1,350` to `1,550` calls depending snapshot page size.
+
+### Mandatory carve-outs
+
+- `2026-07-09` BULL_CALL:
+  - `4` rows must be reported individually old-vs-new.
+- Date provenance:
+  - every row must carry `date_source`.
+  - current Phase-0 CSV totals `6,177` `created_at_fallback` eval rows across `2026-06-02`, `06-03`, `06-04`, `06-05`, `06-08`, `06-09`, and `06-21`.
+  - final shadow counts must report actual inferred-date rows.
+- Reco split:
+  - June 12 onward 100%-match dates derive from eval shadow.
+  - early 0%-match dates are not silently derived.
+  - first full run marks early reco rows as `REQUIRES_INDEPENDENT_RECO_REGEN` unless independent reco regeneration is separately approved.
+  - `2026-06-19` reco-only asymmetry is marked `RECO_ONLY_ASYMMETRY` and kept out of trusted reco training until resolved.
+- Broken coverage:
+  - `2026-06-02` must be refetched or fail-closed.
+  - `2026-06-21` has `665` eval rows and must be stamped `FAIL / INSUFFICIENT_RAW_DATA`, not dropped.
+
+### Interpretation guardrail
+
+- Regenerated H2 labels are gross hold-to-close labels.
+- They are not app fills.
+- They are not managed exits.
+- They are not slippage-adjusted.
+- They are not brokerage-adjusted.
+- They are not proof of profitability.
+- Menu rows are not independent trade decisions.
+- Use per-decision or candidate-day aggregation for trading conclusions.
+
+### Still gated
+
+- Running the DDL.
+- Creating shadow tables.
+- Full `12,061`-row eval regeneration.
+- Full `4,155`-row reco shadow handling.
+- Antigravity recount.
+- `p_ml` retrain.
+- Replay / O3-G2.
+- CHANGE-2.
+
+### Current local state
+
+- `Marketapp-main-worktree` remains dirty with approved-but-unreleased post-S1 patches.
+- This label-regeneration design step did not modify app code.
+- `MarketVivi-git/PROJECT_KNOWLEDGE.md` was updated locally only.
+
+## 2026-07-16 — Shadow DDL ruling received; three DDL fixes applied locally
+
+### Ruling
+
+- Source:
+  - `/tmp/codex-web-uploads/f-jUiqUn/RULING_SHADOW_DDL_BATCH_PLAN_20260715.md`
+- Claude verdict:
+  - DDL/batch design approved conditional on three DDL fixes.
+  - Batch plan is sound as written with two added emphases.
+  - Everything downstream remains gated on Antigravity recount.
+
+### DDL fixes applied to proposal only
+
+- File updated:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/SHADOW_REGEN_DDL_PROPOSAL_20260715.sql`
+- Fix 1:
+  - removed `anon` UPDATE policies.
+  - shadow tables are append-only audit records.
+  - `anon` gets SELECT + INSERT only.
+  - corrections require a new `regen_batch_id`, not in-place mutation.
+- Fix 2:
+  - defaulted `interpretation_guardrail` on both shadow tables.
+  - inserts cannot omit the caveat.
+- Fix 3:
+  - verified null source-id collision risk with exact-count Supabase REST checks.
+  - `public.ml_evaluation_outcomes` `LEGACY_PRE_S1` rows: `12,061`
+  - eval rows with `id IS NULL`: `0`
+  - `public.ml_recommendation_outcomes` `LEGACY_PRE_S1` rows: `4,155`
+  - reco rows with `id IS NULL`: `0`
+  - conclusion: `source_eval_id` / `source_reco_id` can be populated for every legacy row; null-source fallback indexes should not fire for this batch.
+
+### Batch-plan emphases added
+
+- File updated:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/FULL_LABEL_REGEN_BATCH_PLAN_20260715.txt`
+- Mandatory per-date checkpoint:
+  - each date must finish local manifest + shadow rows/fail-closed rows + date reconciliation before the next date begins.
+  - throttle stop loses at most one date's progress.
+- Jul 8 full-run value match:
+  - full batch `new_sim_pnl_h2` values for Jul 8 must equal POC values, not merely match row shape.
+  - any drift is STOP-and-investigate.
+
+### Claude packet updated
+
+- File updated:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_FULL_REGEN_DESIGN_PACKET_20260715.txt`
+- Packet now states:
+  - DDL fixes applied.
+  - no DDL executed.
+  - no shadow table created.
+  - no full regeneration started.
+
+### Still gated
+
+- Vivek accepts corrected DDL.
+- Create shadow tables.
+- Full `12,061`-row eval regeneration.
+- Full `4,155`-row reco shadow handling.
+- Gates 1-7.
+- Antigravity recount.
+- `p_ml` retrain / replay / O3-G2 / CHANGE-2.
+
+### Self-audit
+
+- No Supabase DDL executed.
+- No Supabase writes performed.
+- Only a tiny exact-count null-id check was performed.
+- No app code changed in this pass.
+
+## 2026-07-16 — Corrected shadow DDL accepted, created, and verified
+
+### Execution
+
+- User instruction:
+  - `K proceed`
+- Interpreted as Vivek accepting the corrected DDL after Claude's conditional approval.
+- DDL file executed:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/SHADOW_REGEN_DDL_PROPOSAL_20260715.sql`
+- Execution report:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/SHADOW_DDL_EXECUTION_REPORT_20260716.txt`
+- Execution path:
+  - Supabase CLI linked to project ref `fdynxkfxohbnlvayouje`.
+
+### CLI note
+
+- SQL returned expected result payloads.
+- CLI emitted a non-SQL telemetry shutdown timeout after results:
+  - `Timeout while shutting down PostHog. Some events may not have been sent.`
+- Verification queries confirmed schema state, so this is recorded as telemetry noise, not a DDL failure.
+
+### Verified production schema state
+
+- Tables exist:
+  - `public.ml_evaluation_outcomes_s1`
+  - `public.ml_recommendation_outcomes_s1`
+- Row counts before regeneration:
+  - `public.ml_evaluation_outcomes_s1`: `0`
+  - `public.ml_recommendation_outcomes_s1`: `0`
+- RLS:
+  - `public.ml_evaluation_outcomes_s1`: enabled
+  - `public.ml_recommendation_outcomes_s1`: enabled
+- Policies:
+  - `anon_select_ml_eval_s1`: SELECT for `anon`
+  - `anon_insert_ml_eval_s1`: INSERT for `anon`
+  - `anon_select_ml_reco_s1`: SELECT for `anon`
+  - `anon_insert_ml_reco_s1`: INSERT for `anon`
+- No `anon` UPDATE policy exists.
+- No `anon` DELETE policy exists.
+- Guardrail defaults:
+  - eval shadow `interpretation_guardrail` default present.
+  - reco shadow `interpretation_guardrail` default present.
+
+### Authorization state
+
+- Completed:
+  - corrected DDL accepted.
+  - shadow tables created.
+  - RLS verified.
+  - append-only anon INSERT/SELECT policy verified.
+  - tables verified empty before regeneration.
+- Still gated:
+  - full `12,061`-row eval regeneration.
+  - full `4,155`-row reco shadow handling.
+  - Gates 1-7.
+  - Antigravity recount.
+  - `p_ml` retrain.
+  - replay / O3-G2.
+  - CHANGE-2.
+
+### Self-audit
+
+- No legacy table rows were mutated.
+- No regenerated label rows were inserted yet.
+- No app code changed in this pass.
+- Supabase CLI temp link files were removed from the app repo after execution.
+
+## 2026-07-16 — Gate 8 conditional pass and closure response
+
+### Claude ruling received
+
+- File:
+  - `/tmp/codex-web-uploads/f-gN9pus/RULING_GATE8_CONDITIONAL_PASS_20260716.md`
+- Verdict:
+  - `CONDITIONAL PASS`
+- Claude overrode Antigravity's mechanical FAIL because both FAIL triggers were non-substantive:
+  - Check 4 could not run because the Jul-8 POC CSV was missing from Antigravity's environment.
+  - Check 1's 49-row delta was caused by live post-close rows written after the regeneration run, not missing regenerated rows.
+
+### Substantive Gate 8 state
+
+- Antigravity's substantive checks passed:
+  - full scan of 8,543 OK rows had zero arbitrage-bound violations.
+  - independent Python tally matched OK/FAIL counts.
+  - Jul-9 `BULL_CALL` phantom case collapsed correctly.
+  - RLS append-only behavior was penetration-tested by blocked anon UPDATE/DELETE attempts.
+  - 06-21 fail-closed rows were retained, not dropped.
+  - `created_at_fallback` rows were segregated by `effective_session_date`.
+- Gate 8 is therefore considered substantively passed, subject to two closures.
+
+### Closure 1 — Jul-8 POC file
+
+- Required by Claude:
+  - deliver `poc_2026_07_08_old_vs_new_diff.csv` to Antigravity, or formally accept Claude's previous byte verification.
+- Local file found:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/label_regen_poc_20260715/2026-07-08/poc_2026_07_08_old_vs_new_diff.csv`
+- File facts:
+  - 98 lines total.
+  - 97 data rows.
+- Closure state:
+  - satisfiable by handing this file to Antigravity.
+
+### Closure 2 — go-forward drift policy
+
+- Code inspection:
+  - `brain.py` live evaluator now computes S1-correct debit/credit H2 structure valuation and emits `price_integrity`, `h2_price_integrity_reason`, bound fields, and formula.
+  - `SupabaseClient.kt` first tries to persist full S1-shaped rows to canonical live tables.
+  - If the full insert fails, fallback stripping logs `S1_PRICE_INTEGRITY_FALLBACK_STRIPPED`.
+- 2026-07-16 live evidence:
+  - post-close REST check passed:
+    - snapshots: 76
+    - A/B rows: 74
+    - generated rows: 1,389
+    - eval rows: 49
+    - reco rows: 49
+    - eval OK: 49
+    - eval FAIL: 0
+    - reco OK: 49
+    - reco FAIL: 0
+    - eval/reco null `price_integrity`: 0
+    - all-time eval/reco null `price_integrity`: 0
+- Interpretation:
+  - post-b332 live labels are S1-correct when full-row persistence succeeds.
+  - `_s1` shadow tables are historical repair/audit tables for the regenerated base.
+  - live canonical tables are the forward source only when S1 fields are populated and no stripped fallback occurred.
+
+### Policy recorded
+
+- Current clean retrain:
+  - use only `_s1` OK rows from `S1_FULL_REGEN_20260715_DRAFT1`.
+- Future model-base extension:
+  - historical repaired base: `_s1` OK rows.
+  - post-b332 live base: canonical rows with `price_integrity=OK` and required S1 fields populated.
+  - exclude any fallback-stripped or null-integrity session.
+- Recommended hardening:
+  - add explicit future fields such as `label_engine_version=S1_LIVE`, `build_version`, and `price_integrity_required=true`.
+
+### Closure reply artifact
+
+- Created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_GATE8_CONDITIONAL_PASS_CLOSURE_REPLY_20260716.txt`
+
+### Authorization state
+
+- Trusted now:
+  - S1 regenerated base after Closure 1 is accepted.
+- Still constrained:
+  - train OK-only.
+  - use decision/day split, not row-level split.
+  - document 17-day base profile.
+  - re-examine `EVAL_OUTCOME_WEIGHT = 4`.
+  - keep `p_ml` dead-last tie-break until separately validated.
+
+### Self-audit
+
+- No Supabase DDL executed.
+- No Supabase writes performed.
+- No app code changed.
+- Closure 2 answer is based on local code inspection plus 2026-07-16 REST verification.
+- This does not claim trading profitability; it only defines label-trust eligibility.
+
+## 2026-07-16 — Clean p_ml retrain directive received
+
+### Directive
+
+- File:
+  - `/tmp/codex-web-uploads/f-GruW3I/DIRECTIVE_OC_CLEAN_PML_RETRAIN_20260716.md`
+- Gate state:
+  - Gate 8 closed.
+  - 8,543-row OK regenerated S1 base trusted.
+  - clean `p_ml` retrain unblocked.
+
+### Hard boundaries
+
+- Retrain only.
+- No live sort-key change.
+- No `p_ml` promotion.
+- No `mlAction=BLOCKED` / `mlOodBlocked` wiring.
+- No live build.
+- No OTA.
+- No training on FAIL rows.
+- No live legacy row append for this retrain.
+- `p_ml` remains dead-last tie-break until a separate validation authorizes promotion.
+
+### Required training source
+
+- Table:
+  - `public.ml_evaluation_outcomes_s1`
+- Predicate:
+  - `new_price_integrity = OK`
+- Expected rows:
+  - `8,543`
+- True sample:
+  - `17` days.
+- Required split:
+  - whole-day split only, never row-level.
+
+### Existing trainer risk
+
+- `ml_train.py` still defines:
+  - `EVAL_OUTCOME_WEIGHT = 4`
+  - `RETRAIN_DISABLED_REASON = retrain_disabled_pending_canonical_won_unification`
+- `ml_train.run()` returns immediately with the disabled reason.
+- The old trainer path is deploy-oriented and can overwrite model files.
+- Therefore this directive must use a separate local shadow retrain path, not the live app trainer entrypoint.
+
+### Planned retrain approach
+
+- Create/run a local-only shadow trainer after review approval.
+- Proposed primary weight:
+  - `EVAL_OUTCOME_WEIGHT = 1`
+- Reason:
+  - this retrain uses only one homogeneous S1 evaluator-backed source, so 4x weighting no longer distinguishes source trust and may over-amplify repeated same-day candidates.
+- Optional:
+  - run weight 4 only as sensitivity audit.
+
+### Required proof
+
+- The key deliverable is not raw accuracy.
+- The key deliverable is debit-spread phobia removal:
+  - compare old frozen poisoned model vs clean retrained model on the same `BEAR_PUT` / `BULL_CALL` candidate set.
+  - report probability distribution deltas.
+  - report credit spreads as control.
+- If debit probabilities do not materially change, retrain is considered suspect and must stop for investigation.
+
+### Plan artifact
+
+- Created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLEAN_PML_RETRAIN_PLAN_20260716.txt`
+
+### Self-audit
+
+- No retrain executed.
+- No Supabase reads/writes executed for the plan.
+- No DDL executed.
+- No app code changed.
+- No model asset changed.
+
+## 2026-07-17 — Clean p_ml debit-phobia diagnostic executed
+
+### Authorization source
+
+- File:
+  - `/tmp/codex-web-uploads/f-ILdD95/RETRAIN_SPEC_CLEAN_PML_20260717.md`
+- Claude status:
+  - pre-registered clean `p_ml` debit-phobia diagnostic.
+  - shadow-only.
+  - no promotion.
+  - no app asset overwrite.
+  - no live path change.
+  - no Supabase writes or DDL.
+
+### Execution boundary
+
+- Script created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/clean_pml_debit_phobia_diagnostic_20260717.py`
+- Output directory:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/clean_pml_debit_phobia_20260717/`
+- Production model asset unchanged:
+  - `Marketapp-main-worktree/app/src/main/assets/ml_model.json`
+  - SHA-256 remains `795b333049dbab16715a907d172d612f9fe4f4d6156b76ada4a2c6eee21d5dfd`
+- Supabase access:
+  - read-only REST.
+  - local per-day cache created under `clean_pml_debit_phobia_20260717/rest_cache/`.
+  - no writes.
+
+### Result
+
+- Verdict:
+  - `STOP`
+- Important distinction:
+  - the diagnostic did not prove debit-phobia cured or persistent.
+  - strict feature-integrity filtering removed every debit row before training.
+
+### Eligibility evidence
+
+- Input S1 OK rows:
+  - `8,543`
+- Matched in `top_candidates_json` before feature filtering:
+  - `BEAR_CALL`: `1,946`
+  - `BULL_PUT`: `878`
+  - `BEAR_PUT`: `510`
+  - `BULL_CALL`: `4`
+  - total: `3,338`
+- Excluded for null/defaulted `sigmaOTM`:
+  - `BEAR_CALL`: `288`
+  - `BULL_PUT`: `227`
+  - `BEAR_PUT`: `510`
+  - `BULL_CALL`: `4`
+  - total: `1,029`
+- Final strict eligible set:
+  - `2,309` rows.
+  - `14` effective days.
+  - `BEAR_CALL`: `1,658`
+  - `BULL_PUT`: `651`
+  - `BEAR_PUT`: `0`
+  - `BULL_CALL`: `0`
+
+### Model-card outputs
+
+- Primary weight `1`:
+  - verdict `STOP`
+  - `BEAR_PUT` mean `p_new`: not computable.
+  - `BEAR_PUT` clamp share: not computable.
+  - credit controls survived:
+    - `BEAR_CALL` mean `p_new`: `0.6353`, truth WR `0.5983`.
+    - `BULL_PUT` mean `p_new`: `0.5048`, surviving-subset truth WR `0.3856`.
+- Sensitivity weight `4`:
+  - verdict `STOP`
+  - `BEAR_PUT` mean `p_new`: not computable.
+  - `BEAR_CALL` mean `p_new`: `0.6333`.
+  - `BULL_PUT` mean `p_new`: `0.4643`.
+
+### Artifacts
+
+- Claude result packet:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_CLEAN_PML_DIAGNOSTIC_RESULT_20260717.txt`
+- JSON model card:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/clean_pml_debit_phobia_20260717/model_card_clean_pml_debit_phobia_20260717.json`
+  - SHA-256 `378a0c127dd58ba80da82d3fa8d6e08a4b597f897b136c9029fbe1b8a6a6e14d`
+- Markdown model card:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/clean_pml_debit_phobia_20260717/MODEL_CARD_CLEAN_PML_DEBIT_PHOBIA_20260717.md`
+- Eligible rows:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/clean_pml_debit_phobia_20260717/eligible_rows.csv`
+  - SHA-256 `fbc7faf2b49bbacca5228080199e93fe0026e64f14fed50135ae52274cfd5d02`
+- OOF prediction files:
+  - `oof_predictions_weight1.csv`
+  - SHA-256 `69df028358fa311862a3a7f50316bdb029fe76694be538e1daf1cc7a5459a88a`
+  - `oof_predictions_weight4.csv`
+  - SHA-256 `1aeab1cc7c2e352e1cc5b905685485fceff800893733b3da3d610e42436493b0`
+
+### Required next ruling
+
+- Claude needs to decide whether:
+  - this is final STOP and future capture/schema must persist debit `sigmaOTM`, or
+  - the spec may be amended to permit a generation-time derivation of `sigmaOTM` from captured candidate/leg/snapshot fields, or
+  - a separate debit-only feature audit should identify a valid replacement feature.
+
+### Self-audit
+
+- No app production model overwritten.
+- No app live path changed.
+- No Supabase write or DDL.
+- Shadow fold models only were written.
+- This result must not be promoted or consumed by the app.
+
+## 2026-07-17 — Today storage integrity audit confirms debit feature gap
+
+### Reason
+
+- A read-only audit was run because repeated downstream work found missing Supabase fields after the fact.
+- Focus:
+  - identify whether today’s live Supabase data already contains missing fields that would break future evaluation/retrain.
+
+### Audit artifact
+
+- Script:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/supabase_today_storage_integrity_audit_20260717.py`
+- Output directory:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/storage_integrity_audit_20260717/`
+- Markdown report:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/storage_integrity_audit_20260717/SUPABASE_TODAY_STORAGE_INTEGRITY_2026-07-17.md`
+- JSON report:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/storage_integrity_audit_20260717/supabase_today_storage_integrity_2026-07-17.json`
+
+### Supabase result
+
+- `ml_brain_snapshots` rows for `2026-07-17`:
+  - `61`
+- Total `top_candidates_json` candidates:
+  - `76`
+- Strategy mix:
+  - `BEAR_PUT`: `76`
+- Missing candidate fields:
+  - `BEAR_PUT.sigmaOTM`: `76 / 76`
+- Snapshot context:
+  - top-level context fields checked were present.
+  - `snapshot_latest_poll.nfDTE` and `snapshot_latest_poll.bnfDTE` were missing on all snapshots, but `context_json.nfDTE` / `context_json.bnfDTE` were present, so DTE is recoverable from context.
+- Outcomes:
+  - `ml_evaluation_outcomes` rows for today at audit time: `0`
+  - `ml_recommendation_outcomes` rows for today at audit time: `0`
+  - this is not conclusive until post-close evaluation completes.
+
+### Interpretation
+
+- The debit `sigmaOTM` gap is live today, not only historical.
+- If this persists, future clean `p_ml` retrain/evaluation will again exclude debit rows under Claude’s no-default/no-recompute rule.
+- This is a storage-contract issue in candidate persistence:
+  - debit candidates are generated and persisted,
+  - but their required ML feature `sigmaOTM` is null/missing in `top_candidates_json`.
+
+### Next required fix/ruling
+
+- Before further debit-model work:
+  - either persist `sigmaOTM` for debit candidates at generation time, or
+  - obtain Claude/OpenClaw authorization for a strictly entry-time derivation/replacement feature.
+- No app code fix has been made under this audit.
+- No Supabase writes or DDL were performed.
+
+## 2026-07-17 — Local unpushed patch after freeze: debit sigmaOTM storage fix
+
+### Context
+
+- The 6-day freeze ended with local app changes intentionally not pushed during the watch period.
+- Before pushing, the unpushed app delta was listed and separated from the new storage-contract correction.
+- Baseline app repo HEAD before this local patch:
+  - `Marketapp-main-worktree/main`
+  - `2d2f9d308870ba728a9db505891adc65f3f87175`
+- Baseline knowledge repo HEAD:
+  - `MarketVivi-git/main`
+  - `3bf4409cb6119df1e2cff6f772de6d00596445`
+
+### Existing unpushed freeze-era app changes
+
+- `EvaluationLocalCache.kt`
+  - increased per-session local snapshot cache cap from `5 MB` to `64 MB`.
+  - reason: full-day brain snapshots carry large chain/context evidence; premature trim can falsely make post-close evaluation incomplete.
+- `MarketMLService.kt`
+  - normalized legacy coverage states:
+    - `CLEAN` -> `COMPLETE`
+    - `PARTIAL_COVERAGE` -> `PARTIAL`
+- `MarketWatchService.kt`
+  - poll count now uses slot ordinal from current poll slot key where available.
+  - added dispatch de-duplication by last dispatched slot key.
+  - session integrity now counts distinct slot ordinals from poll history.
+  - introduced `COUNTER_DRIFT` handling and coverage states `COMPLETE`, `PARTIAL`, `COMPLETE_WITH_RETRIES`.
+- `NativeBridge.kt`
+  - aligned coverage-state vocabulary with `MarketWatchService`.
+  - promotion eligibility now requires `coverageIntegrity == COMPLETE`.
+  - added distinct-slot derivation from poll history to avoid false `POLL_OVERRUN` when raw counter drifts.
+- `brain.py`
+  - added session-date-aware freshness filtering for dated history rows.
+  - stale FII/VIX history is ignored instead of being reused across old sessions.
+  - addresses observed stale FII Short% trend display such as `81.0 -> 92.0` when `81.0` came from many days earlier.
+- `test_phase_b.py`
+  - added stale-history regression tests for FII Short%, VIX direction, and FII trend.
+
+### New correction made on 2026-07-17
+
+- Root cause:
+  - `_build_candidate(...)` computed `sigmaOTM` only for credit directional candidates:
+    - `BEAR_CALL`
+    - `BULL_PUT`
+  - debit candidates:
+    - `BEAR_PUT`
+    - `BULL_CALL`
+  - therefore persisted `sigmaOTM = None`, which caused clean `p_ml` retrain to exclude all debit rows under the no-default/no-recompute rule.
+- Fix:
+  - debit spreads now persist `sigmaOTM` at generation time using long/buy-strike distance from spot:
+    - `round(abs(pair['buy'] - spot) / daily_sigma, 2)`
+  - this is storage/instrumentation only.
+  - no debit sigma gate was added.
+  - no ranking behavior was intentionally changed.
+  - existing credit sigma gate remains unchanged.
+- Files changed by this correction:
+  - `app/src/main/python/brain.py`
+  - `app/src/main/python/tests/test_phase_d.py`
+
+### Verification
+
+- Focused tests run locally:
+  - `python3 app/src/main/python/tests/test_phase_d.py`
+    - result: `86/86` passed.
+  - `python3 app/src/main/python/tests/test_phase_b.py`
+    - result: `50/50` passed.
+- New regression coverage:
+  - `test_d1_12e_debit_candidate_uses_buy_ask_and_sell_bid` now asserts debit `sigmaOTM` is not null.
+  - `test_d1_12e2_debit_bear_put_persists_sigma_otm` verifies `BEAR_PUT` persists positive `sigmaOTM`.
+
+### Current local push package status
+
+- App repo currently has unpushed local modifications in 7 files:
+  - `app/build.gradle.kts`
+  - `app/src/main/java/com/marketradar/app/EvaluationLocalCache.kt`
+  - `app/src/main/java/com/marketradar/app/MarketMLService.kt`
+  - `app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `app/src/main/java/com/marketradar/app/NativeBridge.kt`
+  - `app/src/main/python/brain.py`
+  - `app/src/main/python/tests/test_phase_b.py`
+  - `app/src/main/python/tests/test_phase_d.py`
+- App release version prepared:
+  - Android `versionCode = 333`
+  - Android `versionName = "2.5.2"`
+  - Python `BRAIN_VERSION = "2.5.2"`
+  - release note comment: `b333: post-freeze integrity/cache fixes and debit sigmaOTM storage repair`
+- Web repo release sync prepared:
+  - title `Market Radar v2.5.2`
+  - visible label `v2.5.2 · b333`
+  - `app.js` cache-buster `1250 -> 1251`
+- App diff stat after release prep:
+  - `8 files changed`
+- Knowledge repo has unpushed `PROJECT_KNOWLEDGE.md` and `index.html` updates.
+- No git push has been performed yet.
+- No Supabase writes or DDL were performed by this code correction.
