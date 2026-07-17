@@ -10694,3 +10694,52 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 - Knowledge repo has unpushed `PROJECT_KNOWLEDGE.md` and `index.html` updates.
 - No git push has been performed yet.
 - No Supabase writes or DDL were performed by this code correction.
+
+## 2026-07-17 — Synchronized `v2.5.2 / b333` release pushed and signed
+
+### Push result
+
+- `Marketapp` pushed to `main`:
+  - commit `09920166ecb0268e6aa2c7a3a96173f2e6c7fee3`
+  - message: `Release v2.5.2 post-freeze integrity fixes`
+  - remote update: `2d2f9d3..0992016`
+- `MarketVivi` pushed to `main`:
+  - commit `0bbc48a70366c57f04c6c96440885dedb63506a5`
+  - message: `Release v2.5.2 web sync and project knowledge`
+  - remote update: `3bf4409..0bbc48a`
+
+### Release artifacts and workflows
+
+- `Marketapp` debug validation:
+  - workflow: `Market Radar Debug APK Validation`
+  - run: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29570426881`
+  - conclusion: `success`
+- `Marketapp` signed release:
+  - workflow: `Market Radar Signed Release`
+  - run: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29570426875`
+  - conclusion: `success`
+- GitHub release:
+  - tag: `v2.5.2`
+  - URL: `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.2`
+  - published: `2026-07-17T09:37:32Z`
+- `MarketVivi` Pages deployment:
+  - run: `https://github.com/vivekashokan007-cloud/MarketVivi/actions/runs/29570427241`
+  - conclusion: `success`
+
+### Verification before push
+
+- `python3 app/src/main/python/tests/test_phase_d.py`
+  - `86/86` passed.
+- `python3 app/src/main/python/tests/test_phase_b.py`
+  - `50/50` passed.
+
+### Notes
+
+- This release carries:
+  - local cache cap increase to preserve full-day replay evidence,
+  - poll-slot and coverage-integrity counter drift handling,
+  - stale FII/VIX history filtering,
+  - debit `sigmaOTM` persistence for clean `p_ml` retrain eligibility,
+  - synchronized version labels `v2.5.2 / b333`.
+- GitHub Actions emitted a non-blocking Node.js 20 deprecation annotation from third-party actions; workflow conclusion remained `success`.
+- The PAT used for this push should be revoked/rotated after verification per credential hygiene.
