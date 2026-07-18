@@ -10743,3 +10743,399 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
   - synchronized version labels `v2.5.2 / b333`.
 - GitHub Actions emitted a non-blocking Node.js 20 deprecation annotation from third-party actions; workflow conclusion remained `success`.
 - The PAT used for this push should be revoked/rotated after verification per credential hygiene.
+
+## 2026-07-17 — Shadow `debitBreakevenSigma` backfill artifact generated locally
+
+### Claude-authorized shadow diagnostic executed
+
+- Directive used:
+  - `/tmp/codex-web-uploads/f-A4XoWY/DIRECTIVE_OC_DEBIT_BREAKEVEN_SIGMA_BACKFILL_20260717.md`
+- New local-only script created:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/debit_breakeven_sigma_backfill_20260717.py`
+- This script is shadow-only:
+  - no app live-path change,
+  - no asset overwrite,
+  - no Supabase writes,
+  - no DDL,
+  - imports `brain.py::_daily_sigma` directly.
+
+### What the script does
+
+- Loads cached `ml_evaluation_outcomes_s1 OK` + matched `ml_brain_snapshots`.
+- Builds a debit-only backfill feature:
+  - `debitBreakevenSigma = |breakeven - spot| / _daily_sigma(spot, vix)`
+- Uses:
+  - `BEAR_PUT`: `breakeven = buyStrike - netPremium`
+  - `BULL_CALL`: `breakeven = buyStrike + netPremium`
+- Reads entry-time context from stored snapshot `context_json`.
+- Keeps credit rows unchanged in the 38-feature path.
+- Appends a 39th shadow-only debit feature to the local diagnostic vector:
+  - `debit_be_sigma_norm`
+
+### Artifacts written
+
+- Output directory:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/debit_breakeven_sigma_backfill_20260717`
+- Files:
+  - `debit_backfill_v1.csv`
+  - `eligible_rows_with_debit_be_v1.csv`
+  - `oof_debit_v1.csv`
+  - `model_card_debit_breakeven_sigma_v1.json`
+  - `MODEL_CARD_DEBIT_BREAKEVEN_SIGMA_V1.md`
+
+### Realized result
+
+- Matched debit scope found:
+  - `514` rows total
+  - `510` `BEAR_PUT`
+  - `4` `BULL_CALL`
+- Out-of-scope unmatched debit rows:
+  - `54`
+- Strict unit-identity gate outcome:
+  - `402` debit rows passed
+  - `112` matched debit rows failed `units_identity_failed`
+- Current backfill rule is strict and fail-closed:
+  - rows pass only when stored cost identity is accepted,
+  - failed rows are excluded from the rerun.
+
+### Important integrity finding
+
+- The remaining blocker is not the formula.
+- The formula matches Claude’s worked examples exactly, including:
+  - `BEAR_PUT_NF_23150_23300_W150`
+  - `BEAR_PUT_NF_23200_23300_W100`
+- The unresolved issue is stored debit unit identity:
+  - many failed rows have `estCost == maxLoss`,
+  - but `netPremium * lotSize` differs from the stored integer by exactly `±0.5`,
+  - therefore the strict identity gate excludes them.
+- This means the shadow rerun is currently based on the recoverable debit subset, not the full `514`.
+
+### Shadow rerun result on recoverable subset
+
+- Eligible matched rows after backfill:
+  - `2711`
+- Strategy counts:
+  - `BEAR_CALL = 1658`
+  - `BULL_PUT = 651`
+  - `BEAR_PUT = 398`
+  - `BULL_CALL = 4`
+- Shadow verdict from the generated model card:
+  - `PASS`
+- Key debit result:
+  - `BEAR_PUT mean P_new = 0.3518560376884422`
+  - `BEAR_PUT truth WR = 0.3391959798994975`
+  - clamp share `< 0.10 = 0.007537688442211055`
+- Ordering also passed:
+  - `BEAR_PUT mean P_new < BEAR_CALL mean P_new`
+  - `BEAR_PUT mean P_new < BULL_PUT mean P_new`
+- BULL_CALL remains:
+  - insufficient data, no cure claim.
+
+### Hashes
+
+- `debit_backfill_v1.csv`
+  - `606559d4772af3ecf35bfd6e19d48ec06ffad947ac53e8f3b74fbd7d0e93a52a`
+- `eligible_rows_with_debit_be_v1.csv`
+  - `46d731b3418b83381875d07d121dbecd7bd89b31af9e56cfd8c57704a05a74cd`
+- `oof_debit_v1.csv`
+  - `5790fc3a3270e4f72bed157791ef8224ff82e43e104824b1e8471cb184c752c7`
+
+### Interpretation
+
+- The new shadow feature appears to cure debit phobia on the recoverable subset.
+- However, the result is not yet clean enough to claim full matched-set completion because:
+  - `112 / 514` matched debit rows still fail the strict stored-unit audit.
+- This is a data-contract / rounding-identity issue that should be reviewed before any further Claude gate claim is treated as final.
+
+## 2026-07-17 — Confirmatory shadow rerun passed on full matched set
+
+### Claude confirmatory directive executed
+
+- Directive used:
+  - `/tmp/codex-web-uploads/f-3tEhim/DIRECTIVE_OC_DEBIT_DIAGNOSTIC_CONFIRM_20260717.md`
+- This was still shadow-only:
+  - no live-path change,
+  - no app asset overwrite,
+  - no Supabase writes,
+  - no DDL,
+  - no push.
+
+### Confirmatory changes required by Claude
+
+- Debit unit identity was widened from strict rounded equality to a tolerance audit:
+  - accept when `abs(netPremium * lotSize - estCost) <= 1`
+  - and `abs(estCost - maxLoss) <= 1`
+- Early credit `sigmaOTM` gaps were backfilled for shadow training rows only using the same brain formula:
+  - `sigmaOTM = |sellStrike - spot| / _daily_sigma(spot, vix)`
+- The debit feature itself did **not** change:
+  - `debitBreakevenSigma = |breakeven - spot| / _daily_sigma(spot, vix)`
+
+### New / regenerated artifacts
+
+- Output directory:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/debit_breakeven_sigma_backfill_20260717`
+- Files now include:
+  - `debit_backfill_v1.csv`
+  - `credit_sigma_backfill_v1.csv`
+  - `eligible_rows_with_debit_be_v1.csv`
+  - `oof_debit_v1.csv`
+  - `model_card_debit_breakeven_sigma_v1.json`
+  - `MODEL_CARD_DEBIT_BREAKEVEN_SIGMA_V1.md`
+
+### Confirmatory full-set result
+
+- Debit backfill audit:
+  - `matched_scope_rows = 514`
+  - `ok_rows = 514`
+  - `excluded_by_reason = {}`
+  - `unmatched_out_of_scope = 54`
+- Credit sigma shadow backfill:
+  - `rows = 2824`
+  - `live_rows = 2309`
+  - `backfilled_rows = 515`
+  - `excluded_by_reason = {}`
+- Eligible matched rows in the confirmatory rerun:
+  - `3338`
+- Strategy counts:
+  - `BEAR_CALL = 1946`
+  - `BEAR_PUT = 510`
+  - `BULL_PUT = 878`
+  - `BULL_CALL = 4`
+
+### Confirmatory verdict
+
+- Final shadow verdict:
+  - `PASS`
+- BEAR_PUT result:
+  - `mean P_new = 0.38757636470588236`
+  - `truth WR = 0.34509803921568627`
+  - clamp share `< 0.10 = 0.0`
+- Global checks:
+  - `calibration_to_truth = true`
+  - `correct_ordering = true`
+  - `overcorrection = false`
+  - `phobia_persists = false`
+- This is the first confirmatory rerun that passed on the **full matched debit set**, not only a recoverable subset.
+
+### Strategy-level shadow calibration snapshot
+
+- `BEAR_CALL`
+  - `mean_p_new = 0.5973991793422404`
+  - `truth = 0.5837615621788284`
+- `BEAR_PUT`
+  - `mean_p_new = 0.38757636470588236`
+  - `truth = 0.34509803921568627`
+- `BULL_PUT`
+  - `mean_p_new = 0.5270542676537585`
+  - `truth = 0.5056947608200456`
+- `BULL_CALL`
+  - `mean_p_new = 0.232902`
+  - `truth = 0.0`
+  - still insufficient data; no cure claim.
+
+### Additional notes from the confirmatory model card
+
+- Highest BEAR_PUT concentration days in the matched sample:
+  - `2026-06-05 = 96`
+  - `2026-06-24 = 94`
+  - `2026-07-08 = 87`
+  - `2026-06-04 = 62`
+- Debit-absent days in the sampled window:
+  - `2026-06-02`
+  - `2026-06-22`
+  - `2026-06-29`
+  - `2026-07-01`
+  - `2026-07-03`
+  - `2026-07-07`
+  - `2026-07-09`
+  - `2026-07-13`
+
+### Hashes from confirmatory rerun
+
+- `debit_backfill_v1.csv`
+  - `a988c73ea720148136642e95633db4831869df6e8371f6851d1313659acafca4`
+- `credit_sigma_backfill_v1.csv`
+  - `9f0b43ed2c7d6d449e2fc11ddae7e1701823472e2769625de8c7b7882ec09580`
+- `eligible_rows_with_debit_be_v1.csv`
+  - `2034a5bab8dff1717f4558e36b7c7027bb3d7e78bd61f9d327d041008551d9de`
+- `oof_debit_v1.csv`
+  - `e9b97ecb3e7ede31dd866c6b5d861a03dc559d73d910838d563eabf083c776f3`
+
+### Interpretation
+
+- Claude’s confirmatory widening resolved the earlier debit unit-identity blocker.
+- The shadow rerun now supports the stronger statement:
+  - the debit breakeven sigma feature cures the prior debit-phobia signal on the full matched debit sample under the approved confirmatory audit.
+- This remains a shadow research result only.
+- No production ranking, training, or live decision path has been changed from this confirmatory rerun.
+
+## 2026-07-18 - Position Tracking P1 Capture-Only Implementation Started
+
+### Claude directive accepted
+
+- Directive file:
+  - `DIRECTIVE_OC_POSITION_P1_CAPTURE_20260718.md`
+- Scope:
+  - Implement P1 capture-only position tick loop.
+  - Additive telemetry only.
+  - Do not change brain ranking, teacher labels, `position_verdict`, alerts, notifications, or 5-minute scan outputs.
+
+### Locked P1 policy constants
+
+- `SL = 0.60 * max_loss`
+- `TP = 0.50 * max_profit`
+- `EOD = 15:15 IST`
+- Canonical mark basis:
+  - executable-side mark
+- Cadence:
+  - 60 seconds with +/- 5 seconds jitter.
+- These are shadow-only policy labels.
+- P1 must not auto-close any trade.
+
+### Local implementation status
+
+- Android repo:
+  - `Marketapp-main-worktree`
+- Web repo:
+  - `MarketVivi-git`
+- New Android files:
+  - `app/src/main/java/com/marketradar/app/PositionPolicyV1.kt`
+  - `app/src/main/java/com/marketradar/app/PositionTickService.kt`
+  - `supabase/migrations/20260718_position_ticks_p1.sql`
+- Android modified files:
+  - `app/src/main/AndroidManifest.xml`
+  - `app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `app/src/main/java/com/marketradar/app/NativeBridge.kt`
+  - `app/src/main/java/com/marketradar/app/SupabaseClient.kt`
+- Web modified file:
+  - `app.js`
+
+### P1 behavior implemented locally
+
+- `PositionTickService` is a separate Android foreground data-sync service.
+- It starts only when local `open_trades` exists and the current IST time is within 09:15-15:30.
+- It self-stops if:
+  - market session is inactive, or
+  - no open trades are present.
+- It uses a separate 60-second loop and does not alter the existing 5-minute market scan output.
+- It reads open trades from local app state first to avoid additional Supabase reads.
+- It fetches open-position leg quotes from Upstox using:
+  - `GET /v2/market-quote/quotes?instrument_key=<comma-joined keys>`
+- It does not infer missing instrument keys.
+- Missing instrument key is stored as `KEY_MISSING`.
+- Quote auth source is recorded:
+  - `ANALYTICS` if a future analytics token flag/token is present and succeeds.
+  - fallback to `DAILY`.
+  - `NONE` when no token is available.
+
+### P1 mark calculation implemented locally
+
+- Per leg stores:
+  - `instrument_key`
+  - `side`
+  - `option_type`
+  - `strike`
+  - `bid`
+  - `ask`
+  - `ltp`
+  - `mid`
+  - `executable_price`
+  - `price_basis`
+  - `quote_status`
+- Executable side:
+  - short legs: buy-to-close at ask.
+  - long legs: sell-to-close at bid.
+- Position marks:
+  - `executable_mark`
+  - `mid_mark`
+  - `ltp_mark`
+- Valuation quality:
+  - `OK` only when every required leg has bid and ask.
+  - `DEGRADED` when any required leg/key/depth is missing but some quote exists.
+  - `UNAVAILABLE` when no leg has usable quote data.
+- P&L is computed only from executable mark.
+- `current_pnl` is null when valuation is degraded or unavailable.
+- `running_mae` and `running_mfe` are tracked locally per trade id.
+
+### P1 shadow policy labels implemented locally
+
+- `SHADOW_SL`
+  - `current_pnl <= -0.60 * max_loss`
+- `SHADOW_TP`
+  - `current_pnl >= 0.50 * max_profit`
+- `SHADOW_EOD`
+  - tick at or after 15:15 IST
+- `SHADOW_DEGRADED`
+  - valuation quality degraded or unavailable.
+- `HOLD`
+  - no shadow exit rule matched.
+- Policy inputs are stored in `policy_trace_json`.
+
+### Supabase additive schema prepared
+
+- Migration creates:
+  - `public.position_ticks`
+- Migration adds:
+  - `public.trades_v2.close_trace_json jsonb`
+- `position_ticks` includes:
+  - `trade_id`
+  - `session_date`
+  - `tick_ts`
+  - `source`
+  - `auth_source`
+  - `index_key`
+  - `strategy_type`
+  - `status`
+  - `leg_count`
+  - `valuation_quality`
+  - `mark_basis`
+  - `executable_mark`
+  - `mid_mark`
+  - `ltp_mark`
+  - `current_pnl`
+  - `current_pnl_r`
+  - `running_mae`
+  - `running_mfe`
+  - `policy_action`
+  - `policy_reason`
+  - `policy_trace_json`
+  - `legs_json`
+  - `created_at`
+- RLS posture follows existing shadow-table style:
+  - anon/authenticated insert.
+  - anon/authenticated select.
+- RLS hardening remains a backlog item consistent with prior RLS Step 2-8 direction.
+
+### Close trace handling
+
+- `MarketVivi-git/app.js` now adds an additive `close_trace_json` summary when manually closing a trade.
+- The manual close verdict/P&L path is unchanged.
+- `DB.updateTrade` now retries without `close_trace_json` if Supabase rejects the additive column, so manual close is not blocked if the migration has not yet been applied.
+
+### Verification status
+
+- `git diff --check` passed in `Marketapp-main-worktree`.
+- `brain.py` was not modified.
+- Critical Python functions remain untouched:
+  - `evaluate_alerts`
+  - `compute_position_live`
+  - `position_verdict`
+  - `_managed_teacher_outcome`
+- Android build attempt:
+  - command: `ANDROID_HOME=/opt/android-sdk ./gradlew assembleDebug`
+  - result: failed before Kotlin compilation at `:app:processDebugResources`.
+  - failure cause: local AAPT2 daemon startup failure while transforming AndroidX resources.
+  - interpretation: local environment/toolchain failure, not an application compile result.
+
+### Current push status
+
+- P1 files are local only.
+- No push has been performed for P1.
+- Supabase migration has not been applied by Codex.
+
+### Release bump for P1 push
+
+- Android APK version bumped for P1 delivery:
+  - `versionCode: 334 -> 335`
+  - `versionName: 2.5.3 -> 2.5.4`
+- `brain.py` `BRAIN_VERSION` remains `2.5.3` because P1 deliberately does not modify brain logic.

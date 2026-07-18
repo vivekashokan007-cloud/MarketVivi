@@ -727,6 +727,18 @@ const DB = {
             if (error) throw error;
             return true;
         } catch (e) {
+            if (patch && Object.prototype.hasOwnProperty.call(patch, 'close_trace_json')) {
+                try {
+                    const sb = this.supabase;
+                    const fallbackPatch = { ...patch };
+                    delete fallbackPatch.close_trace_json;
+                    const { error } = await sb.from('trades_v2').update(fallbackPatch).eq('id', id);
+                    if (!error) {
+                        console.warn('[DB] updateTrade retried without close_trace_json:', e.message);
+                        return true;
+                    }
+                } catch (_) {}
+            }
             console.warn('[DB] updateTrade failed:', e.message);
             return false;
         }
@@ -2853,6 +2865,26 @@ async function closeTrade(tradeId, exitReason) {
             exit_bias: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.label ?? null,
             trough_pnl: trade.trough_pnl ?? null,
             poll_count: trade.poll_count ?? null,
+            close_trace_json: {
+                source: 'manual_close',
+                capture_phase: 'POSITION_P1',
+                policy_version: 'POSITION_POLICY_V1',
+                exit_reason: exitReason || 'Manual',
+                closed_at: new Date().toISOString(),
+                close_pnl: closePnl,
+                gross_mtm_close: trade.current_pnl ?? null,
+                exit_premium: trade.current_premium ?? null,
+                peak_pnl: trade.peak_pnl ?? null,
+                trough_pnl: trade.trough_pnl ?? null,
+                poll_count: trade.poll_count ?? null,
+                trade_mode: trade.trade_mode ?? null,
+                paper: !!trade.paper,
+                position_tick_capture: {
+                    expected_table: 'position_ticks',
+                    cadence_seconds: 60,
+                    mark_basis: 'EXECUTABLE_SIDE'
+                }
+            },
 
             // ═══ EXIT SNAPSHOT — full market state at close (JSONB) ═══
             exit_snapshot: {
