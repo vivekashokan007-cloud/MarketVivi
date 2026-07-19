@@ -1243,119 +1243,107 @@ function getTeacherTruthConfigCached(force = false) {
     return STATE.teacherTruthConfig;
 }
 
-function teacherChargeRates(tradeLike = {}, config = getTeacherTruthConfigCached()) {
-    const rawDate = tradeLike.entry_date || tradeLike.entryDate || tradeLike.date || tradeLike.poll_ts || null;
-    const tradeDate = rawDate ? new Date(rawDate) : new Date('2026-04-01T00:00:00Z');
-    const usePostStt = !Number.isNaN(tradeDate.getTime()) && tradeDate >= new Date('2026-04-01T00:00:00Z');
-    const usePostExchange = !Number.isNaN(tradeDate.getTime()) && tradeDate >= new Date('2026-03-01T00:00:00Z');
-    return {
-        sttRate: Number(usePostStt ? config.stt_options_rate_from_2026_04_01 : config.stt_options_rate_pre_2026_04_01) || 0.0015,
-        exchangeRate: Number(usePostExchange ? config.exchange_options_rate_from_2026_03_01 : config.exchange_options_rate_pre_2026_03_01) || 0.0003553,
-        gstRate: Number(config.gst_rate) || 0.18,
-        stampDutyBuyRate: Number(config.stamp_duty_buy_rate) || 0.00003,
-        sebiRate: Number(config.sebi_rate) || 0.000001,
-        ipftRate: Number(config.ipft_rate) || 0.000000001,
-        brokeragePerOrder: Number(config.brokerage_per_order) || 20,
-        slippageFallbackPoints: Number(config.bid_ask_slippage_fallback_points) || 0.25
-    };
+function asFiniteNumber(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
 }
 
-function tradeLegPrice(tradeLike = {}, baseName) {
-    const keyMap = {
-        sellLTP: ['sell_ltp', 'sellLTP'],
-        buyLTP: ['buy_ltp', 'buyLTP'],
-        sellLTP2: ['sell_ltp2', 'sellLTP2'],
-        buyLTP2: ['buy_ltp2', 'buyLTP2']
-    };
-    for (const key of (keyMap[baseName] || [baseName])) {
-        const num = Number(tradeLike[key]);
-        if (Number.isFinite(num)) return num;
+function moneyOrUnavailable(value) {
+    const num = asFiniteNumber(value);
+    return num === null ? 'unavailable' : `₹${num.toLocaleString()}`;
+}
+
+function parsedObject(value) {
+    if (value && typeof value === 'object') return value;
+    if (typeof value === 'string' && value.trim()) {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (_) {
+            return {};
+        }
     }
-    return 0;
+    return {};
 }
 
-function estimateTeacherRoundTripCostBreakdown(tradeLike = {}, config = getTeacherTruthConfigCached()) {
+function optionLegQuote(chain = {}, strike, optionType) {
+    if (strike === null || strike === undefined || !optionType) return null;
+    const strikeKey = String(Math.round(Number(strike)));
+    const optKey = String(optionType).toUpperCase();
+    const leg = chain?.strikes?.[strikeKey]?.[optKey] || chain?.strikes?.[strike]?.[optKey] || null;
+    if (!leg || typeof leg !== 'object') return null;
+    const ltp = asFiniteNumber(leg.ltp ?? leg.lastPrice ?? leg.last_price ?? leg.lastTradedPrice);
+    const bid = asFiniteNumber(leg.bid ?? leg.bidPrice ?? leg.bestBid ?? leg.best_bid);
+    const ask = asFiniteNumber(leg.ask ?? leg.askPrice ?? leg.bestAsk ?? leg.best_ask);
+    if (ltp === null && bid === null && ask === null) return null;
+    return { ltp, bid, ask };
+}
+
+function buildCloseLegQuotes(tradeLike = {}) {
     const indexKey = String(tradeLike.index_key || tradeLike.indexKey || 'BNF').toUpperCase() === 'NF' ? 'NF' : 'BNF';
-    const strategyType = String(tradeLike.strategy_type || tradeLike.strategyType || '').toUpperCase();
-    const legCount = Number(tradeLike.leg_count || tradeLike.legCount || ((strategyType === 'IRON_CONDOR' || strategyType === 'IRON_BUTTERFLY') ? 4 : 2)) || 2;
-    const snap = tradeLike.entry_snapshot && typeof tradeLike.entry_snapshot === 'object' ? tradeLike.entry_snapshot : {};
-    const lotSize = Number(tradeLike.lot_size || tradeLike.lotSize || snap.lot_size || snap.lotSize || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT)) || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT);
-    if (!Number.isFinite(lotSize) || lotSize <= 0 || !Number.isFinite(legCount) || legCount <= 0) {
+    const chain = indexKey === 'NF'
+        ? readNativeJson('getNfChain', {})
+        : readNativeJson('getBnfChain', {});
+    const legs = {
+        sell: optionLegQuote(chain, tradeLike.sell_strike ?? tradeLike.sellStrike, tradeLike.sell_type ?? tradeLike.sellType),
+        buy: optionLegQuote(chain, tradeLike.buy_strike ?? tradeLike.buyStrike, tradeLike.buy_type ?? tradeLike.buyType),
+        sell2: optionLegQuote(chain, tradeLike.sell_strike2 ?? tradeLike.sellStrike2, tradeLike.sell_type2 ?? tradeLike.sellType2),
+        buy2: optionLegQuote(chain, tradeLike.buy_strike2 ?? tradeLike.buyStrike2, tradeLike.buy_type2 ?? tradeLike.buyType2)
+    };
+    return Object.fromEntries(Object.entries(legs).filter(([, quote]) => quote));
+}
+
+function estimateTeacherRoundTripCostBreakdown(tradeLike = {}) {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.computeLiveFriction !== 'function') {
         return {
             friction_cost: null,
             friction_version: 'G2_v1',
-            friction_reason: 'MISSING_LOT_SIZE_OR_LEGS',
-            slippage_basis: 'UNAVAILABLE',
-            rates_version: 'teacher_v1_config'
+            friction_reason: 'NATIVE_FRICTION_BRIDGE_UNAVAILABLE',
+            slippage_basis: 'UNAVAILABLE'
         };
     }
-    const rates = teacherChargeRates(tradeLike, config);
-    const sellLtp = tradeLegPrice(tradeLike, 'sellLTP');
-    const buyLtp = tradeLegPrice(tradeLike, 'buyLTP');
-    const sellLtp2 = tradeLegPrice(tradeLike, 'sellLTP2');
-    const buyLtp2 = tradeLegPrice(tradeLike, 'buyLTP2');
-    const entryTurnover = Math.max(0, sellLtp + buyLtp + sellLtp2 + buyLtp2) * lotSize;
-    const entryCredit = Number(tradeLike.entry_premium ?? tradeLike.entryPremium ?? 0) * lotSize;
-    const grossMtm = Number(tradeLike.current_pnl || 0) || 0;
-    const estimatedCloseTurnover = Math.max(0, entryTurnover - (entryCredit ? grossMtm : 0));
-    const shortSellPremium = Math.max(0, sellLtp + sellLtp2) * lotSize;
-    const longEntryPremium = Math.max(0, buyLtp + buyLtp2) * lotSize;
-    const estimatedShortClosePremium = Math.max(0, shortSellPremium - grossMtm);
-    const buySidePremium = longEntryPremium + estimatedShortClosePremium;
-    const slippage = (rates.slippageFallbackPoints / 2) * lotSize * legCount * 2;
-    const brokerage = rates.brokeragePerOrder * legCount * 2;
-    const exchange = (entryTurnover + estimatedCloseTurnover) * rates.exchangeRate;
-    const ipft = (entryTurnover + estimatedCloseTurnover) * rates.ipftRate;
-    const gst = (brokerage + exchange + ipft) * rates.gstRate;
-    const stt = shortSellPremium * rates.sttRate;
-    const stamp = buySidePremium * rates.stampDutyBuyRate;
-    const sebi = (entryTurnover + estimatedCloseTurnover) * rates.sebiRate;
-    const total = brokerage + exchange + gst + stt + stamp + sebi + ipft + slippage;
-    return {
-        friction_cost: Math.round(total * 100) / 100,
-        friction_version: 'G2_v1',
-        rates_version: config.config_version || config.teacher_config_version || 'teacher_v1_config',
-        slippage_basis: 'FALLBACK',
-        slippage_reason: 'P1 bid/ask close tick not readable from PWA under insert-only RLS; using configured fallback points.',
-        lot_size: lotSize,
-        leg_count: legCount,
-        brokerage: Math.round(brokerage * 100) / 100,
-        exchange: Math.round(exchange * 100) / 100,
-        gst: Math.round(gst * 100) / 100,
-        stt: Math.round(stt * 100) / 100,
-        stamp: Math.round(stamp * 100) / 100,
-        sebi: Math.round(sebi * 100) / 100,
-        ipft: Math.round(ipft * 100) / 100,
-        slippage: Math.round(slippage * 100) / 100,
-        entry_turnover: Math.round(entryTurnover * 100) / 100,
-        close_turnover: Math.round(estimatedCloseTurnover * 100) / 100,
-        buy_side_premium: Math.round(buySidePremium * 100) / 100,
-        short_sell_premium: Math.round(shortSellPremium * 100) / 100,
-        rates: {
-            stt_rate: rates.sttRate,
-            exchange_rate: rates.exchangeRate,
-            gst_rate: rates.gstRate,
-            stamp_duty_buy_rate: rates.stampDutyBuyRate,
-            sebi_rate: rates.sebiRate,
-            ipft_rate: rates.ipftRate,
-            brokerage_per_order: rates.brokeragePerOrder,
-            slippage_fallback_points: rates.slippageFallbackPoints
-        }
+    const entrySnapshot = parsedObject(tradeLike.entry_snapshot);
+    const payload = {
+        ...tradeLike,
+        entry_snapshot: entrySnapshot,
+        lot_size: tradeLike.lot_size ?? tradeLike.lotSize ?? entrySnapshot.lot_size ?? entrySnapshot.lotSize ?? null,
+        close_leg_quotes: buildCloseLegQuotes(tradeLike)
     };
+    try {
+        const raw = NativeBridge.computeLiveFriction(JSON.stringify(payload));
+        const parsed = safeParseNB(raw, {});
+        if (!parsed || typeof parsed !== 'object') {
+            return {
+                friction_cost: null,
+                friction_version: 'G2_v1',
+                friction_reason: 'BAD_NATIVE_FRICTION_RESPONSE',
+                slippage_basis: 'UNAVAILABLE'
+            };
+        }
+        return parsed;
+    } catch (err) {
+        return {
+            friction_cost: null,
+            friction_version: 'G2_v1',
+            friction_reason: `NATIVE_FRICTION_BRIDGE_ERROR:${err?.message || err}`,
+            slippage_basis: 'UNAVAILABLE'
+        };
+    }
 }
 
-function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthConfigCached()) {
-    const breakdown = estimateTeacherRoundTripCostBreakdown(tradeLike, config);
-    return Number.isFinite(Number(breakdown.friction_cost)) ? Number(breakdown.friction_cost) : null;
+function estimateTeacherRoundTripCost(tradeLike = {}) {
+    const breakdown = estimateTeacherRoundTripCostBreakdown(tradeLike);
+    return asFiniteNumber(breakdown.friction_cost);
 }
 
 function buildPaperPnlBreakdown(tradeLike = {}) {
     const grossMtm = Number(tradeLike.current_pnl || 0) || 0;
     const frictionBreakdown = estimateTeacherRoundTripCostBreakdown(tradeLike);
-    const estimatedRoundTripCost = Number.isFinite(Number(frictionBreakdown.friction_cost))
-        ? Number(frictionBreakdown.friction_cost)
-        : null;
-    const netIfClosedNow = estimatedRoundTripCost === null ? null : Math.round((grossMtm - estimatedRoundTripCost) * 100) / 100;
+    const estimatedRoundTripCost = asFiniteNumber(frictionBreakdown.friction_cost);
+    const nativeNetPnl = asFiniteNumber(frictionBreakdown.net_pnl);
+    const netIfClosedNow = estimatedRoundTripCost === null
+        ? null
+        : (nativeNetPnl === null ? Math.round((grossMtm - estimatedRoundTripCost) * 100) / 100 : nativeNetPnl);
     return { grossMtm, estimatedRoundTripCost, netIfClosedNow, frictionBreakdown };
 }
 
@@ -2913,7 +2901,7 @@ async function closeTrade(tradeId, exitReason) {
             friction_breakdown_json: isPaper ? paperPnl.frictionBreakdown : null,
             net_pnl: isPaper ? netClosePnl : null,
             net_won: isPaper ? netWon : null,
-            friction_version: isPaper ? 'G2_v1' : null,
+            friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
             exit_premium: trade.current_premium ?? null,
             exit_reason: exitReason || 'Manual',
             paper_close_reason_quality: null,
@@ -2933,7 +2921,7 @@ async function closeTrade(tradeId, exitReason) {
                 source: 'manual_close',
                 capture_phase: 'POSITION_P1',
                 policy_version: 'POSITION_POLICY_V1',
-                friction_version: isPaper ? 'G2_v1' : null,
+                friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
                 exit_reason: exitReason || 'Manual',
                 closed_at: new Date().toISOString(),
                 close_pnl: displayClosePnl,
@@ -2979,7 +2967,9 @@ async function closeTrade(tradeId, exitReason) {
                 drift_from_morning: STATE.biasDrift ?? 0,
                 gross_mtm_close: grossClosePnl,
                 estimated_round_trip_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
-                net_if_closed_now: isPaper ? netClosePnl : null
+                net_if_closed_now: isPaper ? netClosePnl : null,
+                close_leg_quotes: isPaper ? buildCloseLegQuotes(trade) : null,
+                friction_breakdown: isPaper ? paperPnl.frictionBreakdown : null
             },
             paper_discipline: null,
 
@@ -4633,7 +4623,8 @@ function renderTradeCard(t, isPaper) {
     };
     const paperPnl = isPaper ? buildPaperPnlBreakdown(t) : null;
     const headlinePnl = isPaper ? paperPnl.netIfClosedNow : (t.current_pnl || 0);
-    const pnlClass = headlinePnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    const headlinePnlNum = asFiniteNumber(headlinePnl);
+    const pnlClass = headlinePnlNum === null ? '' : (headlinePnlNum >= 0 ? 'pnl-pos' : 'pnl-neg');
     const dots = alignmentDots(forces.aligned);
 
     const ci = t.controlIndex;
@@ -4680,18 +4671,18 @@ function renderTradeCard(t, isPaper) {
         </div>
         <div class="pos-timing">${t.entry_date ? `⏱ ${entryDateShort} ${entryTime} · ${elapsed} ago` : ''}</div>
         <div class="pos-pnl ${pnlClass}">
-            ${isPaper ? 'Net If Closed Now' : 'P&L'}: ₹${headlinePnl.toLocaleString()}
+            ${isPaper ? 'Net If Closed Now' : 'P&L'}: ${moneyOrUnavailable(headlinePnl)}
             ${t.peak_pnl > 0 ? `<span class="pos-peak">(peak ₹${t.peak_pnl.toLocaleString()})</span>` : ''}
         </div>
         ${isPaper
-            ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ₹${paperPnl.estimatedRoundTripCost.toLocaleString()}</span></div>`
+            ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}</span></div>`
             : ''
         }
         ${savedMarginLine}
         <div class="control-section">
             ${t.max_profit || t.max_loss ? `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--border)">
                 <span style="color:var(--green)">🎯 Max: ₹${(t.max_profit || 0).toLocaleString()}</span>
-                <span style="color:var(--text-muted)">${isPaper ? 'Net' : 'P&L'}: ${t.max_profit > 0 ? Math.round((headlinePnl || 0) / t.max_profit * 100) : 0}% of max</span>
+                <span style="color:var(--text-muted)">${isPaper ? 'Net' : 'P&L'}: ${t.max_profit > 0 && headlinePnlNum !== null ? Math.round(headlinePnlNum / t.max_profit * 100) : 0}% of max</span>
                 <span style="color:var(--danger)">🛑 Loss: ₹${(t.max_loss || 0).toLocaleString()}</span>
             </div>` : ''}
             <div class="env-row">
@@ -4759,7 +4750,7 @@ function renderTradeCard(t, isPaper) {
                 · Now: ₹${t.current_premium || '--'}
                 · Spot: ${t.current_spot?.toFixed(0) || '--'}
             </div>
-            ${isPaper ? `<div class="pos-detail">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} · Est. cost: ₹${paperPnl.estimatedRoundTripCost.toLocaleString()} · Net now: ₹${paperPnl.netIfClosedNow.toLocaleString()}</div>` : ''}
+            ${isPaper ? `<div class="pos-detail">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} · Est. cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)} · Net now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}</div>` : ''}
             <div class="pos-forces">
                 ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
             </div>
@@ -4843,14 +4834,16 @@ function renderPosition(snapshot = null) {
     // ═══ PAPER TRADES ═══
     if (paperTrades.length > 0) {
         const paperPnL = paperTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
-        const totalEstCost = paperTrades.reduce((s, t) => s + estimateTeacherRoundTripCost(t), 0);
-        const netPaperPnL = paperPnL - totalEstCost;
-        const paperClass = netPaperPnL >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const paperCostValues = paperTrades.map(t => estimateTeacherRoundTripCost(t));
+        const costUnavailable = paperCostValues.some(v => v === null);
+        const totalEstCost = paperCostValues.reduce((s, v) => s + (v ?? 0), 0);
+        const netPaperPnL = costUnavailable ? null : paperPnL - totalEstCost;
+        const paperClass = netPaperPnL === null ? '' : (netPaperPnL >= 0 ? 'pnl-pos' : 'pnl-neg');
         const nfPapers = paperTrades.filter(t => t.index_key === 'NF').length;
         const bnfPapers = paperTrades.filter(t => t.index_key === 'BNF').length;
         html += `<div class="paper-header">📋 Paper Trades (${nfPapers} NF · ${bnfPapers} BNF)</div>`;
-        html += `<div class="total-pnl-bar paper-pnl ${paperClass}">Paper Net If Closed Now: ₹${netPaperPnL.toLocaleString()}</div>`;
-        html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${paperPnL.toLocaleString()} · Est. round-trip costs: ₹${totalEstCost.toLocaleString()}</div>`;
+        html += `<div class="total-pnl-bar paper-pnl ${paperClass}">Paper Net If Closed Now: ${moneyOrUnavailable(netPaperPnL)}</div>`;
+        html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${paperPnL.toLocaleString()} · Est. round-trip costs: ${costUnavailable ? 'unavailable' : `₹${totalEstCost.toLocaleString()}`}</div>`;
 
         // Cross-test comparison: group by index to show side-by-side performance
         for (const idx of ['NF', 'BNF']) {

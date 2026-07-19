@@ -11343,3 +11343,133 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
   - additive `net_won`
   - `friction_version = G2_v1`
 - P1 `position_ticks` remains expected to collect only when there is an open tracked trade during market hours.
+
+## 2026-07-19 - Claude Reply: G2 Before G1 Sandbox
+
+### Directive source
+
+- `CLAUDE_REPLY_TO_OPENCLAW_20260719.md`
+- Claude ruling:
+  - P1 blockers are considered fixed/verified.
+  - G1 sandbox order layer is valid work but must wait behind G2.
+  - G2 is not complete until code and backfill are implemented, not only the Supabase schema.
+  - G2 must reuse the teacher cost model and must not duplicate the brokerage/statutory/slippage formula in JavaScript.
+  - Teacher outputs must remain unchanged; gross labels stay gross and net labels are additive only.
+  - Historical backfill must use `friction_version='G2_charges_only_backfill'` and `slippage_basis='UNKNOWN_HISTORICAL'`.
+  - Historical slippage must not be estimated.
+  - Rows without close evidence must be skipped and reported.
+
+### G1 sandbox state
+
+- User manually ran the `sandbox_orders` DDL in Supabase SQL editor.
+- Screenshot `Screenshot_20260719_113210_Chrome.jpg` showed:
+  - `Success. No rows returned`
+- Therefore `public.sandbox_orders` is expected to exist in Supabase.
+- Local G1 app changes were deliberately parked before G2 completion:
+  - Android stash: `wip-g1-sandbox-order-layer-20260719`
+  - PWA stash: `wip-g1-pwa-version-knowledge-20260719`
+- G1 is not pushed and not on main yet.
+- G1 must be re-applied only after G2 is committed/pushed, and then must receive the next synchronized version bump.
+
+### G2 implementation now in local files
+
+- Android:
+  - Added native bridge method `computeLiveFriction(tradeJson)` in `NativeBridge.kt`.
+  - Exposed `NativeBridge.computeLiveFriction()` to PWA JavaScript in `MainActivity.kt`.
+  - Added additive Python adapter functions in `brain.py`:
+    - `_trade_to_teacher_candidate`
+    - `_trade_leg_entry_prices`
+    - `_teacher_snap_from_trade_entry`
+    - `_teacher_point_from_trade_close`
+    - `compute_live_friction`
+    - `compute_live_friction_bridge`
+  - The adapter calls existing `_teacher_round_trip_cost`.
+  - `_teacher_round_trip_cost` itself was not edited.
+  - The adapter now fails closed if explicit lot size is missing; it does not silently use default BNF/NF lot sizes.
+  - Added operator tool:
+    - `tools/g2_charges_backfill.py`
+- PWA:
+  - Removed the duplicated JavaScript cost estimator from `app.js`.
+  - `estimateTeacherRoundTripCostBreakdown()` now calls the native Python bridge.
+  - Paper close continues to preserve:
+    - gross `actual_pnl`
+    - gross `canonical_won`
+    - gross `outcome_h2`
+  - Paper close writes additive fields:
+    - `friction_cost`
+    - `friction_breakdown_json`
+    - `net_pnl`
+    - `net_won`
+    - `friction_version`
+  - Paper close stores `close_leg_quotes` and the friction breakdown inside `exit_snapshot` for audit.
+  - Paper UI now shows `unavailable` if native friction cannot be computed; it no longer coerces missing cost to zero.
+
+### Backfill tool design
+
+- `tools/g2_charges_backfill.py` is dry-run by default.
+- Requires:
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - optional `SUPABASE_URL` (defaults to the project URL)
+- Supports:
+  - `--apply`
+  - `--session-date YYYY-MM-DD`
+  - `--page-size`
+  - `--max-rows`
+  - `--sleep`
+- Supabase throttling controls:
+  - small page default: 50 rows
+  - default sleep: 0.20 seconds per REST request
+  - no bulk expensive SQL
+- Evidence order for close-leg prices:
+  - `trades_v2.exit_snapshot.close_leg_quotes`
+  - latest matching `position_ticks.legs_json`
+- Skip rules:
+  - skip rows with null `exit_premium`
+  - skip rows without per-leg close quotes
+  - skip rows where teacher adapter returns no `friction_cost`
+- Backfill writes only additive G2 fields:
+  - `friction_cost`
+  - `friction_breakdown_json`
+  - `net_pnl`
+  - `net_won`
+  - `friction_version='G2_charges_only_backfill'`
+
+### Version target
+
+- Current local synchronized target:
+  - Android `versionName = 2.5.7`
+  - Android `versionCode = 338`
+  - PWA visible label `v2.5.7 · b338`
+  - PWA cache-bust `app.js?v=1253`
+- This is not pushed yet.
+
+### Verification
+
+- Passed:
+  - `python3 -m py_compile app/src/main/python/brain.py tools/g2_charges_backfill.py`
+  - `node --check app.js`
+  - `git diff --check` in both repos
+  - `PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -p 'test_teacher*.py'`
+    - 9 tests passed
+  - direct Python bridge smoke test:
+    - `compute_live_friction()` returned finite `friction_cost`
+    - live basis: `LIVE_BID_ASK`
+  - charges-only smoke test:
+    - `friction_version = G2_charges_only_backfill`
+    - `slippage_basis = UNKNOWN_HISTORICAL`
+    - `breakdown.slippage = 0.0`
+  - fail-closed smoke test:
+    - missing explicit lot size returns `MISSING_LOT_SIZE_OR_LEGS`
+  - backfill without credentials refuses to run:
+    - `Missing SUPABASE_SERVICE_ROLE_KEY; refusing to run.`
+- Blocked:
+  - `./gradlew :app:compileDebugKotlin`
+  - reason: local Android SDK path is not configured:
+    - missing `ANDROID_HOME`
+    - missing `local.properties` `sdk.dir`
+
+### Important caveat
+
+- Exact historical G2 backfill depends on per-leg close quotes.
+- `position_ticks.legs_json` can provide these for trades that had P1 ticks captured.
+- If a historical closed paper row has only aggregate `exit_premium` and no per-leg close quote evidence, the backfill must skip it rather than reconstruct a spread or turnover from insufficient data.
