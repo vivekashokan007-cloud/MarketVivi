@@ -11075,8 +11075,6 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 
 - Migration creates:
   - `public.position_ticks`
-- Migration adds:
-  - `public.trades_v2.close_trace_json jsonb`
 - `position_ticks` includes:
   - `trade_id`
   - `session_date`
@@ -11103,7 +11101,7 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
   - `created_at`
 - RLS posture follows existing shadow-table style:
   - anon/authenticated insert.
-  - anon/authenticated select.
+- No anon/authenticated select, update, or delete policy is created for `position_ticks`.
 - RLS hardening remains a backlog item consistent with prior RLS Step 2-8 direction.
 
 ### Close trace handling
@@ -11129,9 +11127,15 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 
 ### Current push status
 
-- P1 files are local only.
-- No push has been performed for P1.
-- Supabase migration has not been applied by Codex.
+- P1 capture-only implementation was pushed on 2026-07-18.
+- Android repo:
+  - `d2beffd2b31fdecd2c2e2f947dd590f8be9a1ae4`
+  - version `2.5.4`, build `335`
+- Web repo:
+  - `5e8279f64c1e4b0fd9df230889eabfe850303888`
+- Signed release workflow completed successfully:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29639675946`
+- Supabase migration was not applied by Codex during the push.
 
 ### Release bump for P1 push
 
@@ -11139,3 +11143,89 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
   - `versionCode: 334 -> 335`
   - `versionName: 2.5.3 -> 2.5.4`
 - `brain.py` `BRAIN_VERSION` remains `2.5.3` because P1 deliberately does not modify brain logic.
+
+## 2026-07-19 - P1 Blocker Fix: position_ticks DDL and bounded queue
+
+### Directive source
+
+- `DIRECTIVE_OC_P1_BLOCKER_FIX_20260718.md`
+- Claude finding:
+  - P1 capture could not persist because `public.position_ticks` did not exist in Supabase.
+  - On repeated insert failure, the Android pending tick queue could grow without a hard cap.
+
+### Approved boundary
+
+- Do not modify `brain.py`.
+- Do not modify ranking, teacher labels, alerts, scan outputs, or P1 policy behavior.
+- Do not alter `trades_v2`.
+- Add only the `position_ticks` storage table and queue safety instrumentation.
+
+### Local Android changes prepared
+
+- Android version bumped for blocker-fix delivery:
+  - `versionCode: 335 -> 336`
+  - `versionName: 2.5.4 -> 2.5.5`
+- `PositionTickService` now enforces:
+  - `MAX_PENDING_TICKS = 1500`
+  - oldest-row drop when the persisted pending queue exceeds the cap
+  - persisted dropped-row counter: `position_tick_dropped_count`
+  - persisted consecutive flush failure counter: `position_tick_flush_failure_count`
+  - warning logs:
+    - `POSITION_TICK_QUEUE_DROP`
+    - `POSITION_TICK_FLUSH_FAIL`
+- Successful flush clears the pending queue and resets consecutive failure count to zero.
+- Failed flush keeps the bounded queue and increments consecutive failure count.
+
+### Kotlin JSON to DDL reconciliation
+
+- `PositionTickService` writes top-level JSON keys:
+  - `trade_id`
+  - `session_date`
+  - `tick_ts`
+  - `source`
+  - `auth_source`
+  - `index_key`
+  - `strategy_type`
+  - `status`
+  - `leg_count`
+  - `valuation_quality`
+  - `mark_basis`
+  - `executable_mark`
+  - `mid_mark`
+  - `ltp_mark`
+  - `current_pnl`
+  - `current_pnl_r`
+  - `running_mae`
+  - `running_mfe`
+  - `policy_action`
+  - `policy_reason`
+  - `policy_trace_json`
+  - `legs_json`
+- `position_ticks` DDL includes every emitted top-level key.
+- DDL also includes DB-owned:
+  - `id`
+  - `created_at`
+- Leg-level details remain nested under `legs_json`; they are not separate table columns.
+
+### Supabase DDL state
+
+- Migration file now creates only `public.position_ticks`.
+- Migration no longer alters `public.trades_v2`.
+- RLS is enabled.
+- Exact write policy:
+  - policy name: `position_ticks_insert_anon`
+  - command: `INSERT`
+  - roles: `anon`, `authenticated`
+  - `with check (true)`
+- Migration explicitly drops any legacy/open:
+  - `position_ticks_select_anon`
+  - `position_ticks_update_anon`
+  - `position_ticks_delete_anon`
+- Codex attempted to apply the DDL through Supabase Management API.
+- Supabase API response:
+  - HTTP `403`
+  - error code `1010`
+- Result:
+  - DDL must be run manually in Supabase SQL editor unless direct DB credentials or an alternate authorized API path is provided.
+- Manual SQL handoff file:
+  - `/tmp/position_ticks_p1_blocker_fix_20260719.sql`
