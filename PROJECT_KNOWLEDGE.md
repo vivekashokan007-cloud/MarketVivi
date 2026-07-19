@@ -11229,3 +11229,77 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
   - DDL must be run manually in Supabase SQL editor unless direct DB credentials or an alternate authorized API path is provided.
 - Manual SQL handoff file:
   - `/tmp/position_ticks_p1_blocker_fix_20260719.sql`
+
+## 2026-07-19 - G2 Friction Into Live Paper P&L Started
+
+### Directive source
+
+- `DIRECTIVE_OC_FRICTION_LIVE_PNL_20260718-1.md`
+- Claude finding:
+  - paper closes were cost-blind / gross-vs-net ambiguous.
+  - teacher already computes managed outcomes net of brokerage/statutory/slippage friction.
+  - live paper close must preserve gross labels and add honest net fields separately.
+
+### Critical current-state correction
+
+- Existing `MarketVivi/app.js` paper close path was writing net-if-closed-now into:
+  - `trades_v2.actual_pnl`
+  - `trades_v2.canonical_won`
+  - `trades_v2.outcome_h2`
+  - `ml_decisions.actual_pnl`
+  - `ml_decisions.canonical_won`
+- That violated the G2 directive because `actual_pnl` / `canonical_won` must remain gross semantics until a separate label switch gate.
+- Local G2 fix changes paper close semantics to:
+  - `actual_pnl = gross current_pnl`
+  - `canonical_won = actual_pnl > 0`
+  - `outcome_h2 = gross canonical_won`
+  - `net_pnl = gross current_pnl - friction_cost`
+  - `net_won = net_pnl > 0`
+
+### Additive schema prepared
+
+- New migration:
+  - `Marketapp-main-worktree/supabase/migrations/20260719_g2_live_pnl_friction.sql`
+- Adds to `public.trades_v2` only:
+  - `friction_cost numeric`
+  - `friction_breakdown_json jsonb`
+  - `net_pnl numeric`
+  - `net_won boolean`
+  - `friction_version text`
+- Adds advisory indexes:
+  - `trades_v2_friction_version_idx`
+  - `trades_v2_net_won_idx`
+- Manual SQL handoff file:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/g2_live_pnl_friction_schema_20260719.txt`
+
+### Live close friction implementation status
+
+- `MarketVivi/app.js` now writes the additive G2 fields on every paper close.
+- The UI close confirmation still shows:
+  - gross MTM
+  - estimated round-trip cost
+  - net if closed now
+- The close notification now states gross closed, net closed, and estimated friction cost.
+- `DB.updateTrade()` fallback was widened:
+  - if Supabase rejects additive G2 columns, it retries without the additive close fields so manual close is not blocked.
+- This fallback is safety only; the schema must still be applied for G2 data collection.
+
+### Friction basis limitation
+
+- PWA cannot currently read `position_ticks` under the P1 insert-only RLS policy.
+- Therefore manual close friction records:
+  - `slippage_basis = FALLBACK`
+  - reason: P1 bid/ask close tick not readable from PWA under insert-only RLS
+- This is intentionally explicit; the app does not pretend to use live P1 bid/ask half-spread when unavailable.
+- Future refinement:
+  - expose latest local P1 tick through NativeBridge, or
+  - add a tightly scoped server-side close-friction function that reads latest `position_ticks` with service-role authority.
+
+### Release target
+
+- Prepared synchronized release target:
+  - Android `versionName = 2.5.6`
+  - Android `versionCode = 337`
+  - PWA visible label `v2.5.6 · b337`
+  - PWA app cache-bust `app.js?v=1252`
+- `brain.py` remains untouched; teacher behavior is unchanged by construction.

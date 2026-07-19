@@ -727,14 +727,22 @@ const DB = {
             if (error) throw error;
             return true;
         } catch (e) {
-            if (patch && Object.prototype.hasOwnProperty.call(patch, 'close_trace_json')) {
+            const additiveCloseFields = [
+                'close_trace_json',
+                'friction_cost',
+                'friction_breakdown_json',
+                'net_pnl',
+                'net_won',
+                'friction_version'
+            ];
+            if (patch && additiveCloseFields.some(k => Object.prototype.hasOwnProperty.call(patch, k))) {
                 try {
                     const sb = this.supabase;
                     const fallbackPatch = { ...patch };
-                    delete fallbackPatch.close_trace_json;
+                    additiveCloseFields.forEach(k => delete fallbackPatch[k]);
                     const { error } = await sb.from('trades_v2').update(fallbackPatch).eq('id', id);
                     if (!error) {
-                        console.warn('[DB] updateTrade retried without close_trace_json:', e.message);
+                        console.warn('[DB] updateTrade retried without additive close fields:', e.message);
                         return true;
                     }
                 } catch (_) {}
@@ -1266,12 +1274,21 @@ function tradeLegPrice(tradeLike = {}, baseName) {
     return 0;
 }
 
-function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthConfigCached()) {
+function estimateTeacherRoundTripCostBreakdown(tradeLike = {}, config = getTeacherTruthConfigCached()) {
     const indexKey = String(tradeLike.index_key || tradeLike.indexKey || 'BNF').toUpperCase() === 'NF' ? 'NF' : 'BNF';
     const strategyType = String(tradeLike.strategy_type || tradeLike.strategyType || '').toUpperCase();
     const legCount = Number(tradeLike.leg_count || tradeLike.legCount || ((strategyType === 'IRON_CONDOR' || strategyType === 'IRON_BUTTERFLY') ? 4 : 2)) || 2;
     const snap = tradeLike.entry_snapshot && typeof tradeLike.entry_snapshot === 'object' ? tradeLike.entry_snapshot : {};
     const lotSize = Number(tradeLike.lot_size || tradeLike.lotSize || snap.lot_size || snap.lotSize || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT)) || (indexKey === 'NF' ? C.NF_LOT : C.BNF_LOT);
+    if (!Number.isFinite(lotSize) || lotSize <= 0 || !Number.isFinite(legCount) || legCount <= 0) {
+        return {
+            friction_cost: null,
+            friction_version: 'G2_v1',
+            friction_reason: 'MISSING_LOT_SIZE_OR_LEGS',
+            slippage_basis: 'UNAVAILABLE',
+            rates_version: 'teacher_v1_config'
+        };
+    }
     const rates = teacherChargeRates(tradeLike, config);
     const sellLtp = tradeLegPrice(tradeLike, 'sellLTP');
     const buyLtp = tradeLegPrice(tradeLike, 'buyLTP');
@@ -1293,14 +1310,53 @@ function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthCo
     const stt = shortSellPremium * rates.sttRate;
     const stamp = buySidePremium * rates.stampDutyBuyRate;
     const sebi = (entryTurnover + estimatedCloseTurnover) * rates.sebiRate;
-    return Math.round(brokerage + exchange + gst + stt + stamp + sebi + ipft + slippage);
+    const total = brokerage + exchange + gst + stt + stamp + sebi + ipft + slippage;
+    return {
+        friction_cost: Math.round(total * 100) / 100,
+        friction_version: 'G2_v1',
+        rates_version: config.config_version || config.teacher_config_version || 'teacher_v1_config',
+        slippage_basis: 'FALLBACK',
+        slippage_reason: 'P1 bid/ask close tick not readable from PWA under insert-only RLS; using configured fallback points.',
+        lot_size: lotSize,
+        leg_count: legCount,
+        brokerage: Math.round(brokerage * 100) / 100,
+        exchange: Math.round(exchange * 100) / 100,
+        gst: Math.round(gst * 100) / 100,
+        stt: Math.round(stt * 100) / 100,
+        stamp: Math.round(stamp * 100) / 100,
+        sebi: Math.round(sebi * 100) / 100,
+        ipft: Math.round(ipft * 100) / 100,
+        slippage: Math.round(slippage * 100) / 100,
+        entry_turnover: Math.round(entryTurnover * 100) / 100,
+        close_turnover: Math.round(estimatedCloseTurnover * 100) / 100,
+        buy_side_premium: Math.round(buySidePremium * 100) / 100,
+        short_sell_premium: Math.round(shortSellPremium * 100) / 100,
+        rates: {
+            stt_rate: rates.sttRate,
+            exchange_rate: rates.exchangeRate,
+            gst_rate: rates.gstRate,
+            stamp_duty_buy_rate: rates.stampDutyBuyRate,
+            sebi_rate: rates.sebiRate,
+            ipft_rate: rates.ipftRate,
+            brokerage_per_order: rates.brokeragePerOrder,
+            slippage_fallback_points: rates.slippageFallbackPoints
+        }
+    };
+}
+
+function estimateTeacherRoundTripCost(tradeLike = {}, config = getTeacherTruthConfigCached()) {
+    const breakdown = estimateTeacherRoundTripCostBreakdown(tradeLike, config);
+    return Number.isFinite(Number(breakdown.friction_cost)) ? Number(breakdown.friction_cost) : null;
 }
 
 function buildPaperPnlBreakdown(tradeLike = {}) {
     const grossMtm = Number(tradeLike.current_pnl || 0) || 0;
-    const estimatedRoundTripCost = estimateTeacherRoundTripCost(tradeLike);
-    const netIfClosedNow = grossMtm - estimatedRoundTripCost;
-    return { grossMtm, estimatedRoundTripCost, netIfClosedNow };
+    const frictionBreakdown = estimateTeacherRoundTripCostBreakdown(tradeLike);
+    const estimatedRoundTripCost = Number.isFinite(Number(frictionBreakdown.friction_cost))
+        ? Number(frictionBreakdown.friction_cost)
+        : null;
+    const netIfClosedNow = estimatedRoundTripCost === null ? null : Math.round((grossMtm - estimatedRoundTripCost) * 100) / 100;
+    return { grossMtm, estimatedRoundTripCost, netIfClosedNow, frictionBreakdown };
 }
 
 function buildTeacherLaneStatsFromOutcomes(outcomes = []) {
@@ -2816,9 +2872,11 @@ async function closeTrade(tradeId, exitReason) {
     const isPaper = trade.paper;
     const prefix = isPaper ? '📋 Paper' : '📌 Real';
     const paperPnl = isPaper ? buildPaperPnlBreakdown(trade) : null;
-    const closePnl = isPaper ? paperPnl.netIfClosedNow : (trade.current_pnl ?? 0);
+    const grossClosePnl = Number(trade.current_pnl ?? 0) || 0;
+    const netClosePnl = isPaper ? paperPnl.netIfClosedNow : null;
+    const displayClosePnl = isPaper && netClosePnl !== null ? netClosePnl : grossClosePnl;
     const confirmMsg = isPaper
-        ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ₹${paperPnl.grossMtm.toLocaleString()}\nEst. round-trip cost: ₹${paperPnl.estimatedRoundTripCost.toLocaleString()}\nNet if closed now: ₹${paperPnl.netIfClosedNow.toLocaleString()}`
+        ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ₹${paperPnl.grossMtm.toLocaleString()}\nEst. round-trip cost: ${paperPnl.estimatedRoundTripCost === null ? 'unavailable' : `₹${paperPnl.estimatedRoundTripCost.toLocaleString()}`}\nNet if closed now: ${paperPnl.netIfClosedNow === null ? 'unavailable' : `₹${paperPnl.netIfClosedNow.toLocaleString()}`}`
         : `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nP&L: ₹${trade.current_pnl ?? 'unknown'}`;
     if (!confirm(confirmMsg)) return;
 
@@ -2841,15 +2899,21 @@ async function closeTrade(tradeId, exitReason) {
         removeOpenTradeFromState(tradeId); // push removal to Kotlin now
         renderAll();    // re-render immediately — card gone from UI
 
-        const closedWon = closePnl > 0;
+        const grossWon = grossClosePnl > 0;
+        const netWon = isPaper && netClosePnl !== null ? netClosePnl > 0 : null;
 
         // Now update Supabase in background (non-blocking)
         DB.updateTrade(trade.id, {
             status: 'CLOSED',
             exit_date: new Date().toISOString(),
-            actual_pnl: closePnl,
-            canonical_won: closedWon,
-            outcome_h2: closedWon ? 1 : 0,
+            actual_pnl: grossClosePnl,
+            canonical_won: grossWon,
+            outcome_h2: grossWon ? 1 : 0,
+            friction_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
+            friction_breakdown_json: isPaper ? paperPnl.frictionBreakdown : null,
+            net_pnl: isPaper ? netClosePnl : null,
+            net_won: isPaper ? netWon : null,
+            friction_version: isPaper ? 'G2_v1' : null,
             exit_premium: trade.current_premium ?? null,
             exit_reason: exitReason || 'Manual',
             paper_close_reason_quality: null,
@@ -2869,10 +2933,14 @@ async function closeTrade(tradeId, exitReason) {
                 source: 'manual_close',
                 capture_phase: 'POSITION_P1',
                 policy_version: 'POSITION_POLICY_V1',
+                friction_version: isPaper ? 'G2_v1' : null,
                 exit_reason: exitReason || 'Manual',
                 closed_at: new Date().toISOString(),
-                close_pnl: closePnl,
-                gross_mtm_close: trade.current_pnl ?? null,
+                close_pnl: displayClosePnl,
+                gross_mtm_close: grossClosePnl,
+                friction_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
+                net_pnl: isPaper ? netClosePnl : null,
+                net_won: isPaper ? netWon : null,
                 exit_premium: trade.current_premium ?? null,
                 peak_pnl: trade.peak_pnl ?? null,
                 trough_pnl: trade.trough_pnl ?? null,
@@ -2909,9 +2977,9 @@ async function closeTrade(tradeId, exitReason) {
                 minutes_since_open: minsOpen,
                 premium: trade.current_premium ?? null,
                 drift_from_morning: STATE.biasDrift ?? 0,
-                gross_mtm_close: trade.current_pnl ?? 0,
+                gross_mtm_close: grossClosePnl,
                 estimated_round_trip_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
-                net_if_closed_now: closePnl
+                net_if_closed_now: isPaper ? netClosePnl : null
             },
             paper_discipline: null,
 
@@ -2935,20 +3003,20 @@ async function closeTrade(tradeId, exitReason) {
 
         addNotificationLog(
             `${prefix} Trade Closed`,
-            `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike} ${trade.trade_mode ? `[${trade.trade_mode}]` : ''} ${isPaper ? `Net closed: ₹${closePnl} (gross ₹${paperPnl.grossMtm}, est cost ₹${paperPnl.estimatedRoundTripCost}).` : `P&L: ₹${trade.current_pnl}.`}${holdDuration ? ` Held: ${holdDuration}.` : ''} Reason: ${exitReason || 'Manual'}`,
-            closePnl >= 0 ? 'entry' : 'urgent'
+            `${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike} ${trade.trade_mode ? `[${trade.trade_mode}]` : ''} ${isPaper ? `Gross closed: ₹${grossClosePnl}; net: ${netClosePnl === null ? 'unavailable' : `₹${netClosePnl}`} (cost ${paperPnl.estimatedRoundTripCost === null ? 'unavailable' : `₹${paperPnl.estimatedRoundTripCost}`}).` : `P&L: ₹${trade.current_pnl}.`}${holdDuration ? ` Held: ${holdDuration}.` : ''} Reason: ${exitReason || 'Manual'}`,
+            displayClosePnl >= 0 ? 'entry' : 'urgent'
         );
 
         // b105: Fill ML outcome for calibration tracking
         if (trade.id && DB.supabase) {
             const outcomeUpdate = {
-                canonical_won:      closedWon,
-                won:                closedWon,
-                outcome_h2:         closedWon ? 1 : 0,
+                canonical_won:      grossWon,
+                won:                grossWon,
+                outcome_h2:         grossWon ? 1 : 0,
                 outcome_pct_of_max: (trade.max_profit > 0)
-                    ? Math.round((closePnl / trade.max_profit) * 10000) / 10000
+                    ? Math.round((grossClosePnl / trade.max_profit) * 10000) / 10000
                     : null,
-                actual_pnl:         closePnl,
+                actual_pnl:         grossClosePnl,
                 peak_pnl:           trade.peak_pnl ?? null,
                 trough_pnl:         trade.trough_pnl ?? null,
                 hold_minutes:       trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
