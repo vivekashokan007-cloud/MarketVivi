@@ -11297,9 +11297,49 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 
 ### Release target
 
-- Prepared synchronized release target:
+- Synchronized release was pushed:
   - Android `versionName = 2.5.6`
   - Android `versionCode = 337`
   - PWA visible label `v2.5.6 · b337`
   - PWA app cache-bust `app.js?v=1252`
 - `brain.py` remains untouched; teacher behavior is unchanged by construction.
+
+### Push and CI confirmation
+
+- `Marketapp` pushed to `main`:
+  - commit `6f881d87ee70e7da6530fb6c8265c985bb6ad4aa`
+  - message `Add G2 friction schema`
+- `MarketVivi` pushed to `main`:
+  - commit `5adc11d45c262682e65daf9c08531cdd3a75f385`
+  - message `Add gross-preserving paper close friction`
+- GitHub Actions:
+  - Signed release succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29673504269`
+  - Debug validation succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29673504244`
+
+### Supabase schema application confirmation
+
+- User ran the G2 friction schema SQL manually in Supabase SQL editor on 2026-07-19.
+- Screenshot `Screenshot_20260719_101111_Chrome.jpg` showed:
+  - `Success. No rows returned`
+- Therefore the following `public.trades_v2` additive columns are now expected to exist in Supabase:
+  - `friction_cost`
+  - `friction_breakdown_json`
+  - `net_pnl`
+  - `net_won`
+  - `friction_version`
+- Advisory indexes are also expected to exist:
+  - `trades_v2_friction_version_idx`
+  - `trades_v2_net_won_idx`
+
+### Tomorrow check
+
+- After installing/running `v2.5.6 / b337`, close a paper trade only if it is part of the normal test plan.
+- Verify `trades_v2` close rows preserve:
+  - gross `actual_pnl`
+  - gross `canonical_won`
+  - additive `net_pnl`
+  - additive `net_won`
+  - `friction_version = G2_v1`
+- P1 `position_ticks` remains expected to collect only when there is an open tracked trade during market hours.
