@@ -11473,3 +11473,160 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 - Exact historical G2 backfill depends on per-leg close quotes.
 - `position_ticks.legs_json` can provide these for trades that had P1 ticks captured.
 - If a historical closed paper row has only aggregate `exit_premium` and no per-leg close quote evidence, the backfill must skip it rather than reconstruct a spread or turnover from insufficient data.
+
+## 2026-07-19 - Sandbox order layer G1 re-applied after G2 local commit
+
+### Directive source
+
+- User provided Claude directive:
+  - `/tmp/codex-web-uploads/f-foPIMa/DIRECTIVE_OC_SANDBOX_ORDER_LAYER_20260718-1.md`
+- Directive stage:
+  - Implement
+- Scope:
+  - Build first Upstox sandbox order payload/execution plumbing.
+  - Sandbox validates payloads only.
+  - Do not treat sandbox as evidence of fills, pricing, slippage, charges, or edge.
+
+### Hard boundaries preserved
+
+- `brain.py` must remain untouched.
+- No verdict/notification auto-trigger is allowed.
+- Order calls must be explicit dev/debug action only.
+- Sandbox host only:
+  - permitted base URL: `https://sandbox.upstox.com`
+- Live order hosts are forbidden in the order path:
+  - `api-hft.upstox.com`
+  - `api.upstox.com/v2/order`
+  - `api.upstox.com/v3/order`
+
+### Official-doc confirmation
+
+- Upstox sandbox documentation confirms:
+  - sandbox is for API integration/payload testing without live risk
+  - sandbox tokens are valid for sandbox order execution and cannot be used for live transactions
+  - sandbox currently has no market-time restriction
+- Upstox order documentation confirms relevant order payload fields:
+  - `instrument_token`
+  - `quantity`
+  - `product`
+  - `validity`
+  - `price`
+  - `tag`
+  - `order_type`
+  - `transaction_type`
+  - `disclosed_quantity`
+  - `trigger_price`
+  - `is_amo`
+  - `slice`
+  - multi-order additionally uses `correlation_id`
+- Upstox multi-order documentation states BUY orders are processed before SELL orders.
+
+### Local implementation status
+
+- Android repo has local unpushed G1 changes on top of local G2 commit `fdbeff9`.
+- New Kotlin order layer:
+  - `app/src/main/java/com/marketradar/app/OrderExecutionService.kt`
+- Compile-time mode:
+  - `EXECUTION_MODE = "SANDBOX"`
+- Sandbox token preference name:
+  - `SANDBOX_TOKEN`
+- Runtime guard:
+  - rejects dispatch unless mode and base URL are sandbox.
+- Supported debug actions:
+  - `build`
+  - `place_sequential`
+  - `place_multi`
+  - `modify`
+  - `cancel`
+- The order builder validates before dispatch:
+  - legs exist
+  - instrument key/token exists
+  - BUY/SELL side exists
+  - lot size exists from payload/instrument metadata
+  - quantity is positive and lot-size multiple
+  - LIMIT price exists from explicit price or BUY ask / SELL bid quote
+- Leg sequencing:
+  - BUY legs are ordered before SELL legs for sequential dispatch.
+- Persistence:
+  - every sandbox request/response attempts insert into `sandbox_orders`.
+  - failed network calls and bad token responses are also persisted where possible.
+
+### Native bridge status
+
+- `NativeBridge` now exposes:
+  - `setSandboxToken(token)`
+  - `getSandboxTokenReady()`
+  - `runSandboxOrderDebugAction(payloadJson)`
+- `MainActivity` exposes those bridge methods to WebView JavaScript.
+- Sandbox readiness now depends on:
+  - sandbox toggle enabled
+  - dedicated `SANDBOX_TOKEN` present
+- Normal daily/live token no longer makes sandbox readiness appear true.
+
+### Supabase schema
+
+- Android migration added:
+  - `Marketapp-main-worktree/supabase/migrations/20260719_sandbox_orders.sql`
+- Manual copy-paste SQL text file created for user:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/sandbox_orders_schema_20260719.txt`
+- Table:
+  - `public.sandbox_orders`
+- Columns:
+  - `id`
+  - `ts`
+  - `trade_ref`
+  - `api`
+  - `api_version`
+  - `request_json`
+  - `response_json`
+  - `http_status`
+  - `latency_ms`
+  - `order_ids`
+  - `error_code`
+  - `error_message`
+- RLS:
+  - enabled
+  - anon insert allowed
+  - anon select allowed for export/verification
+
+### Safety test
+
+- Added unit test:
+  - `app/src/test/java/com/marketradar/app/OrderExecutionSafetyTest.kt`
+- Test verifies:
+  - `OrderExecutionService.EXECUTION_MODE == "SANDBOX"`
+  - order-layer source does not contain live Upstox order host/path strings.
+
+### Version preparation
+
+- Android prepared version:
+  - `versionName = 2.5.8`
+  - `versionCode = 339`
+- PWA visible version synchronized locally:
+  - title/header `v2.5.8 · b339`
+  - cache-bust `app.js?v=1254`
+
+### Verification status
+
+- `git diff --check` passed in Android repo.
+- `git diff --check` passed in MarketVivi repo.
+- Live Upstox order host/path grep against order path returned no matches.
+- Local Gradle unit test did not run because this workspace has no Android SDK configured:
+  - missing `ANDROID_HOME`
+  - missing `local.properties` `sdk.dir`
+- This is an environment blocker, not a test failure.
+- Build validation still needs Antigravity/GitHub Actions before device install.
+
+### Not yet done
+
+- Supabase `sandbox_orders` schema was manually applied by user before G1 re-apply.
+- Sandbox token still needs to be generated/stored before real sandbox calls.
+- Full Claude test matrix not yet run:
+  - valid BULL_PUT / BEAR_CALL sequential and multi
+  - valid BEAR_PUT debit pair
+  - bad instrument key
+  - bad/expired token
+  - absurd price / zero quantity / wrong lot multiple
+  - modify then cancel
+  - off-market-hours call
+- No `sandbox_orders` export/sha exists yet because matrix execution has not happened.
