@@ -11630,3 +11630,663 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
   - modify then cancel
   - off-market-hours call
 - No `sandbox_orders` export/sha exists yet because matrix execution has not happened.
+
+## 2026-07-19 - Claude G2 backfill, guard enforcement, and P1 tick diagnosis
+
+### Directive source
+
+- User provided Claude directive:
+  - `/tmp/codex-web-uploads/f-eb9VB0/DIRECTIVE_OC_G2_BACKFILL_AND_GUARD_20260719.md`
+- Directive scope:
+  - Execute G2 charges-only backfill on closed paper `trades_v2`.
+  - Make order safety guard enforce in CI.
+  - Diagnose empty `position_ticks`.
+  - Defer `BRAIN_VERSION` alignment to the next version bump; no `brain.py` behavior change.
+
+### G2 backfill execution
+
+- Backfill target:
+  - `trades_v2` rows where `paper=true` and `status='CLOSED'`.
+- Rows processed:
+  - 167
+- Supabase write mode:
+  - apply
+- Rows stamped:
+  - 167 rows stamped with `friction_version='G2_charges_only_backfill'`.
+- Historical slippage handling:
+  - no slippage estimation was performed.
+  - failure payloads stamp `slippage_basis='UNKNOWN_HISTORICAL'`.
+- Additive-only rule preserved:
+  - `actual_pnl` unchanged.
+  - `canonical_won` unchanged.
+  - post-backfill mismatch count against pre-snapshot: 0.
+
+### G2 backfill result
+
+- Computable charges-net rows:
+  - 0 / 167
+- Reason distribution:
+  - `MISSING_CLOSE_LEG_QUOTES`: 143
+  - `NULL_EXIT_PREMIUM`: 24
+- Gross headline over all 167 rows:
+  - gross win rate: 58.0838%
+  - gross average P&L: 2278.25
+  - gross total P&L: 380468.0
+- 2026-07-19 quarantine note:
+  - this gross headline is now retained only as a raw pre-provenance artifact.
+  - it is not an accepted live performance or edge claim.
+  - final replacement requires P&L engine classification and honest baseline filtering.
+- Charges-net headline:
+  - not computable from historical rows because no row had sufficient close-leg evidence.
+- Important interpretation:
+  - This is an evidence-completeness finding, not a G2 formula failure.
+  - Reconstructing charges from aggregate `exit_premium` would violate Claude's boundary because per-leg close quote/turnover evidence is missing.
+
+### G2 artifacts
+
+- Android repo report artifacts:
+  - `reports/g2_pre_backfill_labels_20260719.csv`
+  - `reports/g2_backfill_results_20260719.csv`
+  - `reports/g2_backfill_summary_20260719.json`
+  - `reports/g2_post_backfill_labels_20260719.csv`
+  - `reports/g2_post_backfill_verify_20260719.json`
+- Hashes:
+  - pre labels: `a64d13abd8ea2b232c90b95d3ed243e46e096ad479d4324c0bdf6b7a5aeb3597`
+  - backfill CSV: `4b3d41bba13b32407e09e2eadd5899733daf761e8d7c763b1bfea6c0fcf93695`
+  - summary JSON: `13e3db7af017828b05cbac433950a08f2f1724fc3f7a728106f371480f30f8cf`
+  - post labels: `8431246afddfa6517606fc111f22568c72c3fe239b1b3d1f34525138fbf4c148`
+  - post verify JSON: `accb7a9148ab4613925e7b961d1c6f254f35059be3c4ab726a415b20080c9a66`
+
+### Local code/report changes
+
+- `tools/g2_charges_backfill.py`
+  - now exports per-trade CSV.
+  - now writes summary JSON.
+  - now fail-closes non-computable rows with explicit reason strings.
+  - now reports all-row gross metrics separately from computable charges-net metrics.
+- `app/src/test/java/com/marketradar/app/OrderExecutionSafetyTest.kt`
+  - source lookup now supports both module working directory and repo-root working directory.
+  - missing source file fails loudly with the working directory in the error message.
+- `.github/workflows/debug-apk.yml`
+  - added `./gradlew :app:testDebugUnitTest --stacktrace` before `assembleDebug`.
+- `.github/workflows/release.yml`
+  - added `./gradlew :app:testDebugUnitTest --stacktrace` before `assembleRelease`.
+
+### Verification status
+
+- `python3 -m py_compile tools/g2_charges_backfill.py app/src/main/python/brain.py` passed.
+- `git diff --check` passed.
+- Gradle dry-run confirms `:app:testDebugUnitTest` is in the task graph.
+- Full local `:app:testDebugUnitTest` cannot run in this container:
+  - host architecture: `aarch64`
+  - installed AAPT2 binary: x86-64
+  - direct AAPT2 execution fails with `cannot execute: required file not found`
+  - Gradle fails at `:app:processDebugResources` with AAPT2 daemon startup failure before unit tests execute.
+- Negative live-host proof is therefore not available locally.
+- Expected next validation point:
+  - GitHub Actions on x86 Ubuntu after push should execute the newly wired unit test before any APK build.
+
+### P1 position tick diagnosis
+
+- Supabase `position_ticks` remains empty.
+- Latest DB evidence showed:
+  - `position_ticks` row count: 0
+  - `trades_v2` OPEN count: 0
+  - latest trades were CLOSED historical/paper rows
+  - no OPEN trade was observed after P1 capture deployment in the checked window.
+- Code inspection of `PositionTickService.kt` showed current observability gap:
+  - logs exist for `POSITION_TICK_FLUSH_FAIL`
+  - logs exist for `POSITION_TICK_QUEUE_DROP`
+  - no explicit lifecycle start/stop log was found.
+  - no explicit "no open trades" log was found.
+- Interpretation:
+  - Empty `position_ticks` is most likely benign until an OPEN trade exists after P1.
+  - However, current logging cannot fully distinguish "service ran and had no work" from "service did not start" without DB/open-trade evidence.
+- Issue to raise:
+  - Add lightweight lifecycle/no-open diagnostics to `PositionTickService` in a future Claude-approved patch if Claude wants stronger evidence.
+
+### Not pushed yet
+
+- These changes are local until user explicitly commands push.
+- No version bump was done in this checkpoint.
+- `BRAIN_VERSION` was not changed because Claude directed that it should align only with the next version bump.
+
+## 2026-07-19 - Lot-size directive verification and P&L engine quarantine prep
+
+### Directive source
+
+- User provided Claude directive:
+  - `/tmp/codex-web-uploads/f-Kz348P/DIRECTIVE_OC_LOTSIZE_AND_PNL_QUARANTINE_20260719.md`
+- Directive requested:
+  - verify lot sizes before changing constants;
+  - quarantine historical fixed-multiplier P&L;
+  - recompute honest baseline using only trusted P&L engine rows;
+  - retract the prior live claim of `58.1% win rate / +₹2,278 avg`.
+
+### Critical lot-size finding
+
+- Claude's directive asserted:
+  - NIFTY lot size should be 75.
+  - BANKNIFTY lot size should be 35.
+- Current app constants are:
+  - `NF_LOT = 65`
+  - `BNF_LOT = 30`
+- Authoritative source checked:
+  - Upstox complete instruments master: `https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz`
+  - HTTP `Last-Modified`: `Sat, 18 Jul 2026 23:55:35 GMT`
+  - checked on 2026-07-19.
+- Verification method:
+  - parsed current NSE_FO option contracts expiring within 90 days from 2026-07-19;
+  - filtered instrument names `NIFTY` and `BANKNIFTY`;
+  - inspected `lot_size`.
+- Result:
+  - NIFTY active option rows checked: 1334; all reported `lot_size = 65`.
+  - BANKNIFTY active option rows checked: 970; all reported `lot_size = 30`.
+  - sample NIFTY row: `NIFTY 21600 CE 21 JUL 26`, `NSE_FO|57240`, `lot_size=65`.
+  - sample BANKNIFTY row: `BANKNIFTY 46000 CE 28 JUL 26`, `NSE_FO|61584`, `lot_size=30`.
+- Decision:
+  - Do not change lot-size constants to 75/35.
+  - Do not bump version for Task 1 because no live lot-size behavior change was made.
+  - Raise this to Claude as a directive/source conflict before changing production scaling.
+- Evidence artifact:
+  - Android repo: `reports/lot_size_verification_20260719.json`
+  - sha256: `44307e5289eaa855029b111113ffd7c423d1fdf4abb58be3461e002b01df7cd8`
+
+### P&L quarantine local work
+
+- Added local additive-only migration:
+  - `supabase/migrations/20260719_pnl_engine_quarantine.sql`
+- Migration columns:
+  - `pnl_engine text`
+  - `structure_incomplete boolean`
+  - `pnl_engine_reason text`
+  - `implied_multiplier numeric`
+  - `pnl_engine_classified_at timestamptz`
+- Migration indexes:
+  - `trades_v2_pnl_engine_idx`
+  - `trades_v2_structure_incomplete_idx`
+- Added local classifier:
+  - `tools/pnl_engine_quarantine.py`
+- Classifier behavior:
+  - dry-run by default;
+  - requires `--apply` before writing;
+  - requires `SUPABASE_SERVICE_ROLE_KEY` in environment;
+  - fetches closed paper `trades_v2`;
+  - computes implied multiplier as `actual_pnl / ((entry_premium - exit_premium) * lots)`;
+  - classifies legacy matches as `V0_FIXED_MULTIPLIER_UNTRUSTED`;
+  - classifies non-legacy multiplier evidence as `V1_PER_LEG`;
+  - leaves missing/invalid evidence as `UNKNOWN`;
+  - flags incomplete 4-leg structures for `IRON_CONDOR` and `IRON_BUTTERFLY`;
+  - never modifies `actual_pnl`, `canonical_won`, `entry_premium`, `exit_premium`, or labels.
+
+### Current quarantine status
+
+- Migration and script are local only.
+- They have not been applied to Supabase yet in this checkpoint.
+- The local shell does not have `SUPABASE_SERVICE_ROLE_KEY` set.
+- Do not paste service keys into visible terminal commands; use environment injection or user-side SQL runner if execution is needed.
+- Pending outputs after DB apply:
+  - `reports/pnl_engine_classification_20260719.csv`
+  - `reports/pnl_engine_classification_summary_20260719.json`
+  - sha256 for both files.
+
+### Retraction status
+
+- The earlier G2 gross headline `58.1% win rate / +₹2,278 avg` is now quarantined as a raw pre-provenance figure, not an accepted live performance claim.
+- It must not be used as a live edge claim.
+- Final replacement requires Task 2 classification and Task 3 honest baseline.
+- Required note for final docs after baseline:
+  - `Pre-June P&L used a fixed-multiplier engine on incompletely recorded structures and is quarantined as untrusted; April accounted for 100.2% of previously reported profit.`
+
+### Verification status
+
+- `python3 -m py_compile tools/pnl_engine_quarantine.py tools/g2_charges_backfill.py app/src/main/python/brain.py` passed.
+- `git diff --check` passed in Android repo.
+- No code path, ranking logic, lot-size constant, P&L value, label, or app version was changed in response to the disputed lot-size claim.
+
+## 2026-07-19 - REV2 quarantine correction and close-path investigation
+
+### Directive source
+
+- User provided Claude REV2 directive:
+  - `/tmp/codex-web-uploads/f-r7IGPF/DIRECTIVE_OC_REV2_QUARANTINE_CORRECTED_20260719.md`
+- REV2 supersedes:
+  - `/tmp/codex-web-uploads/f-Kz348P/DIRECTIVE_OC_LOTSIZE_AND_PNL_QUARANTINE_20260719.md`
+
+### REV2 ruling
+
+- Claude withdrew Rev 1 Task 1 in full.
+- Correct current lot sizes are:
+  - `NF = 65`
+  - `BNF = 30`
+- Existing constants are correct and must not be changed.
+- Claude also withdrew the multiplier-threshold classifier because exact 30/65 reconciliation is normal correct lot arithmetic, not evidence of a fabricated fixed-multiplier engine.
+- New classification criterion is structural completeness plus reconciliation.
+
+### Task A close-path investigation
+
+- `MarketVivi/app.js` is the paper close persistence path.
+- Close function:
+  - `closeTrade(tradeId, exitReason)` starts at `MarketVivi/app.js:2855`.
+- `actual_pnl` source:
+  - `grossClosePnl = Number(trade.current_pnl ?? 0) || 0` at `MarketVivi/app.js:2863`.
+  - `actual_pnl: grossClosePnl` at `MarketVivi/app.js:2897`.
+  - `canonical_won` and `outcome_h2` are derived from `grossClosePnl` at `MarketVivi/app.js:2890-2899`.
+  - ML outcome writeback also uses `actual_pnl: grossClosePnl` at `MarketVivi/app.js:3002-3009`.
+- `exit_premium` source:
+  - `exit_premium: trade.current_premium ?? null` at `MarketVivi/app.js:2905`.
+  - close trace repeats the same value at `MarketVivi/app.js:2932`.
+  - exit snapshot stores `premium: trade.current_premium ?? null` at `MarketVivi/app.js:2966`.
+- `current_pnl` / `current_premium` source:
+  - Python computes position live marks in `compute_position_live(...)`.
+  - fallback lot sizes are correctly documented as BNF=30 / NF=65 at `Marketapp-main-worktree/app/src/main/python/brain.py:3280-3299`.
+  - for credit trades, `pnl = (entry_premium - current_net) * lot_size` at `brain.py:3417-3418`.
+  - for debit trades, `pnl = (current_net - entry_premium) * lot_size` at `brain.py:3419-3420`.
+  - Python returns `current_pnl` and `current_net_premium` at `brain.py:3482` and `brain.py:3498`.
+  - Android copies those into open trades as `current_pnl` and `current_premium` at `MarketWatchService.kt:2461-2463`.
+- Interpretation:
+  - In current code, `actual_pnl` is the authoritative realized gross close label because labels, `canonical_won`, `outcome_h2`, and ML writeback derive from it.
+  - `exit_premium` is an auxiliary/audit premium mark copied from `current_premium`.
+  - If both fields came from the same `position_live` update and the trade is a credit spread, they should reconcile through `(entry_premium - exit_premium) * lots * lot_size` within rounding.
+  - Therefore June+ decoupling is not expected by the current source path; likely causes are stale/missing/semantic drift in `current_premium`, changed close timing, or historical schema/field drift.
+  - Code alone does not prove the DB rows are correct; row-level DB inspection is still needed before declaring June+ rows trustworthy or defective.
+
+### REV2 classifier update
+
+- Updated local migration:
+  - `supabase/migrations/20260719_pnl_engine_quarantine.sql`
+- Migration now adds:
+  - `pnl_engine`
+  - `structure_incomplete`
+  - `pnl_reconciles`
+  - `pnl_engine_reason`
+  - `implied_multiplier`
+  - `recon_error`
+  - `pnl_engine_classified_at`
+- Updated local classifier:
+  - `tools/pnl_engine_quarantine.py`
+- Current classifier rule:
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE` for `IRON_CONDOR` / `IRON_BUTTERFLY` rows missing `buy_strike2` or `sell_strike2`.
+  - `RECONCILED` for complete rows where `abs(actual_pnl - ((entry_premium - exit_premium) * lots * lot_size)) <= 5`.
+  - `UNRECONCILED_PENDING_TASK_A` for complete rows that do not reconcile.
+  - `UNKNOWN` where premiums, lots, index, or P&L evidence is missing.
+- Audit fields:
+  - `implied_multiplier` retained for audit only.
+  - `recon_error` retained for row-level verification.
+- Baseline output:
+  - `honest_baseline_reconciled_only_gross_of_costs`
+  - `honest_baseline_reconciled_plus_pending_task_a_gross_of_costs`
+- Caveats:
+  - gross of costs because G2 established historical charges-net is uncomputable;
+  - no lot-size scaling caveat because 65/30 is verified correct;
+  - no tuning/subset hunting.
+
+### Current execution status
+
+- Migration and classifier are local only.
+- Supabase classification has not been applied yet in this checkpoint.
+- Local shell does not have `SUPABASE_SERVICE_ROLE_KEY` set.
+- Do not paste the service-role key into visible commands or files.
+
+### Verification
+
+- `python3 -m py_compile tools/pnl_engine_quarantine.py tools/g2_charges_backfill.py app/src/main/python/brain.py` passed.
+- `git diff --check` passed in Android repo.
+- `git diff --check` passed in MarketVivi repo.
+- Current hashes:
+  - migration: `c730d0b0d8991e4e1fe953e5cf7111102607f1d613dc3dc2c7207bc1ac7ae5b1`
+  - classifier: `eb86cc7d72f67da9be0711d8a0643fb6e865134e3f458bc66ae8ab9c177a2c84`
+  - lot-size evidence: `44307e5289eaa855029b111113ffd7c423d1fdf4abb58be3461e002b01df7cd8`
+
+### Pending
+
+- Apply additive Supabase migration.
+- Run classifier dry-run first, then apply if dry-run counts match expectation.
+- Export:
+  - `reports/pnl_engine_classification_20260719.csv`
+  - `reports/pnl_engine_classification_summary_20260719.json`
+- Report whether expected incomplete count is exactly 55.
+- Use Task C baselines to replace the quarantined old gross headline.
+- Task E per-instrument lot-size lookup is accepted but separate after A-D.
+
+## 2026-07-20 - REV2 amendment sign fix and close-path null-default directive
+
+### Directive sources
+
+- User provided Claude amendment:
+  - `/tmp/codex-web-uploads/f-y6aiA8/AMENDMENT_REV2_SIGN_FIX_AND_AUTHORIZATION_20260719.md`
+- User provided separate close-path directive:
+  - `/tmp/codex-web-uploads/f-ZdzLqF/DIRECTIVE_OC_CLOSE_PATH_NULL_DEFAULT_20260719.md`
+
+### Amendment accepted
+
+- Claude accepted the Task A source-path investigation.
+- Claude corrected the reconciliation formula for debit spreads.
+- Correct formula:
+  - credit strategies: `(entry_premium - exit_premium) * lots * lot_size`
+  - debit strategies (`BEAR_PUT`, `BULL_CALL`): `-1 * (entry_premium - exit_premium) * lots * lot_size`
+- Reason:
+  - `brain.py` computes debit P&L as `(current_net - entry_premium) * lot_size`, opposite sign from credit.
+- Local classifier updated:
+  - `tools/pnl_engine_quarantine.py`
+  - debit strategies now use `recon_sign = -1`.
+  - credit strategies use `recon_sign = +1`.
+  - CSV now includes `recon_sign`.
+
+### Apply gate added
+
+- Classifier now computes gate before any Supabase write.
+- Default expected gates:
+  - `structure_incomplete = 55`
+  - `RECONCILED ~= 114`
+  - reconciled tolerance: `3`
+- If `--apply` is requested and the gate fails:
+  - script exits before patching rows.
+  - no Supabase rows are written.
+- This protects against accidental mass misclassification.
+
+### Current execution status
+
+- Supabase run not executed yet.
+- Local shell still has no `SUPABASE_SERVICE_ROLE_KEY`.
+- Service-role key must not be pasted into shell commands or files.
+- Pending safe run sequence remains:
+  - apply migration;
+  - dry-run classifier;
+  - stop if gate fails;
+  - apply classifier only if gate passes.
+
+### Close-path null-default directive
+
+- Claude identified live MarketVivi defect:
+  - `app.js` close path silently coerces missing `current_pnl` to `0`.
+  - this can write fake `actual_pnl=0`, `canonical_won=false`, `outcome_h2=0`.
+  - exit reason can also become fake `Stop loss` when `current_pnl` is null.
+- Claude boundary:
+  - MarketVivi-only.
+  - separate commit.
+  - do not bundle with quarantine run.
+  - do after quarantine work.
+- Status:
+  - not implemented yet in this checkpoint because amendment explicitly says close-path work is separate and after the quarantine run.
+  - must be treated as high-priority next live fix once quarantine DB run is completed or explicitly waived.
+
+### Verification
+
+- `python3 -m py_compile tools/pnl_engine_quarantine.py tools/g2_charges_backfill.py app/src/main/python/brain.py` passed.
+- `git diff --check` passed in Android repo.
+- Current hashes:
+  - classifier: `d40da71ba7c7456b4a76d1b7a275cb0265b0643430e88abf1307de5cc45c2f11`
+  - migration: `c730d0b0d8991e4e1fe953e5cf7111102607f1d613dc3dc2c7207bc1ac7ae5b1`
+
+## 2026-07-20 - REV2 quarantine dry-run completed, apply gate failed
+
+### Execution boundary
+
+- Ran local read-only dry-run only.
+- No Supabase writes were performed.
+- Additive migration was not applied by this run.
+- `SUPABASE_SERVICE_ROLE_KEY` is still not present in local shell.
+- Classifier was patched to allow anon read-only dry-run, while `--apply` still requires service role.
+- Throttling used:
+  - page size: `25`
+  - sleep: `0.35s`
+
+### Local classifier corrections
+
+- `tools/pnl_engine_quarantine.py` now treats structural incompleteness first.
+- This matches Claude REV2 rule:
+  - structural completeness first;
+  - then signed premium/P&L reconciliation.
+- Before the correction, gate counted `55` incomplete rows but only `54` were classified as `UNTRUSTED_INCOMPLETE_STRUCTURE`.
+- After correction, both gate and class summary agree:
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE = 55`
+- CSV export now includes:
+  - `entry_day`
+  - `pnl_engine_reason`
+  - `canonical_won`
+  - `followed_app`
+  - `recon_sign`
+
+### Dry-run result
+
+- Command:
+  - `python3 tools/pnl_engine_quarantine.py --page-size 25 --sleep 0.35`
+- Rows classified:
+  - `167`
+- Credential mode:
+  - `anon_dry_run`
+- Result:
+  - read-only execution passed;
+  - apply gate failed.
+
+### Apply gate
+
+- Expected:
+  - `structure_incomplete = 55`
+  - `RECONCILED ~= 114`
+  - tolerance `3`
+- Actual:
+  - `structure_incomplete = 55`
+  - `RECONCILED = 60`
+- Gate status:
+  - `incomplete_pass = true`
+  - `reconciled_pass = false`
+  - `pass = false`
+
+### Classification summary
+
+- `RECONCILED`
+  - rows: `60`
+  - win rate: `53.3333%`
+  - avg gross P&L: `1335.05`
+  - total gross P&L: `80103.0`
+  - date range: `2026-03-30` to `2026-06-17`
+- `UNTRUSTED_INCOMPLETE_STRUCTURE`
+  - rows: `55`
+  - win rate: `94.5455%`
+  - avg gross P&L: `5803.49`
+  - total gross P&L: `319192.0`
+  - reason: `FOUR_LEG_STRUCTURE_MISSING_STRIKE2`
+  - split: `IRON_BUTTERFLY 23`, `IRON_CONDOR 32`
+- `UNRECONCILED_PENDING_TASK_A`
+  - rows: `29`
+  - win rate: `44.8276%`
+  - avg gross P&L: `-251.31`
+  - total gross P&L: `-7288.0`
+  - reason: `ACTUAL_PNL_DOES_NOT_RECONCILE_WITH_STORED_PREMIUMS`
+- `UNKNOWN`
+  - rows: `23`
+  - win rate: `0.0%`
+  - avg gross P&L: `-501.70`
+  - total gross P&L: `-11539.0`
+  - reason: `MISSING_ENTRY_OR_EXIT_PREMIUM`
+
+### Current artifact hashes
+
+- `tools/pnl_engine_quarantine.py`
+  - `47eac7001780cebcdb75befd8ea996627fb9b8a95d7e0b59c89571154f5b24aa`
+- `supabase/migrations/20260719_pnl_engine_quarantine.sql`
+  - `c730d0b0d8991e4e1fe953e5cf7111102607f1d613dc3dc2c7207bc1ac7ae5b1`
+- `reports/pnl_engine_classification_20260719.csv`
+  - `48fe85716302a6795eeec484eb3aaa5c26d5762e744d3d9fef36ee7201403345`
+- `reports/pnl_engine_classification_summary_20260719.json`
+  - `bb947f65ad9e349c7626fa17ae9a79cb5f5161602e0949d742d9190f15d5b058`
+
+### Claude handoff file
+
+- Created outside git:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_REV2_QUARANTINE_DRY_RUN_20260720.txt`
+
+### Decision state
+
+- Do not run `--apply` yet.
+- Do not promote old gross P&L headline.
+- The clean currently proven gross baseline is `RECONCILED` only:
+  - `60` rows, total gross P&L `80103.0`, win rate `53.3333%`.
+- `RECONCILED + UNRECONCILED_PENDING_TASK_A` gives `89` rows, total gross P&L `72815.0`, win rate `50.5618%`, but cannot be promoted until Task A provenance is explained.
+- Need Claude ruling before DB apply:
+  - revise expected reconciled gate from `114` to `60`;
+  - or investigate the missing `54` expected reconciliations;
+  - or apply structural quarantine only;
+  - or proceed to close-path null-default fix first.
+
+## 2026-07-20 - Claude god-mode audit checked, neutral rename implemented locally
+
+### Input reviewed
+
+- `/tmp/codex-web-uploads/f-x9V0wN/GOD_MODE_AUDIT_RECONCILIATION_20260720.md`
+- `/tmp/codex-web-uploads/f-fFG7bu/CLAUDE_REPLY_TO_OPENCLAW_20260720.md`
+
+### What was accepted
+
+- Claude's original `RECONCILED ~= 114` gate was wrong.
+- The 114 count double-counted structurally incomplete rows.
+- Structural-first classification removes those rows before reconciliation.
+- Revised gate is accepted:
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE = 55`
+  - `RECONCILED = 60`
+  - `PNL_BASIS_DIVERGENT = 29`
+  - `UNKNOWN = 23`
+  - total `167`
+
+### What remains inferred
+
+- Claude's claim that the 29 divergent rows are likely the most execution-realistic P&L is plausible but not fully proven.
+- It remains an inference until Task A traces the trade-entry write path and proves which basis enters `trades_v2.entry_premium`.
+- Source path verified so far:
+  - `brain.py` live P&L uses `entry_premium` and `current_net`.
+  - `MarketWatchService.kt` copies `current_pnl` and `current_net_premium` from the same `position_live` object.
+  - `MarketVivi/app.js` close path writes `actual_pnl` from `current_pnl` and `exit_premium` from `current_premium`.
+  - If stored entry, stored exit, lot size, and actual P&L do not reconcile, entry-basis provenance is the open degree of freedom.
+
+### Local implementation
+
+- `tools/pnl_engine_quarantine.py` updated locally:
+  - `UNRECONCILED_PENDING_TASK_A` renamed to `PNL_BASIS_DIVERGENT`.
+  - reason renamed to `ENTRY_BASIS_MISMATCH_EXECUTABLE_VS_STORED`.
+  - default gate changed to `55 / 60 / 29 / 23`.
+  - summary keys now explicitly caveat:
+    - reconciled mid-priced baseline excludes spread and charges;
+    - reconciled plus basis-divergent baseline excludes charges.
+- No Supabase writes were performed.
+- `--apply` was not run.
+
+### Verification
+
+- `python3 -m py_compile tools/pnl_engine_quarantine.py` passed.
+- Dry-run command:
+  - `python3 tools/pnl_engine_quarantine.py --page-size 25 --sleep 0.35`
+- Dry-run result:
+  - rows: `167`
+  - credential mode: `anon_dry_run`
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE = 55`
+  - `RECONCILED = 60`
+  - `PNL_BASIS_DIVERGENT = 29`
+  - `UNKNOWN = 23`
+  - `apply_gate.pass = true`
+
+### Artifact hashes
+
+- `tools/pnl_engine_quarantine.py`
+  - `231cd433fb82ec8e112715ed6ba45b25b9d3265f3867257d11d77c9a2229ac9d`
+- `reports/pnl_engine_classification_20260719.csv`
+  - `f84667baa8bd31aba8aa84a1e2d0f791ad7620e5402e8d9ae498f999955c5b13`
+- `reports/pnl_engine_classification_summary_20260719.json`
+  - `9a72e68048583ae2359665d47748cc6f115ff59e14bd4b76ac5b77fb0249600a`
+
+### Claude handoff file
+
+- Created outside git:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_GODMODE_AUDIT_CHECK_20260720.txt`
+
+### Next state
+
+- DB apply is now locally gate-pass after rename, but still requires safe service-role credentials.
+- Do not paste service-role keys into shell history or files.
+- If applying:
+  - first apply additive migration;
+  - then run classifier with service role and `--apply`;
+  - preserve Supabase throttling;
+  - export post-apply CSV, summary JSON, and hashes.
+- Continue to present all baselines with caveats:
+  - `RECONCILED` is mid-priced/reconciled sample, not current performance.
+  - `PNL_BASIS_DIVERGENT` is neutral basis-divergent evidence, not automatically broken and not fully verified as execution-realistic until Task A completes.
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE` remains quarantined.
+  - `UNKNOWN` remains degraded/missing-exit-premium evidence.
+
+## 2026-07-20 - Live crash/recovery root cause: ML brain snapshot bridge OOM
+
+### Trigger
+
+- User reported the app was crashing and recovering during the live session.
+- Log reviewed:
+  - `/tmp/codex-web-uploads/f-L66kud/marketapp-logs-2026-07-20T04-59-28-292Z.csv`
+
+### Finding
+
+- The crash is not in strategy selection/ranking.
+- It is an Android heap OOM in the UI bridge:
+  - `NativeBridge.getMLBrainSnapshots(NativeBridge.kt:2346)`
+  - `java.lang.OutOfMemoryError`
+  - failed allocation around `46 MB`
+  - heap max `256 MB`
+- Repeated OOMs were visible around:
+  - `10:25`
+  - `10:28`
+  - `10:29`
+- WebView then recovered and restored the polling service:
+  - `Restored active service: 15 polls restored`
+
+### Root Cause
+
+- `MarketVivi/app.js` requests `NativeBridge.getMLBrainSnapshots(200)`.
+- The native bridge previously called `EvaluationLocalCache.readBrainSnapshots(...)`, which materializes the full local day snapshot cache.
+- Local snapshot cache is intentionally large for post-close evaluation replay:
+  - `MAX_ROWS_PER_SESSION = 90`
+  - `MAX_BYTES_PER_SESSION = 64 MB`
+- That full evidence cache is too large to serialize through WebView for the ML tab on a 256 MB heap.
+
+### Local Fix
+
+- Android repo local files changed:
+  - `app/src/main/java/com/marketradar/app/EvaluationLocalCache.kt`
+  - `app/src/main/java/com/marketradar/app/NativeBridge.kt`
+- Added `EvaluationLocalCache.readRecentBrainSnapshots(...)`:
+  - streams the JSONL cache;
+  - keeps only bounded recent rows;
+  - does not materialize the full day cache for the UI bridge;
+  - returns newest-first for ML diagnostics.
+- Changed `NativeBridge.getMLBrainSnapshots(...)`:
+  - caps JS bridge rows to `30`;
+  - caps recent-read byte budget to `8 MB`;
+  - compacts each snapshot with `compactTeacherResearchSnapshot(...)` before returning to WebView.
+- PWA mitigation added:
+  - `MarketVivi/app.js` now requests `NativeBridge.getMLBrainSnapshots(30)` instead of `200`.
+  - This reduces the crash trigger for devices still running the old native bridge after the web cache updates.
+- Synchronized crash-fix release prep done locally:
+  - Android `versionName = "2.5.9"`
+  - Android `versionCode = 340`
+  - PWA title/visible label `v2.5.9 / b340`
+  - PWA cache-bust `app.js?v=1255`
+
+### Scope Guard
+
+- Post-close evaluation path is unchanged:
+  - `MarketMLService` still uses `readBrainSnapshots(...)` for full replay evidence.
+- Ranking, strategy generation, Supabase schema, and P&L logic are unchanged.
+- This is a stability/memory guard only.
+
+### Verification
+
+- `git diff --check` passed in Android repo.
+- `git diff --check` passed in PWA repo.
+- `./gradlew :app:compileDebugKotlin --no-daemon` could not run because the local workspace has no Android SDK configured:
+  - missing `ANDROID_HOME`
+  - missing `local.properties` with `sdk.dir`
+
+### Operational Note
+
+- Until a signed release with this native fix reaches the device, avoid repeatedly opening/refreshing the ML tab during live polling if the local snapshot cache is large.
+- Once PWA `app.js?v=1255` is shipped, the current installed app should be less likely to hit the old bridge OOM because the web layer asks for only 30 rows.
+- The durable fix still requires the native `v2.5.9 / b340` APK because only the native change prevents full-cache materialization before serialization.
