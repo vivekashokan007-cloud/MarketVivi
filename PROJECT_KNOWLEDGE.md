@@ -12329,3 +12329,53 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 
 - This does not change candidate ranking, teacher labels, P&L, G2, Supabase writes, or post-close evaluation.
 - It only reduces ML-tab bridge work and UI jank during live data capture.
+
+## 2026-07-20 - v2.5.11 Crash Fix: Cache Rewrite OOM + Foreground Service Quota
+
+### Evidence
+
+- Crash log reviewed:
+  - `/tmp/codex-web-uploads/f-Ejg6bx/marketapp-logs-2026-07-20T07-25-13-439Z.csv`
+- Fatal crash #1:
+  - `OutOfMemoryError` on `DefaultDispatcher-worker-*`
+  - stack:
+    - `EvaluationLocalCache.rewriteCanonicalFile(EvaluationLocalCache.kt:115)`
+    - `EvaluationLocalCache.appendBrainSnapshot(EvaluationLocalCache.kt:175)`
+    - `MarketWatchService.runBrainAnalysis(...)`
+  - cause:
+    - cache file had reached roughly `61-67 MB`;
+    - `rewriteCanonicalFile()` used `buildString(...)`, forcing a second very large in-memory copy during trim/compaction;
+    - `appendBrainSnapshot()` caught `Exception`, not `Throwable`, so `OutOfMemoryError` escaped and killed the app.
+- Fatal crash #2:
+  - `ForegroundServiceStartNotAllowedException: Time limit already exhausted for foreground service type dataSync`
+  - affected:
+    - `MarketWatchService.onStartCommand(...)`
+    - `PositionTickService.onCreate(...)`
+  - cause:
+    - Android foreground-service quota exhaustion during repeated recovery/restart cycles.
+
+### Fix Prepared
+
+- `EvaluationLocalCache.rewriteCanonicalFile(...)` now streams rows to a `.tmp` file with `bufferedWriter(...)`.
+- It no longer builds a full cache-size string in memory.
+- `appendBrainSnapshot(...)` now catches `Throwable` so OOM during local cache maintenance becomes a logged save failure instead of a process kill.
+- `MarketWatchService.onStartCommand(...)` now wraps `startForeground(...)` and exits cleanly if Android blocks foreground promotion.
+- `PositionTickService` now wraps:
+  - `startForeground(...)`
+  - `startForegroundService(...)` / `startService(...)`
+- A blocked position tick service is logged and skipped instead of crashing the main app.
+
+### Release Prep
+
+- Android:
+  - `versionName = "2.5.11"`
+  - `versionCode = 342`
+- PWA:
+  - visible label `v2.5.11 / b342`
+  - cache-bust `app.js?v=1257`
+
+### Scope Guard
+
+- No trading/ranking/teacher/P&L logic changed.
+- Full-day cache retention policy remains unchanged.
+- This is crash containment for local cache compaction and Android foreground-service quota exhaustion.
