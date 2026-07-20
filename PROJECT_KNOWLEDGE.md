@@ -12290,3 +12290,42 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 - Until a signed release with this native fix reaches the device, avoid repeatedly opening/refreshing the ML tab during live polling if the local snapshot cache is large.
 - Once PWA `app.js?v=1255` is shipped, the current installed app should be less likely to hit the old bridge OOM because the web layer asks for only 30 rows.
 - The durable fix still requires the native `v2.5.9 / b340` APK because only the native change prevents full-cache materialization before serialization.
+
+## 2026-07-20 - Post-v2.5.9 Jitter Follow-Up: Bridge Payload Still Too Heavy
+
+### Observation
+
+- Post-update log reviewed:
+  - `/tmp/codex-web-uploads/f-hTeNPc/marketapp-logs-2026-07-20T05-52-14-928Z.csv`
+- Result:
+  - Pre-update/transition period still showed old OOM events while `app.js?v=1254` / early `v1255` boot was active.
+  - After the new bridge path became active, no new crash loop was visible.
+  - The bridge emitted:
+    - `LOCAL_SNAPSHOT_READ_RECENT: rows=5 bytes=8083548 fileBytes=40850814 limit=30 byteCap=8388608`
+    - `ML_BRAIN_SNAPSHOTS_BRIDGE: rows=5 requested=30 maxRows=30`
+- Interpretation:
+  - Crash risk was reduced, but the UI bridge was still moving roughly `8 MB` per ML sync.
+  - The first recent-reader implementation still scanned the full JSONL snapshot cache before trimming.
+  - This explains visible jitter without a hard crash.
+
+### Local Follow-Up Patch Prepared
+
+- Android:
+  - `EvaluationLocalCache.readRecentBrainSnapshots(...)` now reads from the end of the JSONL file using `RandomAccessFile`.
+  - It stops once enough recent rows/bytes are collected, instead of scanning the full day file.
+  - Full post-close replay path remains unchanged; `readBrainSnapshots(...)` still loads the complete cache for evaluation.
+- Android bridge cap tightened:
+  - `ML_BRAIN_SNAPSHOT_JS_MAX_ROWS = 5`
+  - `ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 2 MB`
+- PWA:
+  - `getMLBrainSnapshotsCached(...)` now asks native for `5` rows instead of `30`.
+- Synchronized next-release prep:
+  - Android `versionName = "2.5.10"`
+  - Android `versionCode = 341`
+  - PWA label `v2.5.10 / b341`
+  - PWA cache-bust `app.js?v=1256`
+
+### Scope Guard
+
+- This does not change candidate ranking, teacher labels, P&L, G2, Supabase writes, or post-close evaluation.
+- It only reduces ML-tab bridge work and UI jank during live data capture.

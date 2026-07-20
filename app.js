@@ -1198,7 +1198,7 @@ function getMLBrainSnapshotsCached(force = false) {
         return STATE.mlBrainSnapshots;
     }
     const raw = typeof NativeBridge !== 'undefined' && typeof NativeBridge.getMLBrainSnapshots === 'function'
-        ? NativeBridge.getMLBrainSnapshots(30)
+        ? NativeBridge.getMLBrainSnapshots(5)
         : '[]';
     const parsed = safeParseNB(raw, []);
     STATE.mlBrainSnapshots = Array.isArray(parsed) ? parsed : [];
