@@ -2296,10 +2296,118 @@ function canPaperTrade(indexKey) {
     const paperCount = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper && t.index_key === indexKey).length;
     return paperCount < 5; // 5 per index, 10 total — calibration needs data
 }
-async function takeTradeImpl(candidateId, isPaper = false) {
-    const cand = (bd.watchlist || []).find(c => String(c.id) === String(candidateId))
+
+function findCandidateById(candidateId) {
+    return (bd.watchlist || []).find(c => String(c.id) === String(candidateId))
         || (bd.generated_candidates || []).find(c => String(c.id) === String(candidateId))
         || STATE.positioningCandidates.find(c => String(c.id) === String(candidateId));
+}
+
+function sandboxPreviewLeg(cand, correlationId, action, instrumentKey, strike, optionType, ltp, lotSize, lots) {
+    return {
+        correlation_id: String(correlationId),
+        action,
+        instrument_key: instrumentKey || '',
+        strike,
+        option_type: optionType || '',
+        lot_size: lotSize,
+        lots,
+        ltp: Number(ltp || 0)
+    };
+}
+
+function buildSandboxPreviewPayload(cand) {
+    const isBNF = cand.index === 'BNF';
+    const lotSize = Number(cand.lotSize || (isBNF ? C.BNF_LOT : C.NF_LOT));
+    const lots = Math.max(1, Number.parseInt(cand.lots || cand.lotCount || 1, 10) || 1);
+    const legs = [
+        sandboxPreviewLeg(cand, 1, 'BUY', cand.buyInstrumentKey || cand.buy_instrument_key, cand.buyStrike, cand.buyType, cand.buyLTP, lotSize, lots),
+        sandboxPreviewLeg(cand, 2, 'SELL', cand.sellInstrumentKey || cand.sell_instrument_key, cand.sellStrike, cand.sellType, cand.sellLTP, lotSize, lots)
+    ];
+    if (candidateLegCount(cand) === 4) {
+        legs.push(
+            sandboxPreviewLeg(cand, 3, 'BUY', cand.buyInstrumentKey2 || cand.buy_instrument_key2, cand.buyStrike2, cand.buyType2, cand.buyLTP2, lotSize, lots),
+            sandboxPreviewLeg(cand, 4, 'SELL', cand.sellInstrumentKey2 || cand.sell_instrument_key2, cand.sellStrike2, cand.sellType2, cand.sellLTP2, lotSize, lots)
+        );
+    }
+
+    const instrumentLotSizes = {};
+    legs.forEach(leg => {
+        if (leg.instrument_key) instrumentLotSizes[leg.instrument_key] = lotSize;
+    });
+
+    return {
+        action: 'build',
+        trade_ref: String(cand.id || `sandbox-preview-${Date.now()}`),
+        candidate_id: String(cand.id || ''),
+        strategy_type: cand.type || '',
+        index_key: cand.index || '',
+        expiry: cand.expiry || null,
+        lot_size: lotSize,
+        lots,
+        tag: `MR-SBOX-${Date.now()}`.slice(0, 20),
+        instrument_lot_sizes: instrumentLotSizes,
+        notes: {
+            preview_only: true,
+            no_broker_call: true,
+            price_source: 'candidate_ltp_fallback'
+        },
+        legs
+    };
+}
+
+function sandboxPreviewSummary(result) {
+    const orders = Array.isArray(result?.orders) ? result.orders : [];
+    if (!result?.ok) {
+        return `Sandbox build failed.\n\nCode: ${result?.error_code || 'UNKNOWN'}\nMessage: ${result?.error_message || 'Native order builder rejected the payload.'}`;
+    }
+    const lines = orders.map((order, i) => {
+        const side = order.transaction_type || '--';
+        const qty = order.quantity || '--';
+        const token = order.instrument_token || '--';
+        const price = Number(order.price || 0);
+        return `${i + 1}. ${side} qty ${qty} @ ${price > 0 ? price.toFixed(2) : '--'}\n   ${token}`;
+    });
+    return `Sandbox BUILD preview only. No broker order was sent.\n\nTrade ref: ${result.trade_ref || '--'}\nOrders: ${orders.length}\n\n${lines.join('\n')}`;
+}
+
+async function previewSandboxOrder(candidateId) {
+    const cand = findCandidateById(candidateId);
+    if (!cand) {
+        alert('Sandbox preview failed: candidate not found.');
+        return;
+    }
+    const bridge = window.NativeBridge || window.AndroidBridge;
+    if (!bridge?.runSandboxOrderDebugAction) {
+        alert('Sandbox native bridge not available in this build.');
+        return;
+    }
+    const payload = buildSandboxPreviewPayload(cand);
+    const missing = payload.legs
+        .filter(leg => !leg.instrument_key)
+        .map(leg => `${leg.action} ${leg.strike || '--'} ${leg.option_type || ''}`.trim());
+    if (missing.length) {
+        alert(`Sandbox preview blocked: missing instrument keys.\n\n${missing.join('\n')}`);
+        return;
+    }
+    try {
+        const raw = bridge.runSandboxOrderDebugAction(JSON.stringify(payload));
+        const result = typeof raw === 'string' ? safeParseNB(raw, { ok: false, error_code: 'BAD_NATIVE_JSON', error_message: raw }) : raw;
+        alert(sandboxPreviewSummary(result));
+        if (typeof addNotificationLog === 'function') {
+            addNotificationLog(
+                'Sandbox Build Preview',
+                result?.ok ? `Built ${result.orders?.length || 0} sandbox order payloads; no dispatch.` : `${result?.error_code || 'BUILD_FAILED'}: ${result?.error_message || ''}`,
+                result?.ok ? 'success' : 'warn'
+            );
+        }
+    } catch (e) {
+        alert(`Sandbox preview exception: ${e?.message || e}`);
+    }
+}
+
+async function takeTradeImpl(candidateId, isPaper = false) {
+    const cand = findCandidateById(candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
     const forces = cand.forces || { aligned: 0, f1: 0, f2: 0, f3: 0 };
     const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
@@ -4607,6 +4715,8 @@ function renderCandidateCard(cand, atm, rank) {
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
                     : weakEconomics
                     ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${weakEconomicsText}">⚠️ REVIEW EDGE</button>`
+                    : execModeLower === 'sandbox'
+                    ? `<button class="btn-take" onclick="previewSandboxOrder('${cand.id}')"${oodTitle}>🧪 SANDBOX BUILD${cand.costWarning ? ' ⚠️' : ''}${cand.mlOodBlocked || cand.mlOodFlag || cand.mlOod ? ' ⚠️' : ''}</button>`
                     : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)"${oodTitle}>📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}${cand.mlOodBlocked || cand.mlOodFlag || cand.mlOod ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}

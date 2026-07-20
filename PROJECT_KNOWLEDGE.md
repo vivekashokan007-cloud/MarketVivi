@@ -12379,3 +12379,64 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 - No trading/ranking/teacher/P&L logic changed.
 - Full-day cache retention policy remains unchanged.
 - This is crash containment for local cache compaction and Android foreground-service quota exhaustion.
+
+## 2026-07-20 - v2.5.12 Sandbox Build-Only Preview Wiring
+
+### Scope
+
+- Implemented the next safe sandbox step after the native sandbox order layer:
+  - PWA candidate cards in `SANDBOX` execution mode now show `SANDBOX BUILD` instead of `REAL TRADE`.
+  - The button calls `previewSandboxOrder(...)`, not `takeTrade(..., false)`.
+  - The payload is sent to native with `action = "build"` only.
+  - No broker dispatch path is invoked.
+  - No real/paper trade row is created by this preview path.
+
+### Payload Contract
+
+- The PWA now builds a native-compatible order preview payload from the selected candidate:
+  - `trade_ref`
+  - `candidate_id`
+  - `strategy_type`
+  - `index_key`
+  - `expiry`
+  - `lot_size`
+  - `lots`
+  - `instrument_lot_sizes`
+  - `legs[]`
+- Each leg includes:
+  - `correlation_id`
+  - `action` (`BUY` / `SELL`)
+  - `instrument_key`
+  - `strike`
+  - `option_type`
+  - `lot_size`
+  - `lots`
+  - `ltp`
+- The native `OrderExecutionService.buildOrders(...)` remains the validator and sequence authority:
+  - validates instrument key
+  - validates BUY/SELL side
+  - validates lot-size multiple quantity
+  - validates positive executable price
+  - sorts BUY legs before SELL legs
+
+### Safety Boundary
+
+- This release does not enable `place_sequential`, `place_multi`, `modify`, or `cancel` from the PWA.
+- The preview alert explicitly says no broker order was sent.
+- Sandbox token is not required for `build` mode.
+- Actual sandbox placement remains a future explicit step requiring confirmation and validation.
+
+### Release Prep
+
+- Android:
+  - `versionName = "2.5.12"`
+  - `versionCode = 343`
+  - `BRAIN_VERSION = "2.5.12"` for attribution alignment only
+- PWA:
+  - visible label `v2.5.12 / b343`
+  - cache-bust `app.js?v=1258`
+
+### Scope Guard
+
+- No candidate ranking, teacher label, G2/P&L, Supabase evaluation, or strategy-construction logic changed.
+- This is UI-to-native sandbox order-build wiring only.
