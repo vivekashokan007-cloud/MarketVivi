@@ -13588,3 +13588,62 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
 - `b346` addresses the first safe layer by throttling duplicate native bridge reads.
 - This does not delete or alter stored teacher evidence, rejected candidates, generated candidates, brain ranking, exit logic, or Supabase writes.
 - If jitter continues after `b346`, next investigation should profile payload size reduction in the ML tab only; that would need more design caution because it may reduce visible evidence detail.
+
+## 2026-07-21 - Paper Close Valuation Integrity Fix Prepared
+
+### Evidence After b346
+
+- Supabase verification on 2026-07-21 showed that close-button execution was repaired, but close persistence was still only partially clean.
+- Healthy closed rows existed:
+  - `id 179` (`NF BEAR_PUT`) with non-null `actual_pnl`, `exit_premium`, `net_pnl`, `net_won`;
+  - `id 182` (`BNF BEAR_PUT`) with non-null `actual_pnl`, `exit_premium`, `net_pnl`, `net_won`.
+- Dirty closed rows also existed on the same session:
+  - `id 180` closed with `actual_pnl = 0`, `exit_premium = null`, `net_pnl = -186.79`;
+  - `id 181` closed with `actual_pnl = 0`, `exit_premium = null`, `net_pnl = -185.64`.
+
+### Root Cause
+
+- Python position valuation already emits explicit unavailable state when it cannot produce a valid live mark:
+  - `_stamp_unavailable_position_valuation(...)` sets `current_pnl = None`;
+  - position valuation is marked `unavailable`.
+- Android native sync in `MarketWatchService.kt` was then overwriting those nullable fields with:
+  - `live.optDouble("current_pnl")`
+  - `live.optDouble("current_net_premium")`
+- `JSONObject.optDouble(...)` returns `0.0` when the key is absent or null.
+- Result:
+  - unavailable valuation got silently converted into fake zero P&L and fake zero/blank premium state in `open_trades`;
+  - PWA close guard only blocked `null`, not fake zero;
+  - closing a paper trade in that state persisted dirty labels to Supabase.
+
+### Fix Prepared: v2.5.16 / b347
+
+- Native sync now preserves nullable live valuation fields instead of coercing them to `0.0`.
+- `MarketWatchService.kt` now writes:
+  - `current_pnl`
+  - `current_spot`
+  - `current_premium`
+  - `peak_pnl`
+  - `trough_pnl`
+  - `peak_erosion`
+  - `vix_change`
+  using nullable finite-number helpers.
+- `journey` is only overwritten if it is present in the live payload.
+- PWA close guard is hardened:
+  - paper close is blocked if `current_premium` is unavailable;
+  - paper close is blocked if `valuation_quality` is `degraded` or `unavailable`.
+- Version sync:
+  - Android `versionName = 2.5.16`;
+  - Android `versionCode = 347`;
+  - Python `BRAIN_VERSION = 2.5.16`;
+  - PWA visible label `v2.5.16 / b347`;
+  - PWA cache-bust `app.js?v=1262`.
+
+### Scope / Non-Scope
+
+- This fix does not alter:
+  - candidate generation,
+  - the `1.10 EV` gate,
+  - teacher ranking,
+  - friction formula,
+  - Supabase schema.
+- It only prevents invalid close-state persistence when live valuation is unavailable or degraded.

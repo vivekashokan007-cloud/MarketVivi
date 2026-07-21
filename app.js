@@ -3005,8 +3005,18 @@ async function closeTrade(tradeId, exitReason) {
     const isPaper = trade.paper;
     const prefix = isPaper ? '📋 Paper' : '📌 Real';
     const grossClosePnl = currentPnlValue(trade);
+    const currentPremium = asFiniteNumber(trade.current_premium);
+    const valuationQuality = String(trade.valuation_quality || '').trim().toLowerCase();
     if (grossClosePnl === null) {
         alert('Position cannot be valued right now — no current P&L is available. Close is blocked so the app does not write a fake zero-P&L label. Wait for the next quote/poll or refresh before closing.');
+        return;
+    }
+    if (isPaper && currentPremium === null) {
+        alert('Position cannot be closed right now — the live exit premium is unavailable. Close is blocked so the app does not write a fake zero-premium label. Wait for the next quote/poll or refresh before closing.');
+        return;
+    }
+    if (isPaper && (valuationQuality === 'unavailable' || valuationQuality === 'degraded')) {
+        alert(`Position cannot be closed right now — valuation quality is ${valuationQuality}. Close is blocked so the app does not persist a degraded paper label.`);
         return;
     }
     const paperPnl = isPaper ? buildPaperPnlBreakdown(trade) : null;
@@ -3054,7 +3064,7 @@ async function closeTrade(tradeId, exitReason) {
             net_pnl: isPaper ? netClosePnl : null,
             net_won: isPaper ? netWon : null,
             friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
-            exit_premium: trade.current_premium ?? null,
+            exit_premium: currentPremium,
             exit_reason: exitReason || 'Manual',
             paper_close_reason_quality: null,
             paper_thesis_break_type: null,
