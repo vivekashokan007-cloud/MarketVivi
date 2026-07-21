@@ -1244,6 +1244,7 @@ function getTeacherTruthConfigCached(force = false) {
 }
 
 function asFiniteNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
     const num = Number(value);
     return Number.isFinite(num) ? num : null;
 }
@@ -1251,6 +1252,33 @@ function asFiniteNumber(value) {
 function moneyOrUnavailable(value) {
     const num = asFiniteNumber(value);
     return num === null ? 'unavailable' : `₹${num.toLocaleString()}`;
+}
+
+function currentPnlValue(tradeLike = {}) {
+    return asFiniteNumber(tradeLike.current_pnl);
+}
+
+function pnlSummary(trades = []) {
+    return trades.reduce((acc, trade) => {
+        const pnl = currentPnlValue(trade);
+        if (pnl === null) {
+            acc.unvalued += 1;
+        } else {
+            acc.valued += 1;
+            acc.total += pnl;
+        }
+        return acc;
+    }, { total: 0, valued: 0, unvalued: 0 });
+}
+
+function pnlSummarySuffix(summary) {
+    return summary.unvalued > 0 ? ` · ${summary.unvalued} unvalued excluded` : '';
+}
+
+function defaultExitReasonForTrade(tradeLike = {}) {
+    const pnl = currentPnlValue(tradeLike);
+    if (pnl === null) return 'Manual';
+    return pnl > 0 ? 'Manual exit' : 'Stop loss';
 }
 
 function parsedObject(value) {
@@ -1337,11 +1365,11 @@ function estimateTeacherRoundTripCost(tradeLike = {}) {
 }
 
 function buildPaperPnlBreakdown(tradeLike = {}) {
-    const grossMtm = Number(tradeLike.current_pnl || 0) || 0;
+    const grossMtm = currentPnlValue(tradeLike);
     const frictionBreakdown = estimateTeacherRoundTripCostBreakdown(tradeLike);
     const estimatedRoundTripCost = asFiniteNumber(frictionBreakdown.friction_cost);
     const nativeNetPnl = asFiniteNumber(frictionBreakdown.net_pnl);
-    const netIfClosedNow = estimatedRoundTripCost === null
+    const netIfClosedNow = grossMtm === null || estimatedRoundTripCost === null
         ? null
         : (nativeNetPnl === null ? Math.round((grossMtm - estimatedRoundTripCost) * 100) / 100 : nativeNetPnl);
     return { grossMtm, estimatedRoundTripCost, netIfClosedNow, frictionBreakdown };
@@ -2967,12 +2995,16 @@ async function closeTrade(tradeId, exitReason) {
     // Confirmation
     const isPaper = trade.paper;
     const prefix = isPaper ? '📋 Paper' : '📌 Real';
+    const grossClosePnl = currentPnlValue(trade);
+    if (grossClosePnl === null) {
+        alert('Position cannot be valued right now — no current P&L is available. Close is blocked so the app does not write a fake zero-P&L label. Wait for the next quote/poll or refresh before closing.');
+        return;
+    }
     const paperPnl = isPaper ? buildPaperPnlBreakdown(trade) : null;
-    const grossClosePnl = Number(trade.current_pnl ?? 0) || 0;
     const netClosePnl = isPaper ? paperPnl.netIfClosedNow : null;
     const displayClosePnl = isPaper && netClosePnl !== null ? netClosePnl : grossClosePnl;
     const confirmMsg = isPaper
-        ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ₹${paperPnl.grossMtm.toLocaleString()}\nEst. round-trip cost: ${paperPnl.estimatedRoundTripCost === null ? 'unavailable' : `₹${paperPnl.estimatedRoundTripCost.toLocaleString()}`}\nNet if closed now: ${paperPnl.netIfClosedNow === null ? 'unavailable' : `₹${paperPnl.netIfClosedNow.toLocaleString()}`}`
+        ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)}\nEst. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}\nNet if closed now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}`
         : `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nP&L: ₹${trade.current_pnl ?? 'unknown'}`;
     if (!confirm(confirmMsg)) return;
 
@@ -3092,9 +3124,9 @@ async function closeTrade(tradeId, exitReason) {
                 peak_pnl: trade.peak_pnl ?? 0,
                 trough_pnl: trade.trough_pnl ?? 0,
                 drawdown_from_peak: (trade.peak_pnl > 0 && trade.trough_pnl < trade.peak_pnl) ? trade.peak_pnl - trade.trough_pnl : 0,
-                recovery: (trade.trough_pnl < 0 && trade.current_pnl > 0),
+                recovery: (trade.trough_pnl < 0 && grossClosePnl > 0),
                 poll_count: trade.poll_count ?? 0,
-                pnl_per_poll: trade.poll_count > 0 ? Math.round(trade.current_pnl / trade.poll_count) : 0,
+                pnl_per_poll: trade.poll_count > 0 ? Math.round(grossClosePnl / trade.poll_count) : 0,
                 timeline: trade._journey?.timeline || []
             }
         });
@@ -3446,14 +3478,18 @@ function renderTicker(snapshot = null) {
         const paperTrades = openTrades.filter(t => t.paper);
         let pnlText = '';
         if (realTrades.length > 0) {
-            const realPnl = realTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+            const real = pnlSummary(realTrades);
+            const realPnl = real.total;
             pnlText += `📌${realPnl >= 0 ? '+' : ''}₹${realPnl}`;
             pnlEl.className = realPnl >= 0 ? 'ticker-pnl-pos' : 'ticker-pnl-neg';
+            if (real.unvalued) pnlText += ` (${real.unvalued} unvalued)`;
         }
         if (paperTrades.length > 0) {
-            const paperPnl = paperTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+            const paper = pnlSummary(paperTrades);
+            const paperPnl = paper.total;
             pnlText += `${pnlText ? ' ' : ''}📋${paperPnl >= 0 ? '+' : ''}₹${paperPnl}`;
             if (realTrades.length === 0) pnlEl.className = paperPnl >= 0 ? 'ticker-pnl-pos' : 'ticker-pnl-neg';
+            if (paper.unvalued) pnlText += ` (${paper.unvalued} unvalued)`;
         }
         pnlEl.textContent = pnlText;
     } else if (pnlEl) {
@@ -4732,7 +4768,7 @@ function renderTradeCard(t, isPaper) {
         aligned: t.force_alignment || 0
     };
     const paperPnl = isPaper ? buildPaperPnlBreakdown(t) : null;
-    const headlinePnl = isPaper ? paperPnl.netIfClosedNow : (t.current_pnl || 0);
+    const headlinePnl = isPaper ? paperPnl.netIfClosedNow : currentPnlValue(t);
     const headlinePnlNum = asFiniteNumber(headlinePnl);
     const pnlClass = headlinePnlNum === null ? '' : (headlinePnlNum >= 0 ? 'pnl-pos' : 'pnl-neg');
     const dots = alignmentDots(forces.aligned);
@@ -4785,14 +4821,14 @@ function renderTradeCard(t, isPaper) {
             ${t.peak_pnl > 0 ? `<span class="pos-peak">(peak ₹${t.peak_pnl.toLocaleString()})</span>` : ''}
         </div>
         ${isPaper
-            ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}</span></div>`
+            ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}</span></div>`
             : ''
         }
         ${savedMarginLine}
         <div class="control-section">
             ${t.max_profit || t.max_loss ? `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--border)">
                 <span style="color:var(--green)">🎯 Max: ₹${(t.max_profit || 0).toLocaleString()}</span>
-                <span style="color:var(--text-muted)">${isPaper ? 'Net' : 'P&L'}: ${t.max_profit > 0 && headlinePnlNum !== null ? Math.round(headlinePnlNum / t.max_profit * 100) : 0}% of max</span>
+                <span style="color:var(--text-muted)">${isPaper ? 'Net' : 'P&L'}: ${t.max_profit > 0 && headlinePnlNum !== null ? `${Math.round(headlinePnlNum / t.max_profit * 100)}%` : '--'} of max</span>
                 <span style="color:var(--danger)">🛑 Loss: ₹${(t.max_loss || 0).toLocaleString()}</span>
             </div>` : ''}
             <div class="env-row">
@@ -4840,7 +4876,7 @@ function renderTradeCard(t, isPaper) {
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
             <button class="btn-close-profit" onclick="closeTrade('${t.id}', 'Brain said BOOK')">💰 Book Profit</button>
-            <button class="btn-close-loss" onclick="closeTrade('${t.id}', ${(t.current_pnl ?? 0) > 0 ? "'Manual exit'" : "'Stop loss'"})">🛑 Exit</button>
+            <button class="btn-close-loss" onclick="closeTrade('${t.id}', ${JSON.stringify(defaultExitReasonForTrade(t))})">🛑 Exit</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
             <summary style="cursor:pointer;font-size:10px;color:var(--text-muted);user-select:none">More exit reasons ▸</summary>
@@ -4931,9 +4967,10 @@ function renderPosition(snapshot = null) {
     // ═══ REAL TRADES ═══
     if (realTrades.length > 0) {
         if (realTrades.length > 1) {
-            const totalPnL = realTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+            const real = pnlSummary(realTrades);
+            const totalPnL = real.total;
             const totalClass = totalPnL >= 0 ? 'pnl-pos' : 'pnl-neg';
-            html += `<div class="total-pnl-bar ${totalClass}">📌 Real P&L: ₹${totalPnL.toLocaleString()} (${realTrades.length} positions)</div>`;
+            html += `<div class="total-pnl-bar ${totalClass}">📌 Real P&L: ₹${totalPnL.toLocaleString()} (${real.valued}/${realTrades.length} valued${pnlSummarySuffix(real)})</div>`;
         }
         html += `<div class="section-timestamp">Last updated: ${lastUpdate || API.istNow()}</div>`;
         for (const t of realTrades) {
@@ -4943,9 +4980,10 @@ function renderPosition(snapshot = null) {
 
     // ═══ PAPER TRADES ═══
     if (paperTrades.length > 0) {
-        const paperPnL = paperTrades.reduce((s, t) => s + (t.current_pnl || 0), 0);
+        const paper = pnlSummary(paperTrades);
+        const paperPnL = paper.total;
         const paperCostValues = paperTrades.map(t => estimateTeacherRoundTripCost(t));
-        const costUnavailable = paperCostValues.some(v => v === null);
+        const costUnavailable = paperCostValues.some(v => v === null) || paper.unvalued > 0;
         const totalEstCost = paperCostValues.reduce((s, v) => s + (v ?? 0), 0);
         const netPaperPnL = costUnavailable ? null : paperPnL - totalEstCost;
         const paperClass = netPaperPnL === null ? '' : (netPaperPnL >= 0 ? 'pnl-pos' : 'pnl-neg');
@@ -4953,16 +4991,17 @@ function renderPosition(snapshot = null) {
         const bnfPapers = paperTrades.filter(t => t.index_key === 'BNF').length;
         html += `<div class="paper-header">📋 Paper Trades (${nfPapers} NF · ${bnfPapers} BNF)</div>`;
         html += `<div class="total-pnl-bar paper-pnl ${paperClass}">Paper Net If Closed Now: ${moneyOrUnavailable(netPaperPnL)}</div>`;
-        html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${paperPnL.toLocaleString()} · Est. round-trip costs: ${costUnavailable ? 'unavailable' : `₹${totalEstCost.toLocaleString()}`}</div>`;
+        html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${paperPnL.toLocaleString()} (${paper.valued}/${paperTrades.length} valued${pnlSummarySuffix(paper)}) · Est. round-trip costs: ${costUnavailable ? 'unavailable' : `₹${totalEstCost.toLocaleString()}`}</div>`;
 
         // Cross-test comparison: group by index to show side-by-side performance
         for (const idx of ['NF', 'BNF']) {
             const idxTrades = paperTrades.filter(t => t.index_key === idx);
-            if (idxTrades.length > 1) {
-                const sorted = [...idxTrades].sort((a, b) => (b.current_pnl || 0) - (a.current_pnl || 0));
+            const valuedIdxTrades = idxTrades.filter(t => currentPnlValue(t) !== null);
+            if (valuedIdxTrades.length > 1) {
+                const sorted = [...valuedIdxTrades].sort((a, b) => currentPnlValue(b) - currentPnlValue(a));
                 const best = sorted[0];
                 const worst = sorted[sorted.length - 1];
-                const diff = Math.abs((best.current_pnl || 0) - (worst.current_pnl || 0));
+                const diff = Math.abs(currentPnlValue(best) - currentPnlValue(worst));
                 if (diff > 0) {
                     const modeMatch = best.trade_mode !== worst.trade_mode;
                     const typeMatch = best.strategy_type !== worst.strategy_type;

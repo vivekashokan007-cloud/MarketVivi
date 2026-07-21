@@ -12440,3 +12440,1042 @@ BROKERAGE_PER_ORDER = ₹10   (flat, Upstox, valid through Sept 2026 — re-veri
 
 - No candidate ranking, teacher label, G2/P&L, Supabase evaluation, or strategy-construction logic changed.
 - This is UI-to-native sandbox order-build wiring only.
+
+### Push Verification
+
+- User explicitly authorized push after local checks.
+- `Marketapp` pushed to `main`:
+  - commit `1055806b82c80865a5efffa43ddc37942bf25027`
+  - remote HEAD verified equal to local HEAD
+  - debug workflow succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29737137615`
+  - signed release workflow succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/29737137692`
+- `MarketVivi` pushed to `main`:
+  - commit `ffa52778a37b2fb84279e8657615d4f2a5e4fc7e`
+  - remote HEAD verified equal to local HEAD
+- Both worktrees were clean after push.
+
+### Current Sandbox State
+
+- Sandbox is not yet fully end-to-end.
+- Completed:
+  - native sandbox order builder/validator exists
+  - PWA can build and preview the sandbox payload from a candidate
+  - sandbox preview is isolated from trade recording and broker dispatch
+- Not completed:
+  - UI path for `place_sequential`
+  - explicit confirmation flow for real sandbox dispatch
+  - Upstox sandbox response capture from live app flow
+  - order-status / fill lifecycle tracking
+  - sandbox order response comparison against brain values and later market movement
+- Standing rule:
+  - do not bypass the app by manually sending strategy orders from Codex unless explicitly authorized as an emergency diagnostic;
+  - direct Codex dispatch would weaken the app audit trail and is not the preferred path.
+
+### EV Gate Discussion
+
+- User raised that the current `1.10` EV hard floor is causing no strategy generation.
+- Current recommendation:
+  - do not remove the `1.10` EV gate from live selection directly.
+  - keep the hard live safety gate intact until evidence proves a lower/branch-specific EV floor is profitable after G2 friction.
+- Reason:
+  - no-candidate days may be caused by EV formula conservatism, probability calibration, debit spread rejection, calm-regime branching, candidate construction, or friction assumptions;
+  - deleting the gate live could surface weak premium / negative-expectancy candidates just to force activity.
+- Preferred experiment:
+  - add `EV_RELAX_SHADOW` observe-only diagnostics.
+  - For each poll, record the best candidate under:
+    - current EV floor `1.10`
+    - relaxed EV floor `1.00`
+    - relaxed EV floor `0.90`
+    - EV gate disabled while keeping structural/safety gates intact
+  - Post-close compare realized outcomes after G2 friction.
+- Important boundary:
+  - the relaxed EV path must not affect live `WAIT` / trade decisions until post-close evidence supports promotion.
+
+### Deferred Sandbox Operating Plan
+
+1. Install/update to `v2.5.12 / b343`.
+2. During live market hours, turn `Sandbox ON`.
+3. If a valid candidate appears, press `SANDBOX BUILD`.
+4. Verify the preview:
+   - BUY legs appear before SELL legs
+   - quantity equals lots times lot size
+   - instrument keys are present
+   - prices are positive and plausible
+   - strategy/index/expiry match the card
+5. If build preview is correct, next implementation step is guarded `SANDBOX PLACE`:
+   - UI must ask explicit confirmation
+   - action should be `place_sequential`
+   - response should persist to `sandbox_orders`
+   - no live broker endpoint is allowed
+6. This plan is deferred. User clarified on 2026-07-20 that sandbox implementation must wait until brain logic is corrected.
+
+## 2026-07-20 - Adaptive Brain Analysis Directive Review
+
+Source directive: `DIRECTIVE_OC_ADAPTIVE_BRAIN_ANALYSIS_20260720-1.md`.
+
+### Boundary
+
+- Claude explicitly marked the document as analysis/challenge only.
+- No code changes, no live-path modifications, and no Supabase writes are authorized by this directive.
+- Treat the adaptive-brain discussion as a research track, separate from the current sandbox and crash-stability path.
+
+### Verified Code Findings
+
+- `BUILD3_EV_FLOOR_MULT = 1.10` is active in `brain.py`.
+- A8 EV gate uses `probProfit`, `maxProfit`, and `maxLoss`:
+  - `expected_win = probProfit * maxProfit`
+  - `expected_loss = (1 - probProfit) * maxLoss`
+  - pass requires `expected_win >= expected_loss * 1.10`
+- `trueProb` is not decorative:
+  - Credit candidates compute `trueProb` using `_realized_vol_proxy(vix)`.
+  - `premiumEdge` is computed from `trueProb`.
+  - Ranking uses `premiumEdge` before probability and ML tie-breakers.
+- Important nuance:
+  - `trueProb`/realized-vol proxy affects ranking through `premiumEdge`.
+  - The 1.10 A8 hard gate itself uses `probProfit`, not `trueProb`.
+  - Therefore EV-floor experiments and realized-vol-proxy fixes are related but not identical levers.
+- `_realized_vol_proxy(vix)` is currently a constant bootstrap: `(vix * 0.85) / 100`.
+- `MAX_SIGMA_OTM` live constant is `1.15`; `0.8` is only fallback/default in `_credit_sigma_limits`.
+- `vix_velocity` and `breadth_skew` do not exist in `brain.py`, supporting rejection of Gemini's proposed spatial anomaly veto.
+- Strategy constants include `DOUBLE_DEBIT` in debit/neutral lists, but code comments state `DOUBLE_DEBIT is not built by the live candidate generator`.
+
+### Challenge To Claude/Gemini Claims
+
+- Reject spatial anomaly veto for now:
+  - required inputs are missing;
+  - vector weights are hand-written;
+  - mixed-scale Euclidean distance is not normalized;
+  - threshold has no interpretable calibration.
+- Hold fuzzy regime blending:
+  - historical/live evidence is not enough for 19+ and 24+ VIX activation unless high-vol windows are refetched and tested.
+- Hold adaptive sigma gates:
+  - directionally plausible, but constants are not fitted and the cited `0.8` max-sigma claim is inaccurate for live code.
+- Hold whipsaw siphon:
+  - potentially testable from existing verdict-flip snapshots, but should be observe-only first.
+- Strategy-universe statement needs precision:
+  - live generated structures appear to omit pure long-vol neutral structures;
+  - however `DOUBLE_DEBIT` exists in constants as a dormant/not-built type, so saying "exactly six structures" is too loose unless confirmed by generation-path evidence.
+- RV/VIX analysis needs horizon discipline:
+  - 20-day realized volatility vs same-day VIX is a horizon/basis mismatch;
+  - VIX is forward/implied and closer to 30-day;
+  - intraday strategy selection may need intraday RV, 1-day, 5-day, 10-day, and 20-day comparisons separately.
+- Put-call-parity spot recovery is useful, but only if quotes are synchronized by timestamp/expiry and filtered for stale/zero/wide-spread artifacts.
+- April 2026 artifact claim is plausible but must be date-aligned:
+  - verify whether the 55 incomplete IC/IB winners actually coincide with high-RV dates, not just the same month.
+- `IV_RICH_MIN` priority must be proven by rejection frequency:
+  - recent app evidence often shows sigma, price, credit-positive, capital-limit, and EV-floor rejections dominating;
+  - `iv_not_rich` should be quantified by date/regime before ranking it as top priority.
+
+### Current Recommendation
+
+- Do not implement adaptive brain changes yet.
+- Keep live selection frozen except already-authorized stability tasks.
+- Sandbox implementation is explicitly parked until brain logic/ranking correctness is resolved.
+- Prepare evidence-only queries/analysis for:
+  - VIX/RV band distribution;
+  - generated strategy counts including whether `DOUBLE_DEBIT` ever appears;
+  - rejection-stage distribution by date/regime, especially `iv_not_rich`;
+  - A8 EV relax shadow candidates at `1.10`, `1.00`, `0.90`, and disabled EV while preserving structural/safety gates;
+  - rank-order impact of `trueProb`/`premiumEdge` versus `probProfit`.
+- Any promotion to live ranking must require explicit authorization after post-close evidence.
+
+### Priority Correction
+
+- User clarified that sandbox implementation should not continue before brain logic is corrected.
+- New priority:
+  - brain logic/ranking/rejection correctness first;
+  - sandbox order placement second;
+  - live broker execution last.
+- Reason:
+  - a working sandbox layer is not useful if the brain has no reliable candidate/ranking logic;
+  - sandbox can only test execution mechanics, not fix selection quality.
+
+## 2026-07-20 - Deterministic Brain / LLM Architecture Study Assessment
+
+Source study: `STUDY_DETERMINISTIC_BRAIN_LLM_ARCHITECTURE_20260720.md`.
+
+### Assessment Boundary
+
+- Treat Claude's document as a design study, not implementation authorization.
+- No live brain rewrite, no EV-gate removal, no sandbox continuation is implied by this study.
+- Current program priority remains:
+  - correct brain logic/ranking/rejection evidence first;
+  - keep sandbox order-layer work parked;
+  - keep LLM/Gemini outside the hot path.
+
+### What Was Accepted
+
+- Direction is valid:
+  - the brain should become deterministic but richer, more adaptive, and more auditable;
+  - LLM/Gemini should remain offline/advisory for retrospective review and proposal generation only.
+- Strongest architecture target:
+  - one expected-R currency after friction for all candidates;
+  - shadow EV-floor comparisons before any live threshold change.
+- `DOUBLE_DEBIT` issue is real but needs precise wording:
+  - it exists in constants;
+  - it is not built as a live candidate generator path;
+  - low-IV neutral logic can effectively fall back to short-vol structures.
+
+### Corrections To Claude Claims
+
+- "Zero persistent state in brain.py" is too broad:
+  - `NotificationAgent` persists candidate/verdict state and suppresses repeated alerts;
+  - the accurate gap is no persistent market-belief posterior used by candidate scoring.
+- "Brain lacks all six LLM-like properties" is too broad:
+  - branch overrides, teacher artifacts, Stage 2A shadow, ML advisory, and notification memory already exist in partial form;
+  - the problem is fragmentation, not total absence.
+- "16 gates" should be audited before implementation:
+  - create a gate registry before softening anything;
+  - classify each rejection as SAFETY or EVIDENCE.
+- B1 perception is only partially unblocked:
+  - intraday RV from spot stream is feasible;
+  - IV skew/term structure must first prove enough expiry/strike capture and quote quality.
+
+### Corrected Implementation Sequence
+
+1. Verify data-integrity prerequisites:
+   - S1/G2 friction;
+   - lot-size corrected PnL;
+   - close-path null handling;
+   - post-close evaluation completeness;
+   - clean teacher labels.
+2. Add B1a shadow intraday realized volatility from spot stream.
+3. Add B1b historical RV context with horizon separation:
+   - intraday, 1-day, 5-day, 10-day, 20-day.
+4. Add B2 unified expected-R shadow scorer.
+5. Add EV relaxation shadow:
+   - `1.10`, `1.00`, `0.90`, and EV-disabled-with-safety-gates.
+6. Build gate taxonomy:
+   - SAFETY gates stay hard;
+   - EVIDENCE gates may later become weighted log-odds.
+7. Add limited structure composer shadow only after expected-R exists.
+8. Add session belief posterior in shadow after perception is reliable.
+9. Fit regime weights only after enough clean labelled outcomes exist.
+10. Use LLM/Gemini only for monthly/offline proposal generation with human approval.
+
+### Current Recommendation
+
+- Do not remove the live `1.10` EV floor.
+- Do not continue sandbox implementation until brain selection quality is corrected.
+- Do not build a full composer before one expected-R scorer exists.
+- Next useful coding track should be evidence-only:
+  - RV perception;
+  - expected-R shadow;
+  - EV-band shadow;
+  - gate taxonomy.
+
+### Claude Handoff File
+
+- Prepared assessment file:
+  - `/tmp/DETERMINISTIC_BRAIN_LLM_ARCHITECTURE_ASSESSMENT_TO_CLAUDE_20260720.txt`
+
+## 2026-07-20 - Claude Approval Of Staged Brain Plan
+
+Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
+
+### Ruling Accepted
+
+- Claude approved OpenClaw's corrected staged plan.
+- The corrected nine-phase order replaces Claude's original six-phase order.
+- Canonical diagnosis is now:
+  - the brain does not lack every adaptive piece;
+  - the problem is fragmentation across perception, scoring, selection, teacher, ML advisory, and notification state.
+
+### Accepted Corrections
+
+- `NotificationAgent` persistence exists in `brain.py`; the true gap is no persistent market-belief posterior used in candidate scoring.
+- Gate count must not be treated as fact until a registry exists.
+- Intraday RV is authorized as B1a; IV skew/term is blocked until chain-coverage audit passes.
+- Composer must wait until one expected-R currency exists.
+- Live EV floor must not be relaxed directly.
+- Supabase writes must remain capped/summarized.
+
+### Authorization State
+
+- Phase 0:
+  - already in flight;
+  - must close the four standing items before Phase 3-5 full-session shadow runs.
+- Phases 1-2:
+  - authorized shadow-only:
+    - B1a intraday RV;
+    - B1b historical multi-horizon RV from filtered data.
+- Phases 3-5:
+  - authorized to design and implement in shadow only after Phase 0 closes;
+  - schema/sample rows must be prepared before first full-session run.
+- Phases 6-9:
+  - not authorized.
+
+### Phase 0 Standing Items
+
+- `pnl_engine --apply`:
+  - local dry-run gate currently passes with revised classes `55 / 60 / 29 / 23`;
+  - DB apply still requires safe service-role execution.
+- Close-path null-default fix:
+  - implemented locally in `MarketVivi/app.js`;
+  - not pushed;
+  - no version/cache bust performed yet.
+- Task A entry-basis provenance:
+  - remains an evidence/provenance item unless separately closed by Claude.
+- G2 forward friction confirmation:
+  - G2 live friction fields and bridge exist;
+  - forward confirmation still depends on new clean closes with finite valuation.
+
+### Local Close-Path Null-Default Fix
+
+- Patched `MarketVivi/app.js` forward-only.
+- Behavior:
+  - if `trade.current_pnl` is null/undefined/blank/NaN, manual close is blocked;
+  - no fake `actual_pnl = 0` is written;
+  - no fake `canonical_won = false` / `outcome_h2 = 0` is written;
+  - generic Exit button no longer infers `Stop loss` from coerced zero;
+  - position card/ticker/totals show `unavailable` or exclude unvalued rows with visible counts.
+- Helper correction:
+  - `asFiniteNumber(null)` now returns `null`, not `0`.
+- Verification:
+  - `node --check app.js` passed.
+  - grep check found no remaining `current_pnl ?? 0`, `current_pnl || 0`, or `Number(...current_pnl...)` write/display default pattern except the safe `currentPnlValue()` helper.
+
+### Current Boundary
+
+- No live ranking/selection changes.
+- No brain logic changes.
+- No sandbox continuation.
+- No Supabase writes from this checkpoint.
+- Before pushing this PWA fix:
+  - decide synchronized version bump/cache bust with `Marketapp`;
+  - keep both repos aligned per standing release discipline.
+
+## 2026-07-20 - Phase 0 PnL Engine Dry-Run Refreshed
+
+### Execution Boundary
+
+- Ran throttled read-only dry-run:
+  - `python3 tools/pnl_engine_quarantine.py --page-size 25 --sleep 0.35`
+- Credential mode:
+  - `anon_dry_run`
+- No Supabase writes were performed.
+- Service-role/access-token environment variables are not loaded locally:
+  - `SUPABASE_SERVICE_ROLE_KEY` missing
+  - `SUPABASE_ACCESS_TOKEN` missing
+- Therefore `--apply` was not run.
+
+### Updated Dry-Run Result
+
+- Rows classified:
+  - `170`
+- Previous dry-run had `167`; the increase is from new UNKNOWN rows.
+- Apply gate still passes because UNKNOWN tolerance is `3`.
+
+### Current Class Counts
+
+- `UNTRUSTED_INCOMPLETE_STRUCTURE = 55`
+- `RECONCILED = 60`
+- `PNL_BASIS_DIVERGENT = 29`
+- `UNKNOWN = 26`
+
+### Current Baselines
+
+- Reconciled mid-priced baseline, gross excluding spread and charges:
+  - rows `60`
+  - win rate `53.3333%`
+  - total P&L `80103.0`
+  - avg P&L `1335.05`
+- Reconciled plus basis-divergent baseline, gross excluding charges:
+  - rows `89`
+  - win rate `50.5618%`
+  - total P&L `72815.0`
+  - avg P&L `818.15`
+
+### Updated Artifact Hashes
+
+- `reports/pnl_engine_classification_20260719.csv`
+  - `28324cbac002e15819d5dea1102c7df159ce7a1d73431896c9c9b32793b0b367`
+- `reports/pnl_engine_classification_summary_20260719.json`
+  - `d0efa7e48606e4c86c64c4c814c76b859e59955c1ea68422b35fcefca615e3f5`
+- `tools/pnl_engine_quarantine.py`
+  - `231cd433fb82ec8e112715ed6ba45b25b9d3265f3867257d11d77c9a2229ac9d`
+- `supabase/migrations/20260719_pnl_engine_quarantine.sql`
+  - `c730d0b0d8991e4e1fe953e5cf7111102607f1d613dc3dc2c7207bc1ac7ae5b1`
+
+### DB Apply Status
+
+- Completed on 2026-07-21 UTC through Supabase Management SQL endpoint.
+- Throttling posture:
+  - one management SQL health check;
+  - one server-side DDL/update transaction;
+  - one small anon REST verification read of 170 rows.
+- Management API required a browser-like user agent; the default Python user agent was blocked by Cloudflare 1010.
+- No secrets are stored in repo or project knowledge.
+
+### Supabase Apply Result
+
+- Applied classification columns/indexes to `public.trades_v2`.
+- Updated closed paper rows with additive PnL quarantine fields only.
+- Rows classified:
+  - `170`
+- Class counts:
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE = 55`
+  - `RECONCILED = 60`
+  - `PNL_BASIS_DIVERGENT = 29`
+  - `UNKNOWN = 26`
+- Returned aggregate actual P&L by class:
+  - `RECONCILED`: rows `60`, avg actual P&L `1335.05`, total actual P&L `80103.00`
+  - `PNL_BASIS_DIVERGENT`: rows `29`, avg actual P&L `-251.31`, total actual P&L `-7288.00`
+  - `UNKNOWN`: rows `26`, avg actual P&L `-443.81`, total actual P&L `-11539.00`
+  - `UNTRUSTED_INCOMPLETE_STRUCTURE`: rows `55`, avg actual P&L `5803.49`, total actual P&L `319192.00`
+
+### Read-Back Verification
+
+- Verified via anon REST after apply:
+  - rows read `170`
+  - counts matched the management SQL return exactly.
+
+### Next Requirement
+
+- Phase 0 DB classification is now complete.
+- Next implementation work should follow Claude-approved staged brain plan:
+  - Phase 0 standing queue closure/confirmation;
+  - then Phase 1 shadow-only B1a intraday RV;
+  - then Phase 2 shadow-only B1b historical multi-horizon RV.
+- Do not proceed to Phases 6-9.
+- Do not change live decision path, LLM hot path, or sandbox path until explicitly authorized.
+
+## 2026-07-21 - Phase 1/B1a Shadow Intraday RV Implemented Locally
+
+### Scope
+
+- Implemented Claude-authorized Phase 1/B1a only.
+- Purpose:
+  - compute intraday realized volatility from the live spot poll stream;
+  - persist it as shadow evidence for later brain/ranking research;
+  - avoid all live decision, scoring, ranking, notification, sandbox, and LLM hot-path changes.
+- This is diagnostic/shadow-only. It must not be interpreted as a production ranking rule.
+
+### Android Repo Changes
+
+- Repo: `Marketapp-main-worktree`
+- Branch: `main`
+- Files changed:
+  - `app/src/main/python/brain.py`
+  - `app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `app/src/main/python/tests/test_b1a_intraday_rv_shadow.py`
+  - `supabase/migrations/20260721_b1a_intraday_rv_shadow.sql`
+  - refreshed PnL quarantine report artifacts:
+    - `reports/pnl_engine_classification_20260719.csv`
+    - `reports/pnl_engine_classification_summary_20260719.json`
+
+### B1a Payload
+
+- Added `_compute_b1a_intraday_rv(polls)` in `brain.py`.
+- Source:
+  - `spot_poll_stream`
+- Schema version:
+  - `b1a_intraday_rv_v1`
+- Per-index output currently covers:
+  - `BNF`
+  - `NF`
+- Computed fields include:
+  - `spot_count`
+  - `return_count`
+  - `start_spot`
+  - `last_spot`
+  - `signed_move_pct`
+  - `range_pct`
+  - `rv_pct`
+  - `abs_last_return_pct`
+  - `abs_mean_return_pct`
+  - `implied_daily_sigma_pct`
+  - `rv_to_iv_daily_ratio`
+- Fail-closed statuses:
+  - `INSUFFICIENT_POLLS`
+  - `INSUFFICIENT_RETURNS`
+  - `OK`
+
+### Snapshot Persistence
+
+- `take_poll_snapshot` now attaches:
+  - `b1a_intraday_rv_json`
+  - `b1a_rv_status`
+  - `b1a_bnf_rv_to_iv_daily_ratio`
+  - `b1a_nf_rv_to_iv_daily_ratio`
+- `market_forces.b1a_intraday_rv` also carries the full shadow payload.
+- `poll_summary_json` includes compact B1a summary fields for quick inspection.
+- Kotlin JSON handling was updated so `b1a_intraday_rv_json` is passed as a JSON object to Supabase, not as a string.
+
+### Supabase DDL
+
+- Migration added:
+  - `supabase/migrations/20260721_b1a_intraday_rv_shadow.sql`
+- Adds B1a columns to:
+  - `public.ml_brain_snapshots`
+  - `public.ml_poll_sequences`
+- Columns:
+  - `b1a_intraday_rv_json jsonb`
+  - `b1a_rv_status text`
+  - `b1a_bnf_rv_to_iv_daily_ratio double precision`
+  - `b1a_nf_rv_to_iv_daily_ratio double precision`
+- Index creation is guarded by table and column existence checks.
+
+### Supabase Apply Status
+
+- DDL applied on 2026-07-21 UTC through the Supabase Management SQL endpoint.
+- First apply attempt found a real schema mismatch:
+  - `public.ml_poll_sequences` did not have `session_date`, so an index using `session_date` failed.
+- Migration was corrected to check `information_schema.columns` before creating each session-date index.
+- Corrected apply succeeded:
+  - `b1a_schema_apply = OK`
+  - elapsed approximately `6.4s`
+- Verification:
+  - small anon REST read selected the new B1a columns successfully;
+  - returned `1` row;
+  - no broad Supabase read was used.
+
+### Validation
+
+- Passed:
+  - `git diff --check` in `Marketapp-main-worktree`
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m unittest app.src.main.python.tests.test_b1a_intraday_rv_shadow`
+  - `node --check app.js` in `MarketVivi-git`
+- Expected test fixture warning:
+  - `REPLAY_CAPTURE_WARN` appears because the B1a test fixture intentionally lacks chain payloads.
+  - This warning is not a B1a failure.
+- Android compile was attempted but could not run in the local workspace because Android SDK configuration is missing:
+  - `SDK location not found. Define a valid SDK location with ANDROID_HOME or local.properties.`
+
+### Current Status
+
+- B1a shadow implementation is local and unpushed.
+- Supabase schema side is already applied and verified.
+- No live decision behavior has been intentionally changed by B1a.
+- Next Claude-authorized phase is Phase 2/B1b historical multi-horizon RV, still shadow-only.
+- Do not push until explicitly commanded.
+- If pushing, maintain synchronized version/cache-bust discipline across both repos.
+
+## 2026-07-21 - Phase 2/B1b Shadow Multi-Horizon RV Implemented Locally
+
+### Scope
+
+- Implemented Claude-authorized Phase 2/B1b only.
+- Purpose:
+  - compute historical/multi-horizon realized-volatility evidence from filtered intraday spot poll history;
+  - preserve it for later offline analysis;
+  - keep live strategy generation, ranking, notifications, sandbox, and LLM hot path unchanged.
+- This is shadow-only and must not be used as a live decision input until a later explicit authorization.
+
+### Storage Decision
+
+- B1b is stored inside existing JSON payloads:
+  - `market_forces_json.b1b_historical_multi_horizon_rv`
+  - compact summary fields inside `poll_summary_json`
+- No additional Supabase DDL was added for B1b in this step.
+- Reason:
+  - reduces schema/app deployment coupling;
+  - avoids another Supabase DDL/apply cycle during a throttling-sensitive period;
+  - keeps B1b evidence available for offline extraction from already persisted snapshot JSON.
+
+### B1b Payload
+
+- Added `_compute_b1b_historical_multi_horizon_rv(polls)` in `brain.py`.
+- Source:
+  - `filtered_spot_poll_history`
+- Schema version:
+  - `b1b_historical_multi_horizon_rv_v1`
+- Per-index output currently covers:
+  - `BNF`
+  - `NF`
+- Filters:
+  - positive finite spot values only;
+  - bad spot rows are counted and excluded;
+  - no non-monotonic timestamp rejection yet.
+- Horizons:
+  - `15m` = last 3 polls
+  - `30m` = last 6 polls
+  - `60m` = last 12 polls
+  - `120m` = last 24 polls
+  - `full_session` = all valid intraday polls supplied to the snapshot
+- Per-horizon fields include:
+  - `spot_count`
+  - `return_count`
+  - `start_time`
+  - `last_time`
+  - `start_spot`
+  - `last_spot`
+  - `signed_move_pct`
+  - `range_pct`
+  - `rv_pct`
+  - `abs_last_return_pct`
+  - `abs_mean_return_pct`
+  - `rv_to_iv_daily_ratio`
+
+### Summary Fields
+
+- `poll_summary_json` now includes:
+  - `b1b_rv_status`
+  - `b1b_bnf_max_rv_to_iv_daily_ratio`
+  - `b1b_nf_max_rv_to_iv_daily_ratio`
+
+### Validation
+
+- Passed:
+  - `git diff --check` in `Marketapp-main-worktree`
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m unittest app.src.main.python.tests.test_b1a_intraday_rv_shadow app.src.main.python.tests.test_b1b_historical_rv_shadow`
+- Unit test result:
+  - `Ran 6 tests`
+  - `OK`
+- Expected fixture warnings:
+  - `REPLAY_CAPTURE_WARN` appears because the test fixtures intentionally lack chain payloads.
+  - These warnings are not B1a/B1b failures.
+
+### Current Status
+
+- Phase 1/B1a and Phase 2/B1b are implemented locally and unpushed.
+- No live decision behavior has been intentionally changed by either phase.
+- Next authorized work, after confirming Phase 0 closure remains intact, is Phase 3 expected-R shadow design/implementation.
+- Per Claude, before a first full-session run of Phases 3-5, deliver schema plus sample rows for review.
+- Do not proceed to Phases 6-9.
+- Do not push until explicitly commanded.
+
+## 2026-07-21 - Phase 3 Expected-R Shadow Implemented Locally
+
+### Scope
+
+- Implemented Claude-authorized Phase 3 as shadow-only.
+- Purpose:
+  - compute expected-R evidence for generated candidates;
+  - stamp every row with its probability source;
+  - expose A8-rejected expected-R rows separately;
+  - avoid changing live ranking, A8 behavior, notification, sandbox, LLM, or trade execution.
+
+### Key Guardrail
+
+- Sources are intentionally not blended.
+- Each expected-R row is source-stamped, and the payload explicitly states:
+  - `sources_are_not_like_for_like = true`
+- This follows Claude amendment A2:
+  - interim probability sources are allowed;
+  - cross-source comparisons must not be treated as equivalent probability models.
+
+### Phase 3 Payload
+
+- Added `_compute_phase3_expected_r_shadow(candidates, rejected_candidates)` in `brain.py`.
+- Schema version:
+  - `phase3_expected_r_shadow_v1`
+- Formula:
+  - `expected_r = (p * maxProfit - (1 - p) * maxLoss) / maxLoss`
+- Candidate probability sources:
+  - `probProfit_gate_model_interim`
+  - `trueProb_realized_vol_proxy_interim`
+  - `p_ml_advisory_interim`
+- A8-rejected source:
+  - `probProfit_a8_rejected_interim`
+- Per-row fields include:
+  - `candidate_id`
+  - `deterministic_rank`
+  - `index`
+  - `lane`
+  - `strategy_type`
+  - `is_credit`
+  - `width`
+  - `expiry`
+  - `probability_source`
+  - `probability`
+  - `max_profit`
+  - `max_loss`
+  - `expected_win`
+  - `expected_loss`
+  - `expected_net`
+  - `expected_r`
+  - `ev_floor_mult_reference`
+  - `passes_1_10_reference`
+  - teacher bucket fields if available
+
+### Storage
+
+- Phase 3 is stored inside existing JSON payloads:
+  - `market_forces_json.phase3_expected_r_shadow`
+  - `context_json.snapshot_phase3_expected_r_shadow`
+  - compact counts inside `poll_summary_json`
+- No new Supabase DDL was added for Phase 3.
+- Reason:
+  - avoids another schema dependency;
+  - stays safe under Supabase throttling constraints;
+  - keeps the data extractable for Claude/sample-row review.
+
+### Summary Fields
+
+- `poll_summary_json` now includes:
+  - `phase3_expected_r_status`
+  - `phase3_expected_r_rows`
+  - `phase3_expected_r_a8_rows`
+
+### Tests
+
+- Added:
+  - `app/src/main/python/tests/test_phase3_expected_r_shadow.py`
+- Test coverage:
+  - separate expected-R rows by probability source;
+  - A8-rejected row capture;
+  - snapshot carry-through without changing verdict.
+
+### Validation
+
+- Passed:
+  - `git diff --check` in `Marketapp-main-worktree`
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m unittest app.src.main.python.tests.test_b1a_intraday_rv_shadow app.src.main.python.tests.test_b1b_historical_rv_shadow app.src.main.python.tests.test_phase3_expected_r_shadow`
+- Unit test result:
+  - `Ran 9 tests`
+  - `OK`
+- Expected fixture warnings:
+  - `REPLAY_CAPTURE_WARN` appears because fixtures intentionally omit chain payloads.
+  - Not a Phase 3 failure.
+
+### Current Status
+
+- Phases 1, 2, and 3 are implemented locally and unpushed.
+- Supabase DDL was needed only for B1a and is already applied.
+- B1b and Phase 3 use existing JSON columns.
+- Next authorized work is Phase 4 EV ladder shadow, then Phase 5 gate registry.
+- Before a first full-session run of Phases 3-5, prepare schema plus sample rows for Claude review.
+- Do not proceed to Phases 6-9.
+- Do not push until explicitly commanded.
+
+## 2026-07-21 - Phase 4 EV Ladder Shadow Implemented Locally
+
+### Scope
+
+- Implemented Claude-authorized Phase 4 as shadow-only.
+- Purpose:
+  - measure how many candidates would pass at alternate EV floor multipliers;
+  - preserve A8 killed-candidate evidence;
+  - log the `prob` versus `trueProb` disagreement pair requested by Claude amendment A3;
+  - keep the live `BUILD3_EV_FLOOR_MULT = 1.10` behavior unchanged.
+
+### Key Guardrail
+
+- No live gate softening was made.
+- No ranking, candidate selection, notification, sandbox, LLM, or execution path was changed.
+- The EV ladder answers “what would have happened if the floor were different” only.
+
+### Phase 4 Payload
+
+- Added `_compute_phase4_ev_ladder_shadow(candidates, rejected_candidates)` in `brain.py`.
+- Schema version:
+  - `phase4_ev_ladder_shadow_v1`
+- Multipliers measured:
+  - `0.80`
+  - `0.90`
+  - `1.00`
+  - `1.10`
+  - `1.20`
+  - `1.50`
+- Payload fields include:
+  - `current_live_ev_floor_mult`
+  - `multipliers`
+  - `probability_source`
+  - `pass_counts_by_multiplier`
+  - `rows`
+  - `top_by_highest_passing_multiplier`
+  - `a8_killed_rows`
+  - `a8_disagreement_pair_logged`
+- Per-candidate rows include:
+  - `candidate_id`
+  - `deterministic_rank`
+  - `index`
+  - `lane`
+  - `strategy_type`
+  - `is_credit`
+  - `prob`
+  - `trueProb`
+  - `prob_trueProb_delta`
+  - `max_profit`
+  - `max_loss`
+  - `expected_win`
+  - `expected_loss`
+  - `expected_r`
+  - `pass_by_multiplier`
+  - `highest_passing_multiplier`
+  - `passes_current_1_10`
+
+### A8 Pair Logging
+
+- `_build3_rejection_from_candidate` now carries:
+  - `prob`
+  - `probProfit`
+  - `trueProb`
+- Compact and full rejected-candidate snapshot views also preserve these fields.
+- This is diagnostic attribution only.
+
+### Storage
+
+- Phase 4 is stored inside existing JSON payloads:
+  - `market_forces_json.phase4_ev_ladder_shadow`
+  - `context_json.snapshot_phase4_ev_ladder_shadow`
+  - compact counts inside `poll_summary_json`
+- No new Supabase DDL was added for Phase 4.
+
+### Summary Fields
+
+- `poll_summary_json` now includes:
+  - `phase4_ev_ladder_status`
+  - `phase4_ev_ladder_rows`
+  - `phase4_ev_ladder_a8_rows`
+
+### Tests
+
+- Added:
+  - `app/src/main/python/tests/test_phase4_ev_ladder_shadow.py`
+- Test coverage:
+  - pass/fail counts across alternate EV floor multipliers;
+  - live `1.10` reference remains unchanged;
+  - A8 killed row carries `prob`/`trueProb` disagreement pair;
+  - snapshot carry-through without changing verdict.
+
+### Validation
+
+- Passed:
+  - `git diff --check` in `Marketapp-main-worktree`
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m unittest app.src.main.python.tests.test_b1a_intraday_rv_shadow app.src.main.python.tests.test_b1b_historical_rv_shadow app.src.main.python.tests.test_phase3_expected_r_shadow app.src.main.python.tests.test_phase4_ev_ladder_shadow`
+- Unit test result:
+  - `Ran 12 tests`
+  - `OK`
+- Expected fixture warnings:
+  - `REPLAY_CAPTURE_WARN` appears because fixtures intentionally omit chain payloads.
+  - Not a Phase 4 failure.
+
+### Current Status
+
+- Phases 1-4 are implemented locally and unpushed.
+- Next authorized work is Phase 5 gate registry.
+- After Phase 5, prepare schema plus sample rows for Claude review before any first full-session run of Phases 3-5.
+- Do not proceed to Phases 6-9.
+- Do not push until explicitly commanded.
+
+## 2026-07-21 - Phase 5 Gate Registry Shadow Implemented Locally
+
+### Scope
+
+- Implemented Claude-authorized Phase 5 as shadow-only.
+- Purpose:
+  - inventory all rejection gates observed in `rejected_candidates`;
+  - classify each gate as `SAFETY`, `EVIDENCE`, or `UNCLASSIFIED`;
+  - explicitly mark whether a gate is ever eligible for softening;
+  - preserve the evidence bar required before any future gate change.
+
+### Guardrail
+
+- No live gate was softened.
+- No ranking, selection, notification, sandbox, LLM, or execution path was changed.
+- This is an attribution and governance artifact only.
+
+### Phase 5 Payload
+
+- Added `_compute_phase5_gate_registry(rejected_candidates)` in `brain.py`.
+- Schema version:
+  - `phase5_gate_registry_v1`
+- Static registry version:
+  - `20260721_static_v1`
+- Payload fields include:
+  - `status`
+  - `shadow_only`
+  - `live_gate_changes`
+  - `observed_rejection_rows`
+  - `registered_gate_count`
+  - `registry_complete_for_observed_stages`
+  - `unknown_stages`
+  - `class_counts`
+  - `softening_candidate_count`
+  - `softening_candidates`
+  - `rows`
+
+### Gate Classification Policy
+
+- `SAFETY` gates are not softening-eligible:
+  - missing strike/leg/quote data;
+  - zero price;
+  - non-positive credit/debit/economics;
+  - max-loss/capital limit;
+  - missing sigma data;
+  - construction minimums treated as executable-integrity guards.
+- `EVIDENCE` gates are softening-eligible only after proof:
+  - sigma too close/far;
+  - credit ratio below floor;
+  - IV not rich;
+  - probability below floor;
+  - EV below floor.
+- Unknown future gates become `UNCLASSIFIED`, `needs_review=true`, and `softening_eligible=false`.
+
+### Storage
+
+- Phase 5 is stored inside existing JSON payloads:
+  - `market_forces_json.phase5_gate_registry`
+  - `context_json.snapshot_phase5_gate_registry`
+  - compact fields inside `poll_summary_json`
+- No new Supabase DDL was added for Phase 5.
+
+### Summary Fields
+
+- `poll_summary_json` now includes:
+  - `phase5_gate_registry_status`
+  - `phase5_gate_registry_rows`
+  - `phase5_gate_registry_softening_candidates`
+  - `phase5_gate_registry_complete`
+
+### Tests
+
+- Added:
+  - `app/src/main/python/tests/test_phase5_gate_registry.py`
+- Test coverage:
+  - capital-limit gate remains `SAFETY` and not softening-eligible;
+  - EV floor gate is `EVIDENCE` and softening-eligible only as future research;
+  - unknown gates require review and are not softening-eligible;
+  - snapshot carries Phase 5 registry without changing verdict.
+
+### Validation
+
+- Passed:
+  - `git diff --check` in `Marketapp-main-worktree`
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m unittest app.src.main.python.tests.test_b1a_intraday_rv_shadow app.src.main.python.tests.test_b1b_historical_rv_shadow app.src.main.python.tests.test_phase3_expected_r_shadow app.src.main.python.tests.test_phase4_ev_ladder_shadow app.src.main.python.tests.test_phase5_gate_registry`
+  - `node --check app.js` in `MarketVivi-git`
+  - `git diff --check` in `MarketVivi-git`
+- Unit test result:
+  - `Ran 15 tests`
+  - `OK`
+- Expected fixture warnings:
+  - `REPLAY_CAPTURE_WARN` appears because minimal unit-test fixtures intentionally omit chain payloads.
+  - Not a Phase 5 failure.
+
+### Current Status
+
+- Phases 1-5 are implemented locally and unpushed.
+- Claude-approved scope is complete up to the gate registry.
+- Next required step before any first full-session run of Phases 3-5:
+  - prepare schema plus sample rows for Claude review.
+- Do not proceed to Phases 6-9.
+- Do not push until explicitly commanded.
+
+## 2026-07-21 - Claude Phase 3/4/5 Addendum Processed Locally
+
+### Claude Ruling
+
+- Uploaded ruling:
+  - `CLAUDE_RULING_PHASE345_ADDENDUM_VERIFIED_20260721.md`
+- Verdict:
+  - `CONDITIONAL HOLD`
+- Meaning:
+  - Do not run a full Phase 3-5 live session yet.
+  - P0 close-path/G2 confirmation remains blocking at the program level.
+  - Phases 3-5 local shadow implementation can be corrected, but not treated as session-run authorized.
+
+### Items Confirmed Against Local Files
+
+- Claude checked GitHub `main`, not this local working tree.
+- Local `MarketVivi-git/app.js` already contains the close-path null fix:
+  - `asFiniteNumber(null)` returns `null`, not `0`.
+  - `closeTrade()` blocks if `current_pnl` is unavailable.
+  - missing valuation no longer writes fake `actual_pnl=0`, `canonical_won=false`, or `outcome_h2=0`.
+  - default exit reason for missing P&L is `Manual`, not `Stop loss`.
+- This local PWA fix is still unpushed.
+
+### Addendum Fixes Applied In Marketapp
+
+- B3 rejection evidence preservation:
+  - `_build3_rejection_from_candidate()` now carries:
+    - `prob`
+    - `probProfit`
+    - `trueProb`
+    - `premiumEdge`
+    - `expected_win`
+    - `expected_loss`
+    - `ev_floor`
+    - `ev_floor_mult`
+  - Compact and full rejected-candidate snapshot views also preserve:
+    - `prob`
+    - `probProfit`
+    - `trueProb`
+    - `premiumEdge`
+    - `expected_win`
+    - `expected_loss`
+    - `ev_floor`
+    - `ev_floor_mult`
+- Phase 5 registry correction:
+  - corrected A8 source function from non-existent `_apply_build3_ev_gate` to actual `_build3_apply_a8_ev_gate`.
+  - added `source_ref` field to registered gate rows.
+- N1 pseudo-stage added:
+  - `a8_bypassed_missing_inputs`
+  - class: `POLICY_REVIEW`
+  - softening eligible: `false`
+  - counts generated candidates where A8 currently passes with missing expected-win/loss/floor inputs.
+  - does not change fail-open behavior; it only measures and exposes it for Vivek/Claude policy ruling.
+- Automated registry completeness test added:
+  - parses `brain.py` for `record_rejection(...)`, `stage='...'`, the literal A8 gate, and the pseudo-stage.
+  - fails if source stages and `PHASE5_GATE_REGISTRY_META` diverge.
+
+### Validation
+
+- Passed in `Marketapp-main-worktree`:
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `git diff --check`
+  - `python3 -m unittest app.src.main.python.tests.test_b1a_intraday_rv_shadow app.src.main.python.tests.test_b1b_historical_rv_shadow app.src.main.python.tests.test_phase3_expected_r_shadow app.src.main.python.tests.test_phase4_ev_ladder_shadow app.src.main.python.tests.test_phase5_gate_registry`
+- Unit test result:
+  - `Ran 18 tests`
+  - `OK`
+- Passed in `MarketVivi-git`:
+  - `node --check app.js`
+  - `git diff --check`
+
+### Remaining Holds
+
+- Do not run the Phase 3-5 full-session shadow until Claude/Vivek clears the conditional hold.
+- Need one clean G2 forward close with real non-fabricated gross P&L after the close-path fix is delivered.
+- Need policy ruling on `a8_bypassed_missing_inputs`:
+  - should A8 missing inputs continue to fail open, or should it become fail closed?
+- Need later response packet to Claude covering:
+  - B1 with friction and `slippage_basis`;
+  - B2 signed delta;
+  - B4 caps/truncation discipline;
+  - A1, A2, A5, A6;
+  - A3 source references;
+  - A4 automated registry check;
+  - self-audit deviations.
+
+## 2026-07-21 - Release Prep: Synchronized v2.5.13 / b344
+
+### Release Purpose
+
+- Deliver the local PWA close-path null fix so manual paper closes cannot fabricate zero-P&L labels when valuation is unavailable.
+- Deliver Marketapp Phase 1-5 shadow telemetry and Claude addendum fixes:
+  - B1a intraday realized-vol shadow.
+  - B1b historical/multi-horizon realized-vol shadow.
+  - Phase 3 expected-R shadow.
+  - Phase 4 EV ladder shadow with A8 `prob`/`trueProb` evidence.
+  - Phase 5 gate registry with source references and N1 pseudo-stage.
+- Preserve Claude hold:
+  - no live ranking change.
+  - no EV softening.
+  - no sandbox live path change.
+  - no Phase 6-9 work.
+
+### Version Sync
+
+- Android:
+  - `versionName = 2.5.13`
+  - `versionCode = 344`
+  - `BRAIN_VERSION = 2.5.13`
+- PWA:
+  - title/visible label `v2.5.13 / b344`
+  - cache-bust `app.js?v=1259`
+
+### Post-Install Verification Needed
+
+- Confirm installed app shows `v2.5.13 / b344`.
+- Take/track one paper trade only in normal test flow.
+- Close only when current P&L is available.
+- Verify Supabase writes real non-null gross `actual_pnl`, valid G2 `friction_cost`, `net_pnl`, and `net_won`.
+- If current P&L is unavailable, close should block instead of writing `actual_pnl=0`.
