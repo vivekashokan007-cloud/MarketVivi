@@ -661,6 +661,10 @@ function currentOpenTrades() {
     return readNativeJson('getOpenTrades', []);
 }
 
+function jsArg(value) {
+    return JSON.stringify(String(value ?? ''));
+}
+
 function syncToNative() {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.setOpenTrades !== 'function') return;
     try {
@@ -679,8 +683,13 @@ function addOpenTradeToState(trade) {
 }
 
 function removeOpenTradeFromState(tradeId) {
-    STATE.openTrades = currentOpenTrades().filter(t => String(t.id) !== String(tradeId));
+    const id = String(tradeId ?? '');
+    const stateTrades = Array.isArray(STATE.openTrades) ? STATE.openTrades : [];
+    const nativeTrades = readNativeJson('getOpenTrades', []);
+    const source = nativeTrades.length ? nativeTrades : stateTrades;
+    STATE.openTrades = source.filter(t => String(t.id) !== id);
     syncToNative();
+    return STATE.openTrades.length;
 }
 
 function formatServiceLastPoll(raw) {
@@ -2989,7 +2998,7 @@ async function logManualTrade() {
 }
 
 async function closeTrade(tradeId, exitReason) {
-    const trade = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).find(t => String(t.id) === String(tradeId));
+    const trade = readNativeJson('getOpenTrades', []).find(t => String(t.id) === String(tradeId));
     if (!trade) { console.warn('closeTrade: trade not found:', tradeId); alert('Trade not found. Try refreshing.'); return; }
 
     // Confirmation
@@ -3009,6 +3018,7 @@ async function closeTrade(tradeId, exitReason) {
     if (!confirm(confirmMsg)) return;
 
     try {
+        const latestPoll = latestPollData();
         // Calculate hold duration
         let holdDuration = '';
         if (trade.entry_date) {
@@ -3019,7 +3029,9 @@ async function closeTrade(tradeId, exitReason) {
         }
 
         const isBNF = trade.index_key === 'BNF';
-        const chain = isBNF ? (JSON.parse(NativeBridge.getBnfChain() || '{}')) : (JSON.parse(NativeBridge.getNfChain() || '{}'));
+        const bnfChain = readNativeJson('getBnfChain', {});
+        const nfChain = readNativeJson('getNfChain', {});
+        const chain = isBNF ? bnfChain : nfChain;
         const minsOpen = typeof API?.minutesSinceOpen === 'function' ? API.minutesSinceOpen() : null;
 
         // b108: Remove from STATE and re-render IMMEDIATELY — don't wait for Supabase
@@ -3031,7 +3043,7 @@ async function closeTrade(tradeId, exitReason) {
         const netWon = isPaper && netClosePnl !== null ? netClosePnl > 0 : null;
 
         // Now update Supabase in background (non-blocking)
-        DB.updateTrade(trade.id, {
+        const closePatch = {
             status: 'CLOSED',
             exit_date: new Date().toISOString(),
             actual_pnl: grossClosePnl,
@@ -3048,13 +3060,13 @@ async function closeTrade(tradeId, exitReason) {
             paper_thesis_break_type: null,
             paper_rule_followed: null,
             paper_close_note: null,
-            exit_vix: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? trade.current_vix ?? null,
-            exit_atm_iv: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfAtmIv ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfAtmIv ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.atmIv ?? null),
+            exit_vix: latestPoll?.vix ?? trade.current_vix ?? null,
+            exit_atm_iv: isBNF ? (latestPoll?.bnfAtmIv ?? null) : (latestPoll?.nfAtmIv ?? nfChain?.atmIv ?? null),
             exit_force_alignment: trade.forces?.aligned ?? trade.force_alignment ?? null,
             exit_hold_minutes: trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
             exit_spot: trade.current_spot ?? null,
-            exit_pcr: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nearAtmPCR ?? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfNearAtmPCR ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR ?? null),
-            exit_bias: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.label ?? null,
+            exit_pcr: isBNF ? (latestPoll?.nearAtmPCR ?? latestPoll?.pcr ?? null) : (latestPoll?.nfNearAtmPCR ?? nfChain?.nearAtmPCR ?? null),
+            exit_bias: latestPoll?.bias?.label ?? null,
             trough_pnl: trade.trough_pnl ?? null,
             poll_count: trade.poll_count ?? null,
             close_trace_json: {
@@ -3085,23 +3097,23 @@ async function closeTrade(tradeId, exitReason) {
             // ═══ EXIT SNAPSHOT — full market state at close (JSONB) ═══
             exit_snapshot: {
                 spot: trade.current_spot ?? null,
-                vix: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? trade.current_vix ?? null,
-                atm_iv: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfAtmIv ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfAtmIv ?? null),
-                near_atm_pcr: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nearAtmPCR ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.nfNearAtmPCR ?? (JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR ?? null),
-                futures_premium: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.futuresPremBnf ?? null) : ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.futuresPremNf ?? null),
-                iv_percentile: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.ivPercentile ?? null,
-                call_wall: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfCallWall ?? null) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
-                put_wall: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfPutWall ?? null) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
-                max_pain: isBNF ? ((safeParseNB(NativeBridge.getLatestPoll(), {}))?.maxPainBnf ?? null) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? null),
+                vix: latestPoll?.vix ?? trade.current_vix ?? null,
+                atm_iv: isBNF ? (latestPoll?.bnfAtmIv ?? null) : (latestPoll?.nfAtmIv ?? null),
+                near_atm_pcr: isBNF ? (latestPoll?.nearAtmPCR ?? null) : (latestPoll?.nfNearAtmPCR ?? nfChain?.nearAtmPCR ?? null),
+                futures_premium: isBNF ? (latestPoll?.futuresPremBnf ?? null) : (latestPoll?.futuresPremNf ?? null),
+                iv_percentile: latestPoll?.ivPercentile ?? null,
+                call_wall: isBNF ? (latestPoll?.bnfCallWall ?? null) : (nfChain?.callWallStrike ?? null),
+                put_wall: isBNF ? (latestPoll?.bnfPutWall ?? null) : (nfChain?.putWallStrike ?? null),
+                max_pain: isBNF ? (latestPoll?.maxPainBnf ?? null) : (nfChain?.maxPain ?? null),
                 sell_oi: chain?.strikes?.[trade.sell_strike]?.[trade.sell_type]?.oi ?? null,
-                bias: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.label ?? null,
-                bias_net: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.net ?? null,
-                bias_signals: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.signals?.map(s => ({ n: s.name, d: s.dir })) || [],
+                bias: latestPoll?.bias?.label ?? null,
+                bias_net: latestPoll?.bias?.net ?? null,
+                bias_signals: latestPoll?.bias?.signals?.map(s => ({ n: s.name, d: s.dir })) || [],
                 force_f1: trade.forces?.f1 ?? trade.force_f1 ?? null,
                 force_f2: trade.forces?.f2 ?? trade.force_f2 ?? null,
                 force_f3: trade.forces?.f3 ?? trade.force_f3 ?? null,
                 regime: bd.institutionalRegime?.regime ?? null,
-                spot_sigma: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.spotSigma ?? null,
+                spot_sigma: latestPoll?.spotSigma ?? null,
                 minutes_since_open: minsOpen,
                 premium: trade.current_premium ?? null,
                 drift_from_morning: STATE.biasDrift ?? 0,
@@ -3129,7 +3141,11 @@ async function closeTrade(tradeId, exitReason) {
                 pnl_per_poll: trade.poll_count > 0 ? Math.round(grossClosePnl / trade.poll_count) : 0,
                 timeline: trade._journey?.timeline || []
             }
-        });
+        };
+        const closeSynced = await DB.updateTrade(trade.id, closePatch);
+        if (!closeSynced) {
+            addNotificationLog('Trade Close Sync Failed', `${trade.id}: closed locally but Supabase update failed. Check Logs tab.`, 'urgent');
+        }
 
         addNotificationLog(
             `${prefix} Trade Closed`,
@@ -3154,8 +3170,8 @@ async function closeTrade(tradeId, exitReason) {
                 paper_reason_quality: null,
                 paper_thesis_break_type: null,
                 paper_rule_followed: null,
-                exit_vix:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix ?? null,
-                exit_pcr:           (safeParseNB(NativeBridge.getLatestPoll(), {}))?.pcr ?? null,
+                exit_vix:           latestPoll?.vix ?? null,
+                exit_pcr:           latestPoll?.pcr ?? null,
                 ci_min:             trade._journey?.min_ci ?? null,
                 ci_max:             trade._journey?.max_ci ?? null,
                 closed_at:          new Date().toISOString(),
@@ -4793,6 +4809,7 @@ function renderTradeCard(t, isPaper) {
 
     const icon = isPaper ? '📋' : '📌';
     const paperClass = isPaper ? ' paper-card' : '';
+    const tradeIdArg = jsArg(t.id);
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
     const savedMargin = realMarginValue(t);
     const savedMarginLine = savedMargin
@@ -4875,18 +4892,18 @@ function renderTradeCard(t, isPaper) {
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
-            <button class="btn-close-profit" onclick="closeTrade('${t.id}', 'Brain said BOOK')">💰 Book Profit</button>
-            <button class="btn-close-loss" onclick="closeTrade('${t.id}', ${JSON.stringify(defaultExitReasonForTrade(t))})">🛑 Exit</button>
+            <button class="btn-close-profit" onclick="closeTrade(${tradeIdArg}, 'Brain said BOOK')">💰 Book Profit</button>
+            <button class="btn-close-loss" onclick="closeTrade(${tradeIdArg}, ${JSON.stringify(defaultExitReasonForTrade(t))})">🛑 Exit</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
             <summary style="cursor:pointer;font-size:10px;color:var(--text-muted);user-select:none">More exit reasons ▸</summary>
             <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Target hit')">🎯 Target</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Thesis broke')">📉 Thesis broke</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Expiry exit')">⏱️ Expiry</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Wall drift')">🛡️ Wall drift</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Panic')">😰 Panic</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade('${t.id}', 'Manual')">✋ Manual</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Target hit')">🎯 Target</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Thesis broke')">📉 Thesis broke</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Expiry exit')">⏱️ Expiry</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Wall drift')">🛡️ Wall drift</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Panic')">😰 Panic</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Manual')">✋ Manual</button>
             </div>
         </details>
         <details style="margin-top:6px">

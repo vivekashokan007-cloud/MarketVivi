@@ -13479,3 +13479,58 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
 - Close only when current P&L is available.
 - Verify Supabase writes real non-null gross `actual_pnl`, valid G2 `friction_cost`, `net_pnl`, and `net_won`.
 - If current P&L is unavailable, close should block instead of writing `actual_pnl=0`.
+
+## 2026-07-21 - Intraday Incident: One Position Exit Button Did Not Close
+
+### Observed State
+
+- User updated to `v2.5.13 / b344` during a live session after opening three morning paper trades.
+- Two paper trades closed from the Position tab.
+- One remaining paper trade card did not close when the red Exit button was used.
+- Screenshot evidence:
+  - app visible version `v2.5.13 / b344`;
+  - remaining trade: `BNF Bear Put`, intraday, `57900/58100 W:200`;
+  - card showed `Gross MTM: ₹0`, estimated round-trip cost `₹218.86`, `Net If Closed Now: ₹-218.86`;
+  - mark quality showed `FULL`, quotes `2/2`, CI signals `45%`;
+  - brain showed `EXIT · SOON`.
+
+### Risk Interpretation
+
+- Because the trade showed a gross value of `0`, the `b344` null-P&L guard did not block the close path.
+- The failure therefore likely came from a UI/runtime close-path issue rather than the intentional null-valuation block.
+- Mixed-version trade caveat remains: these trades were opened before the `b344` update and closed after the update, so they are useful for live smoke testing but not clean promotion evidence.
+
+### Hotfix Prepared: v2.5.14 / b345
+
+- Hardened close button invocation:
+  - trade ids are passed through JSON-safe string encoding instead of inline raw interpolation.
+  - this prevents a malformed/special trade id from breaking the `onclick` JavaScript.
+- Hardened close state removal:
+  - local removal now reads native open-trade state directly and returns the remaining count.
+  - this reduces risk of stale `STATE.openTrades` preventing local card removal.
+- Hardened close-path parsing:
+  - replaced raw `JSON.parse(NativeBridge...)` calls in close path with safe bridge JSON helpers.
+  - latest poll and chain snapshots are captured once for the close patch.
+- Hardened close sync:
+  - Supabase `trades_v2` close update is now awaited.
+  - if Supabase close sync fails after local close, the app emits a visible notification-log warning instead of silently swallowing the failure.
+- Version sync:
+  - Android `versionName = 2.5.14`;
+  - Android `versionCode = 345`;
+  - Python `BRAIN_VERSION = 2.5.14`;
+  - PWA visible label `v2.5.14 / b345`;
+  - PWA cache-bust `app.js?v=1260`.
+
+### Next Verification After b345 Install
+
+- Confirm app displays `v2.5.14 / b345`.
+- Open or keep one paper position.
+- Wait for at least one poll with visible current valuation.
+- Press Exit once.
+- Expected:
+  - confirmation dialog appears;
+  - after confirming, the card disappears immediately;
+  - notification log records the close;
+  - Supabase `trades_v2` row changes to `CLOSED`;
+  - `actual_pnl`, `friction_cost`, `net_pnl`, and `net_won` are written when available.
+- If the close still fails, export logs immediately and inspect for `closeTrade error`, `Trade Close Sync Failed`, or `NativeBridge.setOpenTrades` failures.
