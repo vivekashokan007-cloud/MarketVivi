@@ -13534,3 +13534,57 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
   - Supabase `trades_v2` row changes to `CLOSED`;
   - `actual_pnl`, `friction_cost`, `net_pnl`, and `net_won` are written when available.
 - If the close still fails, export logs immediately and inspect for `closeTrade error`, `Trade Close Sync Failed`, or `NativeBridge.setOpenTrades` failures.
+
+## 2026-07-21 - Hotfix Correction: b345 Close Button Quoting Regression
+
+### Observed After b345
+
+- User installed `v2.5.14 / b345`.
+- Both `Book Profit` and `Exit` buttons still did not work on the remaining paper trade.
+- App had noticeable UI jitters but did not crash.
+- Screenshot state:
+  - app visible version `v2.5.14 / b345`;
+  - poll status `40/40`;
+  - open paper trade `BNF Bear Put 57900/58100 W:200`;
+  - `Gross MTM: ₹145`;
+  - estimated round-trip cost `₹220.09`;
+  - `Net If Closed Now: ₹-75.09`;
+  - mark quality `FULL`, quotes `2/2`, CI signals `45%`.
+
+### Log Root Cause
+
+- Exported log showed repeated WebView errors:
+  - `Uncaught SyntaxError: Unexpected end of input @ https://vivekashokan007-cloud.github.io/MarketVivi/:1:12`
+- This is consistent with the inline click handler being parsed as only:
+  - `closeTrade(`
+- Root cause was introduced in `b345`:
+  - trade id was made JSON-safe using `JSON.stringify`;
+  - but it was inserted inside a double-quoted HTML `onclick` attribute;
+  - the inner JSON double quote terminated the attribute early;
+  - browser saw a truncated handler and neither button could execute.
+
+### Fix Prepared: v2.5.15 / b346
+
+- Close buttons now render using single-quoted HTML attributes:
+  - `onclick='closeTrade("id", "reason")'`
+- Both trade id and close reason are JSON-safe JavaScript arguments.
+- This preserves the safety goal from `b345` without breaking HTML attribute parsing.
+- Native ML snapshot bridge now caches identical `getMLBrainSnapshots()` payloads for 60 seconds.
+- Cache key includes evaluation date, requested row cap, local file size, and last-modified timestamp.
+- This prevents repeated UI refreshes from rereading and compacting the same ~MB-scale local teacher snapshot payload.
+- Version sync:
+  - Android `versionName = 2.5.15`;
+  - Android `versionCode = 346`;
+  - Python `BRAIN_VERSION = 2.5.15`;
+  - PWA visible label `v2.5.15 / b346`;
+  - PWA cache-bust `app.js?v=1261`.
+
+### Jitter Observation
+
+- Log shows repeated large local snapshot reads:
+  - `LOCAL_SNAPSHOT_READ_RECENT` around `1.8 MB` rows from a local file around `66.7 MB`;
+  - frequent `ML_BRAIN_SNAPSHOTS_BRIDGE` reads while UI is active.
+- Polling did not crash, but UI jitter likely remains tied to large bridge/local-cache payload movement during active rendering.
+- `b346` addresses the first safe layer by throttling duplicate native bridge reads.
+- This does not delete or alter stored teacher evidence, rejected candidates, generated candidates, brain ranking, exit logic, or Supabase writes.
+- If jitter continues after `b346`, next investigation should profile payload size reduction in the ML tab only; that would need more design caution because it may reduce visible evidence detail.

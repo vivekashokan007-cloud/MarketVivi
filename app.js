@@ -4810,6 +4810,7 @@ function renderTradeCard(t, isPaper) {
     const icon = isPaper ? '📋' : '📌';
     const paperClass = isPaper ? ' paper-card' : '';
     const tradeIdArg = jsArg(t.id);
+    const closeHandler = (reason) => `closeTrade(${tradeIdArg}, ${jsArg(reason)})`;
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
     const savedMargin = realMarginValue(t);
     const savedMarginLine = savedMargin
@@ -4892,18 +4893,18 @@ function renderTradeCard(t, isPaper) {
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
-            <button class="btn-close-profit" onclick="closeTrade(${tradeIdArg}, 'Brain said BOOK')">💰 Book Profit</button>
-            <button class="btn-close-loss" onclick="closeTrade(${tradeIdArg}, ${JSON.stringify(defaultExitReasonForTrade(t))})">🛑 Exit</button>
+            <button class="btn-close-profit" onclick='${closeHandler('Brain said BOOK')}'>💰 Book Profit</button>
+            <button class="btn-close-loss" onclick='${closeHandler(defaultExitReasonForTrade(t))}'>🛑 Exit</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
             <summary style="cursor:pointer;font-size:10px;color:var(--text-muted);user-select:none">More exit reasons ▸</summary>
             <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Target hit')">🎯 Target</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Thesis broke')">📉 Thesis broke</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Expiry exit')">⏱️ Expiry</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Wall drift')">🛡️ Wall drift</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Panic')">😰 Panic</button>
-                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick="closeTrade(${tradeIdArg}, 'Manual')">✋ Manual</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick='${closeHandler('Target hit')}'>🎯 Target</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick='${closeHandler('Thesis broke')}'>📉 Thesis broke</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick='${closeHandler('Expiry exit')}'>⏱️ Expiry</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick='${closeHandler('Wall drift')}'>🛡️ Wall drift</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick='${closeHandler('Panic')}'>😰 Panic</button>
+                <button style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer" onclick='${closeHandler('Manual')}'>✋ Manual</button>
             </div>
         </details>
         <details style="margin-top:6px">
