@@ -1,3 +1,112 @@
+## 2026-07-23 Forward teacher-label recovery executed
+
+- Trigger:
+  - Claude accepted OC correction that the rerun test must purge/rebuild evaluation inputs; otherwise cached `chain_filtered_v3_<date>.json` could replay stale near-close evidence.
+  - Claude recommended recovering post-S1 forward labels with the proven offline regeneration path before touching ranking or sandbox work.
+- Local tooling update:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/full_label_regeneration_s1.py`
+  - added forward-live support for post-S1 dates without requiring `price_integrity=LEGACY_PRE_S1`.
+  - added environment-configurable batch id/output base.
+  - used batch id:
+    - `S1_FORWARD_RECOVERY_20260723`
+  - used output base:
+    - `label_regen_forward_20260723`
+- Execution policy:
+  - single-threaded.
+  - date-by-date.
+  - no parallel Supabase reads/writes.
+  - stopped only if throttle/timeout surfaced; none surfaced.
+- Forward recovery write results into S1 shadow tables:
+  - `2026-07-15`: eval rows `0`, reco rows `0`.
+  - `2026-07-16`: eval rows `49`, `OK 49`, reco rows `49`, `DERIVED_FROM_EVAL_SHADOW 49`.
+  - `2026-07-17`: eval rows `104`, `OK 104`, reco rows `104`, `DERIVED_FROM_EVAL_SHADOW 104`.
+  - `2026-07-20`: eval rows `10`, `OK 10`, reco rows `10`, `DERIVED_FROM_EVAL_SHADOW 10`.
+  - `2026-07-21`: eval rows `26`, `OK 26`, reco rows `26`, `DERIVED_FROM_EVAL_SHADOW 26`.
+  - `2026-07-22`: eval rows `11`, `OK 11`, reco rows `11`, `DERIVED_FROM_EVAL_SHADOW 11`.
+  - `2026-07-23`: eval rows `1`, `OK 1`, reco rows `1`, `DERIVED_FROM_EVAL_SHADOW 1`.
+- Interpretation:
+  - Offline regeneration found zero `MISSING_H2_PRICE_*` failures for the recovered forward window.
+  - This strongly supports the runtime race diagnosis:
+    - raw chain data exists.
+    - Python H2 logic can grade the same days when run offline.
+    - near-close live teacher path is the likely failing path.
+- Current next actions:
+  - prepare/implement runtime fix only after explicit authorization:
+    - stop immediate post-close teacher evaluation, or defer it to settled time.
+    - add H2-window chain completeness gate before grading.
+    - if not complete, defer/fail-loudly with runtime-readiness reason, not `MISSING_H2_PRICE_*`.
+  - separately fix:
+    - `entry_snapshot.candidate_id` null linkage.
+    - deterministic chain fetch ordering and explicit exact-path page cap.
+  - do not treat this as ranking/EV-gate change; this is label trust recovery only.
+
+## 2026-07-23 Runtime teacher race fix staged locally
+
+- App-code fix implemented locally after forward recovery proved offline labels grade cleanly.
+- Files changed:
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketMLService.kt`
+- Behavioral change:
+  - post-close watch-service handoff no longer launches teacher evaluation immediately at ~15:31 IST.
+  - if close handoff happens before `16:30 IST`, it schedules the existing day-evaluation reminder for the settled evaluation window.
+  - if handoff happens at/after `16:30 IST`, it can launch evaluation immediately because the settled window has already arrived.
+- Evaluation-input hardening:
+  - prepared chain cache is no longer accepted unless its `.complete` metadata has `h2_coverage_ok=true`.
+  - older prepared caches without this marker are invalidated and rebuilt.
+  - newly prepared chain inputs verify that every candidate evaluation leg has at least one H2-window row (`15:15-15:30 IST`) before `.complete` is written.
+  - if H2 leg coverage is incomplete, the chain file and `.complete` marker are deleted and evaluation fails/defer-retries with `EVAL_CHAIN_H2_INCOMPLETE` instead of letting Python stamp misleading `MISSING_H2_PRICE_*`.
+- Important boundary:
+  - no ranking change.
+  - no EV floor change.
+  - no sandbox/order authority change.
+  - no Python teacher formula change.
+- Validation:
+  - attempted Android compile with `./gradlew :app:compileDebugKotlin`.
+  - compile could not start because this workspace has no Android SDK configured:
+    - `SDK location not found. Define ANDROID_HOME or sdk.dir in local.properties`.
+  - this is an environment limitation; CI/device build should be used for final compile verification.
+
+## 2026-07-23 Project knowledge refresh — teacher-label race investigation and UI/jitter status
+
+- Current focus from user direction:
+  - We continue to prioritise brain logic correctness over cosmetic issues and keep moving on the execution spine.
+  - Sandbox implementation remains deferred until teacher correctness and reliability are improved.
+  - User preference remains: no risky changes without Claude authorization; version-synced pushes in both repos.
+
+- Consolidated status (as of latest available evidence):
+  - The latest god-mode teacher audit retracted the earlier maxPages/expiry hypotheses and kept the following as surviving:
+    - 126 of 201 recent outcomes remained ungraded (63%).
+    - real trade reality and teacher reality diverge on same-day winners (two NF Bear Put paper trades showed +₹1,225.39, but teacher output was negative/ungradeable).
+    - candidate fields for those trades matched chain correctly, but `entry_snapshot.candidate_id` is `NULL`, so systematic reconciliation between real outcome and teacher trace is broken.
+    - `new_price_integrity` failures were confirmed to be all-or-nothing per day in those observed windows.
+  - The data-store side was revalidated as not the root source of those failures:
+    - H2 window rows were present in the verified window (15:15–15:30 IST) on failing days.
+    - Brain window/parsing logic was checked and not identified as the primary defect.
+  - New surviving hypothesis is a timing race:
+    - evaluation appears to fire within ~1.5–4 minutes after final chain poll and fails with H2 misses.
+    - the one known “late” evaluation run (07-21 at ~18:32 IST) graded cleanly while same-day close-window runs failed.
+    - decisive test remains to re-run evaluation for 2026-07-17, 2026-07-20, 2026-07-22, 2026-07-23 to check if grading becomes OK.
+
+- App/jitter context from latest investigation:
+  - Poll cadence remained healthy and service continuity was maintained.
+  - Observed jank is tied to per-poll payload/I/O pattern, not missed polls:
+    - ~66 MB local snapshot rewrite/read each poll.
+    - repeated large bridge payload marshalling into WebView (~268–338 KB ×2).
+  - a real data-plane issue remains logged: chain save returned `saved=false` without reason at 12:35 IST window, causing a known poll gap.
+  - duplicate-reason logs were observed and are likely logging duplication, not confirmed duplicate database writes.
+  - WebView/UI lifecycle remains OS-kill/restart behavior while foreground service stays active; this is normal with this architecture.
+
+- Pending actions (aligned to latest Claude direction posture):
+  - run the race validation re-check on the four dates above (slow, batched, throttling-safe), and only then treat the race direction as proven.
+  - if proven, move evaluation trigger off near-close instant (or gate on H2-window chain completeness) to avoid false `MISSING_H2_PRICE_*` outcomes.
+  - keep `maxPages`/ordering and missing `candidate_id` cleanup items in the remediation queue even though not yet confirmed as this failure.
+  - continue with `entry`/`close` action reliability fixes only if they are still confirmed by logs; otherwise prioritize teacher-path trustability.
+  - do not widen repo code changes beyond explicit authorized clauses.
+
+- Release/state reminders:
+  - user has repeatedly requested paired release hygiene: both repos must remain version-bumped and pushed together for app-deliverable updates.
+  - latest known release activity has been through `v2.5.23` earlier; no new release/version bump for this July 23 teacher-jitter cycle has been recorded in this file yet.
+
 ## 2026-07-16 Claude ruling - full regeneration accepted pending Gate 8
 
 - Ruling received:
@@ -13647,3 +13756,626 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
   - friction formula,
   - Supabase schema.
 - It only prevents invalid close-state persistence when live valuation is unavailable or degraded.
+
+## 2026-07-21 - Post-Close ML Evaluation Chain Fetch Fixes
+
+### Failure After Market Close
+
+- Post-close ML evaluation failed on 2026-07-21 after the app had otherwise collected the day.
+- Log evidence showed:
+  - `ML_BRAIN_SNAPSHOTS_BRIDGE: date=2026-07-21 rows=1 requested=5 maxRows=5 payloadBytes=280828`
+  - `LOCAL_SNAPSHOT_READ_RECENT: date=2026-07-21 rows=1 bytes=1753618 fileBytes=65727357 limit=5 byteCap=2097152`
+  - `EVAL_FAIL[PREPARING]: EVAL_CHAIN_TRUNCATED`
+- First failure mode:
+  - `ml_option_chain_snapshots.filtered_recent.filtered_stream hit page cap after 200 pages and 0 filtered rows`
+- Root cause:
+  - exact `session_date` chain lookup returned no rows;
+  - fallback used broad recent scans without a bounded session window;
+  - Supabase pagination reached page cap before relevant rows were found.
+- This was classified as an implementation/data-fetch architecture issue, not a Claude/brain-design issue.
+
+### Fix Released: v2.5.17 / b348
+
+- Native `SupabaseClient.kt` chain fetch was changed to:
+  - keep exact `session_date` sources first;
+  - make recent fallback newest-first;
+  - cap broad recent fallback at 30 pages instead of 200;
+  - continue to the next chain source when fallback is capped with zero filtered rows;
+  - preserve chronological output by reversing buffered newest-first fallback rows.
+- Version sync:
+  - Android `versionName = 2.5.17`;
+  - Android `versionCode = 348`;
+  - Python `BRAIN_VERSION = 2.5.17`;
+  - PWA visible label `v2.5.17 / b348`.
+- Pushed synchronized:
+  - `Marketapp` HEAD `a4c9f599d1496432d4d94edb1c457097067e54ab`;
+  - `MarketVivi` HEAD `389ba6734abb006724ad12bf60ed2fb00685f5f0`.
+
+### Second Failure After b348
+
+- User reported ML evaluation failed again after b348.
+- New log evidence showed a different failure:
+  - `EVAL_CHAIN_TRUNCATED: ml_option_chain_snapshots.filtered_recent.filtered_stream hit page cap after 30 pages and 560 filtered rows`
+- Interpretation:
+  - b348 fixed the empty broad-scan failure;
+  - but broad recent fallback was still not the correct primary recovery path;
+  - it found relevant rows, but still declared truncation because fallback could not prove complete coverage.
+- Decision:
+  - do not ask Claude yet;
+  - add a precise bounded `poll_ts` session-window fallback before the broad recent fallback.
+
+### Fix Released: v2.5.18 / b349
+
+- Native `SupabaseClient.kt` now computes the IST session date as a UTC window:
+  - example for `2026-07-21` IST:
+  - start `2026-07-20T18:30:00Z`;
+  - end `2026-07-21T18:30:00Z`.
+- Chain source order is now:
+  - exact `ml_option_chain_snapshots?session_date=eq.<date>`;
+  - exact `chain_slices?session_date=eq.<date>`;
+  - bounded `ml_option_chain_snapshots?poll_ts=gte.<startUtc>&poll_ts=lt.<endUtc>`;
+  - bounded `chain_slices?poll_ts=gte.<startUtc>&poll_ts=lt.<endUtc>`;
+  - broad newest-first recent fallback only as last resort.
+- Both full-chain fetch and leg-filtered streaming use this bounded window path.
+- Purpose:
+  - avoid Supabase-throttling-prone broad scans;
+  - avoid page-cap truncation when `session_date` is missing but `poll_ts` is valid;
+  - preserve teacher/post-close ML evaluation input integrity.
+- Version sync:
+  - Android `versionName = 2.5.18`;
+  - Android `versionCode = 349`;
+  - Python `BRAIN_VERSION = 2.5.18`;
+  - PWA visible label `v2.5.18 / b349`.
+- Pushed synchronized:
+  - `Marketapp` HEAD `d79e0589d84e964feb32507f271b1f50337cdef3`;
+  - `MarketVivi` HEAD `87163e98e1c222641a17e635db080e5069c6154a`.
+
+### Verification Result
+
+- User confirmed after installing/running the latest update:
+  - ML evaluation succeeded.
+- Current conclusion:
+  - the post-close evaluation failure was caused by unbounded/imprecise chain fallback selection;
+  - the bounded `poll_ts` UTC-window fallback in `b349` is the working fix.
+
+### Important Follow-Up
+
+- This does not change:
+  - brain ranking;
+  - `1.10 EV` gate;
+  - candidate construction;
+  - teacher labels;
+  - paper/sandbox order behavior.
+- If ML evaluation fails again, first inspect whether the selected chain source is:
+  - exact `session_date`;
+  - bounded `poll_window`;
+  - or broad `filtered_recent`.
+- Broad `filtered_recent` should now be considered an emergency fallback only; repeated use means the Supabase schema/write path still lacks reliable `session_date` on chain rows.
+
+## 2026-07-22 - D3A/D4/D7 Brain Probability Work, Claude Consultation, Local Push Gate
+
+### Current Native Branch
+
+- Native repo:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree`
+- Active branch:
+  - `d4-d7-payload-semantics-cleanup`
+- Branch is local and not pushed yet.
+- Native working tree is clean after the latest local commits.
+
+### Local Commit Chain
+
+- `eff3a46` - `D7 add precision parity guards`
+- `806615f` - `D7 unify probability semantics`
+- `7df1f43` - `D4 clarify EV payload semantics`
+- `5f2de86` - `D3A aggregate blocked candidate replay`
+- `957a23a` - `D3 add blocked candidate replay report`
+- `5b90c9c` - `D3 preregister blocked candidate replay`
+
+### D3A Completed Locally
+
+- Tool:
+  - `Marketapp-main-worktree/tools/d3_blocked_candidate_replay.py`
+- Report:
+  - `Marketapp-main-worktree/reports/d3a_full_replay_report_20260707_20260721.md`
+- CSV:
+  - `Marketapp-main-worktree/reports/d3a_full_replay_rows_20260707_20260721.csv`
+- Main result:
+  - A8 is broadly protective, but false negatives are meaningful.
+  - This supports adaptive branch design, not a flat removal of the `1.10 EV` floor.
+- D3A is local commit `5f2de86`.
+
+### D4 Implemented Locally
+
+- Commit:
+  - `7df1f43 D4 clarify EV payload semantics`
+- Main changes:
+  - Replaced vague `ALL_NEGATIVE_EV` with explicit floor reason:
+    - `ALL_BELOW_EV_RATIO_FLOOR_1_1`
+  - Added A8 diagnostic/evidence fields:
+    - `ev_ratio`
+    - `a8_expected_win`
+    - `a8_expected_loss`
+    - `a8_ev_floor`
+    - `a8_ev_ratio`
+    - `a8_pass`
+    - `build3EvRatio`
+  - Added named display constant:
+    - `DISPLAY_EV_PROFIT_HAIRCUT = 0.65`
+  - Fixed ranking fallback:
+    - missing `premiumEdge` no longer falls back to `ev`;
+    - missing edge candidates rank below edge-carrying candidates;
+    - `premium_edge_status = MISSING` is stamped.
+- D4 does not change:
+  - A8 floor;
+  - ranking sort-key structure;
+  - teacher outcomes;
+  - lot handling;
+  - tick service;
+  - sandbox.
+
+### D7 Implemented Locally
+
+- Commit:
+  - `806615f D7 unify probability semantics`
+- Main changes:
+  - `probProfit` is now the canonical runtime probability field.
+  - `trueProb` is retained only as a deprecated compatibility alias.
+  - `trueProb` is emitted equal to `probProfit` in payloads.
+  - Added probability metadata:
+    - `prob_source = CHAIN_DELTA_IV` when chain/interpolated delta exists;
+    - `prob_source = BS_FALLBACK_IV` when Black-Scholes fallback is used;
+    - `prob_status = OK` when probability is present;
+    - `prob_status = DEFAULT_0_5` when risk evaluation must use the explicit 0.5 fallback.
+  - Removed realized-vol `trueProb` divergence.
+  - `premiumEdge` now uses raw probability and the unhaircuted formula:
+    - `round(prob * maxProfit - (1 - prob) * maxLoss)`
+  - Display `ev` remains separate and still uses `DISPLAY_EV_PROFIT_HAIRCUT = 0.65`.
+  - Removed Phase 3 fake source:
+    - `trueProb_realized_vol_proxy_interim`
+  - Removed Phase 4/D3 signed probability-disagreement fields:
+    - `prob_trueProb_delta`
+    - `a8_disagreement_pair_logged`
+    - `signed_disagreement`
+    - `signed_disagreement_bucket`
+    - `avg_signed_disagreement`
+- D7 does not change:
+  - A8 floor;
+  - ranking sort-key structure;
+  - thresholds;
+  - teacher outcomes;
+  - lot handling;
+  - tick service;
+  - sandbox.
+
+### Claude D7 Consultation
+
+- Consultation file created for Claude:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_D7_CONSULTATION_PROOF_20260722.txt`
+- Claude ruling file:
+  - `/tmp/codex-web-uploads/f-F58sxh/CLAUDE_RULING_D7_CONSULTATION_20260722.md`
+- Issue raised:
+  - OpenClaw flagged a conflict between the D7 directive asking for AB-676 `premiumEdge = 892` and A8 rounded expected values:
+    - `expected_win = 4704.11`
+    - `expected_loss = 3820.11`
+    - hand difference = `884.00`
+- Claude ruling:
+  - `892` is not a typo.
+  - `884` is not the correct `premiumEdge`.
+  - Both are valid numbers from different precision boundaries:
+    - `premiumEdge = 892` comes from raw probability before payload rounding;
+    - A8 `4704.11 - 3820.11 = 884` comes from rounded payload `probProfit`.
+  - The precision split is a known wart and must be documented, not harmonized now.
+
+### D7 Precision Guard Follow-Up
+
+- Commit:
+  - `eff3a46 D7 add precision parity guards`
+- Added comment at A8 read site:
+  - A8 consumes payload-rounded `probProfit` at 3 decimals.
+  - `premiumEdge` uses raw probability.
+  - Do not harmonize without a measured decision.
+- Corrected AB-676 test:
+  - raw-prob path gives `premiumEdge = 892`;
+  - rounded payload `probProfit = 0.407`;
+  - A8 rounded values still give:
+    - `a8_expected_win = 4704.11`
+    - `a8_expected_loss = 3820.11`
+    - `a8_ev_floor = 4202.12`
+    - `a8_ev_ratio = 1.2314`
+- Added D3 replay guard:
+  - D3 replay reads stored `premiumEdge`;
+  - it does not recompute `premiumEdge` from rounded `probProfit`;
+  - this prevents an `892 -> 884` class drift in analysis outputs.
+- New test:
+  - `app/src/main/python/tests/test_d7_probability_semantics.py`
+
+### Verification Passed After D7 Follow-Up
+
+- Commands run from native repo:
+  - `python app/src/main/python/tests/test_gate3_structural_counts.py`
+  - `python app/src/main/python/tests/test_gate5_trace_smoke.py`
+  - `python app/src/main/python/tests/test_build3_a8_nf_ab.py`
+  - `python -m unittest app/src/main/python/tests/test_d7_probability_semantics.py`
+  - `python -m unittest app/src/main/python/tests/test_phase3_expected_r_shadow.py app/src/main/python/tests/test_phase4_ev_ladder_shadow.py app/src/main/python/tests/test_stage2a_guarded_ranking.py app/src/main/python/tests/test_phase_d.py app/src/main/python/tests/test_d7_probability_semantics.py`
+  - `python -m py_compile app/src/main/python/brain.py tools/d3_blocked_candidate_replay.py`
+- Results:
+  - Gate 3 structural audit passed.
+  - Gate 5 trace smoke passed.
+  - Build 3 A8/NF/AB tests passed.
+  - D7 probability semantics test passed.
+  - Broader unittest set passed:
+    - `99 tests OK`
+  - `py_compile` passed.
+- Cleanup scan:
+  - banned live fields removed.
+  - only remaining `prob_trueProb_delta` hit is a test assertion verifying absence:
+    - `self.assertNotIn("prob_trueProb_delta", row)`
+
+### Current Push Gate
+
+- Claude has ruled the D7 precision issue and requested the extra guard/test.
+- OpenClaw implemented the extra guard/test and verified it locally.
+- Next decision belongs to Vivek:
+  - push the local branch only on explicit user command.
+- If pushing, remember project rule:
+  - both repos must be pushed in sync with versioning when a release path is intended.
+- Current D4/D7 work is brain/tool/test only and has not yet triggered OTA.
+
+## 2026-07-22 - Forward Path Ruling After D7 Merge
+
+### D7 Merge State
+
+- Claude ruling received:
+  - `/tmp/codex-web-uploads/f-H7Q4NN/CLAUDE_RULING_D7_PUSHED_BRANCH_20260722.md`
+- Claude verdict:
+  - D4/D7 pushed branch at `eff3a46013ab03f39f83fa707c5a92b986ad60ed` passed verification.
+  - Branch was correct, zero-behavior on live decisions, and ready for Vivek merge/release decision.
+- Action taken after Vivek command:
+  - native `main` fast-forwarded to `eff3a46013ab03f39f83fa707c5a92b986ad60ed`.
+  - native `main` pushed to GitHub.
+- Current native state:
+  - `Marketapp-main-worktree` on `main`.
+  - `main` is clean and matches `origin/main`.
+  - latest native HEAD:
+    - `eff3a46013ab03f39f83fa707c5a92b986ad60ed`
+- No OTA/version bump was triggered by this D7 merge.
+- No MarketVivi push was performed in the D7 merge step.
+
+### Forward Path Ruling
+
+- Claude ruling received:
+  - `/tmp/codex-web-uploads/f-iPDSdD/CLAUDE_RULING_FORWARD_PATH_20260722.md`
+- Claude says the older D1-D6 / Phase-number / P6-P9 framing is superseded as the active schedule.
+- New authoritative queue:
+  1. Chapter A - close Phase 0 integrity.
+  2. Chapter B - evidence engine: Class B parity plus E1.
+  3. Chapter C - dynamic brain, built only on evidence.
+  4. Chapter D - forward validation to real money.
+- D1-D6 is not discarded, but it now maps into Chapter A / early Chapter B task detail.
+- Old P6-P9 schedule is superseded-as-scheduled.
+
+### What Claude Now Considers Complete
+
+- D4/D7 payload/probability cleanup:
+  - merged native `main` at `eff3a46`.
+- D3A blocked-candidate replay:
+  - tool/report/CSV shipped.
+- D1 tick-units code:
+  - shipped in b350 per Claude's prior verification.
+  - D1 report package remains owed, but code is not the next implementation target.
+- `pnl_engine --apply`:
+  - marked done by Claude, classified `2026-07-21`, with `60/29/85` live.
+- Close-path null fix:
+  - code considered done by Claude.
+  - remaining issue is device/forward evidence confirmation.
+
+### What Is Still Open
+
+- A-1:
+  - one clean G2 forward friction close on a b350+ device.
+  - Supabase must show:
+    - `actual_pnl`
+    - `friction_cost`
+    - `net_pnl`
+    - `net_won`
+  - arithmetic must show:
+    - `net_pnl = actual_pnl - friction_cost`
+  - this proves close-path, friction path, and honest label writing end to end.
+- A-2:
+  - confirm device is b350 or later.
+- A-3:
+  - Task A entry-basis provenance remains open but is non-blocking for starting Chapter B prep.
+  - It must be resolved before trusting historical Class B outcomes for the edge map.
+
+### E1 Pre-Registration
+
+- File received:
+  - `/tmp/codex-web-uploads/f-ZQeuDW/E1_PREREGISTRATION_INCONTEXT_MODEL_BAKEOFF_20260722-1.md`
+- E1 is a pre-registered offline in-context tabular model bake-off.
+- Candidate models:
+  - TabICL
+  - TabPFN v2
+  - TabFM 1.0.0 as ceiling reference only, not deployable if non-commercial licensing applies.
+  - frozen deployed model as baseline.
+  - base rate/regime prior as baseline.
+- E1 is offline only:
+  - no phone code.
+  - no live decision path.
+  - no LLM hot path.
+  - no ranking authority.
+- E1 runs after Phase 0's closing-release push lands.
+- A qualifying model earns only active-shadow eligibility, not live authority.
+
+### Current Next Step
+
+- Single next target per Claude:
+  - A-1 - capture and verify one clean G2 forward friction close on a b350+ device.
+- While waiting for live market conditions:
+  - E1 prep may begin because it is offline and does not touch the live path.
+  - Class B parity harness prep may also begin.
+- Do not work on yet:
+  - dynamic-brain code.
+  - composer.
+  - session belief-state.
+  - fitted regime weights.
+  - LLM hot path.
+  - sandbox.
+  - live A8 floor change.
+  - real-money path.
+  - ranking sort-key change.
+
+### Local Repo Nuance
+
+- `MarketVivi-git` currently has:
+  - local `main` ahead of `origin/main` by one commit:
+    - `5c39718 Release v2.5.19 web sync`
+  - the ahead commit changes only `index.html` version labels.
+  - `PROJECT_KNOWLEDGE.md` is modified locally and uncommitted.
+- This does not block A-1 because Claude's forward ruling treats the web/docs state as non-blocking, but it should be kept visible before any synchronized release decision.
+
+## 2026-07-22 - A-1 G2 Forward Friction Close Evidence
+
+### Bounded Supabase Check
+
+- Purpose:
+  - verify Claude's A-1 gate using today's closed paper trades.
+- Query scope:
+  - table `public.trades_v2`
+  - `status = CLOSED`
+  - `paper = true`
+  - IST trading-day UTC window:
+    - `exit_date >= 2026-07-21T18:30:00Z`
+    - `exit_date < 2026-07-22T18:30:00Z`
+  - selected only close/friction fields.
+- Rows found:
+  - `2`
+
+### Trade Rows Verified
+
+- Trade `id = 184`
+  - strategy: `NF BEAR_PUT`
+  - entry: `2026-07-22T07:25:05.445Z`
+  - exit: `2026-07-22T09:28:14.712Z`
+  - `actual_pnl = 244`
+  - `friction_cost = 153.07`
+  - `net_pnl = 90.93`
+  - `net_won = true`
+  - arithmetic:
+    - `244 - 153.07 = 90.93`
+  - `friction_version = G2_v1`
+  - close trace:
+    - `source = manual_close`
+    - `capture_phase = POSITION_P1`
+    - `policy_version = POSITION_POLICY_V1`
+    - `position_tick_capture.mark_basis = EXECUTABLE_SIDE`
+
+- Trade `id = 183`
+  - strategy: `BNF BEAR_PUT`
+  - entry: `2026-07-22T04:05:24.684Z`
+  - exit: `2026-07-22T06:38:01.409Z`
+  - `actual_pnl = 891`
+  - `friction_cost = 183.13`
+  - `net_pnl = 707.87`
+  - `net_won = true`
+  - arithmetic:
+    - `891 - 183.13 = 707.87`
+  - `friction_version = G2_v1`
+  - close trace:
+    - `source = manual_close`
+    - `capture_phase = POSITION_P1`
+    - `policy_version = POSITION_POLICY_V1`
+    - `position_tick_capture.mark_basis = EXECUTABLE_SIDE`
+
+### A-1 Interpretation
+
+- The required A-1 database evidence is present:
+  - non-null `actual_pnl`
+  - non-null `friction_cost`
+  - non-null `net_pnl`
+  - non-null `net_won`
+  - net arithmetic reconciles exactly to 2 decimals.
+- This is enough for the G2 forward-friction close data check if the device build is confirmed as `b350+`.
+- Remaining A-1/A-2 closure caveat:
+  - explicitly confirm installed app build was `b350` or later during these closes.
+
+## 2026-07-22 - Claude Ruling: Chapter A Closed
+
+### Source
+
+- File received:
+  - `/tmp/codex-web-uploads/f-98K6Kk/CLAUDE_RULING_A1_CHAPTER_A_CLOSED_20260722.md`
+
+### Final Chapter A Verdict
+
+- Claude independently verified the A-1 evidence against live Supabase data.
+- Final ruling:
+  - `A-1 PASSED`
+  - `A-2 PASSED`
+  - `A-3 carried non-blocking`
+  - `CHAPTER A (INTEGRITY) CLOSED`
+
+### Claude's Additional Independent Checks
+
+- OC's original packet verified field presence and arithmetic:
+  - trade `183`: `891 - 183.13 = 707.87`
+  - trade `184`: `244 - 153.07 = 90.93`
+- Claude added deeper anti-fabrication checks:
+  - gross P&L reconciles to real price movement:
+    - trade `183`: `(219.4 - 189.7) * 30 = 891.00`
+    - trade `184`: `(97 - 93.25) * 65 = 243.75`, rounded to `244`
+  - `position_ticks` independently corroborate both trades:
+    - trade `183`: 148 ticks
+    - trade `184`: 121 ticks
+  - tick units are confirmed as rupees, proving the b350 D1 lot-size fix is live:
+    - trade `183` mark reconstruction matched executable mark.
+    - lot sizes resolved as `30` for BNF and `65` for NF.
+  - friction is real and itemized:
+    - `slippage_basis = LIVE_BID_ASK`
+    - `missing_spread_labels = []`
+    - `rates_version = tc_2026_07_A`
+    - brokerage, STT, GST, exchange, SEBI, stamp, and slippage all present.
+
+### What Chapter A Closure Means
+
+- The following integrity defects are now considered fixed on live evidence:
+  - close-path null-to-zero fabrication.
+  - tick lot-unit corruption.
+  - fabricated stop-loss auto-labels.
+  - missing or placeholder friction accounting.
+  - P&L engine classification path.
+- Forward labels are now trusted for downstream evidence work.
+- Historical entry-basis provenance remains open as `A-3`, but it is non-blocking for Chapter B start.
+
+### New Authorized Phase
+
+- Chapter B is now GO.
+- Authorized parallel tracks:
+  - Track 1: Class B parity gate, Tier 1, 5 reference-day harness proof.
+  - Track 2: E1 in-context model bake-off, per preregistration.
+- Still forbidden until later directive:
+  - live dynamic-brain authority.
+  - live ranking sort-key change.
+  - fitted weights in production.
+  - LLM hot path.
+  - sandbox/live order authority.
+  - real-money path.
+
+### Owed Non-Blocking Debts To Attach To Next Artifact
+
+- D1 report package, now with 2026-07-22 live working proof.
+- `629 -> 620` replay-row accounting.
+- corrected `MarketVivi` SHA.
+- D5 `a8_bypassed` count.
+
+## 2026-07-22 - Chapter B Start Audit
+
+### Native Report Created
+
+- File:
+  - `Marketapp-main-worktree/reports/CHAPTER_B_START_AUDIT_20260722.md`
+
+### Harness Safety Patch
+
+- File modified:
+  - `Marketapp-main-worktree/historical_replay_harness.py`
+- Reason:
+  - the first Class B audit attempt hit a Supabase statement timeout on an unbounded ordered `historical_option_candles` span query.
+- Patch:
+  - `_fetch_historical_option_sample(...)` now accepts optional `date_from` / `date_to`.
+  - `_fetch_historical_option_span(...)` now accepts optional `date_from` / `date_to`.
+  - `class_b_audit(...)` passes the requested date window into both helpers.
+- Effect:
+  - Class B audit no longer needs a global historical-candle table scan just to establish sample/span context.
+
+### Verification
+
+- Syntax check passed:
+  - `python3 -m py_compile historical_replay_harness.py`
+
+### Bounded Class B Audit Result
+
+- Command shape:
+  - `python3 historical_replay_harness.py --class-b-audit --from 2026-07-07 --to 2026-07-22 --sample-days 10`
+- Result:
+  - original global timeout removed.
+  - Supabase then returned Cloudflare origin errors:
+    - HTTP `525` SSL handshake failed.
+    - HTTP `521` origin down.
+  - no aggressive retry loop was run because of the standing Supabase throttling discipline.
+- Partial data before Supabase failures:
+  - `2026-07-07`: 75 snapshots, 74 Class A, 510 generated candidates.
+  - `2026-07-08`: 76 snapshots, 75 Class A, 99 generated candidates.
+- Current Chapter B parity status:
+  - `BLOCKED_BY_SUPABASE_ORIGIN`
+  - not a brain failure.
+  - not a parity-harness failure.
+
+### Owed Debt Resolution Notes
+
+- `629 -> 620` replay-row accounting:
+  - original single-day D3 artifact has 646 total rows.
+  - 26 rows are `teacher_eval_match`.
+  - 620 rows are `simulated_trace`.
+  - therefore `620` is the simulated subset, not the total replay population.
+- Wider D3A retained artifact:
+  - 10,676 rows total.
+  - 831 `teacher_eval_match`.
+  - 9,378 `simulated_trace`.
+  - 467 `pricing_failed`.
+- D5 `a8_bypassed`:
+  - not present in retained D3/D3A CSV columns.
+  - cannot be honestly reconstructed from current artifacts.
+  - must locate original D5 artifact or rerun D5 generator if needed.
+
+### Next Safe Chapter B Step
+
+- Wait for Supabase stability.
+- Then run one-day Class B audit/extract/local-parity first.
+- Expand to five reference days only after the one-day local parity result is understood.
+- Continue to avoid live phone code, A8 floor changes, sandbox authority, and ranking changes until explicitly authorized.
+
+### 2026-07-22 - One-Day Chapter B Micro-Probe Clarification
+
+- After the bounded harness patch, a one-day-only Class B check was run for `2026-07-07`.
+- One-day audit output:
+  - `75` snapshots.
+  - `74` Class A snapshots.
+  - `510` generated candidates.
+  - `historical_option_candles_sample_rows = 0`.
+  - `daily_data_probe.rows_sampled = 0`.
+- Direct REST micro-probes then confirmed:
+  - `historical_option_candles` is populated globally.
+  - a global existence probe returned a real row from `2024-09-26`.
+  - bounded probe for `2026-07-07` returned `[]`.
+  - `daily_data` probe for `2026-07-07` returned `[]`.
+- Correct interpretation:
+  - this is not currently a brain logic failure.
+  - this is not currently a Class B harness defect.
+  - this is not currently a one-day Supabase outage.
+  - the blocker is missing reference-day data coverage for `2026-07-07` through the current historical data path.
+- Therefore the next Class B parity attempt must use a day that has:
+  - saved Class A snapshots, and
+  - matching `historical_option_candles` rows, and
+  - matching `daily_data` rows.
+
+### 2026-07-23 - Chapter B Reference Window Coverage Check
+
+- Additional direct REST micro-probes were run for:
+  - `2026-07-08`
+  - `2026-07-09`
+  - `2026-07-10`
+- Result for `daily_data`:
+  - all three dates returned `HTTP 200` with `[]`
+- Result for `historical_option_candles`:
+  - all three dates returned `HTTP 200` with `[]`
+- Combined with the earlier `2026-07-07` result, the tested July 2026 reference window `2026-07-07` through `2026-07-10` currently has:
+  - saved brain snapshots present
+  - but no matching `daily_data`
+  - and no matching `historical_option_candles`
+- Correct interpretation:
+  - the current blocker is not Supabase throttling for these tiny reads.
+  - the current blocker is not the Class B harness.
+  - the current blocker is missing historical backing coverage for the tested July 2026 Chapter B days through the current Supabase path.
+- Implication:
+  - Class B parity on July 2026 reference days cannot proceed until we either populate those historical tables or identify the correct alternate historical source/path.
