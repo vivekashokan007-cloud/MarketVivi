@@ -1263,6 +1263,12 @@ function moneyOrUnavailable(value) {
     return num === null ? 'unavailable' : `₹${num.toLocaleString()}`;
 }
 
+function localeNumberOrFallback(value, fallback = '--', { round = false } = {}) {
+    const num = asFiniteNumber(value);
+    if (num === null) return fallback;
+    return (round ? Math.round(num) : num).toLocaleString();
+}
+
 function currentPnlValue(tradeLike = {}) {
     return asFiniteNumber(tradeLike.current_pnl);
 }
@@ -4824,7 +4830,7 @@ function renderTradeCard(t, isPaper) {
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
     const savedMargin = realMarginValue(t);
     const savedMarginLine = savedMargin
-        ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-2px;margin-bottom:4px">Upstox margin: ₹${Math.round(savedMargin).toLocaleString()} <span style="color:var(--green)">(final)</span></div>`
+        ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-2px;margin-bottom:4px">Upstox margin: ₹${localeNumberOrFallback(savedMargin, 'unavailable', { round: true })} <span style="color:var(--green)">(final)</span></div>`
         : '';
     // Entry time + elapsed
     const entryTime = t.entry_date ? new Date(t.entry_date).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '--';
@@ -4846,7 +4852,7 @@ function renderTradeCard(t, isPaper) {
         <div class="pos-timing">${t.entry_date ? `⏱ ${entryDateShort} ${entryTime} · ${elapsed} ago` : ''}</div>
         <div class="pos-pnl ${pnlClass}">
             ${isPaper ? 'Net If Closed Now' : 'P&L'}: ${moneyOrUnavailable(headlinePnl)}
-            ${t.peak_pnl > 0 ? `<span class="pos-peak">(peak ₹${t.peak_pnl.toLocaleString()})</span>` : ''}
+            ${asFiniteNumber(t.peak_pnl) > 0 ? `<span class="pos-peak">(peak ₹${localeNumberOrFallback(t.peak_pnl)})</span>` : ''}
         </div>
         ${isPaper
             ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}</span></div>`
@@ -4855,9 +4861,9 @@ function renderTradeCard(t, isPaper) {
         ${savedMarginLine}
         <div class="control-section">
             ${t.max_profit || t.max_loss ? `<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--border)">
-                <span style="color:var(--green)">🎯 Max: ₹${(t.max_profit || 0).toLocaleString()}</span>
+                <span style="color:var(--green)">🎯 Max: ₹${localeNumberOrFallback(t.max_profit, '0')}</span>
                 <span style="color:var(--text-muted)">${isPaper ? 'Net' : 'P&L'}: ${t.max_profit > 0 && headlinePnlNum !== null ? `${Math.round(headlinePnlNum / t.max_profit * 100)}%` : '--'} of max</span>
-                <span style="color:var(--danger)">🛑 Loss: ₹${(t.max_loss || 0).toLocaleString()}</span>
+                <span style="color:var(--danger)">🛑 Loss: ₹${localeNumberOrFallback(t.max_loss, '0')}</span>
             </div>` : ''}
             <div class="env-row">
                 <span class="env-row-label" style="color:${ciColor};font-weight:600">${ciLabel}</span>
@@ -4887,15 +4893,15 @@ function renderTradeCard(t, isPaper) {
                     const lCush = Math.round(curSpot - beL);
                     cushionPts = Math.min(uCush, lCush);
                     danger = cushionPts < 0;
-                    beText = `BE: ${beL.toLocaleString()} ↔ ${beU.toLocaleString()} | ↑${uCush}pts / ↓${lCush}pts`;
+                    beText = `BE: ${localeNumberOrFallback(beL)} ↔ ${localeNumberOrFallback(beU)} | ↑${uCush}pts / ↓${lCush}pts`;
                 } else if (beU) {
                     cushionPts = Math.round(beU - curSpot);
                     danger = cushionPts < 0;
-                    beText = `BE: ${beU.toLocaleString()} | ${Math.abs(cushionPts)}pts ${cushionPts < 0 ? '⚠️ BREACHED' : 'buffer'}`;
+                    beText = `BE: ${localeNumberOrFallback(beU)} | ${Math.abs(cushionPts)}pts ${cushionPts < 0 ? '⚠️ BREACHED' : 'buffer'}`;
                 } else {
                     cushionPts = Math.round(curSpot - beL);
                     danger = cushionPts < 0;
-                    beText = `BE: ${beL.toLocaleString()} | ${Math.abs(cushionPts)}pts ${cushionPts < 0 ? '⚠️ BREACHED' : 'buffer'}`;
+                    beText = `BE: ${localeNumberOrFallback(beL)} | ${Math.abs(cushionPts)}pts ${cushionPts < 0 ? '⚠️ BREACHED' : 'buffer'}`;
                 }
                 const color = danger ? 'var(--danger)' : cushionPts < 50 ? 'var(--warn)' : 'var(--text-muted)';
                 return `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${color};border-top:1px solid var(--border)">📍 ${beText}</div>`;
@@ -4924,7 +4930,7 @@ function renderTradeCard(t, isPaper) {
                 · Now: ₹${t.current_premium || '--'}
                 · Spot: ${t.current_spot?.toFixed(0) || '--'}
             </div>
-            ${isPaper ? `<div class="pos-detail">Gross MTM: ₹${paperPnl.grossMtm.toLocaleString()} · Est. cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)} · Net now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}</div>` : ''}
+            ${isPaper ? `<div class="pos-detail">Gross MTM: ₹${localeNumberOrFallback(paperPnl.grossMtm, 'unavailable')} · Est. cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)} · Net now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}</div>` : ''}
             <div class="pos-forces">
                 ${dots} ${forceIcon(forces.f1)} Direction ${forceIcon(forces.f2)} Time ${forceIcon(forces.f3)} Vol
             </div>
@@ -4998,7 +5004,7 @@ function renderPosition(snapshot = null) {
             const real = pnlSummary(realTrades);
             const totalPnL = real.total;
             const totalClass = totalPnL >= 0 ? 'pnl-pos' : 'pnl-neg';
-            html += `<div class="total-pnl-bar ${totalClass}">📌 Real P&L: ₹${totalPnL.toLocaleString()} (${real.valued}/${realTrades.length} valued${pnlSummarySuffix(real)})</div>`;
+            html += `<div class="total-pnl-bar ${totalClass}">📌 Real P&L: ₹${localeNumberOrFallback(totalPnL, '0')} (${real.valued}/${realTrades.length} valued${pnlSummarySuffix(real)})</div>`;
         }
         html += `<div class="section-timestamp">Last updated: ${lastUpdate || API.istNow()}</div>`;
         for (const t of realTrades) {
@@ -5019,7 +5025,7 @@ function renderPosition(snapshot = null) {
         const bnfPapers = paperTrades.filter(t => t.index_key === 'BNF').length;
         html += `<div class="paper-header">📋 Paper Trades (${nfPapers} NF · ${bnfPapers} BNF)</div>`;
         html += `<div class="total-pnl-bar paper-pnl ${paperClass}">Paper Net If Closed Now: ${moneyOrUnavailable(netPaperPnL)}</div>`;
-        html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${paperPnL.toLocaleString()} (${paper.valued}/${paperTrades.length} valued${pnlSummarySuffix(paper)}) · Est. round-trip costs: ${costUnavailable ? 'unavailable' : `₹${totalEstCost.toLocaleString()}`}</div>`;
+        html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${localeNumberOrFallback(paperPnL, '0')} (${paper.valued}/${paperTrades.length} valued${pnlSummarySuffix(paper)}) · Est. round-trip costs: ${costUnavailable ? 'unavailable' : `₹${localeNumberOrFallback(totalEstCost, '0')}`}</div>`;
 
         // Cross-test comparison: group by index to show side-by-side performance
         for (const idx of ['NF', 'BNF']) {
