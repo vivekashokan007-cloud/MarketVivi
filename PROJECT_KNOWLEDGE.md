@@ -66,6 +66,58 @@
     - `SDK location not found. Define ANDROID_HOME or sdk.dir in local.properties`.
   - this is an environment limitation; CI/device build should be used for final compile verification.
 
+## 2026-07-23 Claude verification of teacher race fix and local G1-G4 follow-up
+
+- Claude verification received:
+  - `/tmp/codex-web-uploads/f-EFp3Ga/CLAUDE_VERIFICATION_TEACHER_FIX_20260723.md`
+- Claude verdict:
+  - `v2.5.24 / b355` teacher race fix works.
+  - race hypothesis is confirmed by experiment.
+  - previously failing forward sessions recovered cleanly through offline S1 regeneration:
+    - `2026-07-17`: `104/104 OK`
+    - `2026-07-20`: `10/10 OK`
+    - `2026-07-22`: `11/11 OK`
+    - `2026-07-23`: `1/1 OK`
+  - total S1 forward recovery extension:
+    - `+201` rows
+    - all `201` graded `OK`
+    - zero `MISSING_H2_PRICE_*`
+- Claude remaining gaps:
+  - G1: user-visible accuracy/report surfaces can still read stale live `ml_recommendation_outcomes` rows instead of recovered S1 shadow rows.
+  - G2: failed live rows may still carry misleading `managed_pnl`.
+  - G3: several capture days remain unlabeled or need per-day reason reporting.
+  - G4: Android version is `2.5.24 / b355` but `BRAIN_VERSION` remained `2.5.23`.
+- Local follow-up patch staged after Claude verification:
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/SupabaseClient.kt`
+    - date/recent evaluation reads now prefer S1 shadow tables when available:
+      - `ml_evaluation_outcomes_s1`
+      - `ml_recommendation_outcomes_s1`
+    - S1 shadow rows are normalized back into live field names for app consumers:
+      - `new_sim_pnl_h2` -> `sim_pnl_h2`
+      - `new_outcome_h2` -> `outcome_h2`
+      - `new_canonical_won` -> `canonical_won`
+      - `new_price_integrity` -> `price_integrity`
+      - `new_h2_price_integrity_reason` -> `h2_price_integrity_reason`
+    - failed-integrity rows strip managed teacher metrics before write/read exposure:
+      - `managed_pnl`
+      - `managed_gross_pnl`
+      - `friction_cost`
+      - `r_multiple`
+      - `captured_pct`
+      - `is_success`
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+    - `BRAIN_VERSION` bumped from `2.5.23` to `2.5.24` to match the pushed app version.
+- Validation:
+  - `python3 -m py_compile app/src/main/python/brain.py` passed.
+  - Android Kotlin compile was not rerun because local SDK is unavailable in this workspace; previous attempt failed before compile due to missing `ANDROID_HOME`/`local.properties`.
+- Push status:
+  - Vivek authorized synchronous push after the local follow-up patch.
+  - release bump prepared:
+    - Android `versionName = 2.5.25`
+    - Android `versionCode = 356`
+    - web visible label `v2.5.25 / b356`
+    - Python `BRAIN_VERSION = 2.5.25`
+
 ## 2026-07-23 Project knowledge refresh — teacher-label race investigation and UI/jitter status
 
 - Current focus from user direction:
