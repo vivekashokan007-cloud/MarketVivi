@@ -661,6 +661,31 @@ function currentOpenTrades() {
     return readNativeJson('getOpenTrades', []);
 }
 
+function rememberRenderedOpenTrade(trade) {
+    const id = String(trade?.id ?? '');
+    if (!id) return;
+    if (!STATE.renderedOpenTradesById || typeof STATE.renderedOpenTradesById !== 'object') {
+        STATE.renderedOpenTradesById = {};
+    }
+    STATE.renderedOpenTradesById[id] = { ...trade };
+}
+
+function findOpenTradeById(tradeId) {
+    const id = String(tradeId ?? '');
+    if (!id) return null;
+    const rendered = STATE.renderedOpenTradesById?.[id];
+    const sources = [
+        rendered ? [rendered] : [],
+        Array.isArray(STATE.openTrades) ? STATE.openTrades : [],
+        readNativeJson('getOpenTrades', [])
+    ];
+    for (const source of sources) {
+        const match = source.find(t => String(t?.id ?? '') === id);
+        if (match) return match;
+    }
+    return null;
+}
+
 function jsArg(value) {
     return JSON.stringify(String(value ?? ''));
 }
@@ -688,6 +713,7 @@ function removeOpenTradeFromState(tradeId) {
     const nativeTrades = readNativeJson('getOpenTrades', []);
     const source = nativeTrades.length ? nativeTrades : stateTrades;
     STATE.openTrades = source.filter(t => String(t.id) !== id);
+    if (STATE.renderedOpenTradesById && id) delete STATE.renderedOpenTradesById[id];
     syncToNative();
     return STATE.openTrades.length;
 }
@@ -3004,8 +3030,12 @@ async function logManualTrade() {
 }
 
 async function closeTrade(tradeId, exitReason) {
-    const trade = readNativeJson('getOpenTrades', []).find(t => String(t.id) === String(tradeId));
-    if (!trade) { console.warn('closeTrade: trade not found:', tradeId); alert('Trade not found. Try refreshing.'); return; }
+    const trade = findOpenTradeById(tradeId);
+    if (!trade) {
+        console.warn('closeTrade: trade not found:', tradeId);
+        alert('Trade not found. Try refreshing. If the card is still visible, wait for one poll and try again.');
+        return;
+    }
 
     // Confirmation
     const isPaper = trade.paper;
@@ -3197,6 +3227,7 @@ async function closeTrade(tradeId, exitReason) {
                   if (!error) return;
                   const legacyUpdate = { ...outcomeUpdate };
                   delete legacyUpdate.canonical_won;
+                  delete legacyUpdate.outcome_h2;
                   DB.supabase.from('ml_decisions').update(legacyUpdate).eq('trade_id', trade.id)
                     .then(({error: legacyError}) => {
                         if (legacyError) console.warn('[ML] ml_decisions outcome fill failed:', legacyError.message);
@@ -3309,7 +3340,7 @@ function renderBrainInsights() {
 }
 
 function renderBrainForTrade(tradeId) {
-    const trade = (JSON.parse(NativeBridge.getOpenTrades() || '[]') || []).find(t => String(t.id || '') === String(tradeId || '')) || null;
+    const trade = findOpenTradeById(tradeId);
     const data = bd?.positions?.[tradeId];
     if (!data) {
         if (!trade) return '';
@@ -4795,6 +4826,7 @@ function renderCandidateCard(cand, atm, rank) {
 
 // ═══ TRADE CARD — shared renderer for real + paper positions ═══
 function renderTradeCard(t, isPaper) {
+    rememberRenderedOpenTrade(t);
     const forces = t.forces || {
         f1: t.force_f1 || 0, f2: t.force_f2 || 0, f3: t.force_f3 || 0,
         aligned: t.force_alignment || 0
