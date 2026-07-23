@@ -4701,17 +4701,17 @@ function renderCandidateCard(cand, atm, rank) {
                 const lowerCush = spot ? Math.round(spot - cand.beLower) : null;
                 const cushStr = (upperCush != null && lowerCush != null)
                     ? ` <span style="color:var(--text-muted);font-size:9px">(↑${upperCush}pts / ↓${lowerCush}pts)</span>` : '';
-                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()} ↔ ${cand.beUpper.toLocaleString()}</span>${cushStr}</div>`;
+                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${localeNumberOrFallback(cand.beLower)} ↔ ${localeNumberOrFallback(cand.beUpper)}</span>${cushStr}</div>`;
             } else if (cand.beUpper) {
                 const lp = latestPollData();
                 const spot = cand.index === 'BNF' ? lp?.bnfSpot : lp?.nfSpot;
                 const cush = spot ? Math.round(cand.beUpper - spot) : null;
-                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beUpper.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
+                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${localeNumberOrFallback(cand.beUpper)}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
             } else if (cand.beLower) {
                 const lp = latestPollData();
                 const spot = cand.index === 'BNF' ? lp?.bnfSpot : lp?.nfSpot;
                 const cush = spot ? Math.round(spot - cand.beLower) : null;
-                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${cand.beLower.toLocaleString()}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
+                return `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">BE: <span style="color:var(--accent);font-weight:600">${localeNumberOrFallback(cand.beLower)}</span>${cush != null ? ` <span style="color:var(--text-muted);font-size:9px">(${cush}pts buffer)</span>` : ''}</div>`;
             }
             return '';
         })()}
@@ -4719,22 +4719,22 @@ function renderCandidateCard(cand, atm, rank) {
         ${renderBrainForCandidate(cand.id)}
 
         <div class="v1-metrics">
-            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${cand.maxProfit.toLocaleString()}${cand.realisticMaxProfit ? ` <span style="font-size:9px;color:var(--text-muted)">(actual ~₹${cand.realisticMaxProfit.toLocaleString()})</span>` : cand.intradayTheta && cand.tDTE > 2 ? ` <span style="font-size:9px;color:var(--text-muted)">(Θ ₹${cand.intradayTheta.toLocaleString()}/day)</span>` : ''}</span></div>
-            <div class="v1-metric"><span class="v1-label">Max Loss</span><span class="v1-val red">₹${cand.maxLoss.toLocaleString()}</span></div>
+            <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${localeNumberOrFallback(cand.maxProfit)}${cand.realisticMaxProfit ? ` <span style="font-size:9px;color:var(--text-muted)">(actual ~₹${localeNumberOrFallback(cand.realisticMaxProfit)})</span>` : cand.intradayTheta && cand.tDTE > 2 ? ` <span style="font-size:9px;color:var(--text-muted)">(Θ ₹${localeNumberOrFallback(cand.intradayTheta)}/day)</span>` : ''}</span></div>
+            <div class="v1-metric"><span class="v1-label">Max Loss</span><span class="v1-val red">₹${localeNumberOrFallback(cand.maxLoss)}</span></div>
             <div class="v1-metric"><span class="v1-label">R:R</span><span class="v1-val">${cand.riskReward || '--'}</span></div>
             ${cand.rawProbProfit && cand.rawProbProfit !== cand.probProfit ? `<div class="v1-metric"><span class="v1-label">P(Range)</span><span class="v1-val">${(cand.rawProbProfit * 100).toFixed(1)}%</span></div>` : ''}
             <div class="v1-metric"><span class="v1-label">P(Profit)</span><span class="v1-val${cand.upstoxPop && Math.abs(cand.probProfit * 100 - cand.upstoxPop) > 20 ? '" style="color:var(--danger)' : ''}">${(cand.probProfit * 100).toFixed(1)}%${cand.upstoxPop ? ` <span style="font-size:9px;color:var(--text-muted)">(UPX:${cand.upstoxPop.toFixed(0)}%)</span>` : ''}</span></div>
             ${CALIBRATION.win_rates[cand.type] && CALIBRATION.win_rates[cand.type].total > 0 ? `<div class="v1-metric"><span class="v1-label">Track Record</span><span class="v1-val" style="color:${CALIBRATION.win_rates[cand.type].rate >= 0.7 ? 'var(--green)' : CALIBRATION.win_rates[cand.type].rate >= 0.4 ? 'var(--warn)' : 'var(--danger)'}">${CALIBRATION.win_rates[cand.type].verdict} ${CALIBRATION.win_rates[cand.type].wins}/${CALIBRATION.win_rates[cand.type].total} (${(CALIBRATION.win_rates[cand.type].rate * 100).toFixed(0)}%)</span></div>` : ''}
         </div>
 
-        <div class="v1-target">🎯 Target: ₹${cand.targetProfit?.toLocaleString() || '--'} | 🔴 SL: ₹${cand.stopLoss?.toLocaleString() || '--'}${cand.intradayTheta && (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? ' <span style="font-size:9px;color:var(--text-muted)">(intraday Θ)</span>' : ''}</div>
-        ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${cand.estCost.toLocaleString()} (${cand.estCostPct}% of max) · Net profit: ₹${(cand.netMaxProfit ?? 0).toLocaleString()}</div>` : ''}
+        <div class="v1-target">🎯 Target: ₹${localeNumberOrFallback(cand.targetProfit)} | 🔴 SL: ₹${localeNumberOrFallback(cand.stopLoss)}${cand.intradayTheta && (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? ' <span style="font-size:9px;color:var(--text-muted)">(intraday Θ)</span>' : ''}</div>
+        ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${localeNumberOrFallback(cand.estCost)} (${cand.estCostPct}% of max) · Net profit: ₹${localeNumberOrFallback(cand.netMaxProfit ?? 0)}</div>` : ''}
 
         <div class="v1-forces">
             ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · ${cand.varsityTier === 'PRIMARY' ? '<span style="color:var(--green)">PRIMARY</span>' : '<span style="color:var(--warn)">ALLOWED</span>'}${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
         </div>
         <div class="v1-footer">
-            💰 BUY first ₹${peakCash(cand).toLocaleString()} → Margin: ₹${marginInfo.value.toLocaleString()}${marginInfo.label}
+            💰 BUY first ₹${localeNumberOrFallback(peakCash(cand))} → Margin: ₹${localeNumberOrFallback(marginInfo.value)}${marginInfo.label}
             · EV/₹1K ${marginInfo.source === 'UPSTOX' ? 'margin' : 'cash'}: ₹${(cand.ev / (evCapitalBase / 1000 || 1)).toFixed(0)}
         </div>
         ${weakEconomics ? `<div style="font-size:10px;color:var(--warn);margin-top:4px">⚠️ Economics weak: ${weakEconomicsReasons.join(' · ')}</div>` : ''}
