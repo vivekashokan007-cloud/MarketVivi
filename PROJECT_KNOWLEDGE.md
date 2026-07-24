@@ -1,3 +1,55 @@
+## 2026-07-23 T0 residual cleanup executed after Claude close-forward directive
+
+- Directive received:
+  - `/tmp/codex-web-uploads/f-PdlR8B/DIRECTIVE_T0_CLOSE_AND_FORWARD_20260723.md`
+- Claude verdict:
+  - `v2.5.25 / b356` code is correct.
+  - G4 closed.
+  - G1/G2 fixed forward but old rows/aggregates still needed cleanup.
+  - G3 still needed per-day accounting.
+- Cleanup script created outside app repo release path:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/t0_residual_cleanup_20260723.py`
+- Cleanup report:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/T0_RESIDUAL_CLEANUP_REPORT_20260723.txt`
+- R-1 daily accuracy recompute from S1 shadow base completed:
+  - `2026-07-16`: labeled `7`, wins `7`, accuracy `100.0`
+  - `2026-07-17`: labeled `10`, wins `0`, accuracy `0.0`
+  - `2026-07-20`: labeled `2`, wins `0`, accuracy `0.0`
+  - `2026-07-21`: labeled `5`, wins `5`, accuracy `100.0`
+  - `2026-07-22`: labeled `3`, wins `3`, accuracy `100.0`
+  - `2026-07-23`: labeled `1`, wins `1`, accuracy `100.0`
+  - method stamped:
+    - `s1_shadow_h2_primary_labelable_recompute`
+- R-2 retro-sanitisation completed:
+  - `ml_recommendation_outcomes`: `126` FAIL rows patched.
+  - `ml_evaluation_outcomes`: `126` FAIL rows patched.
+  - patched sessions:
+    - `2026-07-17`: `104`
+    - `2026-07-20`: `10`
+    - `2026-07-22`: `11`
+    - `2026-07-23`: `1`
+  - cleared fields:
+    - `managed_pnl`
+    - `managed_gross_pnl`
+    - `friction_cost`
+    - `r_multiple`
+    - `captured_pct`
+    - `is_success`
+- R-3 unlabelled day accounting completed:
+  - days with snapshots but no live eval rows:
+    - `2026-05-25`, `2026-05-26`, `2026-05-27`, `2026-05-29`, `2026-06-01`, `2026-06-10`, `2026-06-11`, `2026-06-18`, `2026-06-19`, `2026-07-06`
+  - days with snapshots but no labelable candidates:
+    - `2026-06-16`, `2026-06-25`, `2026-06-30`, `2026-07-10`, `2026-07-15`
+  - limitation:
+    - existing S1 regeneration derives shadow rows from old live eval/reco source rows.
+    - days with snapshots and primaries but zero live eval rows need a new snapshot-derived regeneration path before they can be recovered into S1 with honest source attribution.
+- Supabase discipline:
+  - cleanup ran single-process with sleeps between requests.
+  - no throttle/timeout stop occurred.
+- Remaining watch item:
+  - next live session must verify deferred `16:30 IST` evaluation fires unattended.
+  - if it does not fire, add a loud missed-evaluation state instead of allowing a quiet skipped day.
+
 ## 2026-07-23 Forward teacher-label recovery executed
 
 - Trigger:
@@ -14431,3 +14483,460 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
   - the current blocker is missing historical backing coverage for the tested July 2026 Chapter B days through the current Supabase path.
 - Implication:
   - Class B parity on July 2026 reference days cannot proceed until we either populate those historical tables or identify the correct alternate historical source/path.
+
+### 2026-07-23 - E1 Step 2 Offline Bake-Off Prep Status
+
+- Followed Claude `E1_PREREGISTRATION_INCONTEXT_MODEL_BAKEOFF_20260722-1.md` from Step 2 only.
+- Scope preserved:
+  - offline only.
+  - no phone code.
+  - no live ranking authority.
+  - no sandbox authority.
+  - no app wiring.
+- Added local-only E1 tools in `Marketapp-main-worktree`:
+  - `tools/e1_bakeoff_prep.py`
+  - `tools/e1_bakeoff_run.py`
+- Supabase pull discipline:
+  - single process.
+  - small pages/chunks.
+  - sleeps between requests.
+  - Postgres statement timeout `57014` treated as a stop/throttle condition.
+  - snapshot rows cached locally to avoid repeated large pulls.
+- Frozen E1 dataset built from S1 shadow labels:
+  - source table: `ml_evaluation_outcomes_s1`
+  - filter: `role=primary`, `new_price_integrity=OK`, `new_canonical_won not null`
+  - rows: `637`
+  - source S1 rows: `637`
+  - skipped rows: `0`
+  - days: `27`
+  - wins: `328`
+  - losses: `309`
+  - win rate: `51.49%`
+  - prep JSONL SHA256: `e6b52e2984c8f9362b28ae5bd3c95599eb6994602884766ce4483be2445f81e1`
+- Generated artifacts:
+  - `reports/e1_bakeoff_20260723/e1_primary_dataset.csv`
+  - `reports/e1_bakeoff_20260723/e1_primary_dataset.jsonl`
+  - `reports/e1_bakeoff_20260723/e1_manifest.json`
+  - `reports/e1_bakeoff_20260723/E1_PREP_REPORT_20260723.md`
+  - `reports/e1_bakeoff_20260723/E1_BAKEOFF_REPORT_20260723.md`
+  - `reports/e1_bakeoff_20260723/e1_results.json`
+  - `reports/e1_bakeoff_20260723/e1_predictions.csv`
+- Local environment:
+  - isolated venv `.e1_venv`
+  - installed `tabicl==2.1.1`
+  - installed `tabpfn==8.1.0`
+  - installed `torch==2.13.0`
+  - installed `numpy==2.5.1`, `pandas==3.0.5`, `scikit-learn==1.9.0`, `lightgbm==4.7.0`
+  - environment size measured at about `4.9G`
+- One-fold smoke result:
+  - `base_rate`: OK, AUC `0.5` on first fold.
+  - `logistic_baseline`: OK as engineering sanity baseline only, not a pre-registered winning candidate.
+  - `TabICL`: OK technically, but first cached one-fold latency was about `13.07s` for 17 candidates; earlier first run including checkpoint path measured about `59.35s`. This currently fails Claude's G2 `<=5s` candidate-batch latency gate on this CPU environment.
+  - `TabPFN`: not scored; blocked by one-time TabPFN license/token acceptance before model weights can be downloaded. It requires user/API token from Prior Labs before local inference can run.
+- Full TabICL walk-forward was then run for information value while waiting for Claude, explicitly ignoring G2 gate timing as a provisional exploratory read:
+  - folds: `26`
+  - scored rows: `574`
+  - base-rate AUC: `0.45387426900584793`
+  - logistic sanity baseline AUC: `0.5258284600389863`
+  - TabICL AUC: `0.5991228070175438`
+  - TabICL log-loss: `0.7821271718208664`
+  - TabICL Brier: `0.26992232052371407`
+  - TabICL ECE-10: `0.2121586622183539`
+  - TabICL median batch latency: `2.29650937399947s`
+  - TabICL max batch latency: `20.783535877999384s`
+  - process max RSS: about `871880 KB`
+  - result artifact: `reports/e1_bakeoff_20260723/E1_BAKEOFF_REPORT_20260723.md`
+- Current E1 interpretation:
+  - dataset freeze is complete.
+  - TabICL shows real predictive lift on the current frozen dataset and clears the AUC threshold versus both base-rate and logistic sanity baseline.
+  - TabICL median latency clears the `<=5s` batch target after checkpoint cache, but max fold latency exceeds it; G2 therefore needs Claude review rather than a clean pass claim.
+  - TabICL phone eligibility/G3 is not proven because the local Python environment footprint is about `4.9G`.
+  - TabPFN cannot be judged until license/token is supplied.
+  - no E1 result has authority to change app ranking, phone code, sandbox flow, or live trading.
+
+### 2026-07-23 - E1 Claude Ruling And Required Completion Work
+
+- Claude reviewed the first E1 report in `CLAUDE_RULING_E1_BAKEOFF_20260723.md`.
+- Claude independently recomputed the reported metrics from raw predictions and matched OC's arithmetic exactly.
+- Claude ruling:
+  - encouraging signal.
+  - not a qualifying result yet.
+  - do not integrate.
+  - complete the evaluation.
+- Claude identified missing requirements:
+  - frozen deployed model baseline was absent.
+  - within-day AUC must be first-class because the brain ranks same-day candidate menus.
+  - TabPFN v2 still must be run after license/token acceptance.
+  - TabICL license and export/deployment feasibility remain unverified.
+  - TabFM ceiling reference remains unrun.
+- OC then patched `tools/e1_bakeoff_run.py` to:
+  - add `frozen_deployed` model scoring from `app/src/main/assets/ml_model.json`.
+  - add per-model within-day AUC.
+  - add within-day head-to-head counts.
+  - keep all scoring on the identical frozen folds.
+- Full E1 rerun after Claude ruling:
+  - models run: `base_rate`, `frozen_deployed`, `logistic_baseline`, `tabicl`
+  - scored rows per model: `574`
+  - folds: `26`
+  - within-day gradeable days: `17`
+  - single-class days: `9`
+- Updated pooled metrics:
+  - `base_rate`: AUC `0.45387426900584793`, log-loss `0.7905945730708254`, Brier `0.2879669666501715`, ECE-10 `0.16911986180402896`
+  - `frozen_deployed`: AUC `0.42666910331384017`, log-loss `0.8637813470495052`, Brier `0.32509989635933023`, ECE-10 `0.27150151603528466`
+  - `logistic_baseline`: AUC `0.5258284600389863`, log-loss `1.7407134143136107`, Brier `0.33955223287272945`, ECE-10 `0.3010937416496732`
+  - `TabICL`: AUC `0.5991228070175438`, log-loss `0.7821268741337991`, Brier `0.26992216858062484`, ECE-10 `0.21215862962855384`
+- Updated within-day mean AUC:
+  - `base_rate`: `0.5`
+  - `frozen_deployed`: `0.5369413797006923`
+  - `logistic_baseline`: `0.6844039347078659`
+  - `TabICL`: `0.6829299077764996`
+- Within-day head-to-head:
+  - `frozen_deployed` vs `TabICL`: TabICL wins `12`, frozen deployed wins `4`, ties `1`
+  - `frozen_deployed` vs `logistic_baseline`: logistic wins `10`, frozen deployed wins `6`, ties `1`
+  - `logistic_baseline` vs `TabICL`: logistic wins `9`, TabICL wins `6`, ties `2`
+- Updated timing:
+  - `TabICL` median batch latency `3.2997408579994953s`
+  - `TabICL` max batch latency `37.788153735999s`
+  - `frozen_deployed` median batch latency `0.024222369999733928s`
+- Correct updated interpretation:
+  - TabICL beats the frozen deployed asset model on pooled AUC, log-loss, Brier, ECE, and mean within-day AUC.
+  - TabICL does not beat logistic on mean within-day AUC or head-to-head within-day days.
+  - Logistic remains badly calibrated and is not directly usable as a probability/expectancy oracle.
+  - Frozen deployed model is materially weak on this frozen E1 label set.
+  - E1 still cannot be adjudicated until TabPFN, license/exportability, and optionally TabFM ceiling are addressed.
+  - no integration or live authority is justified yet.
+
+### 2026-07-23 - E1B Context Scaling Experiment Partial Results
+
+- Claude/Vivek E1B directive: test whether TabICL improves as context size grows.
+- Scope preserved:
+  - offline only.
+  - no phone code changed.
+  - no live ranking authority.
+  - no integration.
+- Added local tool:
+  - `Marketapp-main-worktree/tools/e1b_context_scaling.py`
+- E1B pre-registration copied into report folder before computing results:
+  - `reports/e1b_context_scaling_20260723/E1B_CONTEXT_SCALING_EXPERIMENT_20260723.md`
+- All-role S1 dataset built:
+  - total rows: `8744`
+  - primary rows: `637`
+  - secondary rows: `8107`
+  - wins: `5072`
+  - losses: `3672`
+  - days: `27`
+  - dataset SHA256: `a2aa514c7e43b459504cff5b9067548f13adc9a78f412f36cb500de1936f712c`
+- E1B artifacts:
+  - `reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv`
+  - `reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.jsonl`
+  - `reports/e1b_context_scaling_20260723/e1b_results_logistic_ladder.json`
+  - `reports/e1b_context_scaling_20260723/e1b_results_A1_tabicl.json`
+  - `reports/e1b_context_scaling_20260723/e1b_results_A2_tabicl.json`
+  - `reports/e1b_context_scaling_20260723/e1b_results_A3_tabicl.json`
+  - `reports/e1b_context_scaling_20260723/E1B_CONSOLIDATED_SUMMARY_20260723.md`
+- Completed E1B metrics:
+  - A1 primary 25%, logistic: pooled AUC `0.5441`, within-day AUC `0.5971`, log-loss `0.8394`
+  - A1 primary 25%, TabICL: pooled AUC `0.5484`, within-day AUC `0.6017`, log-loss `0.8105`
+  - A2 primary 50%, logistic: pooled AUC `0.5644`, within-day AUC `0.6561`, log-loss `1.0715`
+  - A2 primary 50%, TabICL: pooled AUC `0.6487`, within-day AUC `0.6888`, log-loss `0.7222`
+  - A3 primary 100%, logistic: pooled AUC `0.5259`, within-day AUC `0.6846`, log-loss `1.7411`
+  - A3 primary 100%, TabICL: pooled AUC `0.5991`, within-day AUC `0.6829`, log-loss `0.7821`
+  - A4 primary+secondary 100%, logistic: pooled AUC `0.4484`, within-day AUC `0.5190`, log-loss `1.2594`
+  - A4 primary+secondary 100%, TabICL: not completed; runtime-blocked.
+- A4 TabICL runtime result:
+  - first unbounded attempt became effectively stuck with no output progress and near-zero CPU after several minutes.
+  - bounded attempt with `timeout 600` exited with code `124`.
+  - this is recorded as a runtime-ceiling finding, not an accuracy result.
+- Current E1B interpretation:
+  - TabICL improves materially from A1 to A2.
+  - TabICL does not improve monotonically from A2 to A3.
+  - Logistic within-day ranking improves through A3 but probability calibration becomes worse.
+  - Naively adding all secondary rows harms logistic strongly.
+  - Full A4 TabICL cannot currently be measured with the naive full-context runner.
+  - E1B is partial and does not authorize integration.
+- Suggested next E1B work:
+  - test bounded secondary sampling arms such as primary+secondary 10%, 25%, and 50%.
+  - use stratified secondary sampling by day/strategy/index rather than dumping all secondaries into context.
+  - add calibrated logistic arm.
+  - continue TabPFN only after Prior Labs token/license is supplied.
+
+### 2026-07-24 - E1D Retrieval Preservation Gate
+
+- Claude/Antigravity RAG ruling: RAG architecture is promising but retrieval accuracy must be tested offline before any ONNX/Android work.
+- OC implemented E1D as a separate local-only script:
+  - `Marketapp-main-worktree/tools/e1d_retrieval_preservation.py`
+- Scope preserved:
+  - offline only.
+  - no phone code changed.
+  - no live ranking authority.
+  - no Supabase access during model runs.
+- Dataset:
+  - reused E1B all-role CSV: `reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv`
+  - test rows primary-only.
+  - context rows strictly prior-day.
+  - fixed context size `256`.
+  - model: `TabICL`.
+- Retrieval-distance safety:
+  - excluded `bearish_close`, `bullish_close`, `day_direction`, `day_range`, `day_range_sigma`, `downtrend`, `inside_day`, `outside_day`, `uptrend`.
+  - excluded labels/outcomes/IDs and `role`/`training_role` from retrieval distance.
+  - `role` and `training_role` remained available as model features for TabICL.
+- Completed E1D arms:
+  - `recent_256`: full run completed.
+  - `random_256`: full run completed.
+  - `stratified_256`: full run completed after batching by day/index/strategy.
+  - `knn_256`: 3-day sample completed; full run timed out.
+- E1D metrics:
+  - `recent_256`: rows `574`, pooled AUC `0.4596`, within-day AUC `0.5675`, log-loss `1.2465`, Brier `0.3908`, ECE-10 `0.3740`, median latency `11.3290s`, max latency `13.7980s`
+  - `random_256`: rows `574`, pooled AUC `0.6911`, within-day AUC `0.7201`, log-loss `0.7031`, Brier `0.2371`, ECE-10 `0.1227`, median latency `2.5682s`, max latency `56.3216s`
+  - `stratified_256`: rows `574`, pooled AUC `0.5272`, within-day AUC `0.5888`, log-loss `0.8568`, Brier `0.3009`, ECE-10 `0.2487`, median latency `1.9669s`, max latency `34.6689s`
+  - `knn_256` 3-day sample: rows `72`, pooled AUC `0.7081`, within-day AUC `0.7352`, log-loss `0.8376`, Brier `0.2139`, ECE-10 `0.2366`, median latency `1.7018s`, max latency `34.7568s`
+  - `knn_256` full: attempted with `timeout 1800`, exited with code `124`; no full metric.
+- E1D artifacts:
+  - `reports/e1d_retrieval_preservation_20260724/E1D_CONSOLIDATED_SUMMARY_20260724.md`
+  - `reports/e1d_retrieval_preservation_20260724/e1d_results_recent_256_tabicl.json`
+  - `reports/e1d_retrieval_preservation_20260724/e1d_results_random_256_tabicl.json`
+  - `reports/e1d_retrieval_preservation_20260724/e1d_results_stratified_256_tabicl.json`
+  - `reports/e1d_retrieval_preservation_20260724/e1d_results_knn_256_tabicl_3day.json`
+- Correct E1D interpretation:
+  - retrieval is not neutral; strategy changes performance materially.
+  - `random_256` is the strongest completed full-run arm and beats E1 A3/E1B A2/frozen deployed on pooled and within-day AUC.
+  - `random_256` also has strong calibration versus earlier TabICL runs.
+  - `recent_256` and naive `stratified_256` do not preserve accuracy.
+  - `knn_256` partial sample is promising but full k-NN is runtime-blocked in the current naive per-candidate implementation.
+  - RAG is not yet validated for k-NN; ONNX/Android work should still wait.
+- Suggested next E1D work:
+  - leakage/sanity checks on `random_256` because it is unexpectedly strong.
+  - test batchable RAG-like variants such as strategy/index/regime weighted random context.
+  - optimize or approximate k-NN before treating k-NN RAG as viable.
+  - no integration/live authority from this result alone.
+
+### 2026-07-24 - E1E1 P&L-Target Menu Ranking
+
+- User/Claude correction: previous TabICL experiments used wrong target (`canonical_won`); actual objective is friction-true P&L / expectancy.
+- OC implemented E1E1 offline:
+  - script: `Marketapp-main-worktree/tools/e1e_pnl_ranking.py`
+  - report folder: `reports/e1e_pnl_ranking_20260724`
+  - target: `net_pnl`
+  - context: deterministic `random_256`
+  - full generated menu scored per snapshot.
+  - synthetic `NO_TRADE` row added to every menu with realised P&L exactly `0`.
+  - no app code changed.
+  - no live authority.
+  - no Supabase access during model run.
+- Engineering note:
+  - first per-menu implementation timed out at `2700s`.
+  - script was corrected to fit TabICL once per eligible day and score all menus for that day in one batch.
+  - batched 3-day smoke reproduced per-menu P&L output, validating the batching change.
+- 3-day smoke result:
+  - menus `72`
+  - TabICL avg P&L `+8.72`
+  - brain primary avg P&L `-256.87`
+  - random menu avg P&L `-134.47`
+  - oracle avg P&L `+402.68`
+  - model minus brain avg `+265.59`
+  - NO_TRADE pick rate `34.72%`
+  - candidate Spearman `0.4897`
+  - interpretation: promising early-window result, but later proven not to generalise.
+- Full E1E1 result:
+  - scored menus `574`
+  - candidate predictions incl. NO_TRADE `5205`
+  - TabICL total P&L `-35987.00`
+  - brain primary total P&L `-18980.25`
+  - random menu total P&L incl. NO_TRADE `-28832.09`
+  - oracle total P&L incl. NO_TRADE `369436.75`
+  - TabICL avg P&L `-62.70`
+  - brain primary avg P&L `-33.07`
+  - random menu avg P&L `-50.23`
+  - oracle avg P&L `643.62`
+  - TabICL minus brain avg `-29.63`
+  - TabICL minus random avg `-12.46`
+  - brain minus random avg `+17.16`
+  - oracle gap captured by TabICL `-1.80%`
+  - oracle gap captured by brain `+2.47%`
+  - NO_TRADE picks `123 / 574`
+  - NO_TRADE pick rate `21.43%`
+  - candidate Spearman(predicted P&L, actual P&L) `0.0769`
+  - median day-batch latency `16.78s`
+  - max day-batch latency `40.72s`
+- Correct interpretation:
+  - E1E1 rejects direct `random_256` TabICL raw-rupee P&L menu ranking.
+  - Existing brain primary beats this model on full data.
+  - Model is also worse than random menu average on full data.
+  - 3-day smoke was an early-window artifact and must not be used as integration evidence.
+  - Raw rupee regression may be unstable/outlier-dominated; this does not kill normalized R-multiple/clipped target testing.
+  - E1E1 does not prove the current EV/IV hard gate is good; it only proves this TabICL P&L-ranker configuration should not replace current selection.
+- Recommended next work:
+  - direct EV/IV hard-gate audit: rejected-vs-survivor P&L and missed-winner counts.
+  - test normalized `R_multiple` or clipped P&L target.
+  - test TabICL as abstention/notification filter over current brain primary instead of full-menu ranker.
+  - retain regime/branching view because model wins/losses are uneven by day.
+
+### 2026-07-24 - EV/IV / A8 Hard-Gate Audit From D3A Replay
+
+- User concern:
+  - the brain appears to generate useful strategies, but the best candidate is not reliably selected/displayed for the market condition.
+  - user does not agree with the current hard EV floor acting as an early kill switch.
+  - user wants TabICL/branch logic to see candidates before the EV/IV gate removes them.
+- OC response:
+  - ran an offline audit from retained replay artifacts only.
+  - no Supabase query was run.
+  - no app code was changed.
+- New local audit script:
+  - `Marketapp-main-worktree/tools/ev_iv_gate_audit.py`
+- Input artifact:
+  - `Marketapp-main-worktree/reports/d3a_full_replay_rows_20260707_20260721.csv`
+- Output artifacts:
+  - `Marketapp-main-worktree/reports/ev_iv_gate_audit_20260724/EV_IV_GATE_AUDIT_REPORT_20260724.md`
+  - `Marketapp-main-worktree/reports/ev_iv_gate_audit_20260724/ev_iv_gate_audit_summary.json`
+  - `Marketapp-main-worktree/reports/ev_iv_gate_audit_20260724/ev_iv_gate_branch_summary.csv`
+  - `Marketapp-main-worktree/reports/ev_iv_gate_audit_20260724/ev_iv_gate_killed_winner_pockets.csv`
+- Important limitation:
+  - D3A replay rows contain `A8_KILLED` vs `A8_SURVIVOR`, VIX bucket, premium-edge bucket, branch fields, and realised friction-adjusted P&L.
+  - D3A rows do not contain raw EV ratio, raw IV, or exact per-candidate EV-floor comparison fields.
+  - Therefore this is an A8/EV-style hard-gate false-negative audit, not an exact reconstruction of the `1.10` EV boundary.
+- Top-line metrics:
+  - total replay rows: `10676`
+  - priced rows: `10209`
+  - pricing-failed rows: `467`
+  - A8 killed rows: `9844`
+  - A8 killed priced rows: `9377`
+  - A8 killed positive rows: `2501`
+  - A8 killed positive rate: `26.67%`
+  - A8 killed avg net P&L: `-333.00`
+  - A8 survivor rows: `832`
+  - A8 survivor priced rows: `832`
+  - A8 survivor positive rows: `243`
+  - A8 survivor positive rate: `29.21%`
+  - A8 survivor avg net P&L: `-2518.32`
+- Failure-class counts:
+  - `F1_DATA_MISSING`: `581`
+  - `F2_GATE_FALSE_NEGATIVE`: `2501`
+  - `F3_GATE_CORRECT_REJECTION`: `6876`
+  - `F4_SURVIVOR_UNDERPERFORMANCE`: `475`
+  - `F5_SURVIVOR_VALID`: `243`
+- Interpretation:
+  - the hard gate is not purely bad; it correctly rejected many losing candidates.
+  - however, it also killed a large number of profitable candidates.
+  - the killed winner pockets recur by branch, not as isolated one-off accidents.
+  - this supports changing the architecture so economic EV/IV gate outputs become visible features/annotations for shadow ranking before becoming hard exclusions.
+- Examples of killed winner pockets:
+  - MIDDAY BNF CREDIT BEAR_CALL, `EDGE_MISSING`, `VIX_12_14`, `PCR_LT_0_95`: killed priced `1000`, positives `429`, positive rate `42.90%`, avg net P&L `+7.22`
+  - LATE NF CREDIT BULL_PUT, `EDGE_MISSING`, `VIX_12_14`, `PCR_LT_0_95`: killed priced `261`, positives `174`, positive rate `66.67%`, avg net P&L `+50.57`
+  - LATE NF CREDIT BEAR_CALL, `EDGE_MISSING`, `VIX_14_16`, `PCR_GT_1_05`: killed priced `255`, positives `164`, positive rate `64.31%`, avg net P&L `+238.53`
+  - MIDDAY NF CREDIT BULL_PUT, `EDGE_MISSING`, `VIX_12_14`, `PCR_LT_0_95`: killed priced `298`, positives `139`, positive rate `46.64%`, avg net P&L `+91.43`
+  - MORNING_LOCK NF CREDIT BULL_PUT, `EDGE_MISSING`, `VIX_12_14`, `PCR_GT_1_05`: killed priced `56`, positives `56`, positive rate `100.00%`, avg net P&L `+578.49`
+- Examples of weak survivor pockets:
+  - MIDDAY BNF CREDIT BULL_PUT, `EDGE_LT_0`, `VIX_LT_12`, `PCR_LT_0_95`: survivor priced `195`, positives `0`, positive rate `0.00%`, avg net P&L `-567.78`
+  - MORNING_LOCK BNF CREDIT BULL_PUT, `EDGE_LT_0`, `VIX_LT_12`, `PCR_LT_0_95`: survivor priced `95`, positives `0`, positive rate `0.00%`, avg net P&L `-562.01`
+  - LATE BNF DEBIT BEAR_PUT, `EDGE_25_PLUS`, `VIX_14_16`, `PCR_GT_1_05`: survivor priced `45`, positives `0`, positive rate `0.00%`, avg net P&L `-14171.60`
+- Current conclusion:
+  - do not delete all EV/IV safety logic.
+  - do not let the current economic A8/EV floor irreversibly erase all candidates before ranking research sees them.
+  - keep structural impossibility and data-integrity gates hard.
+  - persist killed candidates and gate fields as first-class shadow rows.
+  - treat EV ratio, IV/VIX regime, edge bucket, rejection reason, and branch as model/ranking features.
+  - only make the EV/IV floor adaptive/branch-aware after offline proof beats present gate by branch.
+- Required exact-field follow-up:
+  - persist raw EV ratio / expected-win / expected-loss.
+  - persist exact `BUILD3_EV_FLOOR_MULT` comparison value.
+  - persist raw IV or explicitly name the available signal as VIX if IV is unavailable.
+  - persist rejection stage and reason.
+  - persist max profit, max loss, width, premium, friction, and probability estimate used by the gate.
+- Recommended next direction:
+  - run a shadow selector over the full pre-A8 menu, not over survivors only.
+  - include survivors + A8-killed candidates + `NO_TRADE`.
+  - use clipped or normalized realised R/P&L target rather than raw unbounded rupees.
+  - keep authority shadow-only until branch-level missed-winner capture improves without increasing loser selection.
+
+### 2026-07-24 - User Policy Override: Remove Hard A8 EV Gate
+
+- User clarified history:
+  - the hard EV gate was not originally present.
+  - user had specifically requested it earlier.
+  - after reviewing the replay audit, user now explicitly requested removal of the hard gate.
+- OC code change made locally only:
+  - file changed: `Marketapp-main-worktree/app/src/main/python/brain.py`
+  - test changed: `Marketapp-main-worktree/app/src/main/python/tests/test_build3_a8_nf_ab.py`
+- New live policy:
+  - `BUILD3_A8_HARD_GATE_ACTIVE = False`
+  - A8 EV calculations remain active.
+  - `build3ExpectedWin`, `build3ExpectedLoss`, `build3EvFloor`, `build3EvRatio`, and pass/fail annotations remain available on candidates.
+  - candidates below the `1.10` reference EV floor are no longer removed from ranking.
+  - below-floor candidates are marked with:
+    - `build3A8SoftenedToRanking = True`
+    - `a8_softened_to_ranking = True`
+    - `candidate_released_to_ranking = True` in shadow rejection evidence rows.
+  - A8 summary now reports:
+    - `a8_gate_verdict = PASS`
+    - `a8_gate_mode = SHADOW_ONLY`
+    - `n_ev_below_floor_released_to_ranking`
+- Why this preserves evidence:
+  - existing Phase 3/4/5 diagnostics still receive `ev_below_floor` shadow rows.
+  - replay/teacher analysis can continue measuring what the old hard gate would have killed.
+  - live selection/display is no longer blocked solely by the `1.10` EV floor.
+- Validation run:
+  - `python app/src/main/python/tests/test_build3_a8_nf_ab.py` passed.
+  - `python -m unittest app/src/main/python/tests/test_phase4_ev_ladder_shadow.py app/src/main/python/tests/test_phase5_gate_registry.py` passed.
+  - `python -m py_compile app/src/main/python/brain.py` passed.
+- Push status:
+  - not pushed.
+  - no version bump done yet.
+  - if user commands push, Android version must be bumped and both repos must be pushed synchronously.
+
+### 2026-07-24 - Post-Close ML Auto Evaluation Did Not Run
+
+- User evidence:
+  - post-close screenshots at about `18:12-18:13 IST`.
+  - app showed `Session complete · polls 76/76 slots · Next 27 Jul, 9:15 am`.
+  - ML tab showed:
+    - `Day evaluation: INCOMPLETE_SESSION`
+    - `Waiting for post-close evaluation for 24 Jul`
+    - `Session integrity is broken (NONE). Normal teacher evaluation is blocked for this session`
+    - teacher matrix rows all `0`
+    - chosen vs candidate menu rows `0`
+  - uploaded log file contained only three logcat rows, but one important row:
+    - `LOCAL_SNAPSHOT_READ_RECENT: date=2026-07-24 rows=1 bytes=1859653 fileBytes=65489660 limit=5 byteCap=2097152`
+- Diagnosis:
+  - the UI displayed `76/76` from raw poll coverage, but ML evaluation state was blocked by persisted/derived coverage integrity.
+  - `coverage_integrity_date` can exist without a reliable matching `coverage_integrity_issue`, causing the UI to show broken integrity with issue `NONE`.
+  - the integrity code used only `poll_history[*].t` for slot reconstruction; if restored/bootstrap history uses `time`, `poll_time`, or `poll_ts`, distinct-slot and final-slot detection can falsely fail even when raw poll count is `76`.
+  - `SNAPSHOT_OVERRUN` was treated as `INTEGRITY_BROKEN`; this is too strict because local snapshot cache can contain duplicate/retry rows and full rows are deduplicated by `EvaluationLocalCache` before evaluation.
+  - result: a session can be complete enough for evaluation but still get stuck in stale `INCOMPLETE_SESSION`.
+- Code changes made locally only:
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/NativeBridge.kt`
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketMLService.kt`
+- Fix details:
+  - slot parsing now accepts `t`, `time`, `poll_time`, or `poll_ts`.
+  - slot parser now extracts `HH:mm` from a larger timestamp string instead of requiring the whole string to be exactly `HH:mm`.
+  - `SNAPSHOT_OVERRUN` is downgraded from fatal `INTEGRITY_BROKEN` to `COMPLETE_WITH_RETRIES`.
+  - stale persisted `INTEGRITY_BROKEN` with issue `NONE`, blank issue, or `SNAPSHOT_OVERRUN` is normalized to runnable integrity:
+    - blank/`NONE` -> `COMPLETE`
+    - `SNAPSHOT_OVERRUN` -> `COMPLETE_WITH_RETRIES`
+  - `NativeBridge.repairIncompleteSessionStateIfNeeded` now clears stale `INCOMPLETE_SESSION` when rechecked integrity is no longer broken.
+  - `evaluationPromotionEligible` now allows both `COMPLETE` and `COMPLETE_WITH_RETRIES`.
+- What remains hard-blocked:
+  - `FINAL_SLOT_MISSING`
+  - `FINAL_SLOT_DUPLICATE`
+  - `POLL_OVERRUN`
+  - true `INTEGRITY_BROKEN` with a real fatal issue.
+- Validation:
+  - Python brain tests still pass:
+    - `python app/src/main/python/tests/test_build3_a8_nf_ab.py`
+    - `python -m unittest app/src/main/python/tests/test_phase4_ev_ladder_shadow.py app/src/main/python/tests/test_phase5_gate_registry.py`
+    - `python -m py_compile app/src/main/python/brain.py`
+  - Kotlin compile was attempted:
+    - `./gradlew :app:compileDebugKotlin`
+    - blocked by environment, not code: Android SDK location missing; requires `ANDROID_HOME` or `local.properties sdk.dir`.
+- Push status:
+  - user commanded push after this fix.
+  - synchronized release bump prepared:
+    - Android `versionName = 2.5.26`
+    - Android `versionCode = 357`
+    - Python `BRAIN_VERSION = 2.5.26`
+    - web visible label `v2.5.26 / b357`
+    - web `app.js` cache-bust `1266`
+  - intended release bundle:
+    - remove hard A8 EV gate while preserving EV diagnostics.
+    - repair post-close ML evaluation integrity normalization.
+    - include offline E1/TabICL/EV-gate research artifacts and project knowledge updates.
