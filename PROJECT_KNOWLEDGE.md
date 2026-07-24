@@ -14940,3 +14940,59 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
     - remove hard A8 EV gate while preserving EV diagnostics.
     - repair post-close ML evaluation integrity normalization.
     - include offline E1/TabICL/EV-gate research artifacts and project knowledge updates.
+
+### 2026-07-24 - v2.5.26 Post-Push Evaluation Failure: H2 Chain Coverage
+
+- User uploaded post-update log:
+  - `/tmp/codex-web-uploads/f-yPlaL9/marketapp-logs-2026-07-24T14-42-20-025Z.csv`
+- Confirmed v357 was running:
+  - log contained `MainActivity copied teacher_table_stage2a.json (v357)`.
+  - log contained `repairIncompleteSessionStateIfNeeded: cleared stale incomplete state for 2026-07-24 integrity=COMPLETE`.
+- Therefore the v2.5.26 integrity fix worked.
+- New blocker:
+  - `MarketMLService EVAL_FAIL[PREPARING]`
+  - error:
+    - `EVAL_CHAIN_H2_INCOMPLETE: 0/10 candidate legs have H2 rows from ml_option_chain_snapshots.exact.filtered_stream`
+  - missing legs included:
+    - `BNF|2026-07-28|PE|56400.00`
+    - `BNF|2026-07-28|PE|56600.00`
+    - `NF|2026-07-28|PE|23600.00`
+    - `NF|2026-07-28|PE|23750.00`
+    - `NF|2026-07-28|PE|23650.00`
+    - `BNF|2026-07-28|PE|56200.00`
+    - `NF|2026-07-28|PE|23700.00`
+    - `BNF|2026-07-28|PE|55900.00`
+- Diagnosis:
+  - v2.5.26 got past stale integrity and reached real evaluation preparation.
+  - `SupabaseClient.writeEvaluationChainCandlesForLegs` accepted the first source with any matching candidate rows.
+  - that first source was `ml_option_chain_snapshots.exact.filtered_stream`.
+  - it had candidate rows but zero H2 close-window rows for the required legs.
+  - because source selection stopped early, fallback sources such as `chain_slices` and poll-window searches were not tried.
+  - `MarketMLService` then treated incomplete H2 coverage as a fatal day-level exception.
+- Policy correction:
+  - source selection should prefer a source with H2 coverage for all required legs.
+  - if no source has complete H2, evaluation should continue advisory/partial and Python should mark affected rows through price-integrity logic or produce zero outcomes.
+  - missing H2 should not crash/abort the entire day once the session itself is valid.
+- Code changes made locally for v2.5.27 / b358:
+  - `SupabaseClient.ChainStreamResult` now carries:
+    - `h2Required`
+    - `h2Present`
+    - `h2MissingPreview`
+  - `writeEvaluationChainCandlesForLegs` now:
+    - tries later sources when a source has rows but incomplete H2 coverage.
+    - returns the first H2-complete source when found.
+    - otherwise returns the best partial source by H2 coverage.
+  - `writePagedFilteredChain` now tracks H2-present legs while streaming.
+  - removed duplicated buffered-row insertion and duplicate file replacement in the streaming path.
+  - `MarketMLService` no longer throws `EVAL_CHAIN_H2_INCOMPLETE`.
+  - incomplete H2 is logged as:
+    - `EVAL_CHAIN_H2_INCOMPLETE_ADVISORY`
+  - prepare cache now accepts known partial-H2 metadata, so retries do not repeatedly re-fetch Supabase chain rows.
+- Synchronized version bump prepared:
+  - Android `versionName = 2.5.27`
+  - Android `versionCode = 358`
+  - Python `BRAIN_VERSION = 2.5.27`
+  - web visible label `v2.5.27 / b358`
+  - web `app.js` cache-bust `1267`
+- Validation status:
+  - pending local checks before push.
