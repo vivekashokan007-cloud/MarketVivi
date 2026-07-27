@@ -14995,4 +14995,757 @@ Source ruling: `CLAUDE_APPROVAL_STAGED_BRAIN_PLAN_20260720.md`.
   - web visible label `v2.5.27 / b358`
   - web `app.js` cache-bust `1267`
 - Validation status:
-  - pending local checks before push.
+  - completed before push:
+    - `git diff --check`
+    - `python app/src/main/python/tests/test_build3_a8_nf_ab.py`
+    - `python -m unittest app/src/main/python/tests/test_phase4_ev_ladder_shadow.py app/src/main/python/tests/test_phase5_gate_registry.py`
+    - `python -m py_compile app/src/main/python/brain.py`
+  - Kotlin compile remains unavailable in local Codex environment because Android SDK is not configured.
+- Push result:
+  - Marketapp pushed to `main`:
+    - commit `eda4937023613ec2199b79cfcbeea894cd4eb4b2`
+    - message `Release v2.5.27 H2 advisory evaluation`
+  - MarketVivi pushed to `main`:
+    - commit `f4f4035c08bdca9043a32ce93ca486fc829dd4ed`
+    - message `Sync v2.5.27 project knowledge`
+  - remote HEAD verification:
+    - Marketapp `refs/heads/main = eda4937023613ec2199b79cfcbeea894cd4eb4b2`
+    - MarketVivi `refs/heads/main = f4f4035c08bdca9043a32ce93ca486fc829dd4ed`
+  - GitHub signed release workflow:
+    - run `30104116679`
+    - URL `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/30104116679`
+    - conclusion `success`
+  - GitHub debug APK validation workflow:
+    - run `30104116826`
+    - conclusion `failure`
+    - this failure is consistent with prior debug-validation failures; signed-release path succeeded.
+
+### 2026-07-24 - GitHub Push Method That Worked
+
+- Normal `git push origin main` failed because the cached GitHub credential was invalid:
+  - `Invalid username or token. Password authentication is not supported for Git operations.`
+- `GIT_ASKPASS` with PAT also failed in this environment.
+- GitHub API token check succeeded:
+  - `GET https://api.github.com/user`
+  - returned HTTP `200`
+  - login `vivekashokan007-cloud`
+- Working push method:
+  - use an in-memory Git HTTP extra header.
+  - do not write PAT into `origin` URL.
+  - do not store token in git config.
+- Exact command pattern used for each repo:
+
+```bash
+set +x
+TOKEN='PASTE_PAT_HERE'
+AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+git -c http.https://github.com/.extraheader="Authorization: Basic $AUTH" push origin main
+```
+
+- Remote HEAD verification command pattern:
+
+```bash
+set +x
+TOKEN='PASTE_PAT_HERE'
+AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+git -c http.https://github.com/.extraheader="Authorization: Basic $AUTH" ls-remote origin refs/heads/main
+```
+
+- Signed release workflow check command pattern:
+
+```bash
+set +x
+TOKEN='PASTE_PAT_HERE'
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Accept: application/vnd.github+json' \
+  'https://api.github.com/repos/vivekashokan007-cloud/Marketapp/actions/runs?per_page=5'
+```
+
+- Required release discipline:
+  - push only on explicit user command.
+  - version bump must be synchronized before release:
+    - Android `app/build.gradle.kts` `versionCode`
+    - Android `app/build.gradle.kts` `versionName`
+    - Python `BRAIN_VERSION`
+    - MarketVivi visible version label
+    - MarketVivi `app.js` cache-bust query string when web assets/label change.
+  - push both repos in the same release window:
+    - `Marketapp-main-worktree`
+    - `MarketVivi-git`
+  - verify both remote HEAD SHAs after push.
+  - verify `Market Radar Signed Release` workflow fires and report conclusion.
+  - user should revoke any PAT pasted into chat after release verification.
+
+### 2026-07-26 / 2026-07-27 - Four-Leg Acceptance, PremiumEdge, and Condor Drought Rulings
+
+- Current app/release state before these research entries:
+  - latest pushed app release remains `v2.5.28 / b359`.
+  - Marketapp pushed commit: `f0c055480f3f84839127fc7946ddd2b18bcd5bb2`.
+  - MarketVivi pushed commit: `9a3f4aeff7412b77c606e99613055c5dbd6ef079`.
+  - four-leg code fix was already pushed and verified by Claude in code:
+    - `_candidate_vertical_width` correctly maps suffix labels like `sell2 -> sellStrike2`.
+    - `_structure_value_bound` correctly uses `max(first_width, second_width)`, not sum.
+    - `BRAIN_VERSION = "2.5.28"` matches app `versionName`.
+
+#### PremiumEdge Proxy Study
+
+- Initial local proxy study result was rejected because `premium_matches_chosen = 0/169` was impossible.
+- Root cause found by Codex:
+  - local script appended `primary_candidate_json` first.
+  - duplicate candidate IDs from `top_candidates_json` were skipped.
+  - this discarded richer ranking fields such as `premiumEdge` from the top-candidate row.
+  - exact bug class: duplicate-resolution field loss, not simple null-to-zero coercion.
+- Corrected local rerun:
+  - duplicate candidates are merged by candidate ID.
+  - NULL `premiumEdge` counted and excluded from top-premiumEdge selection.
+  - four-leg rows excluded because local SQLite outcomes predated the four-leg fix.
+- Corrected rerun result:
+  - menus: `109`
+  - candidate rows: `578`
+  - four-leg candidates excluded: `294`
+  - top `premiumEdge` matches stored chosen: `89/109 = 81.65%`
+  - top `premiumEdge` beats chosen: `0/109`
+  - chosen beats top `premiumEdge`: `20/109`
+  - mean premium minus chosen R: `-0.0248`
+  - mean Spearman(`premiumEdge`, realized R): `-0.1528`
+- Claude accepted the duplicate-resolution fix but ruled the three-day proxy is not policy evidence.
+- Claude found the `20/20` divergence was not purely strategy-mix:
+  - direct local check showed:
+    - `2026-06-22`: `BEAR_CALL -> BEAR_CALL` 4, `BULL_PUT -> BEAR_CALL` 3.
+    - `2026-06-24`: `BEAR_PUT -> BEAR_PUT` 13.
+  - largest divergence block is same-strategy `BEAR_PUT -> BEAR_PUT`.
+- Claude’s refined mechanism:
+  - `premiumEdge` embeds a structural risk-size bias.
+  - debit spreads tend to score positive because of payoff asymmetry.
+  - within debit spreads, `premiumEdge` tends to prefer larger `maxLoss`.
+  - therefore future ablations must report each selector’s mean `maxLoss`, split credit/debit, and include a size-matched arm.
+- Standing result:
+  - premiumEdge is unsacred but unchanged.
+  - do not remove/demote it without full-window stored-menu ablation.
+
+#### Full-Window PremiumEdge Ablation Requirements
+
+- Must compare current tuple vs current tuple without `premiumEdge` on identical menus.
+- Must use friction-true P&L as primary objective.
+- R multiple is secondary only.
+- Must include random-from-menu baseline and oracle ceiling.
+- Must count/report NULLs before computing rates.
+- Must report day-level paired statistics and leave-one-day-out sensitivity.
+- Minimum effective sample: `15` days before conclusion.
+- Must stratify by strategy and also report within-strategy behavior.
+- Must split credit vs debit always.
+- Must report each selector’s mean `maxLoss`.
+- Must include a size-matched arm to isolate ranking skill from risk inflation.
+- Four-leg candidates stay excluded until full-table four-leg acceptance verification is complete.
+
+#### Four-Leg S1 Acceptance
+
+- Codex ran local-only cached S1 regeneration verifier:
+  - script: `Marketapp-main-worktree/tools/s1_four_leg_regen_verify.py`
+  - report: `Marketapp-main-worktree/reports/s1_four_leg_regen_20260726/S1_FOUR_LEG_REGEN_ACCEPTANCE_20260726.md`
+  - no Supabase calls.
+  - evaluated with current `brain.py` `2.5.28`.
+- Local cached pass result:
+  - snapshots: `1,442`
+  - fresh outcome rows: `6,733`
+  - errors: `0`
+  - four-leg rows evaluated: `616`
+  - four-leg OK: `616`
+  - four-leg FAIL: `0`
+  - four-leg `MISSING_OR_AMBIGUOUS_STRUCTURE_BOUND`: `0`
+- Claude upgraded this from “code-level pass” to “partial-population acceptance PASS” because:
+  - production S1 table, restricted to the same cached days, also has exactly `616` four-leg labelled rows.
+  - therefore the local pass maps exactly to a verified production subset.
+  - `616 + 2,095 = 2,711` reconciles exactly to the full expected four-leg population.
+- Current four-leg acceptance status:
+  - partial-population PASS: `616/616`.
+  - full-table acceptance still requires Supabase verification.
+  - expected full verification:
+    - `2,711` old four-leg `MISSING_OR_AMBIGUOUS_STRUCTURE_BOUND` rows flip to OK.
+    - OK base moves from `8,744` to approximately `11,455`.
+- Until full-table verification:
+  - keep four-leg candidates out of ranking/model evidence.
+  - do not use four-leg rows in premiumEdge/full-window ablation evidence.
+
+#### Iron Condor Drought Audit
+
+- Claude observed iron-condor generation stopped after `2026-07-06`.
+- Codex ran local-only condor drought audit:
+  - script: `Marketapp-main-worktree/tools/condor_drought_audit.py`
+  - report: `Marketapp-main-worktree/reports/condor_drought_audit_20260726/CONDOR_DROUGHT_AUDIT_20260726.md`
+  - no Supabase calls.
+- Local cached post-`2026-07-07` result:
+  - snapshots inspected: `880`
+  - generated `IRON_CONDOR`: `0`
+  - `IRON_CONDOR` varsity-allowed: `880`
+  - `IRON_CONDOR` varsity-blocked: `0`
+  - snapshots with rejected IC rows: `606`
+- Claude ruling:
+  - neutral branch did not stop firing.
+  - drought is benign and economically driven.
+  - no app-code change.
+  - do not loosen filters to restore condor generation.
+- Main rejection reasons during drought:
+  - probability below floor.
+  - IV richness below floor.
+  - sell-leg sigma too close/far.
+  - credit/width below floor.
+  - sometimes the 1.10 expected-win/expected-loss gate.
+- Critical architectural finding:
+  - routing layer says `NEUTRAL + low IV -> IRON_CONDOR primary`.
+  - filter layer says low IV / poor IV richness -> reject iron condor.
+  - this is a routing/filter contradiction.
+  - the contradiction is currently latent because filters are protecting the app from selling cheap volatility.
+  - IV richness floor is load-bearing; any future relaxation must be reviewed against this routing inversion.
+- Standing warning:
+  - do not frame IC filter ablation as “restore condors”.
+  - frame it as “how much would relaxing each floor have cost us?”
+  - every relaxed arm must include outcome/P&L evaluation, not just recovered candidate counts.
+
+#### Next Ordered Work As Of 2026-07-27
+
+- No live behavior change from the premiumEdge or condor drought findings.
+- No push unless user explicitly commands.
+- Next priority when Supabase is stable:
+  - full-table four-leg verification by batched counts, not aggressive regeneration.
+  - verify `2,711` flip and OK base `8,744 -> ~11,455`.
+- Then:
+  - full-window stored-menu ablation using the full 14-point design.
+- Behind that:
+  - IC filter ablation, cost-of-relaxation framing only, after real four-leg outcomes are verified.
+- Queued but lower priority:
+  - BigQuery TabFM scouting page.
+  - harness fail-open instrumentation.
+
+#### Local Research Artifacts Not Pushed
+
+- `Marketapp-main-worktree/tools/premium_edge_proxy_study.py`
+- `Marketapp-main-worktree/reports/premium_edge_proxy_20260726/`
+- `Marketapp-main-worktree/tools/s1_four_leg_regen_verify.py`
+- `Marketapp-main-worktree/reports/s1_four_leg_regen_20260726/`
+- `Marketapp-main-worktree/tools/condor_drought_audit.py`
+- `Marketapp-main-worktree/reports/condor_drought_audit_20260726/`
+- `Marketapp-main-worktree/historical_replay_harness.py` remains locally modified from earlier Class-B/fidelity work and is not part of the above pushed app release.
+
+### 2026-07-27 - Four-Leg Write Authorization Blocked By Vertical Parity
+
+- Claude authorized the S1 four-leg Supabase repair only conditionally.
+- Required condition before write:
+  - compare local `b359 / brain 2.5.28` vertical regeneration rows against existing S1 vertical labels.
+  - if vertical rows are identical, full-table append is safe.
+  - if vertical rows differ, regeneration must be scoped to four-leg rows only.
+- Codex performed read-only Supabase verification first:
+  - report: `/tmp/SUPABASE_FOUR_LEG_FULL_TABLE_VERIFICATION_20260727.md`
+  - no Supabase writes.
+  - `ml_evaluation_outcomes_s1` baseline confirmed:
+    - total rows: `12,262`
+    - OK: `8,744`
+    - FAIL: `3,518`
+    - four-leg rows: `2,711`
+    - four-leg `MISSING_OR_AMBIGUOUS_STRUCTURE_BOUND`: `2,711`
+    - four-leg OK: `0`
+  - `ml_recommendation_outcomes_s1` baseline confirmed:
+    - total rows: `3,923`
+    - OK: `3,521`
+    - FAIL: `402`
+    - four-leg rows: `387`
+    - four-leg `MISSING_OR_AMBIGUOUS_STRUCTURE_BOUND`: `387`
+    - four-leg OK: `0`
+- Codex then ran the required vertical-parity check:
+  - script: `Marketapp-main-worktree/tools/s1_vertical_parity_check.py`
+  - report: `Marketapp-main-worktree/reports/s1_vertical_parity_20260727/S1_VERTICAL_PARITY_CHECK_20260727.md`
+  - mismatch CSV: `Marketapp-main-worktree/reports/s1_vertical_parity_20260727/s1_vertical_parity_mismatches.csv`
+  - local vertical rows: `6,117`
+  - remote S1 vertical rows fetched for matching dates: `4,842`
+  - matched rows: `4,828`
+  - missing remote rows: `1,289`
+  - rows with any value mismatch: `71`
+  - mismatch fields:
+    - `sim_pnl_h2`: `71`
+    - `outcome_h2`: `19`
+    - `canonical_won`: `19`
+  - mismatch concentration:
+    - primary rows: `8`
+    - secondary rows: `63`
+    - dates: `2026-06-22`, `2026-06-23`, `2026-07-01`, `2026-07-02`, `2026-07-03`
+- Verdict:
+  - vertical parity failed.
+  - full-table S1 append is blocked.
+  - by Claude's own condition, any repair must now be four-leg-only.
+- Codex inspected `full_label_regeneration_s1.py` and found it is not safe unchanged for this repair:
+  - date/full-population oriented, not four-leg-only.
+  - can attempt broad eval rows, including verticals.
+  - not clearly designed to append a second repair batch over existing source rows.
+  - fail-closed behavior can generate bad rows if raw chain data cannot be fetched.
+- Codex ran a no-write dry-run probe:
+  - command used batch id `S1_FOURLEG_FIX_20260727`.
+  - dry-run manifest: `/tmp/s1_fourleg_fix_probe_20260727/2026-06-02/manifest.json`
+  - `legacy_eval_rows`: `748`
+  - `chain_rows`: `0`
+  - chain error: Supabase HTTP `500`, statement timeout on `ml_option_chain_snapshots`.
+  - dry-run attempted `748` eval shadow rows.
+  - all `748` would be `new_price_integrity = FAIL`.
+  - all `748` would be `label_window_status = INSUFFICIENT_RAW_DATA`.
+  - no writes occurred.
+- Write status:
+  - no Supabase write was performed.
+  - do not run full-table append.
+  - do not use current full regen script for real write without a surgical repair wrapper.
+- Required next safe step:
+  - build a four-leg-only dry-run repair tool.
+  - process by date and small snapshot batches to avoid Supabase throttling.
+  - append only rows where regenerated four-leg output is `OK`.
+  - refuse to append timeout/missing-raw/fail-closed rows.
+  - prove dry-run produces exactly `2,711` eval four-leg OK repair rows, `0` FAIL rows, `0` vertical rows before requesting final write authorization.
+- Downloadable handoff for Claude/user:
+  - `/tmp/CLAUDE_FOURLEG_WRITE_AUTH_RESPONSE_BLOCKED_20260727.txt`
+
+### 2026-07-27 - State Routing Shadow Audit From Local Cache
+
+- User provided `STATE_AWARENESS_ANSWER_20260726.md` for analysis.
+- Codex agreed with the core finding but raised an implementation nuance:
+  - `IV_HIGH = 20` is unreachable in observed/cached data.
+  - however the dominant path to four-leg primary is not only the final `NEUTRAL + low IV` branch.
+  - the range override also forces `IRON_BUTTERFLY + IRON_CONDOR` primary regardless of IV bucket.
+- Codex created a local-only shadow audit:
+  - script: `Marketapp-main-worktree/tools/state_routing_shadow_audit.py`
+  - report: `Marketapp-main-worktree/reports/state_routing_shadow_20260727/STATE_ROUTING_SHADOW_AUDIT_20260727.md`
+  - summary JSON: `Marketapp-main-worktree/reports/state_routing_shadow_20260727/state_routing_shadow_summary.json`
+  - per-row CSV: `Marketapp-main-worktree/reports/state_routing_shadow_20260727/state_routing_shadow_rows.csv`
+  - Claude handoff: `/tmp/CLAUDE_STATE_ROUTING_SHADOW_AUDIT_20260727.txt`
+- Data source:
+  - local cached snapshot inputs from `label_regen_full_20260716` and `label_regen_forward_20260723`.
+  - no Supabase calls.
+  - no Supabase writes.
+  - no app behavior change.
+- Audit scope:
+  - `1,442` snapshots across `19` days.
+  - uses stored `effective_bias` when present, otherwise morning `upstoxBias`.
+  - mirrors current `brain.py` varsity routing for measurement only.
+- Key audit results:
+  - VIX min/max/mean: `11.06 / 15.08 / 13.07`.
+  - rows with `vix >= IV_HIGH(20)`: `0`.
+  - rows with `vix >= IV_VERY_HIGH(24)`: `0`.
+  - rows with `vix <= IV_LOW(15)`: `1,438 / 1,442`.
+  - `ivPercentile` present rows: `1,442`.
+  - `ivPercentile > 65`: `0`.
+  - `ivPercentile < 25`: `1,442`.
+- Current primary route counts:
+  - `IRON_BUTTERFLY + IRON_CONDOR`: `1,137`.
+  - `IRON_CONDOR`: `186`.
+  - `BEAR_PUT`: `109`.
+  - `BULL_CALL`: `10`.
+- Current branch counts:
+  - `NEUTRAL | LOW | RANGE`: `810`.
+  - `BEAR | LOW | RANGE`: `318`.
+  - `NEUTRAL | LOW | NO_RANGE`: `186`.
+  - `BEAR | LOW | NO_RANGE`: `109`.
+  - `BULL | LOW | NO_RANGE`: `10`.
+  - `BULL | LOW | RANGE`: `9`.
+- Candidate/filter evidence:
+  - accepted credit candidates: `4,996`.
+  - accepted debit candidates: `519`.
+  - accepted `IRON_CONDOR`: `581`.
+  - accepted `IRON_BUTTERFLY`: `35`.
+  - accepted four-leg `ivRichness` min/median/mean/max: `1.192 / 1.315 / 1.4432 / 1.77`.
+  - four-leg-primary rows where accepted four-leg median `ivRichness < 1.15`: `0`.
+  - rejection summaries include `iv_not_rich = 19,161`, proving filters are load-bearing.
+- Interpretation:
+  - high-VIX routing is unreachable in this cached window.
+  - existing stored `ivPercentile` is also collapsed to LOW in this window, so switching to the existing `iv_pctl > 65` path alone would not create high-IV state variation here.
+  - low-IV credit/four-leg primary routing is real, but mostly through range override.
+  - accepted four-leg candidates were not below IV richness floor; the contradiction is in routing pressure versus filter rejection, not necessarily accepted condors being cheap-vol mistakes.
+- Standing warning:
+  - do not directly patch `IV_HIGH`, `IV_LOW`, `_get_varsity_filter`, or range override yet.
+  - next safe design is a shadow-only state-router comparator that separates:
+    - direction bias,
+    - range state,
+    - premium richness / IV-vs-RV state,
+    - branch source,
+    - newly allowed/blocked strategy families.
+  - only after shadow evidence should live routing be changed.
+
+### 2026-07-27 - Claude State Routing And Write Ruling Follow-Up
+
+- User provided `CLAUDE_RULING_STATE_ROUTING_AND_WRITE_20260727.md`.
+- Claude accepted Codex's state-routing correction and no-write decision.
+- Claude ordered:
+  - b332-local rerun on the 71 vertical mismatches.
+  - explanation of the 1,289 missing remote rows.
+  - build/continue the shadow state-router with branch-source attribution and `ivRichness x range_detected` distribution.
+  - keep Supabase write blocked.
+- Codex ran b332-local mismatch test:
+  - script: `Marketapp-main-worktree/tools/s1_b332_vertical_mismatch_rerun.py`
+  - report: `Marketapp-main-worktree/reports/s1_b332_vertical_mismatch_rerun_20260727/B332_VERTICAL_MISMATCH_RERUN_20260727.md`
+  - no Supabase calls.
+  - loaded `brain.py` from commit `2d2f9d3`, `BRAIN_VERSION = 2.5.1`.
+  - mismatch rows input: `71`.
+  - target snapshots: `8`.
+  - snapshots found in cache: `8`.
+  - b332 outcomes indexed: `41`.
+  - missing b332-local outcomes for mismatch keys: `42`.
+  - comparable remote rows: `29`.
+  - b332-local full matches b332-remote rows: `0`.
+  - b359-local full matches b332-remote rows: `0`.
+  - b332-local full matches b359-local rows: `29`.
+  - verdict counts:
+    - `B332_LOCAL_MATCHES_B359_LOCAL_NOT_REMOTE`: `29`.
+    - `INDETERMINATE`: `42`.
+- Interpretation of b332 rerun:
+  - for all comparable rows, old b332 local code and current b359 local code agree with each other.
+  - both differ from remote b332 values.
+  - therefore comparable mismatch rows are more consistent with input/cache/data-path drift than with b359 code drift.
+  - 42 rows remain indeterminate because matching b332-local outcomes were not produced in the focused rerun.
+- Codex ran a small read-only missing-remote role probe:
+  - script: `Marketapp-main-worktree/tools/s1_missing_remote_role_probe.py`
+  - report: `Marketapp-main-worktree/reports/s1_missing_remote_role_probe_20260727/S1_MISSING_REMOTE_ROLE_PROBE_20260727.md`
+  - read-only Supabase `count=exact` probes only.
+  - no row payload fetch.
+  - no writes.
+- Missing-remote role probe result:
+  - local vertical total: `6,117`.
+  - remote vertical total: `4,842`.
+  - local minus remote aggregate gap: `1,275`.
+  - previous parity missing-local-to-remote count was `1,289` because exact-key matching found only `4,828` matched rows while remote also has a small number of rows not present locally.
+  - local by role:
+    - primary: `452`
+    - secondary: `4,411`
+    - rejected_counterfactual: `1,254`
+  - remote by role:
+    - primary: `441`
+    - secondary: `4,401`
+    - rejected_counterfactual: `0`
+  - gap by role:
+    - rejected_counterfactual: `1,254`
+    - primary: `11`
+    - secondary: `10`
+- Interpretation of missing remote gap:
+  - missing remote rows are overwhelmingly scope mismatch.
+  - local verifier included rejected counterfactual vertical rows.
+  - remote S1 table has zero rejected_counterfactual rows.
+  - this explains `1,254` of the `1,275` aggregate gap.
+  - residual primary/secondary gap is only `21` rows and remains separate source-key investigation if full-table regeneration is reconsidered.
+- Codex enhanced the state-routing shadow audit per Claude:
+  - script/report remain under `Marketapp-main-worktree/tools/state_routing_shadow_audit.py` and `Marketapp-main-worktree/reports/state_routing_shadow_20260727/`.
+  - added branch-source counts.
+  - added joint `range_detected x four_leg_ivRichness` counts.
+  - added a shadow richness-aware comparator.
+- Enhanced state-routing findings:
+  - branch source counts:
+    - range_override: `1,137`
+    - bias_iv_branch: `305`
+  - joint `range_detected x four_leg_ivRichness`:
+    - `range | four_leg_rich`: `99`
+    - `range | no_four_leg_accepted`: `1,038`
+    - `not_range | four_leg_rich`: `23`
+    - `not_range | no_four_leg_accepted`: `282`
+  - shadow comparator:
+    - `IRON_BUTTERFLY+IRON_CONDOR -> same`: `99`
+    - `IRON_BUTTERFLY+IRON_CONDOR -> base_no_rich_IRON_CONDOR`: `745`
+    - `IRON_BUTTERFLY+IRON_CONDOR -> base_no_rich_BEAR_PUT`: `284`
+    - `IRON_BUTTERFLY+IRON_CONDOR -> base_no_rich_BULL_CALL`: `9`
+    - `IRON_CONDOR -> same`: `186`
+    - `BEAR_PUT -> same`: `109`
+    - `BULL_CALL -> same`: `10`
+- Current write status:
+  - still BLOCKED.
+  - no Supabase write performed.
+  - do not attempt full-table append.
+  - proceed only with a purpose-built four-leg-only dry-run repair tool.
+  - source predicate must target remote S1 four-leg failed rows only.
+  - do not append vertical rows.
+  - do not append rejected-counterfactual rows unless explicitly authorized.
+  - do not append timeout-derived or non-OK rows.
+- Claude response file:
+  - `/tmp/CLAUDE_RULING_STATE_ROUTING_AND_WRITE_RESPONSE_20260727.txt`
+
+### 2026-07-27 - Four-Leg Repair Dry-Run Tool Validated On Cached Source Rows
+
+- Codex created a dedicated dry-run repair script:
+  - `Marketapp-main-worktree/tools/s1_four_leg_repair_dry_run.py`
+  - report folder: `Marketapp-main-worktree/reports/s1_four_leg_repair_dry_run_20260727/`
+- Purpose:
+  - fetch legacy four-leg rows in small pages,
+  - resolve them against cached snapshot inputs,
+  - evaluate them with the current checked-out brain,
+  - never write to Supabase.
+- Validation results:
+  - one-day probe on `2026-06-22`:
+    - remote four-leg rows fetched: `358`
+    - eval OK: `358`
+    - eval FAIL: `0`
+    - missing snapshot: `0`
+    - missing candidate: `0`
+  - full-window dry-run over all supported dates:
+    - remote rows fetched: `616`
+    - remote four-leg rows selected: `616`
+    - eval OK: `616`
+    - eval FAIL: `0`
+    - missing snapshot: `0`
+    - missing candidate: `0`
+    - by day:
+      - `2026-06-22`: `358`
+      - `2026-06-29`: `258`
+    - all other supported dates in the dry-run returned `0` rows for this source query.
+- Interpretation:
+  - the repair path is technically valid on the cached legacy source population.
+  - the dry-run did not encounter the earlier chain-timeout failure mode.
+  - however, the dry-run source population is `616`, not the full `2711` S1-shadow four-leg population that still exists in `ml_evaluation_outcomes_s1`.
+  - so the source query is not yet the full end-to-end S1 repair surface.
+- Standing caution:
+  - this caution was superseded by Claude's later corrected ruling and the Stage 1 append below.
+  - the 2711-row acceptance target was rejected as source-unverified and unachievable through the legacy-source repair path.
+
+### 2026-07-27 - Four-Leg S1 Stage 1 Cached-Day Append Completed
+
+- Claude ruling consumed:
+  - `CLAUDE_RULING_FOURLEG_DRYRUN_20260727.md`
+- Corrected scope:
+  - original destination-side target: `2711` S1 four-leg rows.
+  - verified repairable legacy-source maximum: `913` rows.
+  - Stage 1 cached source rows: `616`.
+  - Stage 2 cache-extension rows: `297` (`2026-06-15`, `2026-06-17`) pending.
+  - Stage 3 orphan rows: `1798`, not authorized.
+- Codex updated `Marketapp-main-worktree/tools/s1_four_leg_repair_dry_run.py`:
+  - added guarded append mode: `--execute-append`.
+  - added exact Stage 1 selector: `--stage1-cached-only`.
+  - added hard guards:
+    - dry-run must produce exactly `616` append candidates.
+    - eval OK must be `616`.
+    - eval FAIL must be `0`.
+    - missing snapshot/candidate must be `0`.
+    - target batch must not already exist.
+    - pre-write OK base must be exactly `8744`.
+    - post-write batch count must be `616`.
+    - post-write OK count must be `9360`.
+  - batch stamping:
+    - `regen_batch_id = S1_FOURLEG_FIX_20260727`
+    - `regen_code_version = S1_v2.5.28_b359`
+    - `regen_source = LOCAL_CACHE_B359`
+    - `source_table = public.ml_evaluation_outcomes`
+    - audit note records measured local-vs-remote drift: `0.6%`.
+- Execution:
+  - command used: `python tools/s1_four_leg_repair_dry_run.py --stage1-cached-only --execute-append`
+  - initial insert attempts failed before any write due schema typing:
+    - `new_break_even_win` is boolean, not percentage; percentage moved to `audit_json.teacher_break_even_win_rate_pct`.
+    - `label_window_status` check constraint accepts `OK` / `INSUFFICIENT_LABEL_WINDOW`; repaired OK rows stamped `OK`.
+  - verified after each failed attempt that batch rows remained `0` and OK base remained `8744`.
+  - final append succeeded.
+- Final Stage 1 verification:
+  - inserted rows: `616`
+  - target batch count: `616`
+  - OK base: `8744 -> 9360`
+  - read-back by day:
+    - `2026-06-22`: `358`
+    - `2026-06-29`: `258`
+  - read-back by strategy:
+    - `IRON_CONDOR`: `581`
+    - `IRON_BUTTERFLY`: `35`
+  - read-back by role:
+    - `primary`: `111`
+    - `secondary`: `505`
+  - read-back integrity:
+    - `OK`: `616`
+- Report updated:
+  - `Marketapp-main-worktree/reports/s1_four_leg_repair_dry_run_20260727/S1_FOUR_LEG_REPAIR_DRY_RUN_20260727.md`
+  - summary JSON includes `append_result`.
+- Current next step:
+  - superseded by Stage 2 completion below.
+  - Stage 3 orphan repair remains unauthorized.
+
+### 2026-07-27 - Four-Leg S1 Stage 2 Cache Extension And Append Completed
+
+- Stage 2 scope:
+  - `2026-06-15`: `285` legacy four-leg source rows.
+  - `2026-06-17`: `12` legacy four-leg source rows.
+  - total Stage 2 target: `297`.
+- Codex created a narrow cache-extension tool:
+  - `Marketapp-main-worktree/tools/s1_stage2_cache_extend.py`
+  - report folder: `Marketapp-main-worktree/reports/s1_four_leg_stage2_cache_20260727/`
+  - source table: `ml_brain_snapshots`.
+  - scope limited to `2026-06-15` and `2026-06-17`.
+  - paged reads only, local cache writes only.
+- Cache extension result:
+  - `2026-06-15`: fetched `82` snapshots, id range `935 -> 1016`.
+  - `2026-06-17`: fetched `77` snapshots, id range `1091 -> 1167`.
+  - local cache files written:
+    - `label_regen_full_20260716/2026-06-15/snapshots_input.json`
+    - `label_regen_full_20260716/2026-06-17/snapshots_input.json`
+- Codex enhanced the repair tool for Stage 2:
+  - `--stage2-cache-extension` selector.
+  - Stage 2 guards:
+    - append candidates must be `297`.
+    - eval OK must be `297`.
+    - eval FAIL must be `0`.
+    - missing snapshot/candidate must be `0`.
+    - pre-existing batch rows must be `616`.
+    - pre-write OK base must be `9360`.
+    - post-existing batch rows must be `913`.
+    - post-write OK base must be `9657`.
+  - Stage 2 audit scope stamped as `stage2_cache_extension_2026_06_15_2026_06_17`.
+- Stage 2 dry-run:
+  - command: `python tools/s1_four_leg_repair_dry_run.py --stage2-cache-extension`
+  - remote rows fetched: `297`.
+  - remote four-leg rows selected: `297`.
+  - eval OK: `297`.
+  - eval FAIL: `0`.
+  - missing snapshot: `0`.
+  - missing candidate: `0`.
+  - strategy: `IRON_CONDOR = 297`.
+- Stage 2 guarded append:
+  - command: `python tools/s1_four_leg_repair_dry_run.py --stage2-cache-extension --execute-append`
+  - inserted rows: `297`.
+  - pre-existing batch rows: `616`.
+  - post-existing batch rows: `913`.
+  - pre-write OK base: `9360`.
+  - post-write OK base: `9657`.
+- Final combined read-back for `regen_batch_id = S1_FOURLEG_FIX_20260727`:
+  - total rows: `913`.
+  - all `new_price_integrity = OK`.
+  - by day:
+    - `2026-06-15`: `285`.
+    - `2026-06-17`: `12`.
+    - `2026-06-22`: `358`.
+    - `2026-06-29`: `258`.
+  - by strategy:
+    - `IRON_CONDOR`: `878`.
+    - `IRON_BUTTERFLY`: `35`.
+  - by role:
+    - `primary`: `180`.
+    - `secondary`: `733`.
+- Current status:
+  - all Claude-authorized legacy-source four-leg repair rows are appended.
+  - maximum authorized path was `913`, now achieved.
+  - Stage 3 orphan rows (`1798`) remain not authorized and should not be repaired without a new provenance design/ruling.
+  - `ml_recommendation_outcomes_s1` recommendation pass completed below.
+
+### 2026-07-27 - S1 Recommendation Four-Leg Repair Completed
+
+- Purpose:
+  - complete the deferred `ml_recommendation_outcomes_s1` four-leg repair after evaluation S1 repair reached the authorized `913` rows.
+- Baseline before recommendation repair:
+  - `ml_recommendation_outcomes_s1` total rows: `3923`.
+  - OK rows: `3521`.
+  - FAIL rows: `402`.
+  - four-leg failed rows with `MISSING_OR_AMBIGUOUS_STRUCTURE_BOUND`: `387`.
+  - target repair batch `S1_FOURLEG_RECO_FIX_20260727`: `0` rows.
+- Source coverage:
+  - failed recommendation S1 four-leg rows: `387`.
+  - already-repaired evaluation S1 rows in `S1_FOURLEG_FIX_20260727`: `913`.
+  - one-to-one key match from recommendation S1 to repaired evaluation S1 by `(effective_session_date, snapshot_id, candidate_id, role)`: `387 / 387`.
+  - missing evaluation matches: `0`.
+  - duplicate evaluation keys: `0`.
+- Important source distinction:
+  - legacy `ml_recommendation_outcomes` four-leg source rows only cover `330` rows.
+  - the clean repair path used repaired `ml_evaluation_outcomes_s1` rows, because all `387` recommendation S1 rows already had `DERIVED_FROM_EVAL_SHADOW` mapping and matched the repaired evaluation batch.
+- Codex created a guarded recommendation repair tool:
+  - `Marketapp-main-worktree/tools/s1_reco_four_leg_repair.py`
+  - report folder: `Marketapp-main-worktree/reports/s1_reco_four_leg_repair_20260727/`
+  - default mode is read-only.
+  - append batch id: `S1_FOURLEG_RECO_FIX_20260727`.
+  - source eval batch id: `S1_FOURLEG_FIX_20260727`.
+  - regen code version: `S1_v2.5.28_b359`.
+- Recommendation dry-run:
+  - command: `python tools/s1_reco_four_leg_repair.py`
+  - append candidates: `387`.
+  - by day:
+    - `2026-06-15`: `57`.
+    - `2026-06-17`: `12`.
+    - `2026-06-22`: `60`.
+    - `2026-06-29`: `258`.
+  - by strategy:
+    - `IRON_CONDOR`: `377`.
+    - `IRON_BUTTERFLY`: `10`.
+  - by integrity:
+    - `OK`: `387`.
+- Recommendation guarded append:
+  - command: `python tools/s1_reco_four_leg_repair.py --execute-append`
+  - inserted rows: `387`.
+  - pre-existing batch rows: `0`.
+  - post-existing batch rows: `387`.
+  - pre-write recommendation OK base: `3521`.
+  - post-write recommendation OK base: `3908`.
+- Final read-back:
+  - `ml_evaluation_outcomes_s1`, batch `S1_FOURLEG_FIX_20260727`:
+    - rows: `913`.
+    - OK: `913`.
+  - `ml_recommendation_outcomes_s1`, batch `S1_FOURLEG_RECO_FIX_20260727`:
+    - rows: `387`.
+    - OK: `387`.
+    - by day:
+      - `2026-06-15`: `57`.
+      - `2026-06-17`: `12`.
+      - `2026-06-22`: `60`.
+      - `2026-06-29`: `258`.
+    - by role:
+      - `primary`: `180`.
+      - `secondary`: `207`.
+  - final S1 OK counts:
+    - `ml_evaluation_outcomes_s1`: `9657`.
+    - `ml_recommendation_outcomes_s1`: `3908`.
+- Current status:
+  - all authorized four-leg legacy-source evaluation repairs are done.
+  - deferred recommendation four-leg repair is done.
+  - Stage 3 orphan evaluation rows (`1798`) remain not authorized.
+
+### 2026-07-27 - App Stability Investigation: A/B Schema Failure and R3 Bridge Shrink
+
+- Inputs reviewed:
+  - `APP_LOG_INVESTIGATION_20260727.md`
+  - `marketapp-logs-2026-07-27T10-03-52-011Z.csv`
+  - `marketapp-logs-2026-07-27T06-57-26-738Z.csv`
+- Confirmed hard data-capture bug:
+  - every sampled `BUILD3_AB_SAVE_HTTP` failed with Supabase/PostgREST `PGRST204`.
+  - missing live table column: `ab_week1_decisions.a8_ev_floor_mult`.
+  - error body: `Could not find the 'a8_ev_floor_mult' column of 'ab_week1_decisions' in the schema cache`.
+  - app polling continued, but `BUILD3_AB_SAVE: saved=false` meant paired A/B decision rows were not persisted.
+  - morning rows had real candidates and still failed, e.g. `IC_BNF_57600_56600_W500`, `IC_NF_24150_23750_W100`.
+- Code/schema verification:
+  - `app/src/main/python/brain.py` writes top-level `a8_ev_floor_mult` in `result.build3_ab`.
+  - original `supabase/migrations/20260707_ab_week1_decisions.sql` did not define the column.
+  - other A8 details are inside JSON candidate payloads and do not require separate top-level table columns for this immediate failure.
+- Local schema repair prepared:
+  - `Marketapp-main-worktree/supabase/migrations/20260727_ab_week1_a8_ev_floor_mult.sql`
+  - `/tmp/SQL_AB_WEEK1_A8_SCHEMA_FIX_20260727.sql` for Supabase SQL editor copy/paste.
+  - DDL is additive/idempotent: add `a8_ev_floor_mult double precision` and index `(session_date, a8_ev_floor_mult)`.
+  - live Supabase still requires applying this SQL before A/B rows resume.
+- Jitter/root-cause confirmation:
+  - morning log had `LOCAL_SNAPSHOT_READ_RECENT` around `1.95 MB` per one-row bridge read.
+  - local snapshot file was pinned near `65 MB`.
+  - `LOCAL_SNAPSHOT_TRIM` repeatedly rewrote/trimmed near the `64 MiB` cap.
+  - `ML_BRAIN_SNAPSHOTS_BRIDGE` active-market payload was about `325 KB -> 347 KB`.
+  - no fatal crash/ANR was visible in the reviewed CSVs; behavior is UI/WebView restart/jitter while service survives.
+- Local R3 bridge-shrink fix implemented:
+  - `NativeBridge.compactTeacherResearchSnapshot(...)` now supports `includeRejectedCandidates`.
+  - teacher research rebuild paths keep rejected candidates included, preserving evaluator/report inputs.
+  - `getMLBrainSnapshots()` now excludes full rejected-candidate arrays from the live WebView bridge.
+  - generated candidates, primary candidate, top candidates, rejected aggregate stats, skip reason, and skip-reasons remain available to UI diagnostics.
+  - expected result after app update: materially smaller `ML_BRAIN_SNAPSHOTS_BRIDGE payloadBytes`, less ML-tab jitter/restart cost.
+- Validation:
+  - `git diff --check` passed.
+  - `./gradlew :app:compileDebugKotlin` could not run because the workspace lacks Android SDK configuration (`ANDROID_HOME`/`local.properties` missing).
+- Current pending stability actions:
+  - apply Supabase SQL migration.
+  - confirm next poll has `BUILD3_AB_SAVE: saved=true`.
+  - when authorized to release, bump version synchronously and ship the Android/PWA update.
+  - after update, verify `ML_BRAIN_SNAPSHOTS_BRIDGE payloadBytes` drops and no fatal/ANR appears.
+
+### 2026-07-27 - Release Prep: Synchronized v2.5.29 / b360 Stability Build
+
+- User authorized pushing during market close, with live verification deferred to the next market day.
+- Synchronized version bump prepared:
+  - Android `versionName = 2.5.29`.
+  - Android `versionCode = 360`.
+  - `BRAIN_VERSION = 2.5.29`.
+  - PWA visible label `v2.5.29 / b360`.
+  - PWA cache-bust `app.js?v=1269`.
+- Intended release scope:
+  - additive Supabase migration for `ab_week1_decisions.a8_ev_floor_mult`.
+  - live ML bridge shrink: `getMLBrainSnapshots()` excludes full rejected-candidate arrays from the WebView payload while preserving aggregate rejected stats and teacher-research rebuild inputs.
+  - no brain ranking/selection logic change.
+- Verification plan for next live market session:
+  - apply/confirm the Supabase migration before expecting A/B saves.
+  - confirm next poll logs `BUILD3_AB_SAVE: saved=true`.
+  - confirm `ML_BRAIN_SNAPSHOTS_BRIDGE payloadBytes` is materially lower than the prior active-market `325 KB -> 347 KB`.
+  - confirm no fatal crash/ANR and poll cadence remains intact.
