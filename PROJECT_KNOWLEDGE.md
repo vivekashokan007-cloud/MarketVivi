@@ -1,3 +1,60 @@
+## 2026-07-27 Forward path batching and local b362 auto-evaluation fix
+
+- Trigger:
+  - User asked to proceed by the ordered forward plan instead of doing isolated tiny fixes indefinitely.
+  - Latest governing directive:
+    - `/tmp/codex-web-uploads/f-vx4gUE/MASTER_DIRECTIVE_WAY_FORWARD_20260727.md`
+- Forward path converted into implementable batches:
+  - downloadable plan:
+    - `/tmp/FORWARD_IMPLEMENTATION_BATCHES_20260727.txt`
+  - Batch 0 Supabase activation/verification SQL:
+    - `/tmp/BATCH0_SUPABASE_ACTIVATION_VERIFY_20260727.sql`
+- Batch order recorded:
+  - Batch 0: apply live A/B migration, install current app, verify A/B rows.
+  - Batch 1: close silent write failures and make missed evaluation loud.
+  - Batch 2: diagnose BNF missing strikes and H2 price-integrity failures.
+  - Batch 3: remove family prohibition behind rollback flag without ranking/gate changes.
+  - Batch 4: collect shadow surface for 10-20 sessions.
+  - Batch 5: evaluate tabular model/API layer only after the missing multi-family evidence exists.
+- Important correction:
+  - current `brain.py` already has `BUILD3_A8_HARD_GATE_ACTIVE = False`.
+  - the 1.10 EV floor is currently shadow/ranking metadata, not a hard candidate killer.
+  - current blockers are attribution/write integrity and missing evidence, not the old hard EV gate.
+- Local app-code fix staged for next release:
+  - Android target version:
+    - `versionName = 2.5.31`
+    - `versionCode = 362`
+  - Python `BRAIN_VERSION = 2.5.31`
+  - PWA visible label:
+    - `v2.5.31 / b362`
+  - PWA cache bust:
+    - `app.js?v=1271`
+- Behavioral change staged:
+  - `EvaluationAlarmReceiver` now starts `MarketMLService` with `ACTION_DAY_EVALUATION` automatically when the 16:30+ evaluation alarm fires.
+  - the receiver still creates the evaluation notification, but no longer depends on the user tapping it for the evaluation to start.
+  - durable scheduler state is stored:
+    - `evaluation_alarm_fired_date`
+    - `evaluation_alarm_fired_at_ms`
+    - `evaluation_auto_start_date`
+    - `evaluation_auto_start_at_ms`
+    - `evaluation_auto_start_status`
+    - `evaluation_auto_start_error`
+  - `NativeBridge.getServiceStatus()` exposes those fields to the PWA.
+  - ML tab now displays whether the evaluation alarm fired and whether auto-start succeeded/failed.
+- Why this matters:
+  - 2026-07-27 showed a manual 16:36 evaluation even though the user expected auto evaluation.
+  - code inspection found the 16:30 receiver previously only showed a tap notification; it did not start evaluation itself.
+  - this fix makes the missed-evaluation case observable and should make settled post-close evaluation automatic.
+- Validation:
+  - `python3 -m py_compile app/src/main/python/brain.py` passed.
+  - `node --check app.js` passed.
+  - local Android compile still cannot run because this workspace lacks Android SDK configuration:
+    - missing `ANDROID_HOME` or `local.properties`.
+- Push status:
+  - not pushed yet.
+  - next push, if authorized, must be synchronous in both repos with `v2.5.31 / b362`.
+  - do not include unrelated dirty research file `historical_replay_harness.py` unless explicitly requested.
+
 ## 2026-07-23 T0 residual cleanup executed after Claude close-forward directive
 
 - Directive received:
