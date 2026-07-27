@@ -15749,3 +15749,28 @@ curl -sS \
   - confirm next poll logs `BUILD3_AB_SAVE: saved=true`.
   - confirm `ML_BRAIN_SNAPSHOTS_BRIDGE payloadBytes` is materially lower than the prior active-market `325 KB -> 347 KB`.
   - confirm no fatal crash/ANR and poll cadence remains intact.
+
+### 2026-07-27 - Release Prep: Synchronized v2.5.30 / b361 Teacher Integrity Reporting Fix
+
+- Purpose:
+  - stop the ML UI from showing expectancy-style teacher outcomes on sessions where persisted rows failed integrity and Supabase correctly stored teacher metrics as null.
+- Local fix scope:
+  - `MarketMLService.kt`
+    - sanitize evaluation outcomes before teacher-report aggregation so local report inputs obey the same integrity stripping rules as persisted Supabase rows.
+    - evaluation completion message now explicitly states when `0` gradeable teacher outcomes passed integrity checks.
+  - `brain.py`
+    - `session_teacher_research_report(...)` now emits `integrity_summary` with per-session integrity counts and gradeable-teacher row counts.
+  - `app.js`
+    - ML screen reads `integrity_summary`.
+    - blocks expectancy-style interpretation on sessions with persisted rows but zero gradeable teacher outcomes.
+    - shows explicit warning that integrity blocked teacher evidence.
+    - strategy-outcome line ignores zero-row strategy summaries.
+- Intended user-visible effect:
+  - a FAIL-only evaluation day can still show that rows were produced/persisted, but it must no longer look like valid expectancy evidence.
+  - local teacher research and Supabase teacher rows use the same integrity-safe outcome basis.
+- Synchronized version bump prepared:
+  - Android `versionName = 2.5.30`
+  - Android `versionCode = 361`
+  - `BRAIN_VERSION = 2.5.30`
+  - PWA visible label `v2.5.30 / b361`
+  - PWA cache-bust `app.js?v=1270`
