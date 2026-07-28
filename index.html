@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Market Radar v2.5.31</title>
+    <title>Market Radar v2.5.32</title>
     <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -44,7 +44,7 @@
     <header class="app-header">
         <div class="header-left">
             <h1>Market Radar</h1>
-      <span class="version">v2.5.31 · b362</span>
+      <span class="version">v2.5.32 · b363</span>
         </div>
         <div class="header-right">
             <label class="theme-toggle" title="Toggle theme">
@@ -87,10 +87,12 @@
                         <div class="input-group">
                             <label>FII Cash (₹Cr)</label>
                             <input type="text" inputmode="text" id="in-fii-cash" class="input-field morning-input" placeholder="-1200">
+                            <div class="label-hint">negative = FII selling; positive = FII buying</div>
                         </div>
                         <div class="input-group">
                             <label>FII Short %</label>
                             <input type="text" inputmode="text" id="in-fii-short" class="input-field morning-input" placeholder="88">
+                            <div class="label-hint">valid range 0-100; no % sign</div>
                         </div>
                     </div>
                     <details class="institutional-flow">
@@ -99,16 +101,19 @@
                             <div class="input-group">
                                 <label>DII Cash (₹Cr)</label>
                                 <input type="text" inputmode="text" id="in-dii-cash" class="input-field morning-input" placeholder="5706">
+                                <div class="label-hint">plain number only; no commas</div>
                             </div>
                             <div class="input-group">
                                 <label>FII Idx Fut (₹Cr)</label>
                                 <input type="text" inputmode="text" id="in-fii-idx-fut" class="input-field morning-input" placeholder="-824">
+                                <div class="label-hint">negative = selling/short; positive = buying/long</div>
                             </div>
                         </div>
                         <div class="input-grid" style="margin-top:6px">
                             <div class="input-group">
                                 <label>FII Stk Fut (₹Cr)</label>
                                 <input type="text" inputmode="text" id="in-fii-stk-fut" class="input-field morning-input" placeholder="436">
+                                <div class="label-hint">negative = selling/short; positive = buying/long</div>
                             </div>
                         </div>
                         <div class="input-grid" style="margin-top:6px">
@@ -140,6 +145,7 @@
                         <div class="input-group">
                             <label>GIFT Spot <span class="label-hint">(before scan)</span></label>
                             <input type="text" inputmode="text" id="in-gift-spot" class="input-field morning-input" placeholder="24147">
+                            <div class="label-hint">plain number only; no commas</div>
                         </div>
                     </div>
                     <div class="morning-actions">
@@ -216,7 +222,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="api.js?v=1131"></script>
-    <script src="app.js?v=1271"></script>
+    <script src="app.js?v=1272"></script>
     <script src="log-viewer.js?v=1158"></script>
     <script>
         if ('serviceWorker' in navigator) {

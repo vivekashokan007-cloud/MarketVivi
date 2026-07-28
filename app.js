@@ -1087,6 +1087,131 @@ function requireFilledInputs(fields) {
     if (missing.length) throw new Error(`Missing required input: ${missing.join(', ')}`);
 }
 
+const MORNING_NUMERIC_FIELDS = [
+    { id: 'in-fii-cash', key: 'fiiCash', label: 'FII Cash', warnMin: -15000, warnMax: 15000, signHint: 'negative = FII selling, positive = FII buying' },
+    { id: 'in-fii-short', key: 'fiiShortPct', label: 'FII Short %', hardMin: 0, hardMax: 100, signHint: 'valid percentage range is 0 to 100' },
+    { id: 'in-dii-cash', key: 'diiCash', label: 'DII Cash', warnMin: -15000, warnMax: 15000 },
+    { id: 'in-fii-idx-fut', key: 'fiiIdxFut', label: 'FII Idx Fut', warnMin: -20000, warnMax: 20000 },
+    { id: 'in-fii-stk-fut', key: 'fiiStkFut', label: 'FII Stk Fut', warnMin: -20000, warnMax: 20000 },
+    { id: 'in-dow-close', key: 'dowClose', label: 'Dow Close', hardMin: 10000, hardMax: 100000 },
+    { id: 'in-crude-settle', key: 'crudeSettle', label: 'Crude Settle', hardMin: 20, hardMax: 250 },
+    { id: 'in-gift-spot', key: 'giftSpot', label: 'GIFT Spot', hardMin: 5000, hardMax: 60000 },
+];
+
+const EVENING_NUMERIC_FIELDS = [
+    { id: 'in-eve-dow', key: 'dow', label: 'Dow Close', hardMin: 10000, hardMax: 100000 },
+    { id: 'in-eve-crude', key: 'crude', label: 'Crude Settle', hardMin: 20, hardMax: 250 },
+    { id: 'in-eve-gift', key: 'gift', label: 'GIFT Close', hardMin: 5000, hardMax: 60000 },
+];
+
+function normalizeNumericText(raw) {
+    return String(raw ?? '')
+        .trim()
+        .replace(/[−–—]/g, '-');
+}
+
+function parseStrictNumber(raw, label) {
+    const original = String(raw ?? '');
+    const normalized = normalizeNumericText(original);
+    if (!normalized) {
+        return { ok: false, original, normalized, error: `${label} is blank` };
+    }
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) {
+        return {
+            ok: false,
+            original,
+            normalized,
+            error: `${label} must be a plain number. Use -1688.20, not 1688-, ₹1688, or 1,688.`
+        };
+    }
+    const value = Number(normalized);
+    if (!Number.isFinite(value)) {
+        return { ok: false, original, normalized, error: `${label} is not a finite number` };
+    }
+    return { ok: true, original, normalized, value };
+}
+
+function collectStrictNumericInputs(fieldDefs, { allowBlank = false } = {}) {
+    const values = {};
+    const raw = {};
+    const normalized = {};
+    const errors = [];
+    const warnings = [];
+
+    fieldDefs.forEach(def => {
+        const el = document.getElementById(def.id);
+        const original = el ? String(el.value ?? '') : '';
+        if (allowBlank && !original.trim()) {
+            values[def.key] = null;
+            raw[def.key] = original;
+            normalized[def.key] = '';
+            return;
+        }
+        const parsed = parseStrictNumber(original, def.label);
+        raw[def.key] = parsed.original;
+        normalized[def.key] = parsed.normalized;
+        if (!parsed.ok) {
+            errors.push(parsed.error);
+            return;
+        }
+        values[def.key] = parsed.value;
+        if (def.hardMin !== undefined && parsed.value < def.hardMin) {
+            errors.push(`${def.label} ${parsed.value} is below allowed minimum ${def.hardMin}`);
+        }
+        if (def.hardMax !== undefined && parsed.value > def.hardMax) {
+            errors.push(`${def.label} ${parsed.value} is above allowed maximum ${def.hardMax}`);
+        }
+        if (def.warnMin !== undefined && parsed.value < def.warnMin) {
+            warnings.push(`${def.label} ${parsed.value} is outside usual range (${def.warnMin} to ${def.warnMax})`);
+        } else if (def.warnMax !== undefined && parsed.value > def.warnMax) {
+            warnings.push(`${def.label} ${parsed.value} is outside usual range (${def.warnMin} to ${def.warnMax})`);
+        }
+    });
+
+    return { values, raw, normalized, errors, warnings };
+}
+
+function buildMorningInputValidation(parsedInputs) {
+    const values = parsedInputs.values || {};
+    const warnings = [...(parsedInputs.warnings || [])];
+    if (values.fiiCash < 0) warnings.push(`FII Cash ${values.fiiCash} interpreted as FII selling.`);
+    if (values.fiiCash > 0) warnings.push(`FII Cash ${values.fiiCash} interpreted as FII buying.`);
+    if (values.fiiShortPct > 85) warnings.push(`FII Short % ${values.fiiShortPct} is high; brain treats this as bearish unless trend is covering.`);
+    if (values.fiiShortPct < 70) warnings.push(`FII Short % ${values.fiiShortPct} is low; brain treats this as bullish.`);
+    return {
+        version: 'manual_input_integrity_v1',
+        source: 'manual_lock_form',
+        raw: parsedInputs.raw,
+        normalized: parsedInputs.normalized,
+        parsed: values,
+        errors: parsedInputs.errors || [],
+        warnings,
+        status: parsedInputs.errors && parsedInputs.errors.length ? 'BLOCKED' : (warnings.length ? 'WARN' : 'PASS'),
+        captured_at: new Date().toISOString(),
+    };
+}
+
+function inputConfirmationText(validation) {
+    const p = validation.parsed || {};
+    const lines = [
+        'Confirm interpreted morning inputs:',
+        '',
+        `FII Cash: ${p.fiiCash} (${p.fiiCash < 0 ? 'FII selling' : p.fiiCash > 0 ? 'FII buying' : 'neutral'})`,
+        `FII Short %: ${p.fiiShortPct}`,
+        `DII Cash: ${p.diiCash}`,
+        `FII Idx Fut: ${p.fiiIdxFut}`,
+        `FII Stk Fut: ${p.fiiStkFut}`,
+        `Dow: ${p.dowClose}`,
+        `Crude: ${p.crudeSettle}`,
+        `GIFT: ${p.giftSpot}`,
+    ];
+    if (validation.warnings?.length) {
+        lines.push('', 'Warnings:', ...validation.warnings.map(w => `- ${w}`));
+    }
+    lines.push('', 'Press OK only if these interpreted values are correct.');
+    return lines.join('\n');
+}
+
 function getBrainData(snapshot = null) {
     try {
         const snap = renderSnapshot(snapshot);
@@ -1777,15 +1902,15 @@ function startNativePollWatchdog() {
 
 // collectBaselineFromForm — lifted from former initialFetch.
 // Reads morning input fields and assembles the baseline JSON for Kotlin.
-function collectBaselineFromForm() {
+function collectBaselineFromForm(parsedMorningInputs = null) {
     const get = (id) => {
         const el = document.getElementById(id);
         return el ? el.value : '';
     };
-    const num = (id, dflt = 0) => {
-        const v = parseFloat(get(id));
-        return isNaN(v) ? dflt : v;
-    };
+    const parsedInputs = parsedMorningInputs || collectStrictNumericInputs(MORNING_NUMERIC_FIELDS);
+    if (parsedInputs.errors.length) throw new Error(parsedInputs.errors.join('; '));
+    const inputValidation = buildMorningInputValidation(parsedInputs);
+    const num = (key) => parsedInputs.values[key];
     let latestPoll = {};
     try {
         latestPoll = safeParseNB(
@@ -1811,15 +1936,17 @@ function collectBaselineFromForm() {
         vix: parseFloat(latestPoll.vix ?? ecVix ?? 0) || 0,
         bnfCallWall: parseFloat(latestPoll.bnfCallWall ?? latestPoll.cw ?? 0) || 0,
         bnfPutWall: parseFloat(latestPoll.bnfPutWall ?? latestPoll.pw ?? 0) || 0,
-        fiiCash: num('in-fii-cash'),
-        fiiShortPct: num('in-fii-short'),
-        fiiIdxFut: num('in-fii-idx-fut'),
-        fiiStkFut: num('in-fii-stk-fut'),
-        diiCash: num('in-dii-cash'),
-        dowClose: num('in-dow-close'),
-        crudeSettle: num('in-crude-settle'),
-        giftSpot: num('in-gift-spot'),
+        fiiCash: num('fiiCash'),
+        fiiShortPct: num('fiiShortPct'),
+        fiiIdxFut: num('fiiIdxFut'),
+        fiiStkFut: num('fiiStkFut'),
+        diiCash: num('diiCash'),
+        dowClose: num('dowClose'),
+        crudeSettle: num('crudeSettle'),
+        giftSpot: num('giftSpot'),
         upstoxBias: get('in-upstox-bias'),
+        inputValidation,
+        rawManualInputs: inputValidation.raw,
         eveningClose: eveningClose || undefined,
     };
 }
@@ -5971,19 +6098,23 @@ function lockMorningData() {
             throw new Error('Upstox token missing. Paste token to enable auto polling.');
         }
 
+        const parsedInputs = collectStrictNumericInputs(MORNING_NUMERIC_FIELDS);
+        if (parsedInputs.errors.length) {
+            throw new Error(parsedInputs.errors.join('; '));
+        }
+        const inputValidation = buildMorningInputValidation(parsedInputs);
+        if (!confirm(inputConfirmationText(inputValidation))) {
+            throw new Error('Morning lock cancelled. Correct the displayed inputs and lock again.');
+        }
+
         const rawInputs = {
             date: API.todayIST(),
-            fiiCash: parseFloat(document.getElementById('in-fii-cash')?.value || 0) || 0,
-            fiiShortPct: parseFloat(document.getElementById('in-fii-short')?.value || 0) || 0,
-            diiCash: parseFloat(document.getElementById('in-dii-cash')?.value || 0) || 0,
-            fiiIdxFut: parseFloat(document.getElementById('in-fii-idx-fut')?.value || 0) || 0,
-            fiiStkFut: parseFloat(document.getElementById('in-fii-stk-fut')?.value || 0) || 0,
-            dowClose: parseFloat(document.getElementById('in-dow-close')?.value || 0) || 0,
-            crudeSettle: parseFloat(document.getElementById('in-crude-settle')?.value || 0) || 0,
-            giftSpot: parseFloat(document.getElementById('in-gift-spot')?.value || 0) || 0,
-            upstoxBias: document.getElementById('in-upstox-bias')?.value || ''
+            ...parsedInputs.values,
+            upstoxBias: document.getElementById('in-upstox-bias')?.value || '',
+            inputValidation,
+            rawManualInputs: parsedInputs.raw
         };
-        const baseline = collectBaselineFromForm();
+        const baseline = collectBaselineFromForm(parsedInputs);
         const morningResult = callNativeJson('setMorningInput', JSON.stringify(baseline));
         if (morningResult && morningResult.error) {
             throw new Error(`Morning input error: ${morningResult.error}`);
@@ -6263,29 +6394,41 @@ function switchTab(tabName) {
 
 function saveEveningClose() {
     try {
-        const dowValue = document.getElementById('in-eve-dow')?.value?.trim() || '';
-        const crudeValue = document.getElementById('in-eve-crude')?.value?.trim() || '';
-        const giftValue = document.getElementById('in-eve-gift')?.value?.trim() || '';
         const statusEl = document.getElementById('evening-status');
+        const parsedInputs = collectStrictNumericInputs(EVENING_NUMERIC_FIELDS);
 
-        if (!dowValue && !crudeValue && !giftValue) {
-            if (statusEl) statusEl.textContent = 'Enter at least one value before saving.';
+        if (parsedInputs.errors.length) {
+            if (statusEl) statusEl.textContent = `Save failed: ${parsedInputs.errors.join('; ')}`;
             return;
         }
 
         const payload = {
-            dow: dowValue ? parseFloat(dowValue) : null,
-            crude: crudeValue ? parseFloat(crudeValue) : null,
-            gift: giftValue ? parseFloat(giftValue) : null,
+            dow: parsedInputs.values.dow,
+            crude: parsedInputs.values.crude,
+            gift: parsedInputs.values.gift,
             date: API.todayIST(),
-            saved_at: new Date().toISOString()
+            saved_at: new Date().toISOString(),
+            inputValidation: {
+                version: 'manual_input_integrity_v1',
+                source: 'manual_evening_close_form',
+                raw: parsedInputs.raw,
+                normalized: parsedInputs.normalized,
+                parsed: parsedInputs.values,
+                errors: parsedInputs.errors,
+                warnings: parsedInputs.warnings,
+                status: parsedInputs.warnings.length ? 'WARN' : 'PASS',
+                captured_at: new Date().toISOString(),
+            }
         };
 
-        callNativeJson('setEveningClose', JSON.stringify(payload));
+        const nativeResult = callNativeJson('setEveningClose', JSON.stringify(payload));
+        if (nativeResult && nativeResult.error) {
+            throw new Error(`Evening close error: ${nativeResult.error}`);
+        }
         STATE.eveningClose = payload;
         localStorage.setItem('mr2_evening_close', JSON.stringify(payload));
         if (statusEl) {
-            statusEl.textContent = `Saved: ${payload.date} · Dow ${dowValue || '--'}, Crude ${crudeValue || '--'}, GIFT ${giftValue || '--'}`;
+            statusEl.textContent = `Saved: ${payload.date} · Dow ${payload.dow}, Crude ${payload.crude}, GIFT ${payload.gift}`;
         }
         renderAll();
     } catch (e) {

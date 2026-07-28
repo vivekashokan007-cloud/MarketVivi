@@ -15831,3 +15831,261 @@ curl -sS \
   - `BRAIN_VERSION = 2.5.30`
   - PWA visible label `v2.5.30 / b361`
   - PWA cache-bust `app.js?v=1270`
+
+### 2026-07-27 - Synchronized Release: v2.5.31 / b362 Auto Evaluation Start
+
+- Pushed release state:
+  - Android/app repo `main` remote HEAD: `c70864c66d262058414330eb343fe3669e54a35a`.
+  - PWA/project repo `main` remote HEAD: `d4b9f6e14644e73845451533b74715bf7828b7f9`.
+  - signed-release workflow succeeded: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/30275016926`.
+  - debug APK validation workflow failed separately; not treated as the signed-release blocker.
+- Android/app scope:
+  - `MarketMLService.kt`: `EvaluationAlarmReceiver` now auto-starts `MarketMLService` with `ACTION_DAY_EVALUATION` after the post-close alarm.
+  - `MarketMLService.kt`: persists alarm/autostart diagnostics:
+    - `evaluationAlarmFiredDate`
+    - `evaluationAlarmFiredAtMs`
+    - `evaluationAutoStartDate`
+    - `evaluationAutoStartAtMs`
+    - `evaluationAutoStartStatus`
+    - `evaluationAutoStartError`
+  - `NativeBridge.kt`: exposes those alarm/autostart fields to the ML UI.
+  - `brain.py`: `BRAIN_VERSION = "2.5.31"`.
+  - `app/build.gradle.kts`: `versionName = "2.5.31"`, `versionCode = 362`.
+- PWA scope:
+  - `app.js`: ML tab displays evaluation alarm/autostart state.
+  - `index.html`: visible `v2.5.31 · b362`.
+  - `index.html`: cache-bust `app.js?v=1271`.
+- User/device verification target:
+  - after market close, confirm evaluation starts automatically without pressing force eval.
+  - ML tab should show alarm fired/autostart status.
+  - teacher outcome correctness still needs post-close verification.
+
+### 2026-07-28 - Supabase Batch 0 / Live b362 Verification
+
+- Supabase schema state:
+  - `ab_week1_decisions.a8_ev_floor_mult` confirmed present.
+  - column type: `double precision`.
+  - user applied the migration in Supabase SQL editor.
+- Current-day A/B save verification:
+  - query result showed `session_date = 2026-07-28`.
+  - `rows_today = 11`.
+  - `rows_with_a8_mult = 11`.
+  - `latest_app_version = 2.5.31`.
+  - `latest_brain_version = 2.5.31`.
+  - `latest_local_saved_at = 2026-07-28T10:15:08+0530`.
+  - `latest_snapshot_poll_ts = 2026-07-28T10:15:00+0530`.
+  - conclusion: b362 was running, A/B save path was alive, and the A8 schema migration worked.
+- Brain snapshot verification:
+  - `ml_brain_snapshots` had current-day rows.
+  - first snapshot around `09:15 IST`.
+  - latest sample around `10:15 IST`.
+  - conclusion: brain snapshots were storing.
+- Chain/candidate storage discovery:
+  - active current-day chain storage table is `ml_option_chain_snapshots`.
+  - `chain_slices`, `chain_snapshots`, and `teaching_snapshots` looked empty/legacy for the live current-day check.
+  - current-day `ml_option_chain_snapshots` had both BNF and NF rows.
+  - current-day generated candidates sample showed BNF candidates; NF candidate presence remained dependent on live gates/market state.
+- Operational note:
+  - SQL queries should continue to be small and one at a time because Supabase throttling remains a real operational constraint.
+  - user preference: always provide SQL as downloadable text files unless explicitly told otherwise.
+
+### 2026-07-28 - Offline LightGBM / Tabular Model Evidence
+
+- Scope:
+  - local-only analysis.
+  - no Supabase pull during the experiment.
+  - no app code change.
+  - no live decision authority.
+- Dataset:
+  - source: `Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv`.
+  - source SHA256: `8aff063ff15897417e18524b5374f044d5a8dc53389f89b909b50c0954f13fb3`.
+  - source rows: `8744`.
+  - walk-forward by `effective_session_date`, no random split.
+  - frozen feature set lacks `ivRichness`.
+  - frozen prediction corpus does not include enough neutral/four-leg evidence.
+- Logistic baseline:
+  - row AUC: `0.546378086355274`.
+  - model PnL proxy: `-58994.50`.
+  - brain PnL proxy: `-18980.25`.
+  - oracle PnL proxy: `768280.00`.
+  - conclusion: logistic is not good enough for routing.
+- LightGBM classifier:
+  - row AUC: `0.5958714572530176`.
+  - log loss: `0.9832777734297592`.
+  - Brier: `0.29554967966456525`.
+  - ECE: `0.20409977089605397`.
+  - model PnL proxy: `+142817.50`.
+  - brain PnL proxy: `-18980.25`.
+  - oracle PnL proxy: `768280.00`.
+  - oracle gap captured: about `20.55%`.
+  - conclusion: LightGBM has real ranking signal and is materially better than logistic in this corpus.
+- LightGBM direct PnL regression:
+  - model PnL proxy: `+135957.75`.
+  - oracle gap captured: about `19.68%`.
+  - weaker than classifier top-pick by about `6859.75`.
+  - conclusion: useful research signal, but not standalone authority.
+- Abstention/confidence test:
+  - always-trade LightGBM top-pick:
+    - trades: `853/853`.
+    - PnL proxy: `+142817.50`.
+    - average per trade: `+167.43`.
+  - score `>= 0.70`:
+    - trades: `459/853`.
+    - PnL proxy: `+136869.25`.
+    - average per trade: `+298.19`.
+  - score `>= 0.90`:
+    - trades: `178/853`.
+    - PnL proxy: `+127628.00`.
+    - average per trade: `+717.01`.
+  - conclusion: score can support confidence/abstention tags, but reducing coverage misses profitable opportunities.
+- Family selection test:
+  - LightGBM family hit rate vs oracle: about `82.30%`.
+  - current brain family hit rate vs oracle: about `48.77%`.
+  - strongest evidence so far is as a shadow family-preference layer.
+- Regime stratification:
+  - strong buckets:
+    - NF: model `+202481.50`, brain `+16058.50`, delta `+186423.00`.
+    - normal VIX / 15-20: model `+124547.00`, brain `-40320.00`, delta `+164867.00`.
+  - weak buckets:
+    - BNF: model `-59664.00`, brain `-35038.75`, delta `-24625.25`.
+    - VIX 12-14: model `-18355.00`, brain `+6119.50`, delta `-24474.50`.
+    - low VIX `<15`: model `+18270.50`, brain `+21339.75`, delta `-3069.25`.
+  - conclusion: LightGBM should not be applied uniformly.
+- No-trade diagnostic:
+  - oracle no-trade snapshots: `145`.
+  - model PnL inside oracle no-trade snapshots: `-121579.50`.
+  - brain PnL inside oracle no-trade snapshots: `-124921.00`.
+  - conclusion: no-trade / avoid-loss detection remains the material blocker.
+- Final Codex assessment:
+  - proceed only as shadow instrumentation:
+    - shadow score.
+    - shadow rank.
+    - shadow family preference.
+    - daily comparison report.
+  - do not use LightGBM as live authority, hard execution gate, or recommendation override yet.
+  - build a separate snapshot-level no-trade/avoid-loss classifier before any UI-visible influence.
+- Shareable report:
+  - `/tmp/LIGHTGBM_COMPREHENSIVE_ASSESSMENT_FOR_CLAUDE_20260728.txt`.
+
+### 2026-07-28 - Stability Issue Still Present: Local Snapshot Cache UI Jitter
+
+- Input reviewed:
+  - `marketapp-logs-2026-07-28T08-25-41-883Z.csv`.
+- Log finding:
+  - no `ERROR`, `Exception`, `FATAL`, OOM, or ANR lines in the supplied export.
+  - service was not visibly crashing in the log.
+  - repeated UI bridge reads were heavy:
+    - `LOCAL_SNAPSHOT_READ_RECENT` returned only `rows=1`.
+    - parsed row size around `1.83 MB`.
+    - full local file size around `65.9 MB`.
+    - WebView payload only about `1.3 KB`.
+  - conclusion: likely visible UI jitter / WebView stutter caused by repeatedly reading/parsing giant local snapshot rows for ML tab status, not a service crash.
+- Important constraint:
+  - full local snapshot cache remains intentionally large, near `64 MiB`, because post-close evaluation needs replay evidence.
+  - reducing the full cache cap would risk teacher/evaluation correctness.
+- Local unpushed stability patch prepared:
+  - `EvaluationLocalCache.kt`
+    - added compact sidecar JSONL:
+      - `brain_snapshot_summaries_YYYY-MM-DD.jsonl`.
+    - sidecar stores compact candidate/context summaries only.
+    - sidecar cap:
+      - `120` rows.
+      - `512 KiB`.
+    - full `brain_snapshots_YYYY-MM-DD.jsonl` remains unchanged for post-close evaluation fidelity.
+    - sidecar append failure is isolated and cannot fail full snapshot storage.
+  - `NativeBridge.kt`
+    - `getMLBrainSnapshots()` now reads compact summaries through `readRecentBrainSnapshotSummaries(...)`.
+    - log now emits `ML_BRAIN_SNAPSHOTS_BRIDGE: source=summary`.
+- Expected behavior after release/update:
+  - after the next poll, logs should show `LOCAL_SNAPSHOT_SUMMARY_APPEND`.
+  - normal ML tab refresh should read `LOCAL_SNAPSHOT_SUMMARY_READ_RECENT`.
+  - heavy `LOCAL_SNAPSHOT_READ_RECENT ... fileBytes=659xxxxx` should stop during normal UI refresh.
+  - post-close evaluation should still use full snapshots and remain unaffected.
+- Verification status:
+  - `git diff --check` passed.
+  - `ANDROID_HOME=/opt/android-sdk ./gradlew testDebugUnitTest` reached Android resource processing but failed because AAPT2 daemon startup failed in this local environment.
+  - no source-level failure was observed before AAPT2 failure.
+  - this patch is local/unpushed and should be combined with Claude’s next issue fixes before the next synchronized release.
+- Current pending before push:
+  - review/rectify Claude’s newly found issues.
+  - then bump synchronized versions in both repos.
+  - push both repos together only after explicit user command.
+
+### 2026-07-28 - Manual Input Integrity: FII Cash Sign Capture Root Cause
+
+- User observation:
+  - user remembered entering negative FII cash because FII were selling.
+  - app UI and brain snapshot showed positive `1688.20`.
+  - user correctly rejected Claude's proposed hard range `40-98` for FII Short %, because FII Short % is a `0-100` percentage.
+- Supabase proof query:
+  - file provided to user:
+    - `/tmp/INPUT_FIELD_TRACE_CURRENT_DAY_20260728_V2.txt`.
+  - result file:
+    - `Supabase Snippet Untitled query (90).csv`.
+- Supabase result:
+  - latest 12 `ml_brain_snapshots` rows for `2026-07-28` all stored:
+    - `fii_cash_stored = 1688.2`.
+    - `fii_short_pct_stored = 91`.
+    - `dii_cash_stored = 2329.1`.
+    - `fii_idx_fut_stored = 626`.
+    - `fii_stk_fut_stored = 5316`.
+  - conclusion:
+    - `brain.py` did not flip the FII cash sign.
+    - the positive value reached `morning_input` before the brain used it.
+- Code root cause:
+  - `app.js` used permissive JavaScript `parseFloat()` for morning and evening manual inputs.
+  - `parseFloat()` accepts partial malformed strings:
+    - `parseFloat("1688.20-")` returns `1688.2`.
+    - `parseFloat("1,688.20")` returns `1`.
+    - Unicode minus variants can become `NaN`, then existing fallback could become `0`.
+  - therefore malformed input could silently become a confident parsed number.
+- Local unpushed PWA fix prepared:
+  - `app.js`
+    - added strict numeric parser.
+    - normalizes Unicode minus characters to ASCII `-`.
+    - rejects malformed numeric strings such as trailing sign, comma-formatted values, rupee-prefixed values, and percent-suffixed values.
+    - adds hard validation:
+      - FII Short % must be `0-100`.
+      - Dow, crude, and GIFT have broad hard plausibility bounds.
+    - adds advisory warnings for broad FII/DII/futures magnitude ranges.
+    - morning lock now shows a confirmation dialog with exact interpreted values before starting scan.
+    - `morning_input` now carries:
+      - `inputValidation`.
+      - `rawManualInputs`.
+    - this metadata should persist into `ml_brain_snapshots.context_json`.
+    - evening close now uses the same strict parser and checks native bridge errors before saying "Saved".
+  - `index.html`
+    - added visible hints:
+      - FII Cash negative = FII selling; positive = FII buying.
+      - FII Short valid range `0-100`.
+      - manual numeric fields require plain numbers with no commas.
+- Verification status:
+  - `node --check app.js` passed.
+  - `git diff --check` passed.
+- Pending:
+  - local PWA fix is not pushed yet.
+  - if releasing, perform synchronized version bump and push both repos only after explicit user command.
+
+### 2026-07-28 - Release Prep: Synchronized v2.5.32 / b363 Input Integrity + Snapshot Summary
+
+- User authorized push after deciding not to update the phone immediately.
+- Release intent:
+  - let installed `v2.5.31 / b362` complete the 16:30 auto ML evaluation first.
+  - if auto evaluation completes without errors, then update phone to the new build.
+- Synchronized version target:
+  - Android `versionCode = 363`.
+  - Android `versionName = 2.5.32`.
+  - `brain.py` `BRAIN_VERSION = 2.5.32`.
+  - PWA visible label `v2.5.32 / b363`.
+  - PWA cache-bust `app.js?v=1272`.
+- Included Android fix:
+  - compact local brain snapshot sidecar for ML tab reads.
+  - keeps full local snapshot cache unchanged for post-close evaluation correctness.
+  - expected to reduce UI jitter from repeated `LOCAL_SNAPSHOT_READ_RECENT` parsing of large full-cache rows.
+- Included PWA fix:
+  - strict manual input parsing for morning and evening fields.
+  - FII Short hard domain is `0-100`, not Claude's incorrect `40-98`.
+  - morning lock confirmation shows interpreted values before starting scan.
+  - raw/manual input provenance is stored in `morning_input.inputValidation` and `rawManualInputs`.
+- Release note:
+  - this build is safe to delay installing until after current phone build finishes the day evaluation.
