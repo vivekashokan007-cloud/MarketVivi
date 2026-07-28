@@ -16089,3 +16089,178 @@ curl -sS \
   - raw/manual input provenance is stored in `morning_input.inputValidation` and `rawManualInputs`.
 - Release note:
   - this build is safe to delay installing until after current phone build finishes the day evaluation.
+
+### 2026-07-28 - Post-Close Auto Evaluation Outcome on Installed v2.5.31 / b362
+
+- Installed phone build at evaluation time:
+  - `v2.5.31 / b362`.
+  - next session label showed `29 Jul, 9:15 am`.
+- Auto evaluation result:
+  - evaluation alarm fired for the session.
+  - auto-start status: `STARTED`.
+  - session completed with `76/76` polls.
+  - `Day evaluation: DONE`.
+  - `Outcomes persisted: 0`.
+  - `Produced: 0`.
+  - conclusion: `no evaluable candidate legs were captured for this session`.
+- Teacher/evidence state:
+  - `LOCAL_REPORT_NOT_AVAILABLE` appeared because the teacher research artifact could not be built from zero outcome rows.
+  - `Repair stale research state` later converted a stale `DONE` to `FAILED_RESEARCH` for the missing report, then scheduled a local teacher rebuild.
+  - this is an artifact/report issue, not a crash.
+- Candidate diagnostics:
+  - generated: `0`.
+  - watchlist: `0`.
+  - rejected: `281`.
+  - top rejection stages:
+    - `price_zero 136`
+    - `credit_non_positive 97`
+    - `sigma_otm_too_close 30`
+    - `capital_limit_exceeded 9`
+- Operational meaning:
+  - auto evaluation machinery worked.
+  - the day itself produced no eligible candidate legs, so there was no teacher outcome set to label.
+  - the recommended next step is not retry spam; it is to wait for a day with captureable candidates or to inspect the upstream gate conditions that are eliminating all legs before generation.
+
+### 2026-07-28 - Offline Small-Model Bakeoff Expansion: LightGBM, XGBoost, CatBoost, TabICL Context
+
+- User direction:
+  - do not limit scope to TabICL/TabPFN/TabFM.
+  - test practical tabular models broadly and compare against the current deterministic brain.
+  - no app code change during this research.
+  - no Supabase pull during the latest model tests.
+- Frozen dataset used:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv`.
+  - SHA256: `8aff063ff15897417e18524b5374f044d5a8dc53389f89b909b50c0954f13fb3`.
+  - source rows: `8,744`.
+  - walk-forward evaluated rows: `8,124`.
+  - evaluated snapshots/menus: `853`.
+  - unique session days: `27`.
+  - date range: `2026-06-02` through `2026-07-23`.
+- Validation method:
+  - walk-forward by `effective_session_date`.
+  - no random split.
+  - test day sees only prior-day labels.
+  - snapshot/menu-level comparison is used for strategy selection.
+  - oracle is hindsight best candidate per menu with no-trade floor; it is not a live-achievable target.
+- Baselines:
+  - current brain PnL on this frozen comparison: `-18,980.25`.
+  - oracle no-trade-floor PnL: `+768,280.00`.
+- LightGBM results:
+  - report:
+    - `/tmp/LIGHTGBM_COMPREHENSIVE_ASSESSMENT_FOR_CLAUDE_20260728.txt`.
+  - classifier AUC: `0.5958714572530176`.
+  - classifier selector PnL: `+142,817.50`.
+  - classifier oracle-gap capture: `20.55%`.
+  - PnL-regression selector PnL: `+135,957.75`.
+  - PnL-regression oracle-gap capture: `19.68%`.
+  - family hit rate vs oracle: `82.30%`.
+  - interpretation:
+    - strongest practical classifier/ranker candidate so far.
+    - best first candidate for shadow probability/family advice.
+- XGBoost results:
+  - reports:
+    - `/tmp/xgboost_one_model_bakeoff_20260728/XGBOOST_ONE_MODEL_BAKEOFF_20260728.txt`.
+    - `/tmp/xgboost_comprehensive_diagnostics_20260728/XGBOOST_COMPREHENSIVE_DIAGNOSTICS_20260728.txt`.
+  - classifier AUC: `0.5582883300269408`.
+  - classifier selector PnL: `+130,806.25`.
+  - classifier oracle-gap capture: `19.03%`.
+  - PnL-regression selector PnL: `+84,818.00`.
+  - PnL-regression oracle-gap capture: `13.18%`.
+  - family hit rate vs oracle: `82.65%`.
+  - interpretation:
+    - useful comparator.
+    - does not displace LightGBM or CatBoost in their stronger roles.
+- CatBoost results:
+  - report:
+    - `/tmp/catboost_comprehensive_diagnostics_20260728/CATBOOST_COMPREHENSIVE_DIAGNOSTICS_20260728.txt`.
+  - classifier AUC: `0.588553098445416`.
+  - classifier selector PnL: `+98,527.50`.
+  - classifier oracle-gap capture: `14.93%`.
+  - PnL-regression selector PnL: `+211,455.75`.
+  - PnL-regression oracle-gap capture: `29.27%`.
+  - family hit rate vs oracle: `82.65%`.
+  - interpretation:
+    - classifier is weaker than LightGBM.
+    - direct PnL/payoff regression is strongest result among the small-model tests so far.
+    - CatBoost may be best as expected-payoff / PnL-magnitude advisor, not pure win-probability ranker.
+- Package/runtime fit observed in local `.e1_venv`:
+  - LightGBM package: `8.7M`.
+  - XGBoost package: `183M`.
+  - CatBoost package: `269M`.
+  - XGBoost also pulled about `3.0G` NVIDIA dependency in this venv.
+- Tabular foundation model context:
+  - prior TabICL packet:
+    - `/tmp/CLAUDE_PACKET_TABICL_XGBOOST_LIGHTGBM_FULL_FINDINGS_20260724.md`.
+  - TabICL showed real classification/retrieval signal.
+  - TabICL failed as a direct raw-PnL menu selector in the earlier E1E run:
+    - TabICL raw-PnL top-pick total PnL: `-35,987.00`.
+    - existing brain primary in that same comparison: `-18,980.25`.
+    - candidate Spearman: `0.0769`.
+  - operational conclusion:
+    - TabICL, TabPFN, TabFM should be treated as offline/server-side teacher models.
+    - they should not be embedded directly into the phone app.
+- Consolidated report created for Claude/user review:
+  - `/tmp/MODEL_BAKEOFF_CONSOLIDATED_REPORT_FOR_CLAUDE_20260728.txt`.
+- Current recommended architecture:
+  - keep deterministic brain as production authority.
+  - add no live model authority yet.
+  - use LightGBM as first shadow probability/family/ranking advisor.
+  - use CatBoost as separate shadow expected-PnL/payoff advisor.
+  - keep XGBoost as comparator/sanity check.
+  - keep TabICL/TabPFN/TabFM as offline or server-side teachers.
+  - persist model advice side by side with deterministic brain decisions.
+  - post-close teacher should compare brain vs LightGBM vs CatBoost vs oracle.
+  - only after prospective live shadow evidence should any model-derived threshold or ranking influence production display/notification.
+- Risks / limits:
+  - 27 sessions are unevenly weighted; sample is not enough for live capital authority.
+  - frozen feature set lacks `ivRichness`, so final IV-aware selection is not proven.
+  - four-leg / iron condor evidence is limited in this frozen bakeoff.
+  - CatBoost PnL-regression may be outlier-driven; it needs day/regime/outlier audit before being trusted.
+  - abstention thresholds were chosen retrospectively and must be treated as hypotheses, not production gates.
+
+### 2026-07-28 - G1 Stale `globalDirection` Confirmed and Fixed in v2.5.33 / b364
+
+- Incoming finding:
+  - file reviewed:
+    - `/tmp/codex-web-uploads/f-iLbbVh/FINDINGS_G1_STALE_GLOBALDIRECTION_20260728.md`.
+  - Claude claimed that `globalDirection` could carry stale Dow/Crude references because morning lock refreshed `morning_input` but not `global_direction`.
+- Codex verification:
+  - confirmed real on local `v2.5.32 / b363`.
+  - `NativeBridge.setMorningInput()` wrote:
+    - `morning_input`.
+    - `morning_baseline`.
+    - expiries.
+  - it did not update `global_direction`.
+  - `MarketWatchService` assembled brain context from separate prefs:
+    - `morning_input`.
+    - `global_direction`.
+  - `brain.py` consumes `ctx.globalDirection` for:
+    - overnight Dow/Crude delta.
+    - global boost.
+    - global-direction conflict path, though the conflict path currently expects `dowPct/crudePct/giftPct` while the active writer stores close/now fields.
+- Fix implemented:
+  - Android `NativeBridge.setMorningInput()` now merges fresh morning reference values into existing `global_direction` during the same native morning-lock write.
+  - refreshed fields:
+    - `dowClose`.
+    - `crudeSettle`.
+    - `_date`.
+  - preserved existing fields:
+    - `dowNow`.
+    - `crudeNow`.
+    - `giftNow`.
+    - any other existing keys.
+  - no `brain.py` consumer rewrite.
+  - no ranking/gate/model change.
+- Version synchronization:
+  - Android `versionCode = 364`.
+  - Android `versionName = 2.5.33`.
+  - Android `brain.py BRAIN_VERSION = 2.5.33`.
+  - PWA visible label `v2.5.33 / b364`.
+  - PWA cache-bust `app.js?v=1273`.
+- Expected live verification:
+  - after updating to `v2.5.33 / b364`, first morning lock should make:
+    - `morning_input.dowClose == globalDirection.dowClose`.
+    - `morning_input.crudeSettle == globalDirection.crudeSettle`.
+  - live now-fields should remain preserved when present.
+- Follow-on not included:
+  - G2 freshness/date assertion remains separate and should not be bundled with this release.
