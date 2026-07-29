@@ -16264,3 +16264,65 @@ curl -sS \
   - live now-fields should remain preserved when present.
 - Follow-on not included:
   - G2 freshness/date assertion remains separate and should not be bundled with this release.
+
+### 2026-07-29 - E1 DTE Fabrication Fix Prepared in v2.5.34 / b365
+
+- Incoming files reviewed:
+  - `/tmp/codex-web-uploads/f-h3Tggv/CLAUDE_REVIEW_MODEL_BAKEOFF_20260728.md`.
+  - `/tmp/codex-web-uploads/f-aCSKi6/DIRECTIVE_E1_EXPIRY_DTE_MARGIN_20260729.md`.
+- Codex assessment:
+  - Claude's model-bakeoff objections are valid enough to block model/shadow integration for now.
+  - no LightGBM/XGBoost/CatBoost/TabFM wiring was added.
+  - E1 DTE fallback issue was real in the current app code.
+  - Kotlin was still silently using `?: 3` for `bnfDTE` and `nfDTE` when expiry parsing failed.
+  - that fallback could fabricate time-to-expiry and contaminate pricing, candidate generation, and ML/research labels.
+- Implemented app-side fix:
+  - removed silent Kotlin `?: 3` DTE fallback.
+  - if expiry parse fails, app now writes `bnfDTE` / `nfDTE` as JSON null instead of inventing a value.
+  - added DTE provenance fields:
+    - `bnfDteSource`.
+    - `nfDteSource`.
+    - `bnfDteMeta`.
+    - `nfDteMeta`.
+  - parse failures emit `DTE_PARSE_FAILED` log entries with raw expiry text.
+- Implemented brain-side safety:
+  - added centralized DTE resolver.
+  - candidate generation now skips the affected index with explicit `dte_unavailable` instead of pricing with a fabricated DTE.
+  - max-pain and DTE urgency insights no longer fabricate expiry timing if DTE is unavailable.
+  - position management remains available with neutral timing fallback, so exit/book logic is not blocked by new-entry DTE producer failure.
+  - removed ML enrichment fallback `c.get('tDTE', 3)` so generated-candidate research does not silently receive fabricated DTE.
+- Expiry-day observability:
+  - when front expiry equals session date, brain records `EXPIRY_DAY_NO_CREDIT_PATH`.
+  - this is observability only.
+  - no expiry roll was implemented.
+  - no 0DTE exemption was implemented.
+  - no economic threshold changed.
+- Rejection-margin instrumentation:
+  - added compact numeric margin capture for known numeric gates.
+  - records gate field, observed value, threshold, margin, and margin percent when defensible.
+  - aggregate `snapshot_rejected_candidate_stats.by_stage_margin` now reports:
+    - `n`.
+    - `min_abs_margin`.
+    - `p10_abs_margin`.
+    - `median_abs_margin`.
+  - non-numeric gates remain counted but do not receive fake margins.
+- Version synchronization prepared:
+  - Android `versionCode = 365`.
+  - Android `versionName = 2.5.34`.
+  - Android `brain.py BRAIN_VERSION = 2.5.34`.
+  - PWA visible label `v2.5.34 / b365`.
+  - PWA cache-bust `app.js?v=1274`.
+- Verification performed locally:
+  - `python -m py_compile app/src/main/python/brain.py` passed.
+  - `git diff --check` passed for touched app files.
+  - targeted Python checks passed:
+    - null DTE produces `dte_unavailable`.
+    - expiry-day emits `EXPIRY_DAY_NO_CREDIT_PATH`.
+    - rejection-margin aggregation produces `by_stage_margin`.
+  - Android Gradle verification remains blocked by the known local AAPT2 daemon startup failure before source-level compilation.
+- Follow-on not included:
+  - no model integration.
+  - no expiry rolling decision.
+  - no 0DTE strategy support.
+  - no threshold/ranking changes.
+  - Claude's model-bakeoff arithmetic reconciliation remains the next research/audit task before any model authority is considered.
