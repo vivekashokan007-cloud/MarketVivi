@@ -16326,3 +16326,242 @@ curl -sS \
   - no 0DTE strategy support.
   - no threshold/ranking changes.
   - Claude's model-bakeoff arithmetic reconciliation remains the next research/audit task before any model authority is considered.
+
+### 2026-07-29 - Runtime Integrity Audit: Expiry / Chain Collapse Root Cause Found
+
+- Live log review confirmed a real app-side integrity defect during the same session:
+  - Upstox option-chain HTTP calls were returning `200`.
+  - but `BRAIN_CTX` still showed:
+    - blank `bnfExp` / `nfExp`
+    - `bnfDTE = null`
+    - `nfDTE = null`
+    - zero strikes
+  - repeated symptoms included:
+    - `DTE_PARSE_FAILED`
+    - `bnfChain has no strikes`
+    - `nfChain has no strikes`
+- Root cause found in Android:
+  - `performPoll()` resolved live expiry correctly for Upstox fetch.
+  - `runBrainAnalysis()` independently re-read persisted expiry prefs instead of using the just-resolved live expiry.
+  - `NativeBridge.clearStaleSessionStateIfNeeded()` also had a destructive same-day cleanup path that could remove:
+    - `morning_baseline`
+    - `morning_input`
+    - `expiry_bnf`
+    - `expiry_nf`
+- Correct interpretation:
+  - this was not mainly a brain-ranking issue.
+  - this was not mainly an Upstox outage.
+  - this was an app-side expiry/bridge-state handoff defect that could collapse valid chain fetches into empty brain context.
+
+### 2026-07-29 - Release v2.5.35 / b366 Pushed: Expiry Handoff and Baseline Preservation
+
+- Android changes pushed in `Marketapp-main-worktree`:
+  - `app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+    - live `bnfExpiry` / `nfExpiry` resolved in `performPoll()` are now passed directly into `runBrainAnalysis()`.
+    - `runBrainAnalysis()` now prefers those live expiry values instead of relying only on persisted prefs.
+  - `app/src/main/java/com/marketradar/app/NativeBridge.kt`
+    - added same-day baseline auto-heal when core baseline fields exist and today's poll session is already active.
+    - prevented cleanup from removing `morning_baseline`, `morning_input`, `expiry_bnf`, and `expiry_nf` after successful same-day heal.
+- Version synchronization for this release:
+  - Android `versionCode = 366`
+  - Android `versionName = 2.5.35`
+  - Android `brain.py BRAIN_VERSION = 2.5.35`
+  - PWA visible label `v2.5.35 / b366`
+- Push result:
+  - Android `main` commit: `9bf2919`
+  - PWA `main` commit: `17a09a6`
+- Post-push live verification:
+  - later log showed:
+    - valid `bnfExp` / `nfExp`
+    - valid `bnfDTE` / `nfDTE`
+    - real strike counts in `BRAIN_CTX`
+    - real chain persistence counts
+  - therefore the expiry/DTE and chain-collapse defect was materially fixed.
+
+### 2026-07-29 - Remaining Runtime Issue After v2.5.35: Same-Day `DAILY_RESET_BRIDGE`
+
+- New live log after `v2.5.35 / b366` confirmed:
+  - expiry/DTE issue fixed
+  - chain persistence issue fixed
+  - but `DAILY_RESET_BRIDGE` still fired during an already-active same-day session
+- This was still wrong because:
+  - active session state should not be cleared after same-day polling has already started.
+  - even if recovery succeeds, this creates unnecessary restart/read-path risk.
+- The same log also showed:
+  - app process recreation / background restart still occurs
+  - state restore is better now
+  - candidate generation is no longer blocked upstream; remaining `generated=0` is mostly due to gate waterfall rejection, not missing chain inputs
+  - one `ml_generated_candidates` write hit RLS / `401`, which is treated as a separate Supabase-policy/environment issue, not bundled into the runtime hotfix batch
+
+### 2026-07-29 - Release v2.5.36 / b367 Pushed: Preserve Active Session State
+
+- Android changes pushed in `Marketapp-main-worktree`:
+  - `app/src/main/java/com/marketradar/app/NativeBridge.kt`
+    - `clearStaleSessionStateIfNeeded()` now returns immediately if today's session is already active
+    - stale-state checks now use healed `effectiveBaselineIsToday` instead of pre-heal `baselineIsToday`
+- Version synchronization for this release:
+  - Android `versionCode = 367`
+  - Android `versionName = 2.5.36`
+  - Android `brain.py BRAIN_VERSION = 2.5.36`
+  - PWA visible label `v2.5.36 / b367`
+- Push result:
+  - Android `main` commit: `d74f57764a5b081bc697663d5877acfa73642cdc`
+  - PWA `main` commit: `2104dd1ba194d8fa757d15953c3774fde68d87d0`
+- Intent of this release:
+  - stop same-day bridge cleanup from firing during an already-active session
+  - keep this batch strictly runtime-integrity only
+  - do not mix in Supabase policy work or brain gate/ranking changes
+
+### 2026-07-29 - Current Open Issues After v2.5.36
+
+- Open issue 1:
+  - background process recreation / restart still exists
+  - current status: recovery is stronger, but root stability is not yet closed
+- Open issue 2:
+  - `ml_generated_candidates` can still hit RLS / `401`
+  - current assessment:
+    - app write path and payload shape appear structurally correct
+    - this is more likely a live Supabase RLS / environment problem than an Android-side payload bug
+  - this must be handled as a separate batch from runtime-integrity releases
+- Open issue 3:
+  - once chain inputs are healthy, remaining no-candidate sessions are now mostly genuine gate/economic rejection paths:
+    - `sigma_otm_too_close`
+    - `sigma_otm_too_far`
+    - `width_too_narrow`
+    - `price_zero`
+    - `credit_non_positive`
+  - this is a brain/gate review batch, not a base-input plumbing batch
+
+### GitHub Push Procedure - Current Working Method
+
+- Repo policy:
+  - user requires synchronized version bump in both repos for release-bearing app updates
+  - Android repo and PWA repo must both be pushed when a phone-visible build/version changes
+  - do not push unless explicitly authorized by the user
+- Active repos for current releases:
+  - Android: `Marketapp-main-worktree`
+  - PWA: `MarketVivi-git`
+- Important:
+  - do not use older branch/worktree copies such as the legacy `Marketapp-git` for current release pushes
+- Working push pattern in this Codex environment:
+  1. stage only intended files
+  2. commit in each repo separately
+  3. push with a one-shot GitHub PAT header
+- Generic command pattern that worked:
+
+```bash
+AUTH=$(printf 'x-access-token:%s' 'YOUR_PAT_HERE' | base64 -w0)
+git -C /abs/path/to/repo \
+  -c http.https://github.com/.extraheader="Authorization: Basic $AUTH" \
+  push origin main
+```
+
+- For synchronized release pushes:
+  - bump Android:
+    - `app/build.gradle.kts`
+    - `app/src/main/python/brain.py`
+  - sync PWA visible version label:
+    - `index.html`
+- After push:
+  - record exact remote head SHA for both repos
+  - verify next live app log before mixing further fixes
+- Security note:
+  - do not store PAT values inside repo files
+  - treat pasted PATs as temporary operational secrets and revoke/rotate after use
+
+### 2026-07-30 - Upcoming Market Timing Change to Review Before Monday, August 3, 2026
+
+- New external-change finding received on Thursday, July 30, 2026:
+  - user confirmed an official exchange timing change applies from Monday, August 3, 2026
+  - working assumption for project planning:
+    - market-close boundary relevant to the app will extend from `15:30 IST` to `15:40 IST`
+  - this is now treated as a date-forced base-integrity item that must be corrected before Monday, August 3, 2026
+- Important discipline:
+  - this is a clock / session-boundary change
+  - it must not be mixed with gate tuning, ranking changes, or model work
+  - it affects the integrity of live session boundaries, post-close evaluation timing, and teacher close-window capture
+
+### 2026-07-30 - Code Surfaces Affected by Potential 15:40 Close Migration
+
+- Android service close constants and slot logic:
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+    - `MARKET_CLOSE_MINUTE = 15 * 60 + 30`
+    - `POLL_FULL_DAY_SLOTS`
+    - poll scheduling and market-open/market-close guards
+    - `return mins in 555..930 // 9:15 AM to 3:30 PM IST`
+    - current 3:15 PM / 15:00-15:30 snapshot logic
+- Position tracking live-window logic:
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/PositionTickService.kt`
+    - `MARKET_CLOSE_MINUTES = 15 * 60 + 30`
+    - runtime live-window checks
+- Python brain trading-hours logic:
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+    - `in_hours = (9 * 60 + 15) <= mins <= (15 * 60 + 30)`
+    - teacher H2 evaluation window docstrings and close-window helpers
+    - final close fallback window currently anchored to `15:26-15:30`
+
+### 2026-07-30 - Implementation Rule for the Clock Change
+
+- Before changing constants:
+  - classify each timing site as one of:
+    - market-close boundary
+    - teacher close/evaluation window
+    - deliberate entry window
+    - unrelated timezone offset / static time logic
+- Do not blindly move every `15:15`, `15:30`, `915`, or `930` occurrence.
+- If the official timing change is confirmed to apply to the app’s derivatives scope:
+  - all true market-close boundary sites must move together in one synchronized release batch
+  - teacher close/evaluation windows must be reviewed so the end-of-day reference is not taken 10 minutes early
+- Add a future sentinel after the fix:
+  - verify post-change sessions continue through the `15:40` boundary instead of silently truncating at `15:30`
+
+### 2026-07-30 - 15:40 Close Timing Patch Implemented Locally
+
+- Local synchronized release patch prepared as `v2.5.41 / b372`.
+- Scope intentionally limited to official close/session-boundary migration:
+  - no ranker/gate/model/sandbox logic changes included
+  - no Supabase schema changes included
+- Android runtime changes:
+  - `MarketWatchService.kt`
+    - `MARKET_CLOSE_MINUTE` moved from `15:30` to `15:40`
+    - `POLL_FULL_DAY_SLOTS` now derives to `78` slots for `09:15-15:40` inclusive
+    - market-open guard now uses constants instead of raw `555..930`
+    - late-session chain snapshot window extended through official close
+  - `NativeBridge.kt`
+    - service-status coverage now expects `78` full-day slots
+    - final-slot integrity now checks slot `78`
+    - overrun/missed-slot logic now derives from constants instead of hardcoded `76`
+    - post-close UI coverage immediately expects the full day once current time reaches `15:40`
+  - `MarketOpenScheduler.kt`
+    - market clock status now treats `09:15-15:40` as open
+  - `PositionTickService.kt`
+    - live position tick capture now remains active until `15:40`
+  - `SupabaseClient.kt` and `MarketMLService.kt`
+    - H2 chain-source coverage checks now accept `15:15-15:40`
+  - `brain.py`
+    - `BRAIN_VERSION` bumped to `2.5.41`
+    - teacher H2 window moved to `15:15-15:40`
+    - preferred H2 window moved to `15:15-15:35`
+    - final fallback close window moved to `15:36-15:40`
+- PWA changes:
+  - `api.js`
+    - market-hours helper now treats `09:15-15:40` as open
+    - DTE timestamp anchor moved to `T15:40:00+05:30`
+  - `app.js`
+    - fallback full-day coverage count changed from `76` to `78`
+  - `index.html`
+    - visible version label changed to `v2.5.41 · b372`
+- Local checks completed:
+  - `node --check app.js`
+  - `node --check api.js`
+  - `python3 -m py_compile app/src/main/python/brain.py app/src/main/python/ml_train.py app/src/main/python/ml_engine.py`
+  - `python3 -m unittest app/src/main/python/tests/test_teacher_v1_shadow_labels.py app/src/main/python/tests/test_unified_brain_notification.py app/src/main/python/tests/test_build3_a8_nf_ab.py`
+    - result: 22 tests passed
+  - `git diff --check` passed for edited Android and PWA files
+- Blocked local check:
+  - `./gradlew :app:compileDebugKotlin` could not run because this Codex environment has no Android SDK path configured (`ANDROID_HOME` / `local.properties` missing)
+- Next live sentinel after install:
+  - expected session badge should become `polls 78/78 slots`
+  - final poll should include `15:40`
+  - session integrity should report final-slot occurrence for slot `78`
+  - post-close evaluation should use `15:36-15:40` fallback marks where needed

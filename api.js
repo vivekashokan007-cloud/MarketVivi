@@ -14,7 +14,7 @@ const API = (() => {
     ];
 
     function tradingDTE(expiryStr) {
-        const expiry = new Date(expiryStr + 'T15:30:00+05:30');
+        const expiry = new Date(expiryStr + 'T15:40:00+05:30');
         const now = new Date();
         let count = 0;
         const d = new Date(now);
@@ -33,7 +33,7 @@ const API = (() => {
     }
 
     function calendarDTE(expiryStr) {
-        const expiry = new Date(expiryStr + 'T15:30:00+05:30');
+        const expiry = new Date(expiryStr + 'T15:40:00+05:30');
         const now = new Date();
         return Math.max(1, Math.ceil((expiry - now) / 86400000));
     }
@@ -59,7 +59,7 @@ const API = (() => {
         if (day === 0 || day === 6) return false;
         const dateStr = todayIST();
         if (NSE_HOLIDAYS.includes(dateStr)) return false;
-        return mins >= 555 && mins <= 930; // 9:15 - 15:30
+        return mins >= 555 && mins <= 940; // 9:15 - 15:40
     }
 
     function minutesSinceOpen() {
