@@ -16565,3 +16565,281 @@ git -C /abs/path/to/repo \
   - final poll should include `15:40`
   - session integrity should report final-slot occurrence for slot `78`
   - post-close evaluation should use `15:36-15:40` fallback marks where needed
+
+### 2026-07-31 - Post-Close ML Evaluation Classification
+
+- User reported market close and ML evaluation completion on Friday, July 31, 2026.
+- Supabase was checked directly with bounded reads to avoid throttling.
+- July 31 storage/evaluation counts:
+  - `ml_brain_snapshots`: `73`
+  - `ml_option_chain_snapshots`: `37,960`
+  - `ml_generated_candidates`: `1,405`
+  - `ml_evaluation_outcomes`: `45`
+  - `ml_recommendation_outcomes`: `45`
+  - `ml_daily_accuracy`: `1`
+  - `chain_slices`: `0` for this date; active chain evidence is in `ml_option_chain_snapshots`
+- Chain evidence is internally consistent:
+  - `37,960 = 73 x 520`
+  - option-chain rows align exactly with the number of persisted brain snapshots
+- Snapshot coverage:
+  - earliest persisted slot: `09:15 IST`
+  - latest persisted slot: `15:30 IST`
+  - expected old-session coverage from `09:15` to `15:30`: `76` slots
+  - actual persisted coverage: `73` unique slots
+  - missing slots:
+    - `12:25 IST`
+    - `12:30 IST`
+    - `12:35 IST`
+- User later confirmed these missing slots were caused by a device-level/app restart event:
+  - multiple background apps restarted
+  - therefore this is classified as external/device-level interruption, not an app-code crash finding
+- July 31 daily accuracy row:
+  - `session_date`: `2026-07-31`
+  - `labeled_rows`: `3`
+  - `wins`: `0`
+  - `accuracy_pct`: `0`
+  - `method`: `h2_primary_labelable`
+  - `updated_at`: `2026-07-31T11:08:20+00:00`
+- Outcome sample confirmed teacher-v1 evaluation was active:
+  - `label_version`: `teacher_v1`
+  - old H2/canonical labels can be positive while honest teacher marks `is_success=false`
+  - example condition observed:
+    - `canonical_won = 1`
+    - `outcome_h2 = 1`
+    - `managed_pnl < 0`
+    - `r_multiple < 0`
+    - `is_success = false`
+- Classification:
+  - July 31 is valid for advisory/ranking/teacher-output analysis.
+  - July 31 is not counted as a clean stability-certification session because three midday slots were missed.
+  - No immediate app-code blocker is opened unless the same missed-slot behavior repeats while Market Radar is foreground, or while other apps do not restart.
+- Important operational note:
+  - the phone/session still showed old `15:30` behavior on July 31.
+  - this is expected if the user did not update to the `15:40` release before the market session.
+  - the 15:40 sentinel remains pending for the first installed session after the official timing change applies.
+
+### 2026-07-31 - Month-End Tabular Model Evaluation Started
+
+- User closed baseline as complete for current purposes and shifted the active priority to strategy candidate ranking/recommendation.
+- Month-end offline evaluation was run from local Codex against Supabase with bounded reads, then rerun from cached CSV only.
+- New local offline artifacts:
+  - `Marketapp-main-worktree/tools/month_end_tabfm_eval.py`
+  - `Marketapp-main-worktree/reports/month_end_tabfm_20260731/MONTH_END_TABFM_EVAL_20260731.md`
+  - `Marketapp-main-worktree/reports/month_end_tabfm_20260731/month_end_tabfm_summary.json`
+  - `Marketapp-main-worktree/reports/month_end_tabfm_20260731/month_end_predictions.csv`
+  - `Marketapp-main-worktree/reports/month_end_tabfm_20260731/month_end_teacher_v1_dataset.csv`
+- Dataset:
+  - source: `ml_evaluation_outcomes` + `ml_brain_snapshots`
+  - window: `2026-07-01` to `2026-07-31`
+  - target label: teacher-v1 `is_success`
+  - rows rebuilt: `2,526`
+  - distinct days: `14`
+  - teacher-v1 successes: `4`
+  - success rate: `0.16%`
+  - dataset SHA256: `032385dacf5433d604a61bca8a437dc37f3c5d1925deb01d6663e14a3d918613`
+- Classification result:
+  - not gradeable for AUC because teacher-v1 success is too sparse
+  - conclusion: July month-end ranking evaluation must be P&L/regression-first, not binary-success classification-first
+- Lightweight P&L regression walk-forward result over same folds:
+  - brain-primary total P&L: `-2061.29`
+  - oracle total P&L: `4820.21`
+  - logistic top-pick total P&L: `-4360.70`
+  - LightGBM top-pick total P&L: `-4144.98`
+  - XGBoost top-pick total P&L: `-4957.66`
+- Interpretation:
+  - profitable candidates existed in the menus
+  - current brain primary was negative, but direct model top-pick replacement was worse
+  - direct LightGBM/XGBoost/linear-regression P&L ranker is not approved as a replacement selector
+  - models may still be useful as shadow veto/rerank advisors or branch/regime diagnostics
+- Google TabFM operational finding:
+  - `tabfm[pytorch]` installed successfully in `.e1_venv`
+  - installed `tabfm==1.0.1`
+  - full TabFM run did not complete into the report
+  - smoke test reached model loading with a tiny fold:
+    - train rows: `512`
+    - test rows: `4`
+    - transformed matrix: `(512, 40)` train and `(4, 40)` test
+  - environment remained too slow/unstable for a completed TabFM score in this mobile Codex context
+  - environment footprint after setup:
+    - `.e1_venv`: `5.7G`
+    - Hugging Face cache: `13G`
+- Current practical ruling:
+  - TabFM is installable.
+  - TabFM is not yet operationally proven for this project.
+  - TabFM remains offline/monthly-only until run on a stable machine with pinned local model cache and a hard runtime budget.
+  - TabFM is not a phone-side or 5-minute live-ranking candidate at this stage.
+- Forward ranking direction:
+  - do not replace deterministic brain with direct model top-pick selection
+  - use model experiments to identify branch/regime pockets, gate errors, and advisor/veto logic
+  - keep deterministic brain as authority until shadow advisor improves P&L repeatedly without increasing drawdown
+
+### 2026-08-01 - TabFM Stopped, TabICL Retry Completed On Cached July Data
+
+- User decided TabFM cannot be run safely in this phone/Codex environment.
+- Action taken:
+  - stopped TabFM attempts
+  - removed the heavy Hugging Face TabFM model cache
+  - Hugging Face cache reduced from about `13G` to about `215M`
+  - kept `.e1_venv` intact because it contains the existing experiment dependencies
+- No Supabase reads were made for the TabICL retry.
+- Source remained the already-fetched cached July CSV:
+  - `month_end_teacher_v1_dataset.csv`
+  - SHA256 `032385dacf5433d604a61bca8a437dc37f3c5d1925deb01d6663e14a3d918613`
+- TabICL retry settings:
+  - `TabICLRegressor`
+  - CPU only
+  - `n_estimators=2`
+  - `batch_size=8`
+  - `nice -n 15`
+  - one-thread BLAS/OMP settings
+  - hard command timeouts
+  - target: managed/net P&L
+- Test folds:
+  - `2026-07-24`
+  - `2026-07-29`
+  - `2026-07-30`
+  - `2026-07-31`
+  - rows scored: `249`
+- Same-fold reference:
+  - brain-primary total P&L: `-2929.90`
+  - oracle total P&L: `2077.88`
+- Context-cap results:
+  - cap `32`: top-pick total P&L `-2270.55`, pooled Spearman `-0.0086`
+  - cap `64`: top-pick total P&L `-76.36`, pooled Spearman `0.3334`
+  - cap `128`: top-pick total P&L `-1032.37`, pooled Spearman `0.2093`
+  - cap `256`: top-pick total P&L `-2316.25`, pooled Spearman `0.2266`
+- Best result:
+  - cap `64`
+  - materially improved over brain by about `+2853.54`
+  - still below oracle by about `2154.24`
+  - found the July 30 oracle winner: `BULL_PUT_BNF_56300_55300_W1000`
+- Important interpretation:
+  - more context is not automatically better
+  - recent/retrieved context appears more promising than full-context scaling
+  - TabICL is operationally feasible with capped context in this environment
+  - TabICL is not yet approved as direct selector replacement
+- Forward direction:
+  - build/test TabICL as a shadow advisor/reranker or veto layer
+  - deterministic brain remains authority
+  - promote only after repeated shadow proof across more sessions and regimes
+
+### 2026-08-01 - TabICL Cap-64 Shadow Diagnosis Completed
+
+- Offline diagnosis was run using cached July data only.
+- No Supabase reads were made.
+- Runtime was controlled with low-priority single-thread settings.
+- New local artifacts:
+  - `Marketapp-main-worktree/tools/tabicl_shadow_diagnosis.py`
+  - `Marketapp-main-worktree/reports/tabicl_shadow_diagnosis_20260801/TABICL_SHADOW_DIAGNOSIS_20260801.md`
+  - `Marketapp-main-worktree/reports/tabicl_shadow_diagnosis_20260801/tabicl_cap64_shadow_predictions.csv`
+  - `Marketapp-main-worktree/reports/tabicl_shadow_diagnosis_20260801/tabicl_cap64_day_comparison.csv`
+  - `Marketapp-main-worktree/reports/tabicl_shadow_diagnosis_20260801/tabicl_shadow_diagnosis_summary.json`
+- Diagnosis method:
+  - `TabICLRegressor`
+  - context cap `64`
+  - strict prior-day train rows only
+  - test days `2026-07-24`, `2026-07-29`, `2026-07-30`, `2026-07-31`
+  - rows scored `249`
+- Totals:
+  - brain primary total P&L: `-2929.90`
+  - TabICL top-pick total P&L: `-76.36`
+  - oracle total P&L: `2077.88`
+  - TabICL improvement over brain: `2853.54`
+  - remaining oracle gap after TabICL: `2154.24`
+- Day-level diagnosis:
+  - `2026-07-24`:
+    - brain: `BEAR_PUT NF W100`, P&L `-898.77`
+    - TabICL: `BEAR_PUT NF W150`, P&L `-937.29`
+    - oracle: `BEAR_PUT BNF W200`, P&L `-442.69`
+    - interpretation: all visible candidates were losing; TabICL did not improve
+  - `2026-07-29`:
+    - brain: `BEAR_CALL BNF W500`, P&L `-394.17`
+    - TabICL: `BEAR_CALL BNF W600`, P&L `-220.74`
+    - oracle: `BULL_PUT BNF W1000`, P&L `526.13`
+    - interpretation: TabICL improved width but missed bullish family
+  - `2026-07-30`:
+    - brain: `BEAR_CALL BNF W400`, P&L `-782.69`
+    - TabICL: `BULL_PUT BNF W1000`, P&L `1593.24`
+    - oracle: `BULL_PUT BNF W1000`, P&L `1593.24`
+    - interpretation: deterministic brain picked wrong family and narrow width; TabICL found exact oracle
+  - `2026-07-31`:
+    - brain: `BEAR_PUT NF W100`, P&L `-854.27`
+    - TabICL: `BEAR_PUT BNF W800`, P&L `-511.57`
+    - oracle: `BEAR_CALL BNF W1000`, P&L `401.20`
+    - interpretation: TabICL improved index/width but missed oracle family
+- Test-window strategy buckets:
+  - `BULL_PUT`: `70` rows, avg P&L `97.03`, max `1593.24`, positive rows `35`
+  - `BEAR_CALL`: `145` rows, avg P&L `-398.64`, max `401.20`, positive rows `11`
+  - `BEAR_PUT`: `34` rows, avg P&L `-790.17`, max `-105.45`, positive rows `0`
+- Main diagnosis:
+  - the primary failure is family/index/width routing
+  - the brain repeatedly selected losing bearish structures while better BNF wider structures existed
+  - July 30 is the clearest defect pattern: brain selected bearish `BEAR_CALL W400`, while the correct candidate was `BULL_PUT W1000`
+  - this supports a TabICL shadow advisor/reranker, not an app-side foundation-model replacement
+- Engineering direction:
+  - keep deterministic brain as authority
+  - add a shadow advisor path that compares deterministic primary vs TabICL recent-context recommendation
+  - first audit target: routing logic that suppresses or downranks BNF `BULL_PUT W1000` in low-VIX/BNF conditions
+  - second audit target: bearish-family over-selection when market/regime evidence permits bullish premium-selling candidates
+
+### 2026-08-01 - Independent Month Root-Cause Replay And b373 Shadow Selector Suite
+
+- OpenClaw proceeded independently because Claude was not giving a clean way forward.
+- Supabase was not queried for this step; all analysis used cached local July artifacts.
+- New independent root-cause report created outside git workspace for handoff/download:
+  - `MONTH_ROOTCAUSE_SOLID_FINDINGS_20260801.txt`
+  - `OPENCLAW_INDEPENDENT_FORWARD_PATH_20260801.txt`
+- Local replay artifact:
+  - `Marketapp-main-worktree/tools/month_rootcause_variant_search.py`
+  - `Marketapp-main-worktree/reports/month_rootcause_variant_search_20260801/MONTH_ROOTCAUSE_VARIANT_SEARCH.md`
+- July replay source:
+  - `reports/month_end_tabfm_20260731/month_end_teacher_v1_dataset.csv`
+  - `reports/month_end_tabfm_20260731/month_end_predictions.csv`
+- Key finding:
+  - teacher rows loaded: `2526`
+  - candidate menus/snapshots: `320`
+  - actual app primary managed P&L: `-14150.03`
+  - oracle best available from the same menus: `135715.19`
+  - theoretical selection gap: `149865.22`
+  - better candidate existed as secondary in `260/320` menus, `81.2%`
+- Interpretation:
+  - primary problem is not only candidate generation
+  - the brain often has better evaluated candidates but fails to select them
+  - selection/routing/ranker is the next core target
+- Fault split:
+  - same-family / strike-selection gap: `76194.68` across `246` snapshots
+  - cross-family / routing gap: `73670.54` across `74` snapshots
+- Important negative result:
+  - simple walk-forward historical prior policies were worse than current app
+  - cached LightGBM/XGBoost/logistic policies did not safely beat current ranking
+  - no direct model/ranker replacement is approved
+- Code mapping:
+  - `brain.py` `_get_varsity_filter()` maps bias/VIX/range to PRIMARY/ALLOWED/BLOCKED
+  - `brain.py` `rank_candidates()` sorts `varsityTier` before most managed-exit/economic evidence
+  - Stage 2A teacher rank is shadow/inactive for live ranking in BUILD 3
+  - this explains how a primary lane can outrank better secondary candidates
+- b373 implementation:
+  - Android bumped to `versionCode 373`, `versionName 2.5.42`
+  - added `snapshot_shadow_selector_suite` in snapshot `context_json`
+  - added `shadow_selector_suite` post-close summary inside `session_teacher_research_report()`
+  - selectors logged:
+    - `K0_current_rank`
+    - `K1_premium_edge_rank`
+    - `K2_credit_width_ratio_rank`
+    - `K3_prob_profit_rank`
+    - `K4_managed_proxy_v0`
+    - `K5_model_advisory_if_available`
+    - `K6_no_trade_guard`
+  - all selectors are `shadow_only`
+  - no live verdict, watchlist, notification, paper trade, or sandbox execution authority changed
+- Validation:
+  - `python -m py_compile app/src/main/python/brain.py` passed
+  - synthetic shadow selector smoke test passed
+  - synthetic post-close shadow comparison smoke test passed
+  - `python -m unittest app/src/main/python/tests/test_teacher_v1_shadow_labels.py` passed
+  - `git diff --check -- app/src/main/python/brain.py` passed
+- Git sync rule reaffirmed:
+  - app releases must be pushed through both repos in sync
+  - Android signed release requires sequential Gradle version bump
+  - do not push unless explicitly commanded by user
+  - after push, confirm Android HEAD, PWA HEAD, and release workflow status
