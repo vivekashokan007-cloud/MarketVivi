@@ -16843,3 +16843,294 @@ git -C /abs/path/to/repo \
   - Android signed release requires sequential Gradle version bump
   - do not push unless explicitly commanded by user
   - after push, confirm Android HEAD, PWA HEAD, and release workflow status
+
+### 2026-08-02 - Native In-Context Memory Ranker v0 Started Locally
+
+- User asked whether the app can use the principle of a tabular foundation model instead of running a heavy TabICL/TabPFN model inside Android.
+- Engineering answer:
+  - yes, use the principle as a lightweight in-context market memory ranker
+  - do not run a heavy foundation model on-device
+  - do not let it control live ranking before proof
+- Local implementation started in Android only:
+  - `brain.py` now preserves `tDTE` in saved candidate snapshots
+  - added compact native memory feature builder
+  - added similarity scorer over candidate/context features
+  - added weighted expected-R scoring from nearest historical outcome rows
+  - added `K7_native_memory_ranker_v0` to the shadow selector suite
+- Live authority status:
+  - `K7_native_memory_ranker_v0` is `shadow_only`
+  - if no packaged `ctx.native_memory_rows` are present, it abstains with `ABSTAIN_NO_MEMORY`
+  - no live verdict, watchlist, notification, paper trade, sandbox, or order path is changed
+- Post-close research status:
+  - `session_teacher_research_report()` now emits `native_memory_ranker`
+  - report scope is explicitly labeled `leave_one_snapshot_out_same_session_research_not_live_proof`
+  - current snapshot rows are excluded from that snapshot's memory to avoid direct self-leakage
+  - report compares native-memory pick vs primary and oracle
+- Validation:
+  - `python -m py_compile app/src/main/python/brain.py` passed
+  - `python -m unittest app/src/main/python/tests/test_stage2a_guarded_ranking.py` passed, 8 tests
+  - `python -m unittest app/src/main/python/tests/test_teacher_v1_shadow_labels.py` passed, 10 tests
+- Next evidence step before live authority:
+  - build a compact July memory file from already cached local teacher outcomes
+  - run chronological replay using only prior-day/prior-snapshot memory
+  - compare current brain vs `K7_native_memory_ranker_v0` vs oracle
+  - only if it improves selection reliably should it become a ranking assist
+
+### 2026-08-02 - Native Memory Ranker July Replay Completed Locally
+
+- OpenClaw ran local-only K7 replay from cached July dataset.
+- No Supabase calls were made.
+- New local artifacts:
+  - `Marketapp-main-worktree/tools/native_memory_ranker_replay.py`
+  - `Marketapp-main-worktree/reports/native_memory_ranker_replay_20260802/NATIVE_MEMORY_RANKER_REPLAY_20260802.md`
+  - `Marketapp-main-worktree/reports/native_memory_ranker_replay_20260802/native_memory_leaderboard.csv`
+  - `Marketapp-main-worktree/reports/native_memory_ranker_replay_20260802/native_memory_policy_rows.csv`
+- Dataset:
+  - source: `reports/month_end_tabfm_20260731/month_end_teacher_v1_dataset.csv`
+  - rows: `2526`
+  - unique menus: `320`
+  - dates: `2026-07-01` to `2026-07-31`
+- Baselines:
+  - actual primary total P&L: `-14150.03`
+  - oracle best available total P&L: `135715.19`
+- Best prior-day K7 with primary fallback:
+  - policy: `k7_prior_day_k25_sim0.35_n5_fallback_primary`
+  - total P&L: `-2260.95`
+  - delta vs actual primary: `+11889.08`
+  - OK memory picks: `260`
+  - fallback primary picks: `60`
+  - changed from primary: `245`
+  - family changed: `54`
+  - interpretation: improves selection materially, but remains net negative over the full window because fallback primary carries cold-start losses
+- Best prior-day K7 with no-trade when support is thin:
+  - policy: `k7_prior_day_k25_sim0.35_n5_no_trade`
+  - total P&L: `31975.09`
+  - delta vs actual primary: `+46125.12`
+  - OK memory picks: `260`
+  - no-trade abstain rows: `60`
+  - max drawdown: `-11143.41`
+  - from `2026-07-03`: `39876.15`
+  - from `2026-07-07`: `37539.78`
+- Diagnostic same-day upper bound:
+  - best same-day diagnostic total P&L: `50310.86`
+  - not deployable because same-day outcomes are unavailable during live trading
+- Engineering interpretation:
+  - K7 native memory principle has useful signal
+  - fallback-primary mode is not enough for live authority
+  - the promising mechanism is not only "pick a better candidate"; it is also "abstain when memory support is insufficient"
+  - next safe app step should remain shadow-only: log K7 pick and K7 no-trade recommendation beside current primary, then compare after close
+  - do not promote K7 to live ranking/order authority yet
+
+### 2026-08-03 - M1 Menu-Level Reframe Verified Against Supabase
+
+- User asked OpenClaw to verify Claude's `DIRECTIVE_M1_MENU_LEVEL_REFRAME.md` and not blindly implement it.
+- Initial cached-only review was useful but incomplete because the cached month-end CSV does not contain the exact `price_integrity=OK` SQL population.
+- OpenClaw then ran a throttled read-only Supabase REST pull:
+  - table: `ml_evaluation_outcomes`
+  - filters: `session_date 2026-07-01..2026-07-31`, `label_version=teacher_v1`, `price_integrity=OK`, `snapshot_id not null`, `candidate_id not null`
+  - page size: `200`
+  - sleep between pages: `0.7s`
+  - writes: none
+  - large JSON/chain slices: not fetched
+- New local artifacts:
+  - `Marketapp-main-worktree/tools/m1_menu_level_reframe_audit.py`
+  - `Marketapp-main-worktree/reports/m1_menu_level_reframe_audit_20260803/M1_MENU_LEVEL_REFRAME_AUDIT_20260803.md`
+  - `Marketapp-main-worktree/reports/m1_menu_level_reframe_audit_20260803/supabase_price_integrity_ok_menu_summary.csv`
+  - `Marketapp-main-worktree/reports/m1_menu_level_reframe_audit_20260803/supabase_price_integrity_ok_menu_feature_separation.csv`
+  - `Marketapp-main-worktree/reports/m1_menu_level_reframe_audit_20260803/supabase_price_integrity_ok_within_win_menu_selection.csv`
+  - `Marketapp-main-worktree/reports/m1_menu_level_reframe_audit_20260803/cached_month_dataset_menu_summary.csv`
+- Supabase exact-population result:
+  - rows loaded: `324`
+  - menus all: `43`
+  - menus with at least 3 gradeable candidates: `41`
+  - average candidates/menu: `7.85`
+  - unanimous menus: `24 / 41 = 58.5%`
+  - average within-menu majority: `89.5%`
+  - win-menus: `13 / 41 = 31.7%`
+  - lose-menus: `28 / 41 = 68.3%`
+  - average candidate P&L in win-menus: `+600.02`
+  - average candidate P&L in lose-menus: `-467.73`
+- M1 verification outcome:
+  - Claude's exact 41-menu claim is reproduced from Supabase.
+  - The menu itself is a major decision unit; the next brain fix should start with menu-level trade/abstain.
+  - Candidate-level ranking is not dead; it should become conditional after the menu/snapshot passes a tradeability gate.
+  - Single-family menus are `27 / 41 = 65.8%`, so some within-menu unanimity is partly structural.
+  - Richer menus show lower unanimity:
+    - `3-5` candidates: `94.7%` unanimous
+    - `6-10` candidates: `29.4%` unanimous
+    - `11+` candidates: `20.0%` unanimous
+  - This means broad/multi-candidate menus still need candidate-level ranking after menu-level acceptance.
+- Per-day exact-population breakdown:
+  - `2026-07-16`: 7 menus, 5 win-menus
+  - `2026-07-21`: 5 menus, 5 win-menus
+  - `2026-07-24`: 3 menus, 0 win-menus
+  - `2026-07-29`: 7 menus, 0 win-menus
+  - `2026-07-30`: 16 menus, 3 win-menus
+  - `2026-07-31`: 3 menus, 0 win-menus
+- Engineering decision:
+  - accept M1 as a reframing hypothesis and evidence-backed direction
+  - do not implement a live change directly from this proof alone
+  - next safe work is a replay-only menu-level abstention advisor on the exact Supabase `price_integrity=OK` population
+  - keep K7 native memory ranker shadow-only until post-close evidence proves it beyond warm-up/day-concentration effects
+
+### 2026-08-03 - M1 Menu-Level Abstention Replay Completed
+
+- OpenClaw built the next replay-only step from the exact Supabase M1 population.
+- No new Supabase calls were made in the replay; it reads:
+  - `Marketapp-main-worktree/reports/m1_menu_level_reframe_audit_20260803/supabase_price_integrity_ok_menu_summary.csv`
+- New local artifacts:
+  - `Marketapp-main-worktree/tools/m1_menu_abstention_replay.py`
+  - `Marketapp-main-worktree/reports/m1_menu_abstention_replay_20260803/M1_MENU_ABSTENTION_REPLAY_20260803.md`
+  - `Marketapp-main-worktree/reports/m1_menu_abstention_replay_20260803/menu_abstention_policy_leaderboard.csv`
+  - `Marketapp-main-worktree/reports/m1_menu_abstention_replay_20260803/menu_abstention_policy_rows.csv`
+  - `Marketapp-main-worktree/reports/m1_menu_abstention_replay_20260803/best_policy_day_breakdown.csv`
+  - `Marketapp-main-worktree/reports/m1_menu_abstention_replay_20260803/best_cold_start_abstain_policy_day_breakdown.csv`
+- Critical correction during replay:
+  - an initial version allowed earlier same-day outcomes to influence later same-day menu decisions
+  - this was rejected as live-invalid leakage because teacher outcomes are only available after market close
+  - final replay is `prior-date-only`; memory is updated only after the full session is scored
+- Exact M1 replay baselines over 41 menus:
+  - always trade current primary: `+937.95`
+  - oracle candidate if every menu is traded: `+14941.46`
+  - perfect menu abstention using current primary only: `+13217.27`
+  - trade nothing: `0`
+- Best past-only policy if cold-start is allowed to accept:
+  - policy: `global_min1_win_menu_rate_0.7_accept`
+  - P&L: `+9787.34`
+  - delta vs primary: `+8849.39`
+  - accepted: `15 / 41` menus
+  - accepted win rate: `66.67%`
+  - max drawdown: `-2796.75`
+  - caveat: this inherits early profitable sessions before enough prior evidence exists, so it is less conservative
+- Best deployability-relevant cold-start-abstain policy:
+  - policy: `global_min1_win_menu_rate_0.7_abstain`
+  - P&L: `+4476.06`
+  - delta vs primary: `+3538.11`
+  - accepted: `8 / 41` menus
+  - accepted win rate: `62.5%`
+  - max drawdown: `-2796.75`
+- Best cold-start-abstain day breakdown:
+  - `2026-07-16`: accepted `0 / 7`, policy `0`, primary `+5311.28`, delta `-5311.28`
+  - `2026-07-21`: accepted `5 / 5`, policy `+7272.81`, primary `+7272.81`, delta `0`
+  - `2026-07-24`: accepted `3 / 3`, policy `-2796.75`, primary `-2796.75`, delta `0`
+  - `2026-07-29`: accepted `0 / 7`, policy `0`, primary `-1852.91`, delta `+1852.91`
+  - `2026-07-30`: accepted `0 / 16`, policy `0`, primary `-5067.67`, delta `+5067.67`
+  - `2026-07-31`: accepted `0 / 3`, policy `0`, primary `-1928.81`, delta `+1928.81`
+- Engineering interpretation:
+  - menu-level abstention has real signal even after removing same-day leakage
+  - the sample is still too small for live authority
+  - the strongest mechanism is not better candidate picking yet; it is avoiding bad menus/sessions
+  - next step should expand replay to broader generated-menu/context data before any app wiring
+  - no app behavior changed and no push was done
+
+### 2026-08-03 - Broad Menu Abstention Replay Completed
+
+- OpenClaw expanded the M1 abstention replay from the exact 41-menu Supabase OK population to the broader cached July teacher dataset.
+- No additional Supabase calls were made.
+- New local artifacts:
+  - `Marketapp-main-worktree/tools/m1_broad_menu_abstention_replay.py`
+  - `Marketapp-main-worktree/reports/m1_broad_menu_abstention_replay_20260803/M1_BROAD_MENU_ABSTENTION_REPLAY_20260803.md`
+  - `Marketapp-main-worktree/reports/m1_broad_menu_abstention_replay_20260803/broad_menu_summary.csv`
+  - `Marketapp-main-worktree/reports/m1_broad_menu_abstention_replay_20260803/broad_menu_abstention_policy_leaderboard.csv`
+  - `Marketapp-main-worktree/reports/m1_broad_menu_abstention_replay_20260803/best_policy_day_breakdown.csv`
+  - `Marketapp-main-worktree/reports/m1_broad_menu_abstention_replay_20260803/best_cold_start_abstain_policy_day_breakdown.csv`
+  - `Marketapp-main-worktree/reports/m1_broad_menu_abstention_replay_20260803/best_cold_start_abstain_policy_rows.csv`
+- Source dataset:
+  - `Marketapp-main-worktree/reports/month_end_tabfm_20260731/month_end_teacher_v1_dataset.csv`
+  - candidate rows: `2526`
+  - gradeable menus with at least 3 candidates: `307`
+  - status: exploratory; this is broader than the exact `price_integrity=OK` Supabase M1 proof population
+- Replay discipline:
+  - prior-date-only memory
+  - no same-day teacher outcome leakage
+  - app behavior changes: none
+- Broad replay baselines over 307 menus:
+  - always trade current primary: `-41202.03`
+  - oracle candidate every menu: `+108232.93`
+  - perfect menu abstention using primary only: `+23222.75`
+  - win-menus: `53 / 307 = 17.26%`
+  - unanimous menus: `121 / 307 = 39.41%`
+- Best cold-start-abstain policy:
+  - policy: `strategy_context_min1_avg_menu_pnl_0.0_abstain`
+  - signature uses primary strategy plus `day_direction`, `day_range`, and `day_vix`
+  - P&L: `+21463.57`
+  - delta vs primary: `+62665.60`
+  - accepted: `32 / 307` menus
+  - accepted win rate: `53.12%`
+  - max drawdown: `-4725.56`
+- Day breakdown for the best cold-start-abstain policy:
+  - `2026-07-01`: accepted `0 / 58`, avoided primary `-30952.29`
+  - `2026-07-02`: accepted `0 / 71`, avoided primary `-13513.08`
+  - `2026-07-03`: accepted `0 / 61`, avoided primary `-8705.09`
+  - `2026-07-07`: accepted `0 / 57`, missed primary `+350.84`
+  - `2026-07-08`: accepted `9 / 13`, policy `+13250.75`
+  - `2026-07-14`: accepted `5 / 5`, policy `+354.29`
+  - `2026-07-16`: accepted `7 / 7`, policy `+5311.28`
+  - `2026-07-21`: accepted `5 / 5`, policy `+7272.81`
+  - `2026-07-24`: accepted `3 / 3`, policy `-2796.75`
+  - `2026-07-29`: accepted `0 / 7`, avoided primary `-1852.91`
+  - `2026-07-30`: accepted `0 / 16`, avoided primary `-5067.67`
+  - `2026-07-31`: accepted `3 / 3`, policy `-1928.81`
+- Concentration check:
+  - best policy day: `2026-07-08`, P&L `+13250.75`
+  - best-day share of total policy P&L: `61.74%`
+  - policy P&L excluding best day: `+8212.82`
+- Engineering interpretation:
+  - menu-level abstention is no longer only a 41-menu artifact; it survives the broader 307-menu replay
+  - the current brain's biggest failure is trading bad menus/sessions, not merely picking the wrong candidate inside a good menu
+  - the abstention signal is promising but still not live-ready because it accepts only `10.42%` of menus and has day-concentration risk
+  - next safe implementation direction is a shadow-only menu advisor that reports `TRADEABLE_MENU` vs `ABSTAIN_MENU` beside the current brain output
+  - no live ranking/order/notification behavior should change until post-close shadow evidence confirms the advisor
+
+### 2026-08-03 - Rejected Candidate P&L Measurement Release Prepared
+
+- User identified a missing correctness measurement:
+  - rejected candidates also need post-close P&L, otherwise we cannot prove whether the gate waterfall rejected profitable candidates
+- OpenClaw implemented this as a bounded research-only evaluator, not live authority.
+- Release target:
+  - Android `versionName = 2.5.43`
+  - Android `versionCode = 374`
+  - Python `BRAIN_VERSION = 2.5.43`
+  - PWA visible label `v2.5.43 · b374`
+- Android files included in the intended release batch:
+  - `Marketapp-main-worktree/app/build.gradle.kts`
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+  - `Marketapp-main-worktree/app/src/main/python/tests/test_stage2a_guarded_ranking.py`
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/SupabaseClient.kt`
+  - `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/MarketMLService.kt`
+- PWA/knowledge files included in the intended sync batch:
+  - `MarketVivi-git/index.html`
+  - `MarketVivi-git/PROJECT_KNOWLEDGE.md`
+- Core implementation:
+  - `brain.py` now evaluates a capped rejected-candidate cohort after market close
+  - cap: `REJECTED_EVAL_CANDIDATE_CAP = 24` per snapshot
+  - rejected rows are stamped as `role = rejected`
+  - rejected rows are stamped as `source_record_type = MENU_REJECTED_BY_GATES`
+  - rejected rows preserve `candidate_id`, rejection stage/reason, gate metadata, and four-leg strike fields where available
+  - rejected P&L is reported under daily teacher research as a separate `rejected_research` cohort
+- Safety boundaries:
+  - no live ranking change
+  - no live gate authority
+  - no notification routing change
+  - no paper trade behavior change
+  - no sandbox/order behavior change
+  - no training switch-gate authority
+  - rejected P&L is not pooled into chosen/generated candidate metrics
+- Kotlin persistence protection:
+  - `buildRecommendationRows(...)` skips `role = rejected`
+  - lane summary excludes rejected rows from primary/secondary teacher metrics and exposes `rejectedResearchRows` separately
+  - `saveEvaluationOutcomes(...)` tries full persistence first, then falls back to a no-rejected-research payload if Supabase rejects the new role
+  - normal day evaluation should not be blocked by rejected-research schema incompatibility
+- Local verification:
+  - `python -m py_compile app/src/main/python/brain.py app/src/main/python/tests/test_stage2a_guarded_ranking.py` passed
+  - `python -m unittest app/src/main/python/tests/test_stage2a_guarded_ranking.py` passed, `15` tests
+  - `python -m unittest discover -s app/src/main/python/tests -p 'test_*.py'` passed, `194` tests
+- Verification limitation:
+  - local `./gradlew :app:compileDebugKotlin` could not run because the workspace has no Android SDK configured
+  - error: missing `ANDROID_HOME` or `local.properties` `sdk.dir`
+  - GitHub Actions signed/debug builds remain the Kotlin compile/release validation path
+- Claude-facing handoff created outside git:
+  - `CLAUDE_UPDATE_REJECTED_CANDIDATE_PNL_AND_M1_PUSH_PLAN_20260803.txt`
+- Known local files intentionally excluded from this release unless separately requested:
+  - `Marketapp-main-worktree/historical_replay_harness.py`
+  - untracked analysis `reports/` and `tools/`
