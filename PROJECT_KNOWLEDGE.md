@@ -17134,3 +17134,35 @@ git -C /abs/path/to/repo \
 - Known local files intentionally excluded from this release unless separately requested:
   - `Marketapp-main-worktree/historical_replay_harness.py`
   - untracked analysis `reports/` and `tools/`
+### 2026-08-03 - P1 Rejected Outcomes + Context Percentile Release
+
+- Supabase production migration was applied directly before release:
+  - migration file: `Marketapp-main-worktree/supabase/migrations/20260803_rejected_candidate_outcomes.sql`
+  - created table: `public.ml_rejected_candidate_outcomes`
+  - verified: `56` columns and expected key columns present
+  - verified indexes:
+    - `ml_rejected_candidate_outcomes_pkey`
+    - `idx_ml_rejected_candidate_outcomes_session_date`
+    - `idx_ml_rejected_candidate_outcomes_stage`
+    - `idx_ml_rejected_candidate_outcomes_strategy`
+    - `idx_ml_rejected_candidate_outcomes_snapshot`
+- Release target:
+  - Android `versionName = 2.5.44`
+  - Android `versionCode = 375`
+  - Python `BRAIN_VERSION = 2.5.44`
+  - PWA visible label `v2.5.44 · b375`
+- Runtime scope:
+  - rejected candidate post-close outcomes persist to the new research table only
+  - production teacher tables continue excluding `role = rejected`
+  - rejected persistence failure is surfaced loudly in ML evaluation status, without blocking normal chosen/generated outcome persistence
+  - live percentile context is now used as a bounded ranking modifier, not as a hard gate
+  - percentile context uses available premium/FII/VIX/range history and earlier same-session context where available
+- Safety scope:
+  - no live order/sandbox behavior changed
+  - no rejected rows are mixed into chosen/teacher production metrics
+  - no hard percentile gate was added
+  - Supabase migration is additive and idempotent
+- Release hygiene:
+  - synchronized release required in both repos
+  - Android signed release should fire because `app/build.gradle.kts` changed
+  - unrelated local analysis artifacts under `reports/`, `tools/`, `catboost_info/`, and modified `historical_replay_harness.py` remain excluded unless separately requested
