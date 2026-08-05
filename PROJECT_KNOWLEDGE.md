@@ -17166,3 +17166,34 @@ git -C /abs/path/to/repo \
   - synchronized release required in both repos
   - Android signed release should fire because `app/build.gradle.kts` changed
   - unrelated local analysis artifacts under `reports/`, `tools/`, `catboost_info/`, and modified `historical_replay_harness.py` remain excluded unless separately requested
+- Push and CI result:
+  - `Marketapp` pushed to `main`: `cef1c198a3b728dd6ea9f46d8298206978c61135`
+  - `MarketVivi` pushed to `main`: `4a6f10978720f6aa917cd3b0f1fdbc537db3fde7`
+  - Android signed release workflow succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/30804966112`
+  - Android debug APK validation also succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/30804966116`
+  - GitHub release created:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.44`
+- Post-close Supabase verification for `2026-08-03`:
+  - ML evaluation completed successfully before the `v2.5.44` app was active for the captured session
+  - `ml_evaluation_outcomes`: `85` rows
+  - `ml_recommendation_outcomes`: `85` rows
+  - primary rows: `7`
+  - secondary rows: `78`
+  - distinct evaluated snapshots: `7`
+  - distinct candidates: `40`
+  - price integrity: `85 / 85 OK`
+  - created at: `2026-08-03 11:04:40 UTC`
+  - total managed P&L across evaluated rows: `-13437.19`
+  - average R multiple: `-0.0207`
+  - teacher success rows: `0`
+  - nuance: positive P&L does not count as teacher success unless the managed target condition is captured
+- New-feature verification status:
+  - `ml_rejected_candidate_outcomes`: `0` rows for `2026-08-03`
+  - `ml_brain_snapshots` for `2026-08-03` showed `0` `context_percentiles` markers
+  - interpretation: today's session/evaluation was produced by the pre-`v2.5.44` app state; this is expected if the phone update occurred after the market/evaluation capture
+  - next live verification target: run `v2.5.44 / b375` during the next live market session and confirm:
+    - context percentile markers appear in `ml_brain_snapshots.context_json` / `poll_summary_json`
+    - rejected research rows persist into `ml_rejected_candidate_outcomes`
+    - normal `ml_evaluation_outcomes` and `ml_recommendation_outcomes` persistence remains unchanged
