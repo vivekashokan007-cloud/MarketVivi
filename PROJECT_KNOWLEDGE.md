@@ -1,3 +1,147 @@
+## 2026-08-05 - Release Prep: v2.5.48 / b379 Rejected Diagnostics + B1 Precedence
+
+- Release target prepared after Claude ruling v2 and Codex verification:
+  - Android `versionName = 2.5.48`
+  - Android `versionCode = 379`
+  - Python `BRAIN_VERSION = 2.5.48`
+  - PWA visible label `v2.5.48 · b379`
+  - PWA cache-bust `app.js?v=1280`
+- Runtime code changes:
+  - rejected-candidate post-close write path now logs actual PostgREST status/body instead of emitting misleading `migration_required`
+  - rejected payload keys are diffed against expected `ml_rejected_candidate_outcomes` columns and reported in app logs
+  - context-percentile app read path now prefers `history_source=live` over `backfill` for the same `(session_date, variable_name)`, then latest `history_window_end`
+  - service status now treats `PARTIAL` coverage as evaluation-promotion eligible; only `INTEGRITY_BROKEN` blocks normal evaluation
+- B1 local-tool correction:
+  - `tools/b1_percentile_backfill_controller.py` updated to match Claude v2 corrected constraints
+  - PCR excluded from merged backfill because premium-history PCR and chain PCR are definitionally incomparable
+  - VIX daily collapse uses last poll
+  - manual institutional fields use modal daily value with latest tie-break
+  - per-row `source_table` is actual source only: `premium_history` or `ml_brain_snapshots`
+  - `source_quality` marks splice windows
+  - null-value and unknown-source rows are skipped
+- Read-only B1 full-window dry-run:
+  - source window: `2026-07-01` to `2026-08-05`
+  - Supabase reads: `146` premium-history rows and `1959` snapshot rows
+  - rows built locally: `416`
+  - Supabase rows written: `0`
+  - PCR rows: `0`
+  - unknown-source rows: `0`
+  - null-value rows: `0`
+  - transient Supabase read retries occurred near later snapshot pages and recovered through built-in backoff
+- Verification:
+  - `python3 -m py_compile tools/b1_percentile_backfill_controller.py app/src/main/python/brain.py` passed
+  - `git diff --check` passed
+  - local Android/Kotlin compile could not run because this workspace has no configured Android SDK (`ANDROID_HOME` / `local.properties sdk.dir` missing)
+- Standing caveat:
+  - missed slots are not automatically corrupted sessions; `PARTIAL` is usable/advisory, while duplicate/missing final slot and true broken integrity remain blockers
+- Pending after release:
+  - verify next post-close ML evaluation on-device confirms rejected-outcome write success or exposes the real PostgREST payload error
+  - decide whether to write B1 backfill rows to Supabase after reviewing the dry-run evidence
+  - continue family-selection/ranker replay only after rejected-outcome evidence is no longer silently missing
+
+## 2026-08-05 b378 full-candidate evidence push and first live ledger reading
+
+- Release pushed synchronously:
+  - Marketapp commit:
+    - `014c7aa3f690a64141761e0750d6a62c02cf1109`
+    - message: `Release v2.5.47 full candidate evidence telemetry`
+  - MarketVivi commit:
+    - `96636e3a3ad6922131b77399e5cb3ec2914d3de2`
+    - message: `Sync PWA release v2.5.47`
+  - Android:
+    - `versionName = 2.5.47`
+    - `versionCode = 378`
+  - Python:
+    - `BRAIN_VERSION = 2.5.47`
+  - PWA label:
+    - `v2.5.47 · b378`
+- GitHub Actions:
+  - Signed release succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/30983874119`
+  - Debug APK validation succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/30983874228`
+- Validation before push:
+  - `python3 -m py_compile app/src/main/python/brain.py historical_replay_harness.py` passed.
+  - `python3 app/src/main/python/tests/test_build3_a8_nf_ab.py` passed.
+  - `python3 -m unittest app.src.main.python.tests.test_stage2a_guarded_ranking` passed.
+  - local `./gradlew compileDebugKotlin` remained blocked by missing Android SDK/local.properties in this workspace, but GitHub build validation passed.
+- Main b378 implementation:
+  - UI-facing `generated_candidates` remains capped for payload safety.
+  - new wider research/evaluation evidence path:
+    - `ranked_candidates_full`
+    - `BUILD3_RANKED_EVIDENCE_CAP = 150`
+  - new `build3_flow_v1` ledger records candidate accounting through:
+    - construction
+    - Build 3 ranking
+    - A8
+    - lane gate
+    - final rank
+    - persistence
+  - `poll_summary.generated_count` remains the UI/menu count.
+  - new `poll_summary.ranked_evidence_count` carries the wider evidence count.
+  - Kotlin compaction now preserves:
+    - `snapshot_ranked_candidates_full`
+    - `snapshot_build3_flow`
+    - `snapshot_build3_gate`
+    - `snapshot_build3_lane_gate`
+    - `snapshot_rejected_candidate_stats`
+  - `ml_generated_candidates.generated_count` now prefers ranked evidence count when available, falling back to old generated count.
+    - Claude flagged a valid minor residual: stamp `app_version` on `ml_generated_candidates` rows later so this meaning change is self-diagnosing.
+    - Do not implement until table schema/migration is checked.
+- Claude handoff file created for b378:
+  - `/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/CLAUDE_HANDOFF_V2_5_47_FULL_CANDIDATE_EVIDENCE_20260805.txt`
+- First installed-device log after update:
+  - upload:
+    - `/tmp/codex-web-uploads/f-ZL9Q2d/marketapp-logs-2026-08-05T08-27-40-009Z.csv`
+  - screenshot confirmed:
+    - `v2.5.47 · b378`
+  - crash scan result:
+    - no `FATAL`
+    - no `AndroidRuntime`
+    - no traceback
+    - no OOM/ANR/SIGSEGV/process-died signature
+  - observed restart at `13:46:36` was tied to `MY_PACKAGE_REPLACED`, consistent with APK update/install rather than organic crash.
+  - one short service restart/gap warning:
+    - `BL_A_SERVICE_RESTART_GAP_MS=2176`
+  - one recoverable error:
+    - `POLL_ALARM_FAIL: Job was cancelled`
+  - service recovered and continued polling/UI sync.
+  - snapshot payload looked safe:
+    - bridge payload about `67514` bytes.
+    - local cache file about `312789` bytes under `2097152` cap.
+- Claude b378 first-live ledger findings:
+  - directive/file:
+    - `/tmp/codex-web-uploads/f-GBmuxC/CLAUDE_B378_FIRST_LIVE_LEDGER_FINDINGS_20260805.md`
+  - Claude explicitly marked it observation-only; no behavior change requested.
+  - b378 ledger present on live rows.
+  - silent-loss class appears closed on sampled b378 polls:
+    - `unexplained_drop_at_final_rank = 0`
+    - `unexplained_drop_at_build3_rank = 0`
+    - `truncated_at_persistence = 0`
+    - `truncated_at_ranked_evidence = 0`
+    - `dropped_capital_at_final_rank = 0`
+    - `dropped_capital_at_build3_rank = 0`
+  - lane gate is firing in restriction mode, not total wipe:
+    - `CALM_NF_LANE_RESTRICTION`
+    - removed BNF candidates while NF survivors remained.
+    - `CALM_NF_ONLY_WAIT` not yet observed.
+  - major finding:
+    - A8 EV floor rejected 100% of checked candidates, but A8 is soft so supply was released.
+    - observed `build3EvRatio` values were below `1.10`, and none reached `1.0` in the sampled rows.
+    - Claude’s interpretation: EV arithmetic is likely using expiry max-loss while the real evaluation/exit horizon is H2, causing horizon mismatch and family reordering distortion.
+- Current position:
+  - do not code immediately from the b378 first-live ledger.
+  - post-close checks should decide the next correction.
+  - real money remains paused.
+  - next evidence priorities:
+    - full-day `build3_flow` ledger must remain balanced.
+    - compare lane-gate removed candidates versus survivors.
+    - pull full-session `build3EvRatio` distribution by family/index.
+    - confirm whether any candidate crossed `1.0` or `1.10`.
+    - check whether `CALM_NF_ONLY_WAIT` occurred.
+    - confirm post-close teacher/research uses wider `ranked_candidates_full`, not only UI top 30.
+  - if evidence confirms EV/ranking distortion, next likely target is replacing expiry-risk EV with holding-period/managed-exit risk evidence, not another broad model experiment.
+
 ## 2026-07-27 Forward path batching and local b362 auto-evaluation fix
 
 - Trigger:
