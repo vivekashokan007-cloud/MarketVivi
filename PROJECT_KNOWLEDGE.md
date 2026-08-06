@@ -1,3 +1,163 @@
+## 2026-08-06 - Local Fix Prepared: v2.5.50 / b381 Daily-Grain Percentile Reader
+
+- Claude's v2.5.49 B1 review was checked against the local code before accepting.
+- Confirmed real issue:
+  - `public.ml_context_percentile_history` can contain two grains under `history_source='backfill'`
+  - daily B1 rows have `poll_ts IS NULL`
+  - older poll-level rows have `poll_ts IS NOT NULL`
+  - the app reader previously did not select or filter `poll_ts`, so `live > backfill` precedence could not distinguish daily backfill from poll-level backfill
+- Local correction implemented:
+  - file: `Marketapp-main-worktree/app/src/main/java/com/marketradar/app/SupabaseClient.kt`
+  - `getContextPercentileDailyHistory()` now selects `poll_ts`
+  - REST query now filters `&poll_ts=is.null`
+  - this pins the live context-history bridge to daily-grain rows only
+- Reasoning:
+  - the bridge feeds the Python brain's `premiumHistory` contract
+  - Python computes current live percentiles from historical raw daily values
+  - intra-session poll history remains separately available from live polling
+  - mixing poll-level and daily rows would make percentile influence uninterpretable
+- Local synchronized version bump prepared:
+  - Android `versionName = 2.5.50`
+  - Android `versionCode = 381`
+  - Python `BRAIN_VERSION = 2.5.50`
+  - PWA visible label: `v2.5.50 · b381`
+  - PWA cache-bust: `app.js?v=1282`
+- Validation completed:
+  - `python3 -m py_compile app/src/main/python/brain.py tools/b1_percentile_backfill_controller.py`
+  - `git diff --check` in Marketapp
+  - `git diff --check` in MarketVivi
+- Not pushed yet:
+  - this is local-only until Vivek explicitly commands push
+  - if pushed, it must be synchronized to both repos so the phone/PWA can identify the corrected build
+- Claude rejected-outcome request review:
+  - real PostgREST body logging and payload-key diff are already present in current code
+  - remaining rejected-outcome task is live/post-close proof, not another code change yet
+
+## 2026-08-06 - Current State: v2.5.49 / b380 B1 Backfill + Bias Capture
+
+- Latest synchronized release:
+  - Android app repo: `Marketapp-main-worktree`
+  - PWA repo: `MarketVivi-git`
+  - Android `versionName = 2.5.49`
+  - Android `versionCode = 380`
+  - Python `BRAIN_VERSION = 2.5.49`
+  - PWA visible label: `v2.5.49 · b380`
+  - PWA cache-bust: `app.js?v=1281`
+- Latest pushed commits:
+  - Marketapp: `5bc0e243b8faa544afe802dcd98dca1a2b08217c`
+  - Marketapp message: `Release v2.5.49 B1 backfill and bias capture`
+  - MarketVivi: `4b5a68e6c77217964b53528b15247c2495ae1944`
+  - MarketVivi message: `Sync PWA release v2.5.49`
+- GitHub validation:
+  - signed release succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31064676033`
+  - debug validation succeeded:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31064676021`
+  - release artifact:
+    - `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.49`
+
+### B1 percentile backfill state
+
+- B1 percentile-support rows were written to Supabase table `public.ml_context_percentile_history`.
+- Write source:
+  - vetted local CSV: `reports/b1_percentile_backfill_20260805/tier1_merged_daily_rows_2026-07-01_to_2026-08-05.csv`
+  - direct CSV write path was used after the long controller path proved fragile in this environment
+  - write was deliberately small-batch and throttling-safe: chunk size `25`, sleeps between batches, no retries/errors
+- Rows written and verified:
+  - total rows: `416`
+  - date range: `2025-10-23` to `2026-08-05`
+  - by variable:
+    - `vix`: `153`
+    - `bias_net`: `26`
+    - `fii_cash`: `50`
+    - `fii_short_pct`: `50`
+    - `dii_cash`: `46`
+    - `fii_idx_fut`: `45`
+    - `fii_stk_fut`: `46`
+  - by source:
+    - `premium_history`: `260`
+    - `ml_brain_snapshots`: `156`
+- PCR was intentionally excluded from B1 merged backfill because premium-history PCR and chain/PCR definitions are not equivalent.
+- The app read path already prefers `history_source = live` over `backfill` for the same `(session_date, variable_name)`, then latest `history_window_end`.
+- Important limitation:
+  - recent `bias_net` history after `2026-06-29` was not available in older snapshots because the snapshot contract did not persist it
+  - this is not solved retroactively by the B1 write unless a separate derivation/replay backfill is authorized
+  - future capture is now fixed in app code from `v2.5.49 / b380`
+
+### Bias capture fix
+
+- File changed:
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+- Future snapshots now persist bias context into both major snapshot JSON blocks:
+  - `context_json.bias_net`
+  - `context_json.effective_bias`
+  - `context_json.morningBias`
+  - `market_forces_json.bias_net`
+  - `market_forces_json.effective_bias`
+  - `market_forces_json.morning_bias`
+- Extraction order:
+  - `result.effective_bias` fallback `ctx.effective_bias`
+  - `result.morningBias` fallback `ctx.morningBias`
+  - `bias_net = effective_bias.net` fallback `morningBias.net`
+- Scope:
+  - additive persistence only
+  - no live ranking logic changed in this release
+  - no new gate was added
+  - no sandbox/order routing changed
+
+### Controller hardening
+
+- File changed:
+  - `Marketapp-main-worktree/tools/b1_percentile_backfill_controller.py`
+- Safety changes:
+  - merged-daily write mode now requires both `--write` and `--allow-merged-write`
+  - report records whether write was requested and rows written
+  - fixed local-variable bug from `history_source` to `args.history_source`
+- Operational lesson:
+  - one long controller run crashed before writes because of the variable bug
+  - another long run was interrupted before writes
+  - final production write used the vetted CSV direct path to avoid repeating the loop
+
+### Local validation
+
+- Passed:
+  - `python3 -m py_compile app/src/main/python/brain.py tools/b1_percentile_backfill_controller.py`
+  - `git diff --check`
+  - focused `take_poll_snapshot` contract test confirmed:
+    - `context_bias_net = -2.0`
+    - `forces_bias_net = -2.0`
+    - `snapshot_contract_ok bias_net=-2.0 app_version=2.5.49`
+- Local Android/Kotlin compile remains unavailable in this workspace because Android SDK is not configured; GitHub Actions is the release validation path.
+
+### Pending verification from Claude direction
+
+- Live verification on the device:
+  - install/update to `v2.5.49 / b380`
+  - after 2-3 live polls, query Supabase to confirm new snapshots contain:
+    - `context_json.bias_net`
+    - `market_forces_json.bias_net`
+    - `app_version = 2.5.49`
+- Post-close verification:
+  - confirm ML evaluation still completes normally
+  - confirm teacher/research artifact reads percentile context
+  - confirm rejected-candidate outcome path remains healthy
+- B1 behavior verification:
+  - confirm app reads backfill rows for `vix`, `fii_short_pct`, `fii_cash`, `dii_cash`, `fii_idx_fut`, and `fii_stk_fut`
+  - confirm live rows override backfill where both exist
+- Brain work still pending after baseline verification:
+  - verify percentile context actually changes ranking when it should
+  - continue rejected-candidate outcome comparison
+  - tune ranking/menu selection, not hard gates, unless risk/margin/data-integrity gates are involved
+  - do not claim historical `bias_net` context is fully repaired until separate derivation/replay is explicitly completed
+
+### Standing operational rules
+
+- Push only on explicit user command.
+- When app changes must reach the phone/PWA, both repos must be synchronized with a version bump.
+- SQL for user-run Supabase checks should be provided as downloadable `.txt` files.
+- Supabase work must be bounded, resumable, and throttling-aware.
+- Claude directives are not accepted blindly; Codex should verify practicality and raise technical concerns.
+
 ## 2026-08-05 - Release Prep: v2.5.48 / b379 Rejected Diagnostics + B1 Precedence
 
 - Release target prepared after Claude ruling v2 and Codex verification:
