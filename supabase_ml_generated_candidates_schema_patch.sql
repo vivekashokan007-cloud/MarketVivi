@@ -66,6 +66,30 @@ create index if not exists idx_ml_generated_candidates_surfaced
 create index if not exists idx_ml_generated_candidates_session_lane
     on public.ml_generated_candidates (session_date, lane, was_surfaced);
 
+alter table public.ml_generated_candidates enable row level security;
+
+drop policy if exists ml_generated_candidates_select_anon on public.ml_generated_candidates;
+create policy ml_generated_candidates_select_anon
+on public.ml_generated_candidates
+for select
+to anon, authenticated
+using (true);
+
+drop policy if exists ml_generated_candidates_insert_anon on public.ml_generated_candidates;
+create policy ml_generated_candidates_insert_anon
+on public.ml_generated_candidates
+for insert
+to anon, authenticated
+with check (true);
+
+drop policy if exists ml_generated_candidates_update_anon on public.ml_generated_candidates;
+create policy ml_generated_candidates_update_anon
+on public.ml_generated_candidates
+for update
+to anon, authenticated
+using (true)
+with check (true);
+
 -- Verification: table shape
 select table_name, column_name, data_type
 from information_schema.columns
@@ -79,4 +103,3 @@ from pg_indexes
 where schemaname = 'public'
   and tablename = 'ml_generated_candidates'
 order by indexname;
-
