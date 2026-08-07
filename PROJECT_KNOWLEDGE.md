@@ -1,3 +1,280 @@
+## 2026-08-07 - Current State: v2.5.58 / b389 N2 Position Notification Release Pushed
+
+- Latest synchronized runtime release has been pushed to both repos.
+- Marketapp commit:
+  - `8e9ad8caa9a4221e20211939b9318425a335fd5d`
+  - message: `Release v2.5.58 notification reachability`
+- MarketVivi commit:
+  - `46fd50bef864ad7203cd806f45b448c5f2742079`
+  - message: `Sync PWA release v2.5.58`
+- Remote `main` HEADs confirmed:
+  - Marketapp `main`: `8e9ad8caa9a4221e20211939b9318425a335fd5d`
+  - MarketVivi `main`: `46fd50bef864ad7203cd806f45b448c5f2742079`
+- Synchronized version state:
+  - Android `versionName = 2.5.58`
+  - Android `versionCode = 389`
+  - Python `BRAIN_VERSION = 2.5.58`
+  - PWA visible label: `v2.5.58 · b389`
+  - PWA cache-bust: `app.js?v=1290`
+
+### GitHub Actions / Release Status
+
+- Marketapp GitHub Actions completed successfully:
+  - `Market Radar Debug APK Validation`
+    - run id: `31156495100`
+    - conclusion: `success`
+  - `Market Radar Signed Release`
+    - run id: `31156494570`
+    - conclusion: `success`
+- This means the signed Android release path fired correctly from the Gradle version bump.
+
+### What v2.5.58 / b389 Changes
+
+- Scope: N2 position and brain notification reachability.
+- Files changed in Marketapp:
+  - `app/build.gradle.kts`
+  - `app/src/main/python/brain.py`
+  - `app/src/main/python/tests/test_unified_brain_notification.py`
+  - `app/src/main/java/com/marketradar/app/MarketWatchService.kt`
+  - `app/src/main/java/com/marketradar/app/NotificationHelper.kt`
+- Files changed in MarketVivi:
+  - `index.html`
+
+### N2 Fixes Implemented
+
+- Position risk/exit alerts no longer get structurally suppressed just because mark quality or control-index completeness is degraded.
+  - If `current_pnl` is computable, `POS_TARGET`, `POS_STOP`, and `POS_BOOK` remain eligible.
+  - Degraded mark state now adds a quality note to the actionable alert body.
+  - If `current_pnl` is missing, only `POS_DATA_QUALITY` is emitted, because risk/exit math cannot be trusted.
+- Multiple position alerts can now dispatch in one poll.
+  - Python returns a `brain_notifications` array for unseen position contracts.
+  - Kotlin dispatch loop sends each contract instead of only the single legacy `brain_notification`.
+  - Legacy single `brain_notification` remains for UI/snapshot compatibility.
+- Position alert dedupe is now state-aware instead of permanently suppressing all future alerts for the same trade.
+  - Repeating same trade/state dedupes.
+  - State transitions such as target -> stop or book -> stop can notify again.
+- Entry notification contract diagnostics are now persisted on every `brain_notification`.
+  - Conditions recorded:
+    - `action_not_wait`
+    - `confidence_min`
+    - `entry_window_active`
+    - `executable_candidate_present`
+    - `two_poll_stability`
+  - This lets later audits explain why an entry notification did or did not fire without guessing from logs.
+- Android notification throttle no longer keys only by title.
+  - Throttle key now includes type, title, and body.
+  - This avoids merging different position alerts that share generic titles like `Stop Loss Near`.
+- Notification bodies were enriched.
+  - Entry alerts include index, strategy, strikes, lots, credit/debit, net premium, max loss, target, stop, confidence, forces, and DTE when available.
+  - Position alerts include index, strategy, strikes, lots, P&L, percent of max profit/loss, max profit, max loss, forces, and quality note.
+
+### N2 Validation
+
+- Passed:
+  - `python -m unittest app/src/main/python/tests/test_unified_brain_notification.py app/src/main/python/tests/test_phase_e.py`
+  - result: `61 tests OK`
+  - `git diff --check`
+- Android/Kotlin compile was attempted locally:
+  - `./gradlew :app:compileDebugKotlin`
+  - local result: blocked because this Codex workspace does not have Android SDK configured:
+    - `SDK location not found`
+  - GitHub debug validation later passed, so the hosted Android build path is healthy.
+
+### N2 Scope Intentionally Not Included
+
+- N2 heartbeat / keepalive notification was not implemented in this batch.
+- Reason:
+  - it changes notification cadence and noise profile;
+  - it is safer as a separate explicit decision after live observation of the restored risk/entry notification path.
+
+### Expected Live Checks After Installing v2.5.58
+
+- During live market:
+  - position notification should fire for target/stop/book state when P&L is computable, even if mark quality is partial.
+  - degraded data should be visible as a warning/quality note, not as a silent suppressor of risk alerts.
+  - if multiple open paper positions have actionable state in one poll, more than one position alert can dispatch.
+  - entry notification diagnostics should explain any missing entry alert.
+- After post-close:
+  - confirm ML evaluation still completes.
+  - confirm `brain_notification` / `brain_notifications` contracts are visible in snapshot or log evidence.
+
+### Current Dirty/Untracked Local State Note
+
+- The app repo still contains many untracked analysis reports/tools from prior offline investigations.
+- They were deliberately not committed in `v2.5.58`.
+- The PWA repo still has a modified `PROJECT_KNOWLEDGE.md` after this update and an untracked historical knowledge file:
+  - `PROJECT_KNOWLEDGE_UPDATED_20260723_E1_TABICL.md`
+- This knowledge update is local until explicitly pushed.
+
+## 2026-08-07 - Current State: v2.5.56 / b387 Rank Diagnostics Prepared, Not Yet Released
+
+- Latest code pushed to both repos:
+  - Marketapp commit:
+    - `dbd8c990effd1fd6eb25dc542e6c9b5eeec9e03e`
+    - message: `Add rank diagnostics evidence`
+  - MarketVivi commit:
+    - `e4ca6f3c5a563881739370886357cd2d0df5ff84`
+    - message: `Bump visible version to 2.5.56`
+- Synchronized version state in git:
+  - Android `versionName = 2.5.56`
+  - Android `versionCode = 387`
+  - Python `BRAIN_VERSION = 2.5.56`
+  - PWA visible label: `v2.5.56 · b387`
+- Important delivery status:
+  - both repos are pushed
+  - signed release for `b387` did **not** complete
+  - debug validation for `b387` did **not** complete
+  - failure was GitHub infrastructure, not code evidence:
+    - signed release run `31118949782` failed because hosted runner was not acquired
+    - debug validation run `31118949775` failed while downloading actions / timed out
+  - because of that, phone-side install/update proof for `b387` does not exist yet
+
+### What b387 changes
+
+- File changed:
+  - `Marketapp-main-worktree/app/src/main/python/brain.py`
+- Diagnostic-only expansion for Build 3 ranking analysis:
+  - keeps actual ranking order unchanged
+  - keeps UI-facing generated menu capped
+  - adds larger research evidence path with `ranked_candidates_full`
+  - stages `BUILD3_RANKED_EVIDENCE_CAP = 200`
+  - keeps `generated_candidates` UI cap at `30`
+- New/expanded evidence recorded per candidate:
+  - `varsityTier`
+  - `forces`
+  - `forceAligned`
+  - `forceAgainst`
+  - `contextScore`
+  - `gammaRisk`
+  - `wallScore`
+  - `premium_edge_status`
+  - `rank_diagnostics`
+  - `sort_tuple`
+  - `sort_tuple_fields`
+  - `candidate_id`
+  - `structure_stability_marker`
+- Honest limitation preserved:
+  - true consecutive-poll hold index is **not** available at ranker scope
+  - ranker now states this explicitly instead of fabricating one:
+    - `structure_hold_index_source = unavailable_at_ranker_scope`
+  - the only known history-based hold logic remains downstream in notification/state handling, not inside `rank_candidates()`
+
+### b387 local validation
+
+- Passed:
+  - `python -m py_compile app/src/main/python/brain.py`
+  - `python -m py_compile app/src/main/python/tests/test_build3_a8_nf_ab.py`
+  - `python app/src/main/python/tests/test_build3_a8_nf_ab.py`
+  - `python app/src/main/python/tests/test_stage2a_guarded_ranking.py`
+  - strict JSON serialization with `allow_nan=False`
+- Local Android build still not runnable in this workspace because Android SDK is not configured.
+- Rank-order proxy on cached `2026-08-06` rows showed:
+  - `rank_mismatches = 0`
+  - meaning the diagnostic patch did not locally reorder persisted ranking output
+- Payload sizing was explicitly measured before raising ranked evidence cap:
+  - row-size growth was real
+  - cap `200` was chosen as a bounded evidence compromise instead of `300`
+
+### What remains pending after b387
+
+- Retry GitHub Actions when GitHub infra is healthy so a signed release exists.
+- Only after that:
+  - install/update phone build
+  - verify `ranked_candidates_full` / rank diagnostics persist on live snapshots
+  - verify next post-close session captures ranking evidence for real market conditions
+- This commit does **not** change hard gates, ranking semantics, sandbox routing, or teacher labeling logic.
+
+## 2026-08-06 - Release Chain: v2.5.53 / b384 to v2.5.55 / b386
+
+- Three synchronized app releases were successfully built and released before `b387`:
+  - `v2.5.53 / b384`
+  - `v2.5.54 / b385`
+  - `v2.5.55 / b386`
+- GitHub Actions succeeded for all three:
+  - `66a2192 Fix foreground restart loop and candidate RLS`
+    - signed release: `31090651157`
+    - debug validation: `31090650569`
+  - `3e26892 Fix post-close evaluator OOM`
+    - signed release: `31098568394`
+    - debug validation: `31098568403`
+  - `69ed5d4 Fix rejected research payload shape`
+    - signed release: `31101367995`
+    - debug validation: `31101367958`
+
+### v2.5.53 / b384
+
+- App repo commit:
+  - `66a21924140e05322c45221a0710b9748f97b3dd`
+  - message: `Fix foreground restart loop and candidate RLS`
+- PWA repo commit:
+  - `d832e4c...`
+  - message: `Sync v2.5.53 release and candidate RLS`
+- Purpose:
+  - reduce foreground/background restart-loop behavior
+  - repair candidate evidence read/write access around RLS path
+- On-device observation after this line:
+  - app still showed restart symptoms in the field
+  - ML evaluation could run, but stability was not fully trusted yet
+
+### v2.5.54 / b385
+
+- App repo commit:
+  - `3e2689248b2dbe1d2c8a8747e1138c0d984f58a0`
+  - message: `Fix post-close evaluator OOM`
+- PWA sync release followed in MarketVivi.
+- Purpose:
+  - stop post-close evaluator out-of-memory failure
+- Result:
+  - pushed and released successfully
+  - evaluator became materially more stable
+
+### v2.5.55 / b386
+
+- App repo commit:
+  - `69ed5d4b489e0af6fa20fd27ddb67572f070dea7`
+  - message: `Fix rejected research payload shape`
+- PWA repo commit:
+  - `ea0631e...`
+  - message: `Sync v2.5.55 release`
+- Purpose:
+  - correct rejected-candidate research payload shape for Supabase persistence
+- Before this fix, live post-close app evidence showed:
+  - evaluation completed normal chosen-candidate persistence
+  - rejected research save failed with:
+    - `REJECTED_RESEARCH_SAVE_FAILED`
+    - `status=400`
+    - `PGRST102`
+    - `All object keys must match`
+- User question resolved:
+  - this fix does not alter already-saved historical chosen/outcome values
+  - it only corrects future rejected-candidate write shape
+
+### 2026-08-06 live market / post-close evidence
+
+- Device evidence from 6 Aug showed:
+  - app was running on `v2.5.53 / b384`, then later `v2.5.55 / b386`
+  - session completed with `78/78` polls
+  - teacher matrix and candidate menu were populated
+  - class-A correctness gate passed
+  - chosen-candidate evaluation persisted
+- Important post-close detail from device:
+  - `Produced: 1808`
+  - `Outcomes persisted: 296`
+  - rejected research save failed separately because rejected rows were stored in a different path and payload-shape mismatch broke that path
+- Meaning:
+  - core evaluation engine was working
+  - rejected-candidate research persistence was the broken sub-path
+  - this is why `v2.5.55 / b386` was cut
+
+### Standing interpretation after 6 Aug
+
+- Baseline post-close ML evaluation is mostly functioning.
+- The low-confidence area is no longer "can the evaluator run at all"; it is:
+  - candidate ranking quality
+  - rejected-candidate research completeness
+  - live restart/jitter behavior
+  - whether ranking diagnostics are rich enough to isolate root-cause family selection mistakes
+
 ## 2026-08-06 - Local Fix Prepared: v2.5.50 / b381 Daily-Grain Percentile Reader
 
 - Claude's v2.5.49 B1 review was checked against the local code before accepting.
