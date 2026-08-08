@@ -17778,3 +17778,244 @@ git -C /abs/path/to/repo \
     - context percentile markers appear in `ml_brain_snapshots.context_json` / `poll_summary_json`
     - rejected research rows persist into `ml_rejected_candidate_outcomes`
     - normal `ml_evaluation_outcomes` and `ml_recommendation_outcomes` persistence remains unchanged
+
+### 2026-08-07 - Weekend Percentile Data Stabilization Through 2026-08-07
+
+- User direction:
+  - market is closed on Friday and next open market is Monday
+  - do not wait passively for live sessions; use the weekend to stabilize existing Supabase data that supports the percentile architecture
+  - continue to be careful with Supabase throttling
+- Scope:
+  - no app runtime code changed
+  - no Android/PWA release was made as part of this stabilization step
+  - no push was performed unless separately commanded
+  - work was local tooling plus controlled Supabase writes to `public.ml_context_percentile_history`
+- Reason for the work:
+  - the percentile architecture needs existing historical context so the brain can compare current market conditions against prior sessions
+  - prior checks showed `history_source=live` rows were absent, but backfilled history rows existed
+  - app logs showed `CTX_PERCENTILE_HISTORY_BRIDGE latestDay=2026-06-29` in one path; investigation found this was caused by stale/partial daily history coverage, especially `bias_net`, not absence of all percentile rows
+- Supabase table used:
+  - `public.ml_context_percentile_history`
+- C3 point-in-time context percentile stabilization:
+  - new local throttling-safe tool:
+    - `Marketapp-main-worktree/tools/c3_context_percentile_incremental.py`
+  - purpose:
+    - reuse existing C3 CSV support history
+    - fetch only one target session from Supabase
+    - rank current snapshot values against prior support
+    - preserve point-in-time rule inside the target day by appending same-day history only after ranking the current value
+  - throttle design:
+    - reads lightweight snapshot IDs first
+    - reads snapshot JSON in chunks of `5`
+    - writes in chunks of `50`
+    - sleeps between writes
+    - no parallel Supabase work during writes
+  - C3 rows written:
+    - `2026-08-05`: `6,182 / 6,182`
+    - `2026-08-06`: `5,995 / 5,995`
+    - `2026-08-07`: `6,231 / 6,231`
+  - C3 generated report/CSV artifacts:
+    - `Marketapp-main-worktree/reports/c3_context_percentile_backfill_20260803/C3_CONTEXT_PERCENTILE_INCREMENTAL_2026-08-05.md`
+    - `Marketapp-main-worktree/reports/c3_context_percentile_backfill_20260803/context_percentile_rows_2026-08-05_incremental.csv`
+    - `Marketapp-main-worktree/reports/c3_context_percentile_backfill_20260803/C3_CONTEXT_PERCENTILE_INCREMENTAL_2026-08-06.md`
+    - `Marketapp-main-worktree/reports/c3_context_percentile_backfill_20260803/context_percentile_rows_2026-08-06_incremental.csv`
+    - `Marketapp-main-worktree/reports/c3_context_percentile_backfill_20260803/C3_CONTEXT_PERCENTILE_INCREMENTAL_2026-08-07.md`
+    - `Marketapp-main-worktree/reports/c3_context_percentile_backfill_20260803/context_percentile_rows_2026-08-07_incremental.csv`
+  - C3 verification:
+    - `2026-08-07` sample read returned `500` point-in-time rows
+    - sample contained `80` variables
+    - all sampled rows had `poll_ts`
+    - `history_source = backfill`
+    - `source_quality = PRE_T_CLEAN_INCREMENTAL`
+- B1 daily context percentile stabilization:
+  - new local throttling-safe tool:
+    - `Marketapp-main-worktree/tools/b1_daily_incremental.py`
+  - purpose:
+    - create daily-grain rows needed by the app's `premium_history` / daily-history bridge
+    - reuse existing B1 daily CSV support history
+    - fetch only one target session from Supabase
+    - preserve signed FII/DII values exactly as stored
+  - tool improvement made on 2026-08-07:
+    - `--prior-csv` now supports multiple CSV files
+    - this allowed `2026-08-07` daily percentiles to include `2026-08-06` as prior support
+  - B1 rows written:
+    - `2026-08-06`: `7 / 7`
+    - `2026-08-07`: `7 / 7`
+  - B1 daily variables written per day:
+    - `vix`
+    - `fii_short_pct`
+    - `fii_cash`
+    - `dii_cash`
+    - `fii_idx_fut`
+    - `fii_stk_fut`
+    - `bias_net`
+  - B1 generated report/CSV artifacts:
+    - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/B1_TIER1_INCREMENTAL_DAILY_2026-08-06.md`
+    - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/tier1_merged_daily_rows_2026-08-06_incremental.csv`
+    - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/B1_TIER1_INCREMENTAL_DAILY_2026-08-07.md`
+    - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/tier1_merged_daily_rows_2026-08-07_incremental.csv`
+  - B1 Supabase verification for `2026-08-06`:
+    - exactly `7` daily rows found with `poll_ts is null`
+    - `bias_net = -0.22`, `pct_60 = 26.92`, support `26`
+    - `dii_cash = 2883.2`, `pct_60 = 54.35`, support `46`
+    - `fii_cash = -943.4`, `pct_60 = 52.0`, support `50`
+    - `fii_idx_fut = -823`, `pct_60 = 23.33`, support `45`
+    - `fii_short_pct = 88`, `pct_60 = 53.0`, support `50`
+    - `fii_stk_fut = 49`, `pct_60 = 41.3`, support `46`
+    - `vix = 12.11`, `pct_60 = 11.67`, support `60`
+  - B1 Supabase verification for `2026-08-07`:
+    - exactly `7` daily rows found with `poll_ts is null`
+    - `bias_net = -0.64`, `pct_60 = 25.93`, support `27`
+    - `dii_cash = 4013.6`, `pct_60 = 68.09`, support `47`
+    - `fii_cash = -17.9`, `pct_60 = 64.71`, support `51`
+    - `fii_idx_fut = 2254`, `pct_60 = 93.48`, support `46`
+    - `fii_short_pct = 86`, `pct_60 = 41.18`, support `51`
+    - `fii_stk_fut = 242`, `pct_60 = 44.68`, support `47`
+    - `vix = 12.18`, `pct_60 = 16.67`, support `60`
+- Important interpretation:
+  - B1 daily rows are the rows the app currently reads through `getContextPercentileDailyHistory(...)` because that reader requests `poll_ts is null`
+  - C3 point-in-time rows are valuable for research/evaluation and richer context, but the current app daily bridge does not consume C3 poll-level rows unless a separate reader is added
+  - `history_source=live` remains empty; current stabilization is under `history_source=backfill`
+- Remaining concern:
+  - app-side `premium_history` can become stale because `MarketWatchService.bootstrapFromSupabase()` may skip a Supabase refresh when local cache appears fresh
+  - this can explain stale `CTX_PERCENTILE_HISTORY_BRIDGE latestDay` logs even after Supabase has newer daily rows
+  - recommended later fix: make the daily percentile bridge refresh explicitly from Supabase or invalidate stale `premium_history` when latest Supabase date is newer
+- Current git hygiene:
+  - the incremental tools and generated report/CSV files are untracked in the Android repo
+  - many older research files under `reports/` and `tools/` are also untracked
+  - do not blindly add all untracked files
+  - if pushing this stabilization work, stage only the intended incremental tools and selected reports, or keep them local as research artifacts
+
+### 2026-08-07 - Post-Close ML Evaluation Verification
+
+- User supplied post-close screenshots and log:
+  - `marketapp-logs-2026-08-07T11-15-19-357Z.csv`
+  - screenshots around `16:44` to `16:51 IST`
+- App version observed:
+  - Android `v2.5.58`
+  - build `b389`
+- App UI status:
+  - session complete: `78 / 78` slots
+  - next market open: `10 Aug, 9:15 am`
+  - ML evaluation status: `DONE`
+  - local app line: `Evaluation done for 2026-08-07: 2472 outcomes produced, 2472 persisted to Supabase`
+  - normal evaluation rows persisted separately: `1287`
+  - recommendation rows persisted separately: `1287`
+  - rejected research: `1185 / 1185`
+  - rejected persistence mode: `separate_table`
+  - Class A correctness gate: `PASS`
+  - chosen snapshots: `75`
+  - generated-ready: `75`
+  - rejected-ready: `75`
+  - context-ready: `75`
+  - comparison-ready: `75`
+  - outcome rows: `1287`
+  - chosen rows: `75`
+  - app training progress: `1000 / 500`, status `READY FOR RETRAIN GATE`
+- Log evidence:
+  - `REJECTED_RESEARCH_PAYLOAD_AUDIT: rows=1185 keys=56/56 unknown=[] missingRequired=[] keysetMismatches=0`
+  - one warning was present:
+    - `EVAL_CHAIN_SOURCE_H2_INCOMPLETE: source=ml_option_chain_snapshots.exact.filtered_stream h2=0/120; trying next source`
+  - interpretation:
+    - the first H2 chain source was incomplete
+    - the evaluation did not fail because the app moved to the next source and completed persistence
+  - no crash, fatal, ANR, or OOM evidence was present in the small post-close log export
+- Supabase verification performed by OpenClaw using narrow REST reads:
+  - `ml_brain_snapshots`: `78` rows for `2026-08-07`
+  - `ml_generated_candidates`: `1390` rows for `2026-08-07`
+  - `ml_evaluation_outcomes`: `1287` rows
+  - `ml_recommendation_outcomes`: `1287` rows
+  - `ml_rejected_candidate_outcomes`: `1185` rows
+  - total evaluated/rejected produced rows verified: `1287 + 1185 = 2472`
+  - normal evaluation and recommendation row counts matched exactly
+- Supabase normal evaluation distribution:
+  - `price_integrity = OK`: `1287 / 1287`
+  - roles:
+    - `primary`: `75`
+    - `secondary`: `1212`
+  - label version:
+    - `teacher_v1`: `1287`
+  - strategy type:
+    - `BEAR_CALL`: `646`
+    - `BULL_PUT`: `498`
+    - `IRON_CONDOR`: `143`
+  - lane:
+    - `NF_intraday`: `597`
+    - `BNF_intraday`: `440`
+    - `NF_swing`: `153`
+    - `BNF_swing`: `97`
+  - index:
+    - `NF`: `750`
+    - `BNF`: `537`
+  - teacher success:
+    - `2 / 1287`
+    - success rate `0.16%`
+  - average R: `0.0384`
+  - total managed P&L across normal evaluation rows: `343068.81`
+  - distinct evaluated snapshots: `75`
+- Supabase rejected research distribution:
+  - `price_integrity = OK`: `1185 / 1185`
+  - label version:
+    - `teacher_v1`: `1185`
+  - strategy type:
+    - `BEAR_CALL`: `682`
+    - `BULL_PUT`: `503`
+  - lane:
+    - `NF_intraday`: `651`
+    - `BNF_intraday`: `386`
+    - `NF_swing`: `126`
+    - `BNF_swing`: `22`
+  - index:
+    - `NF`: `777`
+    - `BNF`: `408`
+  - rejection stages:
+    - `sigma_otm_too_close`: `417`
+    - `sigma_otm_too_far`: `300`
+    - `capital_limit_exceeded`: `300`
+    - `ev_below_floor`: `168`
+  - rejected teacher success:
+    - `80 / 1185`
+    - success rate `6.75%`
+  - average R: `0.0115`
+  - total managed P&L across rejected research rows: `151849.66`
+  - distinct rejected-evaluated snapshots: `75`
+- Supabase generated candidate distribution:
+  - total generated candidates: `1390`
+  - strategy type:
+    - `BEAR_CALL`: `660`
+    - `BULL_PUT`: `587`
+    - `IRON_CONDOR`: `143`
+  - lane:
+    - `NF_intraday`: `646`
+    - `BNF_intraday`: `440`
+    - `NF_swing`: `189`
+    - `BNF_swing`: `115`
+  - index:
+    - `NF`: `835`
+    - `BNF`: `555`
+- Percentile stabilization cross-check for `2026-08-07`:
+  - daily B1 rows in `ml_context_percentile_history`: `7`
+  - daily variables:
+    - `bias_net`
+    - `dii_cash`
+    - `fii_cash`
+    - `fii_idx_fut`
+    - `fii_short_pct`
+    - `fii_stk_fut`
+    - `vix`
+  - C3 incremental point-in-time rows: `6231`
+  - C3 point-in-time rows have `poll_ts`
+- Interpretation:
+  - post-close evaluation and rejected-research persistence are now verified for `2026-08-07`
+  - the rejected-research table/schema path that failed earlier is now working
+  - the app has enough persisted evidence for ranking diagnosis over Friday's full session
+  - there is still a meaningful ranking problem:
+    - chosen teacher success was poor
+    - many rejected candidates had positive research outcomes
+    - rejected outcome research should be used for offline diagnosis, not directly mixed into live teacher success
+- Push hygiene:
+  - if pushing now, do not blindly add all untracked `reports/` and `tools/`
+  - recommended push scope should be explicit:
+    - `PROJECT_KNOWLEDGE.md`
+    - optionally only the two new incremental tools and the specific 2026-08-05/06/07 B1/C3 report artifacts
+  - app runtime code does not need a version bump for this project-knowledge-only update
