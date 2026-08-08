@@ -1,3 +1,64 @@
+## 2026-08-08 - Current State: v2.5.60 / b391 OODA-1 Capture Parity + Margin Shadow Release
+
+### Release Intent
+- User explicitly commanded push after reviewing OODA-1 margin/exit parity directive.
+- This is a synchronized Android/PWA release bump:
+  - Android `versionName = 2.5.60`
+  - Android `versionCode = 391`
+  - Python `BRAIN_VERSION = 2.5.60`
+  - PWA visible label: `v2.5.60 · b391`
+
+### Marketapp Changes
+- Rejected candidate evaluation capture parity:
+  - `ml_rejected_candidate_outcomes` writer whitelist now includes `iv_richness`, `width`, and `prob_profit`.
+  - `buildRejectedEvaluationRows` now copies snake_case values and camelCase aliases:
+    - `ivRichness -> iv_richness`
+    - `probProfit -> prob_profit`
+    - `width -> width`
+- Upstox margin quote handling:
+  - existing read-only `https://api.upstox.com/v2/charges/margin` path remains read-only.
+  - margin evidence now quotes up to 10 actionable candidates per poll instead of only the top candidate.
+  - quotes are cached by basket within each poll.
+  - per-candidate quote evidence is written into `marginByCandidate`.
+  - top-candidate compatibility is preserved through `top_candidate_margin`.
+  - `margin_shadow_summary` records candidate count, quoted count, error count, skipped count, cache size, and explicitly stamps `capital_gate_behavior = UNCHANGED_MAX_LOSS_BASED`.
+  - no order placement, no ranking change, and no live capital-gate change were made.
+
+### Important Interpretation Caveat
+- Claude's OODA-1 text says incorrect static margin feeds `capital_limit_exceeded`.
+- Local code inspection showed current `capital_limit_exceeded` rejection is still based on `max_loss > capital * 0.10`, not live broker margin.
+- Therefore this release intentionally keeps margin as shadow/evidence-only. Any change that makes Upstox margin affect live capital gating must be treated as a separate behavior/risk-policy change.
+
+### Verification
+- `git diff --check` passed in `Marketapp-main-worktree`.
+- Local Kotlin compile could not be completed in this Codex environment because Android SDK is not configured:
+  - `SDK location not found`
+  - requires `ANDROID_HOME` or `local.properties sdk.dir`
+- GitHub Actions signed release is expected to provide build verification after push because `app/build.gradle.kts` changed.
+
+### Post-Install / Post-Close Checks
+- After one post-close evaluation on this version, verify new `ml_rejected_candidate_outcomes` rows have non-null:
+  - `poll_ts`
+  - `iv_richness`
+  - `width`
+  - `prob_profit`
+- During live market polling, check logs for `[margin_shadow]` entries:
+  - `candidates=...`
+  - `quoted=...`
+  - `errors=...`
+  - `skipped=...`
+  - `behavior=UNCHANGED_MAX_LOSS_BASED`
+- Confirm `margin_shadow_summary` appears in saved brain context/output where applicable.
+
+### Still Pending From OODA-1
+- Reconcile `PHASE5_GATE_REGISTRY` counts vs `build3_flow_v1` vs `ml_rejected_candidate_outcomes`.
+- G2 exit-policy diagnosis:
+  - peak favorable P&L as fraction of max profit.
+  - whether target-near was ever reached.
+  - whether profit was given back.
+  - time from entry to peak.
+- Phase 3 T2.2 one-date chain reconstruction/reconciliation.
+
 ## 2026-08-07 - Current State: v2.5.58 / b389 N2 Position Notification Release Pushed
 
 - Latest synchronized runtime release has been pushed to both repos.
