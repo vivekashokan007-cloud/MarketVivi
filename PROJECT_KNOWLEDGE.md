@@ -18374,3 +18374,237 @@ git -C /abs/path/to/repo \
 - Current status:
   - local files changed, not pushed.
   - next safe step is review/diff, then synchronized version bump and push only if explicitly commanded.
+
+## 2026-08-09 - v2.5.64 Pushed and PC2 Data Groundwork Backfill
+
+- Latest confirmed synchronized release before the backfill work:
+  - App version: `v2.5.64`
+  - Build: `b395`
+  - Marketapp commit: `72776123ee7b6b59e4514284dd28fb9db8ff74f5`
+  - Marketapp message: `Release v2.5.64 PC2 evidence maps`
+  - MarketVivi commit: `28882fb626c29b733521c046d5da329c0b548b2d`
+  - MarketVivi message: `Sync release label to v2.5.64`
+- GitHub Actions completed successfully:
+  - Marketapp signed release: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31314430631`
+  - Marketapp debug validation: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31314430634`
+  - only warning observed: GitHub `setup-java` Node 20 deprecation notice; not an app failure.
+
+### PC2 Backfill Objective
+
+- User clarified that the percentile architecture needs historical data groundwork first.
+- The purpose is not to disguise hard constants as percentile constants.
+- The purpose is to let the brain compare live values against previous sessions so fixed market-opportunity constants become context-aware evidence.
+- Strong requirement:
+  - Supabase must be handled slowly and resumably.
+  - If a run gets interrupted, it must resume from deterministic artifacts/checkpoints instead of starting from zero.
+
+### B1 Daily Context Percentile Backfill
+
+- A controlled B1 merged daily backfill was run with small pages, sleeps, and chunked writes.
+- Command shape used:
+  - `tools/b1_percentile_backfill_controller.py`
+  - stage: `tier1_merged_daily`
+  - write mode: enabled
+  - history source: `backfill`
+  - snapshot window: `2026-07-01` to `2026-08-05`
+  - write chunk: `20`
+  - sleep: `2.0s`
+- Completed result:
+  - premium source rows read: `146`
+  - snapshot source rows read: `1959`
+  - merged trading days: `153`
+  - daily percentile rows built: `416`
+  - Supabase rows written: `416/416`
+  - report: `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/B1_TIER1_MERGED_DAILY_DRY_RUN_2026-07-01_to_2026-08-05.md`
+  - CSV: `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/tier1_merged_daily_rows_2026-07-01_to_2026-08-05.csv`
+  - local resume-state report: `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/PC2_BACKFILL_RESUME_STATE_20260809.md`
+- Final B1 status is `WARN`, not failure.
+- Interpretation of `WARN`:
+  - `vix` has mature support: latest support_60 `60`.
+  - FII/DII variables have partial but usable support, roughly `44` to `51`.
+  - `bias_net` has low support, roughly `25` to `27`.
+  - The brain can use this context, but institutional-flow percentile maturity is still developing.
+
+### B1 Incremental Coverage Through 2026-08-07
+
+- Existing reports already showed successful incremental writes:
+  - `2026-08-06`: rows built `7`, rows written `7`.
+  - `2026-08-07`: rows built `7`, rows written `7`.
+- Remote spot verification on 2026-08-09 confirmed recent backfill daily rows:
+  - `2026-08-05`: `6` variables present; `bias_net` absent for that day.
+  - `2026-08-06`: `7` variables present.
+  - `2026-08-07`: `7` variables present.
+- Verified B1 daily variables:
+  - `vix`
+  - `fii_short_pct`
+  - `fii_cash`
+  - `dii_cash`
+  - `fii_idx_fut`
+  - `fii_stk_fut`
+  - `bias_net` where available.
+
+### C3 Point-In-Time Percentile Backfill
+
+- Existing local C3 incremental reports show successful writes through 2026-08-07:
+  - `2026-08-05`: rows produced `6182`, rows written `6182`.
+  - `2026-08-06`: rows produced `5995`, rows written `5995`.
+  - `2026-08-07`: rows produced `6231`, rows written `6231`.
+- Important metadata caveat:
+  - `reports/c3_context_percentile_backfill_20260803/c3_context_percentile_progress.json` still lists `last_completed_day` as `2026-08-04`.
+  - Do not rely on that JSON alone for 2026-08-05 through 2026-08-07.
+  - Use the daily incremental reports and/or small Supabase verification before rerunning those dates.
+
+### Resumability Rules Going Forward
+
+- B1 rows use deterministic IDs and upsert-style writes.
+- If B1 is interrupted during write:
+  - rerun the same date-window command with the same write flags.
+  - existing rows should merge rather than duplicate.
+- C3 rows are large.
+- Do not rerun full C3 history unless verification proves missing rows.
+- For each new completed market session:
+  - run only B1 daily incremental for the target day.
+  - run only C3 daily incremental for the target day.
+  - keep Supabase page sizes small and writes chunked.
+
+### What Is Now Solved
+
+- The app has a stronger historical baseline for percentile-aware context through 2026-08-07.
+- VIX regime context is no longer dependent only on current-day values.
+- FII short percent and signed FII/DII flows now have persisted daily percentile context.
+- C3 point-in-time context rows are available through 2026-08-07 for broader ranking diagnostics.
+
+### Still Not Solved
+
+- Historical DOW/CRUDE/GIFT movement percentile support is still incomplete before reliable daily storage.
+- Candle-pattern thresholds are not ready for live percentile authority.
+- G2 managed-exit constants (`TARGET_NEAR_RATIO`, `STOP_LOSS_RATIO`) need separate replay after position/close attribution remains stable.
+- Width/wall-distance constants are still the next behavior-facing Batch A:
+  - `BNF_WIDTHS`
+  - `NF_WIDTHS`
+  - `MIN_WIDTH_BNF`
+  - `MIN_WIDTH_NF`
+  - `IC_WALL_MAX_SIGMA`
+- Remote/app-side freshness risk around `premium_history` stale reads remains a separate read-freshness issue.
+
+### Current Working State
+
+- Latest app/PWA pushed version remains `v2.5.64 / b395`.
+- Today’s B1/C3 backfill evidence and resume-state files are local artifacts unless explicitly pushed later.
+- No app behavior change was introduced by the backfill run itself.
+- Next safe data action:
+  - after the next completed market session, run daily incremental B1/C3 only for that session.
+- Next safe behavior action:
+  - proceed to Batch A width/wall-distance softening only after reviewing diffs and deciding to resume app-code changes.
+
+## 2026-08-09 - PC2 Batch A Width/Wall Decision
+
+- Batch A was rechecked after the B1/C3 data groundwork update.
+- Tool run:
+  - `python3 tools/pc2_batch_a_width_wall_replay.py`
+- Result:
+  - joined generated-to-outcome rows: `1481`
+  - rejected outcome rows: `1185`
+  - width bucket summary rows: `48`
+  - report: `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/PC2_BATCH_A_WIDTH_WALL_REPLAY_20260809.md`
+- Focused validation:
+  - `python3 -m py_compile app/src/main/python/brain.py tools/pc2_batch_a_width_wall_replay.py`
+  - `python3 -m unittest app.src.main.python.tests.test_stage2a_guarded_ranking`
+  - test result: `25 tests OK`
+
+### Batch A Decision
+
+- Do not live-soften width/wall constants yet.
+- Keep these shadow-only:
+  - `BNF_WIDTHS`
+  - `NF_WIDTHS`
+  - `MIN_WIDTH_BNF`
+  - `MIN_WIDTH_NF`
+  - `IC_WALL_MAX_SIGMA`
+- Reason:
+  - C3 telemetry proves `width_too_narrow` happens in live rejection telemetry.
+  - But the cached rejected-outcome set has `0` `width_too_narrow` managed-outcome rows.
+  - Therefore we cannot yet prove narrower candidates would improve managed P&L after costs, fill quality, and price integrity.
+- Practical rule:
+  - Width floors remain hard structure/fill controls for now.
+  - Width ladders remain generation ladders for now.
+  - Condor wall distance remains shadow-only until condor wall-distance replay exists.
+- This avoids replacing one fixed hard rule with an unproven percentile rule disguised as market intelligence.
+
+### New Next Behavior Candidate
+
+- Since Batch A is not live-ready, the next behavior-facing work should move to the next safer evidence-backed area:
+  - Batch B delete-proof/context handling for VIX regime and sigma-context thresholds, or
+  - continue rejected-candidate outcome capture until `width_too_narrow` has enough managed-outcome rows.
+- Do not change width floors live until the missing rejected-outcome evidence exists.
+
+## 2026-08-09 - PC2 Batch B VIX Regime Live Context
+
+- User corrected the direction:
+  - percentile/context should be live where evidence is sufficient.
+  - old constants should remain as shadow diagnostics.
+  - do not create new disguised percentile hard constants.
+- Batch B was therefore implemented only for the VIX-regime part, not for sigma thresholds.
+
+### What Changed In App Brain
+
+- `IV_HIGH`, `IV_VERY_HIGH`, and `IV_LOW` moved from pure constant authority to live context authority:
+  - authority: `percentile_live_with_constant_shadow`
+  - status: `LIVE_CONTEXT`
+  - scope: VIX regime routing and Force3 only.
+- Old absolute VIX constants are still preserved in shadow evidence:
+  - old constant regime is recorded.
+  - live percentile regime is recorded.
+  - `differs_from_live` marks whether old constant logic disagrees with context logic.
+- Missing VIX history no longer silently falls back to absolute VIX constants for live behavior.
+  - missing context now produces neutral regime with explicit `neutral_missing_context`.
+  - IV percentile is allowed as fallback only when VIX history is unavailable.
+- Runtime evidence now carries `pc2_vix_regime_context` through:
+  - candidate trace varsity metadata.
+  - market forces.
+  - poll summary.
+  - snapshot context.
+
+### What Did Not Change Yet
+
+- Sigma thresholds remain shadow-only:
+  - `SIGMA_IMPORTANT_THRESHOLD`
+  - `SIGMA_ENTRY_THRESHOLD`
+  - `SIGMA_EXIT_THRESHOLD`
+- Width/wall constants remain shadow-only from Batch A:
+  - `BNF_WIDTHS`
+  - `NF_WIDTHS`
+  - `MIN_WIDTH_BNF`
+  - `MIN_WIDTH_NF`
+  - `IC_WALL_MAX_SIGMA`
+- Hard safety/risk controls remain hard.
+- This is not a broad live percentile switch for all 30 constants.
+
+### Validation
+
+- Local validation passed:
+  - `python3 -m py_compile app/src/main/python/brain.py app/src/main/python/tests/test_force3_a3.py app/src/main/python/tests/test_stage2a_guarded_ranking.py`
+  - `python3 app/src/main/python/tests/test_force3_a3.py`
+  - `python3 -m unittest app.src.main.python.tests.test_stage2a_guarded_ranking`
+  - `python3 app/src/main/python/tests/test_force1_a1.py`
+  - `python3 app/src/main/python/tests/test_force2_a2.py`
+  - `git diff --check`
+- Test result summary:
+  - Force3 PC2 percentile-regime tests passed.
+  - Stage2A guarded-ranking suite passed: `27` tests.
+  - Force1 A1 suite passed: `8` tests.
+  - Force2 A2 suite passed: `9` tests.
+
+### Current State
+
+- Release being prepared for push:
+  - `v2.5.65 / b396`
+  - Android Gradle `versionName = 2.5.65`
+  - Android Gradle `versionCode = 396`
+  - Python `BRAIN_VERSION = 2.5.65`
+  - PWA visible label `v2.5.65 · b396`
+- PC2 Batch B VIX live-context code is included in this release candidate.
+- Project direction:
+  - continue moving market-context constants into live contextual authority only where the data path and attribution are strong enough.
+  - keep constants visible as shadow diagnostics so old-vs-new behavior remains auditable.
+  - do not remove risk/fill/margin hard gates without direct evidence.
