@@ -1,3 +1,166 @@
+## 2026-08-09 - Current State: v2.5.62 / b393 PC2 Percentile Gate-Basis Release
+
+### Release Intent
+- User explicitly commanded push after PC2 Batch 0-6 implementation work.
+- This is a synchronized Android/PWA release:
+  - Android `versionName = 2.5.62`
+  - Android `versionCode = 393`
+  - Python `BRAIN_VERSION = 2.5.62`
+  - PWA visible label `v2.5.62 · b393`
+  - PWA cache-bust `app.js?v=1291`
+
+### What Changed
+- PC2 percentile gate-basis metadata and attribution are now wired through the brain and native compactors.
+- `IV_RICH_MIN` is included as a percentile-aware Kind B gate because the fixed hard threshold was not market-context-relative.
+- Eligible PC2 gates now carry gate-basis evidence:
+  - `MIN_CREDIT_RATIO`
+  - `IV_RICH_MIN`
+  - `MIN_PROB`
+  - `MIN_SIGMA_OTM`
+  - `MAX_SIGMA_OTM`
+- Rejected-candidate evidence preserves the exact rejection decision plus percentile/fallback context.
+- Accepted/generated candidates carry compact `pc2_gate_basis` and `gate_basis_summary` metadata.
+- Batch 4 G0 delete proof and Batch 6 premium-history hygiene reports were added for auditability.
+
+### Guardrails
+- No Supabase live polling dependency was added.
+- No bulk Supabase write was needed for Batch 6 because the missing-only check found zero missing remote rows.
+- Risk/capital guardrails remain in place.
+- This release is intended to make market-context percentile basis observable and usable without losing attribution.
+
+### Verification Before Push
+- `python3 -m py_compile app/src/main/python/brain.py tools/pc2_calibrate_kind_b.py tools/pc2_g0_delete_proof.py`
+- `python3 tools/pc2_calibrate_kind_b.py`
+- `git diff --check` in both repos
+- Focused Python unit tests covering candidate parity, probability semantics, unified notification, Stage 2A guarded ranking, Build 3 A8, teacher shadow labels, Phase 3/4/5 gate registry and EV ladder.
+
+## 2026-08-09 - PC-2 Percentile Implementation Decision Lock
+
+### Claude-Approved Clarifications
+- Stability support rule is now **deterministic jackknife**, not bootstrap.
+  - No free resample-count constant should be introduced.
+  - Persist per decision:
+    - `stability_ratio`
+    - `bar`
+    - `jackknife_n`
+- Percentile activation is **live on pass**, with no separate shadow period after calibration.
+  - If calibration and stability pass, `gate_basis = percentile`.
+  - If either fails, keep `gate_basis = hard_fallback`.
+  - Counterfactual logging remains required for attribution.
+- Any calibration target with `p < 5` or `p > 95` stays on `hard_fallback` pending manual review.
+- `IV_HIGH`, `IV_VERY_HIGH`, and `IV_LOW` may be deleted only after byte-identical replay proof.
+  - If replay changes output, treat that as a finding and report the delta instead of silently restoring the constants.
+- `premium_history` backfill should happen before percentile authority is activated.
+- One-chain reconstruction is a hard gate before any full 425-day candle reconstruction.
+- Compact JSON attribution is approved first; do not create a row-per-gate audit table immediately if it increases Supabase load.
+
+### Final Batch Order
+- Batch 0: anchor + constant inventory, no behavior change.
+- Batch 1: jackknife percentile stability engine, fallback-first.
+- Batch 2: calibration table for all KIND B constants, with `p<5` / `p>95` flags.
+- Batch 3: additive persistence for attribution metadata.
+- Batch 4: G0 IV constant delete proof by byte-identical replay.
+- Batch 6: `premium_history` backfill, moved earlier before wiring.
+- Batch 5: wire G1/G3/G4/G7 + G2 mechanism-only, activate only when Batch 1 and Batch 2 pass.
+- Batch 7: C3 point-in-time backfill.
+- Batch 8: one-chain reconstruction gate for candle history.
+- Batch 9: live margin confirmation during market hours.
+
+### Immediate Work Plan
+- Start with Batch 0, Batch 1, and Batch 2 only.
+- Do not change live behavior until the calibration table exists and is reviewed.
+- Keep Supabase writes chunked, resumable, and slow to avoid throttling.
+
+## 2026-08-09 - Current State: v2.5.61 / b392 G2 Teacher Path Diagnostics Release
+
+### Release Intent
+- User ran the Supabase G2 diagnostic migration successfully in the Supabase SQL editor:
+  - result shown as `Success. No rows returned`.
+  - migration only added nullable columns; existing saved outcome rows were not modified.
+- User then explicitly commanded push.
+- This is a synchronized Android/PWA release bump:
+  - Android `versionName = 2.5.61`
+  - Android `versionCode = 392`
+  - PWA visible label: `v2.5.61 · b392`
+
+### Marketapp Changes
+- Added G2 teacher-path diagnostic persistence for both chosen/evaluation rows and rejected candidate research rows.
+- New diagnostic fields:
+  - `peak_pnl`
+  - `trough_pnl`
+  - `max_capture_pct`
+  - `near_target_pct`
+  - `target_gap_pnl`
+  - `time_to_peak_step`
+  - `target_was_reached`
+- `brain.py` now records peak/trough net P&L while walking the managed teacher path before TP/SL/EOD assignment.
+- `SupabaseClient.kt` now whitelists and writes the new fields for:
+  - `ml_evaluation_outcomes`
+  - `ml_rejected_candidate_outcomes`
+- Failed price-integrity rows are sanitized so these path diagnostics are removed when `price_integrity = FAIL`.
+- No target threshold, stop threshold, ranking, gate, notification, paper-trade, sandbox, or live-order behavior was changed.
+
+### Supabase Schema
+- Added migration:
+  - `supabase/migrations/20260809_g2_teacher_path_diagnostics.sql`
+- Tables altered:
+  - `public.ml_evaluation_outcomes`
+  - `public.ml_rejected_candidate_outcomes`
+- Columns added as nullable:
+  - `peak_pnl double precision`
+  - `trough_pnl double precision`
+  - `max_capture_pct double precision`
+  - `near_target_pct double precision`
+  - `target_gap_pnl double precision`
+  - `time_to_peak_step integer`
+  - `target_was_reached boolean`
+- Existing historical rows remain unchanged and will show `NULL` for these fields unless separately regenerated/backfilled.
+
+### Push / Release Evidence
+- Marketapp pushed to `main`:
+  - commit `4cf24375e3ce7119a2dec6739dec68abb16b088b`
+  - message `Add G2 teacher path diagnostics`
+  - remote `main` confirmed at same SHA.
+- MarketVivi pushed to `main`:
+  - commit `8cf022e4f56c4a80a5f9575654879ae407061533`
+  - message `Sync release label to v2.5.61`
+  - remote `main` confirmed at same SHA.
+- GitHub Actions completed successfully:
+  - `Market Radar Signed Release`
+    - run id `31293721572`
+    - conclusion `success`
+    - link `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31293721572`
+  - `Market Radar Debug APK Validation`
+    - run id `31293721639`
+    - conclusion `success`
+    - link `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31293721639`
+
+### Verification
+- `python3 -m py_compile app/src/main/python/brain.py` passed.
+- `git diff --check` passed in both repos before commit.
+- Local Android Kotlin compile could not be run in this Codex environment because Android SDK is not configured:
+  - missing `ANDROID_HOME` / `local.properties sdk.dir`
+- GitHub Actions signed release and debug APK validation passed after push, so remote build validation succeeded.
+
+### Interpretation
+- G2 remains diagnostic-only.
+- The key forward evidence will come from future post-close evaluations after installing this build:
+  - whether `near_target_pct` stays far below `1.0` for most EOD rows, supporting target-too-high / horizon-too-short.
+  - whether `peak_pnl` was materially positive but final `managed_pnl` fell back, supporting management/giveback.
+  - whether rejected candidates show better `near_target_pct`, `peak_pnl`, or `target_gap_pnl` than chosen candidates.
+- This directly addresses the earlier G2 question without tuning the teacher or changing live ranking prematurely.
+
+### Next Checks After Install / Post-Close
+- After the next successful ML evaluation, verify recent rows in both tables have non-null diagnostics for `price_integrity = OK` rows:
+  - `ml_evaluation_outcomes`
+  - `ml_rejected_candidate_outcomes`
+- Compare by lane and role:
+  - TP rate vs `target_was_reached`
+  - median/average `near_target_pct`
+  - median/average `target_gap_pnl`
+  - `peak_pnl - managed_pnl` to detect giveback.
+- If rows fail to save, first check for schema drift/key mismatch in rejected outcome payloads before changing teacher logic.
+
 ## 2026-08-08 - Current State: v2.5.60 / b391 OODA-1 Capture Parity + Margin Shadow Release
 
 ### Release Intent
@@ -18080,3 +18243,134 @@ git -C /abs/path/to/repo \
     - `PROJECT_KNOWLEDGE.md`
     - optionally only the two new incremental tools and the specific 2026-08-05/06/07 B1/C3 report artifacts
   - app runtime code does not need a version bump for this project-knowledge-only update
+
+## 2026-08-09 - PC2 Percentile Implementation State
+
+- PC2 implementation is proceeding in batches, not as one large blind switch.
+- Batch 0 inventory, Batch 1 jackknife stability metadata, and Batch 2 calibration table exist under `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/`.
+- Batch 3 gate-basis metadata has been implemented locally:
+  - `brain.py` now records `pc2_gate_basis` and `gate_basis_summary` evidence for percentile-capable gates.
+  - Java compactors in `NativeBridge.kt` and `MarketMLService.kt` preserve the PC2 metadata through app snapshot/evaluation payload compaction.
+  - No Supabase column addition is required for this metadata batch; fields are carried as JSON payload evidence.
+- Important boundary:
+  - live gate behavior has not been changed by Batch 3.
+  - current `gate_basis` remains `hard_fallback`.
+  - `live_behavior_change=false`.
+  - percentile behavior is only counterfactual metadata until Batch 5.
+- PC2 percentile candidate gates currently recorded:
+  - `MIN_CREDIT_RATIO`
+  - `IV_RICH_MIN`
+  - `MIN_PROB`
+  - `MIN_SIGMA_OTM`
+  - `MAX_SIGMA_OTM`
+- `IV_RICH_MIN` is intentionally included in PC2:
+  - old hard value `1.15` calibrated to about `0.62` percentile in available generated-candidate evidence.
+  - this confirms the old fixed IV richness interpretation was extreme and not market-context-relative.
+  - owner/user approved this as an extreme percentile candidate, so it is marked `owner_approved_extreme_percentile`.
+  - it is still not live-switched until the gate-basis switch batch.
+- Candidate metadata stamping is guarded:
+  - debit candidates are not stamped with credit-gate metadata.
+  - accepted candidates are stamped only when the source metric exists.
+  - rejected candidates are stamped only when their rejection stage maps to a PC2 gate.
+- Verification completed locally:
+  - `python3 -m py_compile app/src/main/python/brain.py tools/pc2_calibrate_kind_b.py`
+  - `git diff --check`
+  - `python3 tools/pc2_calibrate_kind_b.py`
+- Latest calibration source counts:
+  - B1 rows: `1654`
+  - C3 rows: `168620`
+  - generated rows: `11036`
+- Recommended next sequence:
+  - Batch 4: G0 delete-proof and non-candidate threshold inventory.
+  - Batch 6: premium-history / daily-history backfill hygiene for stable context.
+  - Batch 5: live percentile gate-basis switch for eligible gates, including `IV_RICH_MIN`, only after attribution is present.
+
+## 2026-08-09 - PC2 Batch 4 G0 Delete Proof
+
+- Batch 4 local proof was run using cached snapshot inputs only.
+- No Supabase calls were made.
+- Tool added locally:
+  - `Marketapp-main-worktree/tools/pc2_g0_delete_proof.py`
+- Report outputs:
+  - `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/PC2_BATCH4_G0_DELETE_PROOF.md`
+  - `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/PC2_BATCH4_G0_DELETE_PROOF.json`
+- Result:
+  - rows checked: `1601`
+  - missing `ivPercentile`: `0`
+  - `vix >= IV_HIGH(20)`: `0`
+  - `vix >= IV_VERY_HIGH(24)`: `0`
+  - `vix <= IV_LOW(15)`: `1597`
+  - `ivPercentile < 25`: `1601`
+  - varsity routing deltas between current and proposed G0-deleted behavior: `0`
+  - Force3 deltas: `0`
+  - verdict: `BYTE_IDENTICAL_ON_CACHE`
+- Important interpretation:
+  - `IV_HIGH` and `IV_VERY_HIGH` are dead in this cache.
+  - `IV_LOW` is not dead; it is reachable.
+  - The cached behavior is still byte-identical after hard-VIX deletion because `ivPercentile` is present and already classifies every cached row as low-IV.
+  - Runtime deletion should not be done as an isolated blind edit. In Batch 5, G0/force/routing consumers should move to context-percentile authority with explicit missing-context fallback and persisted `gate_basis`/`switch_basis`.
+
+## 2026-08-09 - PC2 Batch 6 and Batch 5 Local Implementation
+
+- Batch 6 premium-history hygiene was checked carefully with low-load/missing-only logic.
+- Supabase throttle safety:
+  - schema/source probe used small pages and sleeps.
+  - missing-only dry-run found no missing remote rows to write.
+  - no live polling Supabase dependency was added.
+- Batch 6 result:
+  - source rows read: `146`
+  - missing-only candidate rows: `0`
+  - no remote write required today.
+  - full local artifact regenerated with `237` candidate rows.
+  - report: `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/PC2_BATCH6_PREMIUM_HISTORY_STATUS.md`
+- Batch 5 live gate-basis wiring is now locally code-complete.
+- Batch 5 report:
+  - `Marketapp-main-worktree/reports/pc2_full_percentile_implementation/PC2_BATCH5_LIVE_GATE_BASIS_WIRING.md`
+- PC2 live percentile-capable gates wired in `brain.py`:
+  - `MIN_CREDIT_RATIO`
+  - `IV_RICH_MIN`
+  - `MIN_PROB`
+  - `MIN_SIGMA_OTM`
+  - `MAX_SIGMA_OTM`
+- `IV_RICH_MIN` decision:
+  - included as a Kind B percentile-aware live gate.
+  - not a Kind A floor.
+  - hard fallback remains `1.15`.
+  - calibrated percentile target remains `0.62`.
+  - marked `owner_approved_extreme_percentile`.
+  - active live percentile authority is used only if history and jackknife stability pass.
+- Live switch safety:
+  - if observed value, hard threshold, calibration metadata, 60-row history percentile threshold, VIX full-support stability bar, or jackknife pass is missing, the gate remains `hard_fallback`.
+  - `live_percentile_authority=true` means percentile basis actually controlled the gate.
+  - `live_behavior_change=true` means percentile authority changed the pass/fail decision versus the old hard rule.
+- Candidate paths wired:
+  - two-leg credit spreads: sigma lower, sigma upper, credit ratio, IV richness, probability.
+  - iron condor: sigma lower, sigma upper, credit ratio, IV richness, probability.
+  - iron butterfly: IV richness, probability.
+- Accepted candidates now carry `pc2_gate_basis` and `gate_basis_summary`.
+- Rejected candidates preserve the exact gate decision that rejected them and carry PC2 fields into rejected-outcome evaluation.
+- Java bridge status:
+  - existing Java bridge already merges `ml_context_percentile_history` into `premiumHistory` before Python analysis.
+  - Batch 5 does not add a new live Supabase query.
+- Local validation completed:
+  - `python3 -m py_compile app/src/main/python/brain.py tools/pc2_calibrate_kind_b.py tools/pc2_g0_delete_proof.py`
+  - `python3 tools/pc2_calibrate_kind_b.py`
+  - `git diff --check`
+- Additional focused Python validation completed:
+  - `python3 -m unittest app.src.main.python.tests.test_candidate_parity_contract app.src.main.python.tests.test_d7_probability_semantics app.src.main.python.tests.test_unified_brain_notification`
+    - result: `23 tests OK`
+  - `python3 -m unittest app.src.main.python.tests.test_stage2a_guarded_ranking app.src.main.python.tests.test_build3_a8_nf_ab app.src.main.python.tests.test_teacher_v1_shadow_labels`
+    - result: `30 tests OK`
+  - `python3 -m unittest app.src.main.python.tests.test_phase5_gate_registry app.src.main.python.tests.test_phase4_ev_ladder_shadow app.src.main.python.tests.test_phase3_expected_r_shadow`
+    - result: `12 tests OK`
+  - attempted module group for `test_stage1_strike_pair_truncation`, `test_gate5_trace_smoke`, and `test_gate3_structural_counts` returned `NO TESTS RAN` under direct unittest module invocation; not treated as a failing assertion.
+- Calibration source counts unchanged after removing the old support magic:
+  - B1 rows: `1654`
+  - C3 rows: `168620`
+  - generated rows: `11036`
+- Important correction:
+  - `tools/pc2_calibrate_kind_b.py` no longer uses the old `support >= 30` shortcut.
+  - `IV_RICH_MIN` activation is now explicit owner-approved percentile candidate after stability pass.
+- Current status:
+  - local files changed, not pushed.
+  - next safe step is review/diff, then synchronized version bump and push only if explicitly commanded.
