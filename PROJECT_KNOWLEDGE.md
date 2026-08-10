@@ -18608,3 +18608,174 @@ git -C /abs/path/to/repo \
   - continue moving market-context constants into live contextual authority only where the data path and attribution are strong enough.
   - keep constants visible as shadow diagnostics so old-vs-new behavior remains auditable.
   - do not remove risk/fill/margin hard gates without direct evidence.
+
+## 2026-08-10 - Current State: v2.5.65 / b396 Pushed + June B1 Backfill
+
+### Latest Confirmed Release
+
+- Latest synchronized pushed release:
+  - Android/Python/PWA: `v2.5.65 / b396`
+  - Marketapp commit: `a6ad8a2c03dacd0e57505e75bb0b76cd1048e082`
+  - MarketVivi commit: `beb420136e347479234449e301d310e20ab49ac3`
+- GitHub evidence:
+  - Signed release workflow passed: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31322003872`
+  - Debug validation workflow passed: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31322003868`
+  - APK release: `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.65`
+  - MarketVivi Pages workflow passed: `https://github.com/vivekashokan007-cloud/MarketVivi/actions/runs/31322003077`
+- GitHub Actions warnings were dependency/runtime deprecation warnings only; no release failure was observed.
+
+### Current Parameter Authority State
+
+- Tracked constants/parameters: `50`.
+- Hard safety constants intentionally kept hard: `7`.
+- Market-judgment constants tracked: `37`.
+- Replaced or softened away from pure hard behavior: `8`.
+- Live-soft opportunity/ranking evidence parameters:
+  - `MIN_CREDIT_RATIO`
+  - `IV_RICH_MIN`
+  - `MIN_PROB`
+  - `MIN_SIGMA_OTM`
+  - `MAX_SIGMA_OTM`
+- Live context authority with old constants preserved as shadow diagnostics:
+  - `IV_HIGH`
+  - `IV_VERY_HIGH`
+  - `IV_LOW`
+- Still pending market-judgment constants: `29`.
+- Important pending groups:
+  - width/wall: `BNF_WIDTHS`, `NF_WIDTHS`, `MIN_WIDTH_BNF`, `MIN_WIDTH_NF`, `IC_WALL_MAX_SIGMA`
+  - external movement: `DOW_THRESHOLD`, `CRUDE_THRESHOLD`, `GIFT_THRESHOLD`
+  - timing/notification: `NOISE_WINDOW`, `LAST_ENTRY_CUTOFF`, `ROUTINE_NOTIFY_MS`
+  - sigma/exit: `SIGMA_IMPORTANT_THRESHOLD`, `SIGMA_ENTRY_THRESHOLD`, `SIGMA_EXIT_THRESHOLD`, `TARGET_NEAR_RATIO`, `STOP_LOSS_RATIO`
+  - candle-pattern constants remain unsupported for live percentile authority until richer historical candle context exists.
+
+### June 2026 B1 Daily Backfill
+
+- User asked whether to use pre-market time for June 2026 B1 backfill to support percentile context.
+- Decision:
+  - Proceed with **B1 daily only**, not heavy C3.
+  - Keep Supabase work slow, chunked, and resumable.
+  - Stop short of market open if any throttling/stability signal appears.
+- Schema probe command:
+  - `python3 tools/b1_percentile_backfill_controller.py --stage schema_probe --page-size 20 --max-pages 2 --sleep-sec 2.0 --timeout 120`
+- Schema probe report:
+  - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/B1_SCHEMA_SOURCE_PROBE.md`
+- Dry-run command:
+  - `python3 tools/b1_percentile_backfill_controller.py --stage tier1_merged_daily --history-source backfill --snapshot-start 2026-06-01 --snapshot-end 2026-06-30 --page-size 40 --max-pages 10 --snapshot-max-pages 80 --write-chunk 20 --sleep-sec 2.0 --timeout 180`
+- Dry-run result:
+  - premium source rows read: `146`
+  - snapshot source rows read: `1627`
+  - candidate daily rows built: `385`
+  - merged trading days/support days: `147`
+  - status: `WARN`, not failure, because several institutional-flow variables still have less than 60 observations.
+- Dry-run artifacts:
+  - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/B1_TIER1_MERGED_DAILY_DRY_RUN_2026-06-01_to_2026-06-30.md`
+  - `Marketapp-main-worktree/reports/b1_percentile_backfill_20260805/tier1_merged_daily_rows_2026-06-01_to_2026-06-30.csv`
+
+### June Write Outcome
+
+- Write command used:
+  - `python3 tools/b1_percentile_backfill_controller.py --stage tier1_merged_daily --write --allow-merged-write --history-source backfill --snapshot-start 2026-06-01 --snapshot-end 2026-06-30 --page-size 40 --max-pages 10 --snapshot-max-pages 80 --write-chunk 20 --sleep-sec 2.0 --timeout 180`
+- Main write progressed safely:
+  - read `146` premium-history rows.
+  - read `1627` `ml_brain_snapshots` rows.
+  - wrote `360/385` rows before stopping.
+- Failure:
+  - `HTTP 409 Conflict`, not throttling.
+- Root cause:
+  - `ml_context_percentile_history` has composite unique key:
+    - `session_date`
+    - `poll_ts`
+    - `index_key`
+    - `lane`
+    - `variable_name`
+    - `history_source`
+  - The B1 writer currently posts with `on_conflict=id`.
+  - B1 deterministic ID includes `source_table`, but the database unique key does **not** include `source_table`.
+  - Therefore a source-upgrade row can collide with an existing equivalent daily row even when row IDs are unique.
+- Safe manual resume:
+  - inspected the failed tail rows from the CSV.
+  - read existing June rows only.
+  - skipped one conflicting row:
+    - `2026-06-29`
+    - variable: `vix`
+    - existing row ID: `b1_557be91c78484f32233b65aea13b2fd807958e89`
+    - skipped new row ID: `b1_3e3f9df8d57dad689d0406490212a9a59076d09f`
+  - wrote remaining `24` rows in chunks of `10` with `2s` sleeps.
+
+### June Verification After Resume
+
+- Lightweight Supabase verification result:
+  - June rows in `ml_context_percentile_history`: `127`
+  - source split:
+    - `ml_brain_snapshots`: `125`
+    - `premium_history`: `2`
+- Latest June date coverage verified:
+  - `2026-06-24`: `6` rows
+  - `2026-06-25`: `6` rows
+  - `2026-06-29`: `7` rows
+  - `2026-06-30`: `6` rows
+- Latest June key values verified:
+  - `2026-06-30 vix`: value `13.48`, `pct_60=13.33`, `support_count_60=60`
+  - `2026-06-30 fii_short_pct`: value `83`, `pct_60=25`, `support_count_60=44`
+  - `2026-06-30 fii_cash`: value `-1350.1`, `pct_60=65.91`, `support_count_60=44`
+  - `2026-06-30 dii_cash`: value `2801.54`, `pct_60=30`, `support_count_60=40`
+  - `2026-06-30 fii_idx_fut`: value `-1800`, `pct_60=15.38`, `support_count_60=39`
+  - `2026-06-30 fii_stk_fut`: value `2343`, `pct_60=82.5`, `support_count_60=40`
+
+### Practical Next Step
+
+- Do not rerun the full June B1 write blindly.
+- Before the next large B1 backfill/rerun, fix `tools/b1_percentile_backfill_controller.py` so conflict handling matches the table’s composite unique key or implements explicit source-upgrade handling.
+- No app code was changed by the June B1 backfill itself.
+- No push was performed for this Supabase-only backfill update unless the user explicitly commands it later.
+- Continue live-market validation on `v2.5.65 / b396` before making another behavior-facing app change.
+
+## 2026-08-10 - Post-Close ML Evaluation Retry Fix Prepared
+
+### Failure Observed
+
+- User supplied post-close log `marketapp-logs-2026-08-10T11-28-41-349Z.csv` and screenshots from `v2.5.65 / b396`.
+- ML evaluation did start, but app reported `RETRYABLE` instead of completing the full teacher research/report path.
+- Concrete log failures:
+  - rejected research save failed because Supabase table `ml_rejected_candidate_outcomes` lacked context columns now sent by the app:
+    - `iv_richness`
+    - `width`
+    - `prob_profit`
+  - outcome table writes hit `PGRST102 All object keys must match`.
+  - retry writes then hit duplicate-key conflicts on:
+    - `ml_evaluation_outcomes`
+    - `ml_recommendation_outcomes`
+  - teacher research rebuild hit Android heap OOM while processing the large full outcome payload.
+
+### Local Fix Scope
+
+- Prepared synchronized release target:
+  - Android/Python/PWA: `v2.5.66 / b397`
+- Marketapp fixes:
+  - `SupabaseClient.kt`
+    - canonicalizes evaluation/recommendation outcome rows before chunked writes.
+    - writes evaluation/recommendation rows through idempotent `on_conflict=snapshot_id,candidate_id,role` upsert paths.
+    - adds fallback for `ml_rejected_candidate_outcomes` when Supabase schema cache is missing the new context columns.
+  - `MarketMLService.kt`
+    - compacts teacher research candidate/outcome payload before Python report generation.
+    - caps rejected teacher-report rows for memory safety while preserving full persisted outcome save intent.
+    - catches teacher-report `Throwable` so OOM does not crash the service path.
+  - `NativeBridge.kt`
+    - applies the same compact teacher-report rebuild payload to UI/native rebuild paths.
+  - migration:
+    - `supabase/migrations/20260810_rejected_candidate_context_columns.sql`
+    - additive only; adds `iv_richness`, `width`, `prob_profit` to `ml_rejected_candidate_outcomes`.
+- MarketVivi sync:
+  - visible label bumped to `v2.5.66 / b397`.
+  - cache-bust bumped.
+
+### Operational Note
+
+- Do not retry evaluation on the old `v2.5.65 / b396` APK; it can repeat the same schema/write/OOM failure.
+- Safe path:
+  - apply the Supabase migration.
+  - install fixed `v2.5.66 / b397` APK after signed release is available.
+  - press `Retry Eval` if the app still shows today as retryable.
+- Separate issue still visible in the August 10 screenshots:
+  - candidate diagnostics still show `ev_below_floor` / `expected_win below 1.10x expected_loss` rejections.
+  - that is a brain gate/ranking policy issue, not the ML evaluator persistence/OOM failure fixed in this batch.
