@@ -18779,3 +18779,110 @@ git -C /abs/path/to/repo \
 - Separate issue still visible in the August 10 screenshots:
   - candidate diagnostics still show `ev_below_floor` / `expected_win below 1.10x expected_loss` rejections.
   - that is a brain gate/ranking policy issue, not the ML evaluator persistence/OOM failure fixed in this batch.
+
+## 2026-08-10 - v2.5.66 / b397 Pushed + Supabase Migration Text File
+
+### Push Completed
+
+- User explicitly approved push after the August 10 post-close ML evaluation retry failure.
+- Synchronized release was pushed to both repos:
+  - Marketapp `main`: `b637978b90da0591173ce04d117e2470d8269b44`
+  - MarketVivi `main`: `23488a72bb154f161e04d49da231f5eeb04a4946`
+- Version sync:
+  - Android Gradle `versionName = 2.5.66`
+  - Android Gradle `versionCode = 397`
+  - Python `BRAIN_VERSION = 2.5.66`
+  - PWA visible label/cache updated to `v2.5.66 / b397`
+
+### GitHub Release Evidence
+
+- Signed release workflow fired and passed:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31388627056`
+- Debug validation workflow fired and passed:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31388627065`
+- GitHub release created:
+  - `Market Radar v2.5.66`
+  - tag: `v2.5.66`
+
+### What This Release Fixes
+
+- Fixes ML evaluation retry persistence failure caused by rejected-candidate context columns missing in Supabase.
+- Fixes heterogeneous row payload write failure:
+  - previous error: `PGRST102 All object keys must match`.
+  - app now canonicalizes evaluation/recommendation outcome rows before writing.
+- Fixes retry duplicate conflicts:
+  - evaluation and recommendation outcome writes now use stable upsert conflict paths:
+    - `snapshot_id`
+    - `candidate_id`
+    - `role`
+- Reduces post-close teacher-report OOM risk:
+  - compacts candidate arrays before report generation.
+  - compacts reporting outcome payloads.
+  - caps rejected rows in report payload while preserving persisted evaluation writes.
+  - catches report-generation `Throwable` so report OOM does not crash the whole evaluation path.
+- Adds additive migration:
+  - `supabase/migrations/20260810_rejected_candidate_context_columns.sql`
+  - columns added to `public.ml_rejected_candidate_outcomes`:
+    - `iv_richness double precision`
+    - `width double precision`
+    - `prob_profit double precision`
+
+### Migration Text File for Manual Supabase Run
+
+- User asked for a downloadable text file, not SQL extension, to run the migration manually in Supabase.
+- Created workspace text file:
+  - `RUN_FIRST_SUPABASE_MIGRATION_20260810.txt`
+- Contents are the same additive migration plus `notify pgrst, 'reload schema';`.
+- Operational sequence:
+  - run `RUN_FIRST_SUPABASE_MIGRATION_20260810.txt` in Supabase SQL editor.
+  - wait about `30` seconds for PostgREST schema reload.
+  - install/update to `v2.5.66 / b397`.
+  - then retry ML evaluation if the app still shows August 10 as retryable.
+
+### Important Current Open Items
+
+- The migration text file is in the local workspace for user download; it was not part of the repo push.
+- Unrelated local reports/tools remain dirty/untracked in `Marketapp-main-worktree`; they were intentionally not staged or pushed.
+- `MarketVivi-git` still has unrelated untracked file:
+  - `PROJECT_KNOWLEDGE_UPDATED_20260723_E1_TABICL.md`
+- The August 10 screenshots still showed `ev_below_floor` / `expected_win below 1.10x expected_loss`.
+  - This release does not change that brain gate/ranking behavior.
+  - That remains a separate ranker/economics policy issue.
+
+## 2026-08-11 - v2.5.67 / b398 Prepared for Push
+
+### Release Scope
+
+- User approved pushing the current local batch.
+- Version sync target:
+  - Android `versionName = 2.5.67`
+  - Android `versionCode = 398`
+  - Python `BRAIN_VERSION = 2.5.67`
+  - PWA label `v2.5.67 / b398`
+
+### Code Changes Included
+
+- PC2 context threshold conversion:
+  - width floors are live-soft opportunity context with constant fallback.
+  - constructed iron-condor wall distance has percentile-aware live-soft context.
+  - cross-market Dow/Crude/GIFT move thresholds use live percentile context with constant fallback.
+  - target-near and stop-near position alert thresholds use percentile context with safety fallback.
+  - significant-move alert threshold uses percentile context with constant fallback.
+- Safety/risk gates are not removed.
+- Constants remain available as fallback when historical context is thin.
+
+### Supabase Migration Included
+
+- Added repo migration:
+  - `supabase/migrations/20260810_recommendation_outcome_schema_parity.sql`
+- Purpose:
+  - bring `ml_recommendation_outcomes` into parity with teacher/evaluation diagnostics.
+  - add managed-exit P&L, capture, target-reached, label/config, and H2 integrity columns.
+  - deduplicate and add unique key on `(snapshot_id, candidate_id, role)`.
+  - reload PostgREST schema after migration.
+
+### Expected Effect
+
+- The brain should rely less on static market constants and more on current context percentiles.
+- Recommendation outcome persistence should have the schema needed for full post-close verification.
+- Existing saved rows are preserved; migration is additive except for duplicate cleanup before unique-index creation.
