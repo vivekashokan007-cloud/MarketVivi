@@ -18886,3 +18886,141 @@ git -C /abs/path/to/repo \
 - The brain should rely less on static market constants and more on current context percentiles.
 - Recommendation outcome persistence should have the schema needed for full post-close verification.
 - Existing saved rows are preserved; migration is additive except for duplicate cleanup before unique-index creation.
+
+## 2026-08-11 - v2.5.68 / b399 PC2 Percentile Authority Batch Pushed
+
+### Push Completed
+
+- User explicitly commanded push after the next percentile-authority batch.
+- Synchronized release was pushed to both repos:
+  - Marketapp `main`: `22eb55a77c81c343dde1427975b84f95bff17b38`
+  - MarketVivi `main`: `3d630d272a34fdcfde205d1815c04a47ff3a7fec`
+- Version sync:
+  - Android Gradle `versionName = 2.5.68`
+  - Android Gradle `versionCode = 399`
+  - Python `BRAIN_VERSION = 2.5.68`
+  - PWA visible label updated to `v2.5.68 / b399`
+
+### GitHub Release Evidence
+
+- Marketapp signed release workflow fired and passed:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31451061161`
+- Marketapp debug validation workflow fired and passed:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31451061167`
+- MarketVivi pages deployment passed:
+  - `https://github.com/vivekashokan007-cloud/MarketVivi/actions/runs/31451060396`
+
+### Code Changes Included
+
+- PC2 Batch E alert timing safety:
+  - broad startup `NOISE_WINDOW` no longer suppresses open-position risk, exit, book-profit, or data-quality alerts.
+  - non-position chatter remains suppressible during startup noise.
+  - entry alerts obey session timing policy through explicit alert timing context.
+  - emitted alerts now carry `pc2_alert_timing_context` for auditability.
+- PC2 Batch F constant authority classification:
+  - supply ladders are classified as generation-supply controls, not live percentile gates.
+  - candle-pattern thresholds are classified as advisory pattern interpretation rules, not live trading thresholds.
+  - policy constants are separated from market-judgment constants.
+  - legacy unused sigma entry/exit constants are marked as shadow/unused.
+- PC2 inventory visibility:
+  - `_pc2_parameter_authority_inventory()` now reports resolved vs pending Kind-B constants.
+  - snapshot summaries expose the key authority counts for UI/log audit.
+
+### Verification Before Push
+
+- Python compile passed:
+  - `python3 -m py_compile app/src/main/python/brain.py`
+- PC2 authority inventory probe passed:
+  - `status=OK`
+  - `kind_b_market_judgment_count=37`
+  - `resolved_kind_b_count=37`
+  - `pending_kind_b_count=0`
+  - `live_soft_opportunity_count=6`
+  - `live_context_authority_count=11`
+  - `policy_controlled_count=3`
+  - `legacy_unused_shadow_count=2`
+  - `supply_ladder_shadow_count=2`
+  - `advisory_pattern_shadow_count=13`
+  - `pending_kind_b_constants=[]`
+- Alert timing probe result:
+  - position alert bypassed startup noise as expected.
+  - startup watchlist chatter was suppressed as expected.
+
+### Current PC2 Percentile Status
+
+- The original Kind-B constant list is now fully classified:
+  - market-judgment constants converted to live-soft percentile/context behavior where appropriate.
+  - hard safety gates remain hard only where they protect capital or execution feasibility.
+  - policy constants remain explicit policy, not disguised market percentiles.
+  - supply ladders and candle-pattern interpretation remain shadow/advisory until replay evidence justifies changing candidate supply or pattern behavior.
+- As of this release:
+  - no pending Kind-B constant remains unclassified.
+  - this does not mean every constant became a live percentile gate.
+  - it means each constant now has a declared authority and audit path.
+
+### Important Open Watch Items
+
+- Recent screenshots still showed `ev_below_floor` / `expected_win below 1.10x expected_loss` diagnostics.
+  - Current intent is that A8/EV should not silently hard-block candidates unless explicitly configured.
+  - Next inspection should confirm whether `ev_below_floor` is only shadow/diagnostic or still acting as a real rejection path.
+- Post-close ML evaluation on August 10 produced outcomes but still showed recommendation/rejected persistence verification concerns before the latest schema/retry work.
+  - Tomorrow's session should verify whether `v2.5.68 / b399` keeps evaluation, recommendation outcomes, rejected research, and teacher report paths stable.
+- Several local report/tool artifacts remain untracked in `Marketapp-main-worktree`.
+  - They were intentionally not pushed with this release.
+  - Do not stage them unless explicitly deciding to version those analysis tools/reports.
+- `MarketVivi-git` still has unrelated untracked file:
+  - `PROJECT_KNOWLEDGE_UPDATED_20260723_E1_TABICL.md`
+
+### Next Practical Batch
+
+- Live-market verification:
+  - confirm position alerts still fire after startup/restart.
+  - confirm normal watchlist notifications are not noisy during startup.
+  - confirm generated/watchlist/candidate counts are preserved.
+  - confirm post-close evaluation reaches `DONE` without rejected/recommendation persistence errors.
+- If `ev_below_floor` still acts as a hard rejection:
+  - treat that as the next priority brain logic issue.
+  - do not spend time on cosmetic UI/report refinements until this is resolved.
+
+## 2026-08-11 - v2.5.71 / b402 Censored Percentile Calibration Batch
+
+### Push Intent
+
+- User commanded push after Claude b401 verification analysis and the censored calibration hardening batch.
+- This is a synchronized release target:
+  - Android `versionName = 2.5.71`
+  - Android `versionCode = 402`
+  - Python `BRAIN_VERSION = 2.5.71`
+  - PWA label/cache-bust updated to `v2.5.71 / b402`
+
+### Included Runtime Changes
+
+- PC2 percentile authority now requires generated + rejected union provenance before a live percentile can override the hard fallback.
+- Added exact calibration population marker:
+  - `pc2_generated_rejected_union_v1`
+- Added censored calibration guard:
+  - `pc2_censored_calibration_guard_v2`
+- Added one-tick neutrality proof before percentile authority can become live.
+- Historical daily calibration rows now carry provenance metadata through Supabase `extra_json`.
+- Android Supabase fetch now reads `extra_json` into local Python premium history so live brain logic can verify provenance.
+- Debit/credit candidate population handling now accepts both camelCase and snake_case fields.
+- PC2 tests were updated to reflect the current authority inventory:
+  - `live_soft_opportunity_count = 6`
+  - `live_context_authority_count = 11`
+  - `pending_kind_b_count = 0`
+
+### Verification Before Push
+
+- Passed:
+  - `python -m py_compile app/src/main/python/brain.py tools/c3_context_percentile_backfill.py`
+  - `python -m unittest app/src/main/python/tests/test_c3_censored_calibration.py app/src/main/python/tests/test_stage2a_guarded_ranking.py`
+  - `git diff --check` in both repos
+- Local Android assemble check remains environment-blocked:
+  - `SDK location not found`
+  - needs `ANDROID_HOME` or `local.properties` with `sdk.dir`
+
+### Next Live Verification
+
+- After app update, check that PC2 falls back safely unless the generated + rejected union provenance, censor guard, stability, and one-tick neutrality all pass.
+- Confirm post-close evaluation still persists chosen outcomes and rejected research without the previous PGRST/schema mismatch errors.
+- Confirm EV/A8 diagnostics are not unintentionally reintroduced as a silent hard candidate blocker unless explicitly authorized.
