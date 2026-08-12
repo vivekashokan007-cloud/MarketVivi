@@ -1,3 +1,61 @@
+## 2026-08-12 - v2.5.72 / b403 ML Evaluation Save OOM Fix Shipped
+
+### Release Outcome
+- User authorized shipping after the 2026-08-12 post-close ML auto-evaluation failure.
+- Synchronized release was pushed to both repos:
+  - Marketapp `main`: `0772629a5be04403034b1e82f5190b20ee8433f8`
+  - MarketVivi `main`: `d48d456cf70b190e975e43150624b48bc42c590b`
+- Runtime labels:
+  - Android `versionName = 2.5.72`
+  - Android `versionCode = 403`
+  - Python `BRAIN_VERSION = 2.5.72`
+  - PWA visible label `v2.5.72 · b403`
+
+### Failure Evidence
+- Phone screenshot showed installed app `v2.5.71 · b402`, session complete with `78/78` polls, but ML session rows stayed `0`.
+- Uploaded app log showed `DAY_EVAL_ACTION_FAIL` caused by Android heap `OutOfMemoryError` while saving evaluation outcomes:
+  - `SupabaseClient.saveEvaluationOutcomes$stripShadowTeacher`
+  - `SupabaseClient.saveEvaluationOutcomes`
+  - `MarketMLService.runDayEvaluation`
+- Supabase read-only counts for `2026-08-12` before the fix:
+  - `ml_brain_snapshots = 77`
+  - `ml_generated_candidates = 3523`
+  - `ml_evaluation_outcomes = 0`
+  - `ml_recommendation_outcomes = 0`
+  - `ml_rejected_candidate_outcomes = 0`
+- Interpretation: the failure happened before outcome persistence; this was app-side native heap pressure, not a Supabase schema/RLS problem.
+
+### Fix Shipped
+- `SupabaseClient.saveEvaluationOutcomes()` no longer eagerly builds every fallback JSON array.
+- Outcome fallback payloads are now built lazily only after a failed write attempt.
+- Row-copy fallback logic avoids `JSONObject(src.toString())`, removing a large stringify/reparse allocation path.
+- Rejected outcome rows now reuse the source `JSONObject` for `outcome_json` instead of reparsing the full row.
+- No teacher formula, gate/ranking policy, Supabase schema, or RLS behavior was changed.
+
+### Verification
+- Local:
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `python3 -m unittest app/src/main/python/tests/test_stage2a_guarded_ranking.py`
+  - `node --check app.js`
+  - `git diff --check` in both repos
+- Local Android Kotlin compile remained unavailable in this workspace because no Java runtime is installed.
+- GitHub Actions passed:
+  - Signed release: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31598500956`
+  - Debug APK validation: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31598501065`
+  - MarketVivi Pages: `https://github.com/vivekashokan007-cloud/MarketVivi/actions/runs/31598499550`
+- APK release:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.72`
+  - asset: `app-release.apk`
+  - asset digest: `sha256:8551b1e09a68a3b2107f0abb6b7a9e1f844b7a849a2651c14b4278915a2f241a`
+
+### Next Live Check
+- Install/update phone to `v2.5.72 / b403`.
+- Next post-close evaluation should write non-zero rows to:
+  - `ml_evaluation_outcomes`
+  - `ml_recommendation_outcomes`
+  - `ml_rejected_candidate_outcomes`
+- If rows are still zero, inspect app logs first for the new `EVAL_OUTCOME_POST_*` mode/fallback evidence before changing ML logic.
+
 ## 2026-08-09 - Current State: v2.5.62 / b393 PC2 Percentile Gate-Basis Release
 
 ### Release Intent
