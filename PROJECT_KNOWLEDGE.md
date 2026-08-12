@@ -19024,3 +19024,152 @@ git -C /abs/path/to/repo \
 - After app update, check that PC2 falls back safely unless the generated + rejected union provenance, censor guard, stability, and one-tick neutrality all pass.
 - Confirm post-close evaluation still persists chosen outcomes and rejected research without the previous PGRST/schema mismatch errors.
 - Confirm EV/A8 diagnostics are not unintentionally reintroduced as a silent hard candidate blocker unless explicitly authorized.
+
+## 2026-08-12 - Current State Reconciliation After Fresh Git Clone
+
+### Local Workspace State
+
+- Fresh local working copies were created under `/root/New Project (1)`:
+  - `Marketapp`
+  - `MarketVivi`
+- Both repos are on `main` and were clean after clone.
+- Current GitHub source of truth is newer than the earlier uploaded knowledge snapshot:
+  - Marketapp `main`: `6af138a42bd75d4c4554fdbf1fdcfd4c3bb97911`
+  - MarketVivi `main`: `a7636502a8be4a1e143cdd72fdf60eb208ab9b2b`
+- Current synchronized version:
+  - Android `versionName = 2.5.71`
+  - Android `versionCode = 402`
+  - Python `BRAIN_VERSION = 2.5.71`
+  - PWA visible label `v2.5.71 / b402`
+  - PWA cache-bust `app.js?v=1298`
+
+### Baseline Verification In This Workspace
+
+- Passed:
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - `node --check app.js`
+- Android/Kotlin local compile remains expected to be blocked in this Codex environment unless Android SDK is configured.
+- GitHub Actions remains the reliable Android build/sign validation path.
+
+### Pending-Work Reconciliation
+
+- PC2 Kind-B authority classification is code-complete as of current `v2.5.71 / b402`.
+  - Current probe from `brain.py` reports:
+    - `status = OK`
+    - `kind_b_market_judgment_count = 37`
+    - `resolved_kind_b_count = 37`
+    - `pending_kind_b_count = 0`
+    - `live_soft_opportunity_count = 6`
+    - `live_context_authority_count = 11`
+    - `policy_controlled_count = 3`
+    - `legacy_unused_shadow_count = 2`
+    - `supply_ladder_shadow_count = 2`
+    - `advisory_pattern_shadow_count = 13`
+- PC2 Batch C is no longer merely shadow in current code:
+  - `DOW_THRESHOLD`
+  - `CRUDE_THRESHOLD`
+  - `GIFT_THRESHOLD`
+  - current status: `LIVE_CONTEXT_WITH_CONSTANT_FALLBACK`
+- PC2 Batch D is implemented:
+  - `TARGET_NEAR_RATIO`
+  - `STOP_LOSS_RATIO`
+  - current status: `LIVE_CONTEXT_WITH_CONSTANT_SAFETY_FLOOR`
+- PC2 Batch E alert timing is implemented:
+  - open-position risk/exit/book/data-quality alerts bypass broad startup noise suppression.
+  - routine and entry/session timing remain policy-controlled.
+- G2 teacher-path diagnostics are code/schema-complete:
+  - evaluation, recommendation parity, and rejected-candidate rows have the diagnostic columns and writer allowlists.
+- Rejected-candidate context parity is code/schema-complete:
+  - `iv_richness`
+  - `width`
+  - `prob_profit`
+- Margin shadow evidence is code-complete:
+  - `marginByCandidate`
+  - `top_candidate_margin`
+  - `margin_shadow_summary`
+  - explicit `capital_gate_behavior = UNCHANGED_MAX_LOSS_BASED`
+- `ranked_candidates_full` and `build3_flow` preservation are code-complete through Python snapshot context and Kotlin/native compaction paths.
+- Censored percentile calibration hardening is code-complete:
+  - generated + rejected union provenance is required.
+  - `pc2_generated_rejected_union_v1` is the expected calibration population marker.
+  - `pc2_censored_calibration_guard_v2` is present.
+  - one-tick neutrality proof is required before percentile authority can override hard fallback.
+
+### Still Open / Needs Evidence
+
+- Live/post-close verification remains needed:
+  - PC2 must fall back safely unless union provenance, censor guard, stability, and one-tick neutrality all pass.
+  - chosen outcomes, recommendation outcomes, and rejected research must persist without PGRST/schema mismatch errors.
+  - G2 diagnostic fields should be non-null for fresh `price_integrity = OK` rows.
+  - margin shadow logs and saved `margin_shadow_summary` should be observed during live market polling.
+- EV/A8 remains the next brain-logic watch item:
+  - confirm `ev_below_floor` / `expected_win below 1.10x expected_loss` is not silently acting as an unauthorized hard candidate blocker.
+  - if it is still hard-blocking, prioritize that before cosmetic UI/report work.
+- PC2 Batch F remains classified but not live behavior:
+  - `BNF_WIDTHS` and `NF_WIDTHS` remain supply-ladder shadow.
+  - candle-pattern constants remain advisory/shadow and need replay evidence before changing live candidate supply or strategy behavior.
+- One-chain reconstruction / candle-history reconstruction gate still has no current code evidence of completion in the cloned repo.
+- `ml_generated_candidates` row builder still does not clearly stamp `app_version`; the earlier residual remains valid unless a schema-safe implementation is added.
+
+### Standing Guardrails
+
+- Push only on explicit user command.
+- Any app-deliverable code change must keep Android, Python, and PWA versions synchronized.
+- Do not make Upstox margin affect live capital gating without a separate explicit risk-policy decision.
+- Supabase writes must remain bounded, resumable, and throttling-aware.
+- Claude directives should be verified against local code before implementation.
+
+## 2026-08-12 - v2.5.72 / b403 ML Evaluation Save OOM Fix
+
+### Trigger Evidence
+
+- User reported the August 12 ML auto evaluation failed after the session completed.
+- Uploaded phone screenshot showed:
+  - app `v2.5.71 / b402`
+  - session complete with `78/78` slots
+  - ML tab session rows `0`
+- Uploaded log showed native failure at `17:50:45 IST`:
+  - `DAY_EVAL_ACTION_FAIL`
+  - `java.lang.OutOfMemoryError`
+  - heap growth limit `268435456`
+  - stack entered `SupabaseClient.saveEvaluationOutcomes$stripShadowTeacher`
+- Supabase read-only verification for `2026-08-12` showed:
+  - `ml_brain_snapshots = 77`
+  - `ml_generated_candidates = 3523`
+  - `ml_evaluation_outcomes = 0`
+  - `ml_recommendation_outcomes = 0`
+  - `ml_rejected_candidate_outcomes = 0`
+- Interpretation:
+  - polling and candidate evidence existed.
+  - Python evaluation had reached the save phase.
+  - outcome persistence failed before any outcome rows landed.
+  - this was a native heap/payload-preparation failure, not a Supabase schema/PGRST failure.
+
+### Fix Prepared
+
+- Synchronized release target:
+  - Android `versionName = 2.5.72`
+  - Android `versionCode = 403`
+  - Python `BRAIN_VERSION = 2.5.72`
+  - PWA visible label `v2.5.72 · b403`
+  - PWA cache-bust `app.js?v=1299`
+- `SupabaseClient.saveEvaluationOutcomes()` no longer materializes every fallback payload up front.
+  - full rows are attempted first.
+  - fallback payloads are built lazily only if needed.
+  - row-copy fallbacks now copy JSON object keys directly instead of `JSONObject(src.toString())` stringify/reparse cloning.
+- Rejected research `outcome_json` now stores the existing source object reference instead of reparsing it from string.
+- Behavior intent:
+  - no teacher formula change.
+  - no ranking/gate change.
+  - no Supabase schema change.
+  - only reduce native memory pressure during post-close outcome persistence.
+
+### Required Post-Install Check
+
+- Install/update to `v2.5.72 / b403`.
+- Retry/evaluate `2026-08-12` if the app still exposes it as retryable.
+- Confirm Supabase rows become non-zero for:
+  - `ml_evaluation_outcomes`
+  - `ml_recommendation_outcomes`
+  - `ml_rejected_candidate_outcomes`
+- If save still fails, inspect the next log for the first HTTP/PGRST error because this patch should remove the pre-write OOM class.
