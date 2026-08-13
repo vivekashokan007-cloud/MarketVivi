@@ -19606,3 +19606,20 @@ git -C /abs/path/to/repo \
 - Python: `BRAIN_VERSION = 2.5.76`.
 - PWA: visible label `v2.5.76 · b407` and title updated.
 - Both `Marketapp` and `MarketVivi` must be committed and pushed together.
+
+## 2026-08-13 - PC2 Batch F Candle Percentile Backfill Completed
+
+- A dedicated resumable tool was added: `tools/pc2_batch_f_candle_backfill.py`.
+- It reconstructs the existing 15-minute NF/BNF candle patterns from the ordered spot values already persisted in `ml_brain_snapshots`.
+- It writes research-only, point-in-time rows to `ml_context_percentile_history`; it never changes historical candidates, selected strategies, outcomes, or paper P&L.
+- Stored variables per index/poll are:
+  - `pc2f_candle_bullish_strength`
+  - `pc2f_candle_bearish_strength`
+  - `pc2f_candle_net_strength`
+  - `pc2f_candle_caution_count`
+- The run uses deterministic row IDs, small chunked writes, and a local per-day checkpoint. Re-running a completed range is idempotent; an interruption resumes at the next unfinished day.
+- Completed source range: `2026-06-01` through `2026-08-13`.
+  - calendar checkpoints: `74`
+  - remote Batch F candle rows verified: `32,392`
+  - this equals `4` metrics x `2` indices for every persisted snapshot in the completed range.
+- The candle contribution remains capped at `+/-0.03` in paper-mode ranking and remains non-veto, non-live evidence until a later outcome study validates any stronger authority.
