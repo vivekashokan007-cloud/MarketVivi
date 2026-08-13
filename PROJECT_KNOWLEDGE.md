@@ -19536,3 +19536,73 @@ git -C /abs/path/to/repo \
 - Retry or run the next completed market-day evaluation.
 - Confirm `Daily Teacher Research`, `Class A Correctness Gate`, and Stage 2A cards load without the unavailable/error state.
 - Confirm the app log contains `TEACHER_RESEARCH_REPORT` rather than `TEACHER_RESEARCH_REPORT_FAIL`.
+
+## 2026-08-13 - PC2 Paper-Primary Selector Prepared: v2.5.75 / b406
+
+### Decision
+- Owner approved a six-month no-real-money validation period.
+- In `executionMode = paper`, PC2 now owns the global primary candidate selection.
+- The deterministic rank remains stored on every candidate as shadow/comparator evidence; it no longer decides the paper primary.
+- Sandbox and live modes retain their existing deterministic ordering. PC2 paper authority is deliberately unavailable outside paper mode.
+
+### What Changed
+- Added `pc2_paper_primary_v1` in Python.
+  - Existing candidate construction, capital, and direction-safety gates remain hard constraints.
+  - PC2 sorts eligible candidates globally by existing PC2 gate outcomes, bounded `contextPercentileScore`, live percentile-authority count, then risk-normalized economics and probability as tie-breakers.
+  - This is not a new uncalibrated hard threshold system.
+- Fixed the primary snapshot routing bug.
+  - The snapshot primary is now `watchlist[0]`, the global PC2 paper primary.
+  - The old `top_5_nf + top_5_bnf` reconstruction could overwrite a BNF global candidate with an NF candidate and is removed from primary routing.
+- Persisted `pc2PaperRank`, eligibility, selector version, mode, and policy summary in the research snapshot and Android teacher-research compactor.
+- PC2 Batch F supply ladders and candle patterns remain advisory/shadow because they do not yet have replay authority. They are not silently promoted to hard gates.
+
+### Synchronized Release Prepared
+- Android: `versionName = 2.5.75`, `versionCode = 406`.
+- Python: `BRAIN_VERSION = 2.5.75`.
+- PWA: visible label `v2.5.75 · b406` and title updated.
+- Both repositories must be pushed together:
+  - `Marketapp`
+  - `MarketVivi`
+
+### Validation
+- `python3 -m py_compile app/src/main/python/brain.py`: passed.
+- Focused Python suite: 49 tests passed, including PC2 selector, snapshot routing, percentile, teacher, gate, and ranking regressions.
+- `git diff --check`: passed in both repositories.
+- Local Android build remains unavailable in this environment because JDK 17/Android SDK are unavailable. CI must validate the APK after push.
+
+## 2026-08-13 - Batch F Paper Supply and Candle Context Prepared: v2.5.76 / b407
+
+### Decision
+- Batch F is now active for paper research only.
+- Sandbox and live behavior remain unchanged.
+- It supplements the PC2 paper-primary selector; it does not remove capital, direction, construction, EV, or execution-readiness safeguards.
+
+### Paper Supply Ladder
+- The existing baseline width ladders remain available.
+- Paper-only strike-valid additions are generated when they match the chain interval:
+  - BNF: `100`, `700`, `900`, `1200` in addition to the existing ladder.
+  - NF: `50`, `350`, `500` in addition to the existing ladder.
+- Every candidate records whether its width came from the baseline or paper-expanded ladder. Normal option-chain leg availability and the existing risk/capital gates still decide whether a candidate survives.
+
+### 15-Minute Candle Context
+- Existing 15-minute candles now contribute bounded evidence to the PC2 paper context score.
+- A bullish/bearish pattern that agrees with a directional candidate adds evidence; a conflicting pattern subtracts it.
+- The complete Batch F candle contribution is capped at `+/-0.03` per candidate.
+- Doji and spinning-top patterns are stored as caution evidence but do not force a trade or act as hard vetoes.
+- Candle patterns do not create candidates and do not bypass safety gates.
+- If no candidate is both capital-safe and direction-safe, PC2 produces no paper primary and forces `WAIT`; it does not surface the least-bad unsafe candidate.
+
+### Evidence and Validation
+- Candidate, snapshot, and Android teacher-research compact payloads persist width provenance and candle-score components.
+- `pc2_batch_f_supply_pattern` now reports `PAPER_ACTIVE_BOUNDED`.
+- Validation passed:
+  - `python3 -m py_compile app/src/main/python/brain.py`
+  - focused Python suite: 53 tests passed
+  - direct Stage 1 strike-pair checks: passed
+  - `git diff --check`: passed
+
+### Synchronized Release Prepared
+- Android: `versionName = 2.5.76`, `versionCode = 407`.
+- Python: `BRAIN_VERSION = 2.5.76`.
+- PWA: visible label `v2.5.76 · b407` and title updated.
+- Both `Marketapp` and `MarketVivi` must be committed and pushed together.
