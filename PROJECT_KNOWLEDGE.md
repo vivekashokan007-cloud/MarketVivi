@@ -1,3 +1,272 @@
+## 2026-08-13 - Current State: v2.5.73 / b404 C3 Auto Finalization Shipped, Teacher Research Watch
+
+### Post-Retry Backfill Verification
+- The user's retry completed on the installed `v2.5.73 / b404` build.
+- The retry still reported that the teacher research artifact could not be loaded/generated for `2026-08-13`; core evaluation persistence completed and the UI exposed the derived Teacher v1 and chosen-vs-candidate metrics.
+- Production Supabase verification before backfill:
+  - `ml_brain_snapshots`: `78` rows, `09:15`-`15:40` IST coverage.
+  - `ml_generated_candidates`: `3800` rows.
+  - `ml_context_percentile_history` for `2026-08-13`: no rows.
+- Manual recovery/backfill completed after retry:
+  - C3: `6496` poll-level rows written for `2026-08-13` from the completed snapshot/candidate union.
+  - B1: `7` daily rows written for `2026-08-13`: `vix`, `fii_short_pct`, `fii_cash`, `dii_cash`, `fii_idx_fut`, `fii_stk_fut`, and `bias_net`.
+  - PCR was intentionally excluded from B1, as required by the existing source-definition rule.
+  - All rows use `history_source='backfill'`; no live rows were fabricated for this pre-b404 session.
+- The resumable local C3 progress file now records `2026-08-13` as complete. The existing backfill reports and CSV artifacts remain in `Marketapp/reports/c3_context_percentile_backfill_20260803/`.
+- Remaining immediate work is teacher-research generation hardening/retry diagnosis. C3/B1 data history for today is complete and verified.
+
+### Release Outcome
+- User authorized C3 automation implementation and push.
+- Marketapp `main` was pushed:
+  - commit: `36f123eb762ef66a1e739d5f370d654687c15857`
+  - message: `Automate C3 percentile finalization`
+- Runtime labels:
+  - Android `versionName = 2.5.73`
+  - Android `versionCode = 404`
+  - Python `BRAIN_VERSION = 2.5.73`
+- GitHub Actions passed:
+  - Signed release: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31692100398`
+  - Debug APK validation: `https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/31692100389`
+- APK release:
+  - `https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.5.73`
+  - asset: `app-release.apk`
+  - asset digest: `sha256:ec816f93a80e95da7b56f3db89ca8ce611430d92c731422f153b8e1c0a4b89fb`
+- Local Android compile was not run in this workspace because no JDK/Android SDK is configured here; CI provided build validation.
+
+### C3 Automation Implemented
+- Implemented C3 Stages 1-2 only, matching Claude's `GO C3 / HOLD B1` ruling:
+  - compact canonical C3 frame capture during live polls
+  - pure Python `c3_percentile_finalizer.py`
+  - `brain.c3_finalize_frames(...)` bridge
+  - local snapshot fallback preserves `c3_finalization_frame`
+  - `MarketMLService.ACTION_PERCENTILE_FINALIZE` runs separately after successful ML evaluation
+  - bounded prior-history seed fetch from `ml_context_percentile_history`
+  - prior-outcome fetch uses only `session_date < target_day`, `label_version='teacher_v1'`, `price_integrity='OK'`
+  - chunked C3 upsert with pre-retry existing-key query and final remote verification
+  - `history_source='live'`, poll-level only
+  - C3 failure does not unset or rerun completed ML evaluation
+- B1 was intentionally not implemented or enabled.
+
+### C3 Verification Before Push
+- Passed:
+  - `python3 -m py_compile app/src/main/python/brain.py app/src/main/python/c3_percentile_finalizer.py`
+  - `PYTHONPATH=app/src/main/python python3 -m unittest app/src/main/python/tests/test_c3_percentile_finalizer.py`
+  - `git diff --check`
+- Earlier implementation checks also passed:
+  - C3 bridge smoke test produced rows
+  - snapshot capture smoke test produced C3 frame
+  - parity against the manual C3 extractor matched persisted values after fixing `rejected_sigma_otm_median`
+  - targeted Python suite passed except the known pre-existing `test_phase5_gate_registry.py` mismatch
+- `test_phase5_gate_registry.py` remains a pre-existing source/registry mismatch, not introduced by C3 automation.
+
+### 2026-08-13 Phone / Supabase Status
+- User reported ML evaluation completed but showed errors on phone screenshots.
+- Phone screenshots initially still showed installed app `v2.5.72 / b403`, so the newly shipped C3 automation was not active for that already-captured session.
+- Production Supabase verification for `2026-08-13`:
+  - `ml_brain_snapshots`: `78`
+  - `ml_generated_candidates`: `3800`
+  - `ml_evaluation_outcomes`: `14538`
+  - `ml_recommendation_outcomes`: `14538`
+  - `ml_rejected_candidate_outcomes`: `616`
+  - all checked evaluation rows were `label_version='teacher_v1'` and `price_integrity='OK'`
+  - lane counts:
+    - BNF intraday: `4118` alternatives, `0` chosen
+    - NF intraday: `10420` rows, `75` chosen, `10345` alternatives
+  - `ml_context_percentile_history` with `history_source='live'` for `2026-08-13`: `0`, expected because the session was captured before `b404` was installed
+- Interpretation:
+  - ML evaluation data is safe and persisted.
+  - The visible phone error is the derived `Daily Teacher Research` artifact failing to generate/load, not core ML outcome persistence.
+  - Retry after installing `b404` is expected to attempt teacher-research rebuild; if it still fails, ship a narrow teacher-research hardening patch.
+
+### Current Immediate Watch Items
+- Confirm phone is installed on `v2.5.73 / b404`.
+- Watch the retry result:
+  - if teacher research rebuild succeeds, no urgent patch is needed
+  - if teacher research remains unavailable, harden teacher research generation so it is lighter/resumable and can rebuild from Supabase evidence without making completed ML evaluation look failed
+- First true C3 auto-finalization test requires a full session captured on `b404`.
+- After next post-close ML evaluation on `b404`, verify `ml_context_percentile_history` gets poll-level rows with `history_source='live'`.
+- Run at least 5 clean C3 sessions before considering any B1 live work.
+
+### Grok / Gemini Consultation Decisions
+- Grok packet (`v2.5.71 / b402` basis) was reviewed against current code:
+  - keep `CONTEXT_PERCENTILE_MIN_SUPPORT = 10`
+  - do not promote `probProfit`
+  - do not harden EV
+  - one-lot `TRANSITION` must be expressed through rupee risk budget / width-structure, not reduced lot size
+  - future state work should split `DATA_BLOCKED` from market `TRAP`
+  - future B0-B4 state batch should be shadow-only first: data health, margin provenance, shadow state labels, written risk-budget actuator contract, post-close outcome review
+- Gemini assessment was reviewed and corrected:
+  - correct that PC2 remains subordinate and needs ledger review
+  - incorrect that all PC2 batches A-D are purely shadow-only
+  - current code has live-soft/live-context pieces for some PC2 constants and `contextPercentileScore` is already in `rank_candidates`
+  - incorrect/outdated that raw `premiumEdge` alone drives top-1; current ranking uses `adjustedEdgePerRisk`
+  - reject immediate active veto plus ranker rewrite until outcome evidence exists
+- Correct next PC2 action:
+  - measure current winner vs percentile-preferred winner after clean sessions
+  - analyze PC2 ledger before changing rank order or granting veto authority
+
+### Security / Operations
+- A GitHub PAT was shared in chat and used once as an ephemeral push credential after explicit user authorization.
+- It was not stored in project files or git config.
+- Owner should rotate the PAT because it was exposed in chat.
+
+### Historical Note
+- The next section was written before `b404` shipped and remains as the audit trail for the design/backfill work.
+
+## 2026-08-13 - Current State: C3 Backfill Complete, Auto Percentile Finalization Pending
+
+### Session Outcome
+- The 2026-08-12 ML evaluation issue was fixed and shipped in `v2.5.72 / b403`.
+- User confirmed on phone that ML evaluation completed successfully after re-evaluation:
+  - app showed `v2.5.72 · b403`
+  - `Day evaluation: DONE`
+  - session `12 Aug`
+  - outcomes persisted: `13776`
+  - evaluation rows persisted: `13310`
+  - recommendation rows persisted separately
+  - rejected research mode: `separate_table`
+- ML tab showed valid research evidence again:
+  - session rows: `1000`
+  - NF intraday rows: `730`, chosen `6`, alternatives `724`
+  - BNF intraday rows: `270`, chosen `0`, alternatives `270`
+  - Class A correctness gate: `PASS`
+  - Paper training progress: `1000/500`, status `READY FOR RETRAIN GATE`
+
+### C3 Context Percentile Backfill Status
+- Manual resumable C3 context percentile backfill was continued and completed for the recent missing days and historical June/May blocks.
+- Production Supabase project used for verification:
+  - project ref: `fdynxkfxohbnlvayouje`
+  - table: `public.ml_context_percentile_history`
+- Verified production state after backfill:
+  - daily backfill rows: `569`
+  - daily date range: `2025-10-23` to `2026-08-11`
+  - poll-level backfill rows: `341570`
+  - poll-level date range: `2026-05-25` to `2026-08-12`
+  - `history_source='live'`: no rows yet
+- Recent date detail:
+  - `2026-08-11`: B1 daily rows `7`, C3 poll rows `6610`
+  - `2026-08-12`: B1 daily rows `0`, C3 poll rows `6413`
+- June final verification included:
+  - `2026-06-29`: `7132` C3 rows
+  - `2026-06-30`: `6804` C3 rows
+- Local resumable progress artifact:
+  - `Marketapp/reports/c3_context_percentile_backfill_20260803/c3_context_percentile_incremental_progress.json`
+- Local C3 tooling/worktree status at knowledge update time:
+  - `Marketapp/tools/c3_context_percentile_backfill.py` modified
+  - `Marketapp/tools/c3_context_percentile_incremental.py` untracked
+  - `Marketapp/reports/c3_context_percentile_backfill_20260803/` untracked
+
+### Manual Process Used
+- The manual C3 process reads completed session snapshots and generated candidates, reconstructs approximately 80 context variables per poll, and compares each value only against prior values.
+- For each poll and variable:
+  - seed prior 30/60 values
+  - compute percentile
+  - emit the row
+  - append the current value only after computing its percentile
+- This preserves point-in-time ordering inside the same day.
+- Writes are deterministic, chunked, resumable, and verified by existing remote keys/counts.
+- A normal completed day produces roughly `6000-7000` C3 poll-level rows.
+
+### Claude Ruling On Automation
+- Claude reviewed the automatic percentile finalization design and returned:
+  - overall ruling: `MODIFY`
+  - `GO` on C3 automatic writes after gates
+  - `HOLD` on B1 live writes
+- Approved staged direction:
+  - Stage 1: compact frame capture plus local dry-run, no writes
+  - Stage 2: C3 automatic write with `history_source='live'`, poll-level only
+  - Stage 3: run at least 5 clean C3 sessions while B1 remains dry-run only
+  - Stage 4: B1 live write only after rollback flag, source-quality approval, historical parity gates, and Vivek sign-off
+- Claude explicitly ruled that B1 and C3 should not be activated together because B1 daily rows can affect future live ranking through the daily percentile reader, while C3 poll-level rows currently do not.
+
+### Codex Analysis After Claude Ruling
+- Important correction found: current live `context_percentiles.current_values` are not sufficient for exact manual C3 parity.
+- On 2026-08-12 production snapshots:
+  - `77` total snapshots
+  - `75` snapshots had nonempty live `context_percentiles`
+  - sample snapshot `4083` had `83` variables compared to manual backfill
+  - `39` exact numeric matches
+  - `11` both null
+  - `33` mismatches
+- Material mismatch examples:
+  - `ev_per_1k_menu_best`: live `-170.3682` vs backfill `59.322034`
+  - `rejected_count`: live `135` vs backfill `20`
+  - `prob_profit_menu_median`: live `0.1209` vs backfill `0.192`
+  - outcome-prior variables were null live but populated in backfill
+- Conclusion: automatic C3 cannot blindly persist the existing live artifact as the canonical row source. The app must either capture canonical recording values at poll time or share the same extractor logic used by the manual finalizer.
+
+### Current Design Decision
+- Yes, the post-market process can be automated inside the app after market close.
+- Target sequence:
+  - market closes
+  - ML evaluation runs and is marked done
+  - percentile finalization runs separately
+  - C3 poll-level rows are calculated
+  - rows are uploaded in small chunks
+  - remote verification runs
+  - percentile sync is marked done
+- Percentile finalization must be separate from ML evaluation state. If percentile finalization fails, the successful ML evaluation must remain done.
+- C3 should be automated first because it removes almost all daily manual work and has low current behavioral risk.
+- B1 should remain manual or dry-run until input parity, source-quality rollback, and approval gates are implemented.
+
+### Required Gates Before C3 Auto Write
+- Exact parity against the manual C3 tool for at least one completed session:
+  - IDs
+  - current values
+  - `pct_30`
+  - `pct_60`
+  - `support_count`
+  - ordering
+  - metadata/provenance
+- Ordering test:
+  - poll 1 excludes itself
+  - poll 2 sees only poll 1
+  - poll 3 sees only polls 1-2
+- Leakage test using prior sessions only:
+  - `session_date < target_day`
+  - `label_version='teacher_v1'`
+  - `price_integrity='OK'`
+- Interrupted upload test, including lost acknowledgement after successful server write.
+- Memory test on a full 78-poll session.
+- Evaluation independence test:
+  - forced percentile failure must not unset or rerun completed ML evaluation.
+
+### B1 Status
+- Manual B1 variables remain:
+  - `vix`
+  - `fii_short_pct`
+  - `fii_cash`
+  - `dii_cash`
+  - `fii_idx_fut`
+  - `fii_stk_fut`
+  - `bias_net`
+- PCR stays excluded.
+- Signed FII/DII values must remain signed.
+- B1 for `2026-08-12` is still missing in production at the time of this update.
+- B1 live automation is not approved yet because daily `live` rows are preferred over `backfill` rows by the reader and can affect future ranking.
+- Required B1 future controls:
+  - remote approval/source-quality flag honored by the reader
+  - explicit rollback by config, not deletion
+  - dry-run comparison across at least 10 historical sessions
+  - missing variable handling as `PENDING` then explicit `UNAVAILABLE`
+  - owner sign-off before live writes
+
+### Security / Operations Notes
+- Supabase `ml_context_percentile_history` was found write-capable for app-originated roles during earlier verification.
+- RLS/security should be reviewed deliberately before enabling app-originated C3 writes; do not abruptly enable RLS mid-feature.
+- A GitHub PAT was shared in chat during the session. It should be treated as exposed and rotated by the owner; do not store it in project files.
+- No automation coding has been authorized yet. The user explicitly requested study/design first and said not to code before saying go.
+
+### Next Engineering Work When User Says Go
+- Implement Stages 1-2 only:
+  - compact canonical frame capture during live polls
+  - pure percentile finalizer shared/testable outside Android service code
+  - separate `ACTION_PERCENTILE_FINALIZE` state after ML evaluation done
+  - C3 chunked upsert with mandatory pre-retry existing-key query
+  - verification and status reporting in ML tab/logs
+- Keep B1 as dry-run/log-only until the B1 gates are met.
+- Do not push automation changes without explicit user command.
+
 ## 2026-08-12 - v2.5.72 / b403 ML Evaluation Save OOM Fix Shipped
 
 ### Release Outcome
@@ -19231,3 +19500,39 @@ git -C /abs/path/to/repo \
   - `ml_recommendation_outcomes`
   - `ml_rejected_candidate_outcomes`
 - If save still fails, inspect the next log for the first HTTP/PGRST error because this patch should remove the pre-write OOM class.
+## 2026-08-13 - Teacher Research Artifact Hardening Prepared: v2.5.74 / b405
+
+### Root Cause Confirmed
+- The 2026-08-13 ML evaluation persisted its evaluation and recommendation rows successfully, but teacher research generation failed afterward.
+- The failure boundary was the Kotlin-to-Python call to `session_teacher_research_report`, where compact snapshots and report outcomes were serialized to large JSON strings while the source arrays and Python copies were also alive.
+- This created avoidable Android heap and bridge pressure. The previous 256 MB Android heap OOM makes this the leading cause, although the phone did not provide a fresh exception line proving the exact allocation failure.
+- This is not a Supabase data-loss issue and not a C3 finalization issue.
+
+### Fix Prepared
+- Teacher report inputs are now written to temporary JSON files and passed to Python by path for both:
+  - immediate post-evaluation generation in `MarketMLService`;
+  - local retry rebuild and the remote recovery path in `NativeBridge`.
+- `brain.py` accepts either legacy JSON strings or file paths, preserving compatibility with existing tests and callers.
+- Temporary bridge files are deleted in `finally` blocks after Python returns.
+- Failed local rebuilds clear the rebuild key, so a later retry is not suppressed when the source files have not changed.
+
+### Synchronized Release Prepared
+- Android: `versionName = 2.5.74`, `versionCode = 405`.
+- Python: `BRAIN_VERSION = 2.5.74`.
+- PWA: visible version `v2.5.74 · b405`, title updated, stylesheet cache-bust advanced to `1141`.
+- Both repositories are intended to be pushed together after validation:
+  - `Marketapp`
+  - `MarketVivi`
+
+### Validation
+- `python3 -m py_compile app/src/main/python/brain.py app/src/main/python/c3_percentile_finalizer.py`: passed.
+- `PYTHONPATH=app/src/main/python python3 -m unittest app/src/main/python/tests/test_stage2a_guarded_ranking.py`: 33 tests passed.
+- Teacher report file-input smoke test: passed.
+- `git diff --check`: passed in both repositories.
+- Local Android build remains unavailable because this environment has no JDK/Android SDK; CI must validate the APK after push.
+
+### Tomorrow's Check
+- Install `v2.5.74 / b405`.
+- Retry or run the next completed market-day evaluation.
+- Confirm `Daily Teacher Research`, `Class A Correctness Gate`, and Stage 2A cards load without the unavailable/error state.
+- Confirm the app log contains `TEACHER_RESEARCH_REPORT` rather than `TEACHER_RESEARCH_REPORT_FAIL`.
