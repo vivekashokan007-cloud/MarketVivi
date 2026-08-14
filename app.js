@@ -4681,27 +4681,31 @@ function renderWatchlist(snapshot = null) {
 
     // Display-only: Python/Kotlin brain owns candidate generation, ranking, and watchlist selection.
     const brainWatchlist = Array.isArray(bd.watchlist) ? bd.watchlist : [];
-    const executable = brainWatchlist.length;
+    const entryReadyCandidates = brainWatchlist.filter(c => c?.entryEligible === true);
+    const executable = entryReadyCandidates.length;
     const total = (bd.generated_candidates || []).length;
 
     // ═══ GO VERDICT BANNER ═══
     const biasLabel = bd.effective_bias?.label || latestPoll?.bias?.label || baseline?.bias?.label || 'NEUTRAL';
     const vix = latestPoll?.vix || baseline?.vix || 0;
     const modeLabel = STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING';
-    const goClass = executable >= 3 ? 'go-banner go-green' : executable >= 1 ? 'go-banner go-yellow' : 'go-banner go-grey';
-    const goIcon = executable >= 3 ? '✅' : executable >= 1 ? '🟡' : '⏹';
+    const goClass = executable >= 1 ? 'go-banner go-green' : brainWatchlist.length ? 'go-banner go-yellow' : 'go-banner go-grey';
+    const goIcon = executable >= 1 ? '✅' : brainWatchlist.length ? '🟡' : '⏹';
 
     const brainVerdict = bd.verdict || {};
-    const brainStrategyLabel = brainVerdict.strategy ? friendlyType(brainVerdict.strategy) : '';
-    const brainActionLabel = brainVerdict.action ? String(brainVerdict.action).replace('_', ' ') : '';
+    const marketThesis = brainVerdict.market_thesis || {};
+    const displayedStrategy = brainVerdict.strategy || marketThesis.strategy;
+    const displayedAction = brainVerdict.strategy ? brainVerdict.action : marketThesis.action;
+    const brainStrategyLabel = displayedStrategy ? friendlyType(displayedStrategy) : '';
+    const brainActionLabel = displayedAction ? String(displayedAction).replace('_', ' ') : '';
     const brainRegimeType = bd.regime?.type || bd.marketPhase?.type || '';
     const brainRangeDetected = brainRegimeType === 'range'
         || brainVerdict.strategy === 'IRON_CONDOR'
         || brainVerdict.strategy === 'IRON_BUTTERFLY';
 
     let html = `<div class="${goClass}">
-        <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : 'WAIT'} · ${modeLabel}</div>
-        <div class="go-detail">${brainWatchlist.length} brain watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : brainWatchlist.length ? 'MONITOR' : 'WAIT'} · ${modeLabel}</div>
+        <div class="go-detail">${executable} entry-ready · ${brainWatchlist.length} monitor/watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
         ${STATE.brainRefreshPending ? `<div class="go-detail" style="font-size:11px;color:var(--accent)">🔄 Refreshing ${STATE.tradeMode.toUpperCase()} candidates...</div>` : ''}
         ${(() => {
             if (!STATE.lastScanTime) return '';
@@ -4721,7 +4725,7 @@ function renderWatchlist(snapshot = null) {
                 ? `<div class="go-detail" style="font-size:11px; color:${driftColor}">${driftIcon} Morning: ${morningL} · Now: ${liveL} · Drift: ${drift > 0 ? '+' : ''}${drift}${STATE.driftOverridden ? ' · OVERRIDDEN' : ''}</div>`
                 : `<div class="go-detail" style="font-size:11px; color:var(--green)">✅ Plan holding: ${morningL}</div>`;
         })() : ''}
-        ${brainStrategyLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">🧠 Brain strategy: ${brainStrategyLabel}${brainActionLabel ? ' · ' + brainActionLabel : ''}</div>` : ''}
+        ${brainStrategyLabel ? `<div class="go-detail" style="font-weight:700; margin-top:4px;">🧠 ${executable >= 1 ? 'Entry strategy' : 'Market thesis'}: ${brainStrategyLabel}${brainActionLabel ? ' · ' + brainActionLabel : ''}</div>` : ''}
         ${bd.effective_bias && bd.morningBias && bd.effective_bias.bias !== bd.morningBias.bias ? (() => {
             const eb = bd.effective_bias;
             const mw = Math.round(eb.morning_weight * 100);
@@ -4781,8 +4785,15 @@ function renderCandidateCard(cand, atm, rank) {
     const premLabel = cand.isCredit ? 'Net Credit' : 'Net Debit';
     const execReady = cand.executionReadiness || {};
     const execGate = execReady.gate || cand.executionGate || 'WAIT';
-    const execOk = execReady.ready === true || cand.executionReady === true;
-    const execReasons = Array.isArray(execReady.reasons) ? execReady.reasons : [];
+    const backendExecOk = execReady.ready === true || cand.executionReady === true;
+    const entryEligible = cand.entryEligible === true;
+    const entryEligibility = cand.entryEligibility || {};
+    const entryReasons = Array.isArray(entryEligibility.reasons) ? entryEligibility.reasons : [];
+    const execOk = backendExecOk && entryEligible;
+    const execReasons = [
+        ...(Array.isArray(execReady.reasons) ? execReady.reasons : []),
+        ...entryReasons,
+    ];
     const execMode = execReady.mode || 'paper';
     const rrValue = (typeof cand.maxProfit === 'number' && typeof cand.maxLoss === 'number' && cand.maxLoss > 0)
         ? cand.maxProfit / cand.maxLoss
@@ -4797,15 +4808,16 @@ function renderCandidateCard(cand, atm, rank) {
     const marginInfo = marginDisplay(cand);
     const evCapitalBase = marginInfo.source === 'UPSTOX' ? marginInfo.value : peakCash(cand);
     const alignLabel = backendBlocked ? '⛔ BLOCKED BY BRAIN' :
+        !entryEligible ? '🟡 MONITOR — NO ENTRY EDGE' :
         forces.aligned === 3 && economicallyStrong ? '🟢 ALIGNED — Entry Ready' :
         forces.aligned === 3 ? '🟡 STRUCTURE OK — Review Edge' :
         forces.aligned === 2 ? '🟡 CONDITIONAL' : '⚫ WATCHING';
     const alignClass = backendBlocked ? 'align-1' :
         forces.aligned === 3 && economicallyStrong ? 'align-3' :
         forces.aligned >= 2 ? 'align-2' : 'align-1';
-    const execBadgeBg = execOk ? (economicallyStrong ? '#2E7D32' : '#6B7280') : '#B45309';
-    const execBadgeText = execOk ? (economicallyStrong ? 'READY' : 'MONITOR') : 'WAIT';
-    const execDisplayGate = execOk && !economicallyStrong ? 'MONITOR' : execGate;
+    const execBadgeBg = execOk && economicallyStrong ? '#2E7D32' : '#6B7280';
+    const execBadgeText = execOk && economicallyStrong ? 'READY' : 'MONITOR';
+    const execDisplayGate = execOk && economicallyStrong ? execGate : 'MONITOR';
 
     // Legs — execution order: BUY protection first, then SELL credit (Indian margin rule)
     let legsText = '';
@@ -4937,8 +4949,11 @@ function renderCandidateCard(cand, atm, rank) {
                     ? ` title="${oodWarnText}"`
                     : '';
                 const weakEconomicsText = weakEconomicsReasons.length ? weakEconomicsReasons.join(' | ') : 'Economics weak';
+                const entryBlockedText = entryReasons.length ? entryReasons.join(' | ') : 'Candidate did not pass backend entry eligibility';
                 const realBtn = execBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
+                    : !entryEligible
+                    ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${entryBlockedText}">⚠️ MONITOR ONLY</button>`
                     : weakEconomics
                     ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${weakEconomicsText}">⚠️ REVIEW EDGE</button>`
                     : execModeLower === 'sandbox'

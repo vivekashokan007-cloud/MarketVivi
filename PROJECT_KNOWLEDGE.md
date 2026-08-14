@@ -19692,3 +19692,56 @@ git -C /abs/path/to/repo \
 - Python: `BRAIN_VERSION = 2.5.77`.
 - PWA: visible label `v2.5.77 · b408` and title updated.
 - Both repositories must be committed and pushed together. CI remains responsible for APK validation because local JDK 17/Android SDK are unavailable.
+
+## 2026-08-14 - Entry Eligibility, Confidence, and ML Gap Contract Fix: v2.5.78 / b409
+
+### Morning Failure Evidence
+
+- The market thesis was mildly bearish and Bear Call was a plausible strategy family, but the displayed candidates were not entry quality.
+- NF top candidate: max profit `INR 29`, max loss `INR 9,721`, negative premium edge, ML `7% SKIP`.
+- BNF top candidate: max profit `INR 5,300`, max loss `INR 9,700`, displayed POP `62.6%` versus a `64.67%` terminal-payoff break-even probability, negative premium edge.
+- Both candidates inherited `gap_sigma=416.48` even though the ML training range was approximately `[-5.24, 5.45]`.
+- The UI showed monitor/economic warnings, but the backend still allowed the candidate to be ranked primary and the green `GO` banner only counted watchlist rows.
+
+### Root Causes Corrected
+
+- Android incorrectly wrote BNF daily sigma in price points into `gap_sigma`.
+  - `dailySigma`/`daily_sigma` now store the VIX-implied daily move in points.
+  - `gapSigma`/`gap_sigma` now store the overnight open-versus-previous-close move in the same `0.5% = 1 sigma` convention used by the existing gap context and ML training path.
+- `_align_verdict_to_watchlist` no longer manufactures `30/45/70` confidence floors from one/two/three aligned forces.
+- Market thesis confidence is now retained separately as `market_confidence`; actionable `entry_confidence` is candidate-specific and conservatively uses `min(market confidence, valid ML probability percent)`.
+- Added `entry_eligibility_v1_positive_ev_ood_fail_closed` for every strategy family.
+  - Requires positive, present `premiumEdge`.
+  - Requires valid positive max-profit/max-loss values.
+  - Fails closed for capital/direction/execution blocks.
+  - Fails closed for any critical ML OOD flag, missing/invalid ML probability, or `SKIP/BLOCKED/UNSURE` model action.
+  - Requires candidate entry confidence of at least the existing explicit `55` notification threshold.
+- Monitor-only candidates remain in the research menu and retain their PC2 research rank, but they cannot become the PC2 actionable primary.
+- When no candidate passes, the final verdict is `WAIT`; the original market thesis remains available as evidence.
+
+### Notification and UI Safety
+
+- Unified entry notifications now require an explicitly `entryEligible` candidate, exact verdict/candidate strategy match, candidate entry confidence, entry window, and two-poll stability.
+- Legacy `WATCHLIST_ENTRY` alerts are evidence only and cannot bypass the unified entry contract.
+- MarketVivi now shows:
+  - `GO` only when at least one candidate is entry eligible;
+  - `MONITOR` when research/watchlist candidates exist but none pass entry eligibility;
+  - separate entry-ready and monitor/watchlist counts;
+  - `Market thesis` instead of `Brain strategy` when the final action is `WAIT`;
+  - `MONITOR ONLY` for any backend-ineligible candidate while preserving the paper-research button.
+
+### Validation
+
+- Focused backend regression suite: `125` tests passed.
+- Full Python discovery: `248` tests run; `247` passed and one pre-existing Phase 5 registry metadata test failed because seven stale registry entries no longer have matching source rejection stages. The same mismatch was verified against pre-change `HEAD`.
+- `python3 -m py_compile`: passed.
+- `node --check app.js`: passed.
+- Added source-contract coverage proving Android no longer maps `dailySigma` into `gap_sigma`.
+- Local Android build remains unavailable because this environment has no JDK 17/Android SDK; GitHub CI must validate the APK.
+
+### Synchronized Release
+
+- Android: `versionName = 2.5.78`, `versionCode = 409`.
+- Python: `BRAIN_VERSION = 2.5.78`.
+- PWA: visible label `v2.5.78 · b409`; app cache-bust advanced.
+- `Marketapp` and `MarketVivi` must be committed and pushed together.
