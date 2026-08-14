@@ -4789,6 +4789,11 @@ function renderCandidateCard(cand, atm, rank) {
     const entryEligible = cand.entryEligible === true;
     const entryEligibility = cand.entryEligibility || {};
     const entryReasons = Array.isArray(entryEligibility.reasons) ? entryEligibility.reasons : [];
+    const researchRank = Number.isFinite(Number(cand.pc2PaperResearchRank))
+        ? Number(cand.pc2PaperResearchRank) : null;
+    const entryRank = Number.isFinite(Number(cand.pc2PaperRank))
+        ? Number(cand.pc2PaperRank) : null;
+    const familyTier = cand.varsityTier === 'PRIMARY' ? 'Family fit: PRIMARY' : 'Family fit: ALLOWED';
     const execOk = backendExecOk && entryEligible;
     const execReasons = [
         ...(Array.isArray(execReady.reasons) ? execReady.reasons : []),
@@ -4860,7 +4865,7 @@ function renderCandidateCard(cand, atm, rank) {
             </div>
             <span class="v1-rank">${cand._posMatch ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">📌+⚡</span>' : cand._posOnly ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">⚡ TMR</span>' : ''}${rank === 1 && cand.brainScore > 0 ? '🧠 ' : ''}#${rank || ''}</span>
         </div>
-        <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE || '--'}T${cand.brainScore ? ` · <span style="color:${cand.brainScore > 0 ? 'var(--green)' : cand.brainScore < 0 ? 'var(--danger)' : 'var(--text-muted)'};font-weight:600">🧠${cand.brainScore > 0 ? '+' : ''}${cand.brainScore.toFixed(2)}</span>` : ''}</div>
+        <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE || '--'}T${researchRank != null ? ` · Research #${researchRank}` : ''}${entryEligible && entryRank != null ? ` · Entry #${entryRank}` : ''}${cand.brainScore ? ` · <span style="color:${cand.brainScore > 0 ? 'var(--green)' : cand.brainScore < 0 ? 'var(--danger)' : 'var(--text-muted)'};font-weight:600">🧠${cand.brainScore > 0 ? '+' : ''}${cand.brainScore.toFixed(2)}</span>` : ''}</div>
         <div class="v1-legs">${legsText}</div>
         <div class="v1-prem">${premLabel} ₹${cand.netPremium}/share · W:${cand.width}</div>
         ${(() => {
@@ -4901,7 +4906,7 @@ function renderCandidateCard(cand, atm, rank) {
         ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${localeNumberOrFallback(cand.estCost)} (${cand.estCostPct}% of max) · Net profit: ₹${localeNumberOrFallback(cand.netMaxProfit ?? 0)}</div>` : ''}
 
         <div class="v1-forces">
-            ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · ${cand.varsityTier === 'PRIMARY' ? '<span style="color:var(--green)">PRIMARY</span>' : '<span style="color:var(--warn)">ALLOWED</span>'}${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
+            ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · <span style="color:var(--text-muted)">${familyTier}</span>${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
         </div>
         <div class="v1-footer">
             💰 BUY first ₹${localeNumberOrFallback(peakCash(cand))} → Margin: ₹${localeNumberOrFallback(marginInfo.value)}${marginInfo.label}
