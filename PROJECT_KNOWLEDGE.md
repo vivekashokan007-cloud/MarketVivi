@@ -19745,3 +19745,117 @@ git -C /abs/path/to/repo \
 - Python: `BRAIN_VERSION = 2.5.78`.
 - PWA: visible label `v2.5.78 · b409`; app cache-bust advanced.
 - `Marketapp` and `MarketVivi` must be committed and pushed together.
+
+## 2026-08-14 - PC2 Composite Shadow Evidence and v2.5.79 / b410 Pushed
+
+### Shipped State
+
+- The synchronized release is pushed to both repositories.
+  - `Marketapp` main:
+    - `f590796` - PC2 composite shadow evidence, canonical ranked-evidence handling, and regression tests.
+    - `0320909` - Android/Python version bump.
+  - `MarketVivi` main:
+    - `4533f49` - clearer research/entry-rank UI.
+    - `177e562` - PWA version bump.
+- Runtime identity is aligned:
+  - Android: `versionName = 2.5.79`, `versionCode = 410`.
+  - Python: `BRAIN_VERSION = 2.5.79`.
+  - PWA: `v2.5.79 · b410`.
+- The first PC2 evidence push accidentally retained `v2.5.78 / b409`; this was corrected immediately by the synchronized `v2.5.79 / b410` follow-up. Future pushes must continue to bump Android, Python, and PWA versions together.
+
+### PC2 Composite Shadow Contract
+
+- Added `pc2_composite_shadow_v1` as research-only telemetry.
+- It combines two deliberately non-overlapping terms:
+  - `adjustedEdgePerRisk` (70%); and
+  - `contextPercentileScore` (30%).
+- It normalizes only against a supplied, frozen historical reference grouped by index, strategy direction, and DTE bucket, with a `GLOBAL` fallback.
+- It refuses current-menu normalization. Without a valid reference, candidates are marked `REFERENCE_UNAVAILABLE` and receive no composite score.
+- It does not change paper primary selection, entry eligibility, execution readiness, or notifications. The existing PC2 paper selector remains active until replay validates a promotion decision.
+- Probability/ML probability are excluded because they are not independent of economics. Width, candle, and regime values are excluded because they already contribute to the context score; this avoids double counting.
+
+### Canonical Evidence and UI Integrity
+
+- C3 frame capture now prefers `snapshot_ranked_candidates_full` over the top-30 UI menu and records the source used.
+- Android teacher research and evaluation leg collection now prefer the full ranked candidate evidence over the display-capped generated menu.
+- Android fallback cache preserves PC2 paper ranks, sort components, and composite-shadow telemetry.
+- Candidate cards now distinguish:
+  - `Research #`: legacy/current PC2 research ordering;
+  - `Entry #`: shown only for an entry-eligible candidate; and
+  - `Family fit: PRIMARY/ALLOWED`: a non-actionable family-tier diagnostic.
+- Green entry/ready treatment remains reserved for actual entry eligibility and execution readiness. `PRIMARY` no longer implies a trade should be entered.
+
+### Validation
+
+- Focused suite: 49 tests passed, including entry eligibility, PC2 selector, composite shadow, Batch F, C3 finalization, Android poll feature contract, and notification behavior.
+- Full Python discovery: 252 tests run; 251 passed. The one failure is the pre-existing Phase 5 gate-registry metadata mismatch in `test_phase5_gate_registry`.
+- Python compilation, PWA JavaScript syntax check, and `git diff --check` passed.
+- Android APK build was not run locally because this environment has no JDK 17/Android SDK. GitHub CI and a phone install remain required release checks.
+
+### Position Notification Finding
+
+- A paper BNF Iron Butterfly opened at 12:48 on 2026-08-14 showed a full valuation (`4/4` quotes and computable P&L), but Android displayed `Position Data Incomplete`.
+- The alert was not caused by missing price quotes. It was triggered because Control Index signal completeness was `45%`, below the existing `60%` warning threshold.
+- Current code merges quote degradation and low Control Index completeness under one title. The message is therefore misleading when the mark quality is `FULL`.
+- Risk and exit alerts remain active while P&L is computable. This is a wording/classification issue, not a valuation failure.
+- Tomorrow's live check: open or monitor a paper position, compare quote quality, Control Index completeness, P&L availability, and notification wording. If it repeats with a full mark, change the alert title to distinguish limited signals from incomplete price data.
+
+### Pending Decisions and Work
+
+1. Build the frozen historical PC2 composite reference dataset from replay/backfill data.
+2. Replay composite-shadow ranking against the active PC2 selector over historical sessions, including neutral Iron Butterfly/Iron Condor cases and outcome quality by index/DTE bucket.
+3. Design and calibrate a strategy-aware range-confidence contract for neutral strategies. Directional global market confidence must not authorize neutral entries by itself.
+4. Define promotion criteria before allowing the composite selector to influence paper ranking. Sandbox/live remain unchanged.
+5. Fix the separate stale Phase 5 gate-registry metadata test.
+6. Confirm GitHub CI/APK installation for v2.5.79 / b410 before treating the release as phone-verified.
+
+## 2026-08-14 - NF Generation Flood Investigation and Supply-Quality Shadow: v2.5.80 / b411
+
+### Verified Diagnosis
+
+- The observed NF Bear Call flood is real, but the uploaded directive was not safe to implement literally.
+- The persisted `ml_generated_candidates` rows are a bounded, rank-biased sample, not raw generation supply. Android persists at most 50 lane-diverse rows per poll, while `snapshot_ranked_candidates_full` is capped at 200.
+- A direct live snapshot built 297 candidates and had 124 NF Bear Calls in the top-200 research evidence, all with negative premium edge. The research-menu distortion is therefore real even though the directive's 99.6% figure cannot be attributed to the uncapped generator.
+- NF does not have twice as many strike steps as BNF. NF scans approximately 800 points in 50-point steps; BNF scans approximately 2,000 points in 100-point steps.
+- The proposed `credit_to_risk` is not an independent signal. For a credit spread it is a monotonic transform of the existing `creditWidthRatio`: `credit_to_risk = ratio / (1 - ratio)`.
+- Existing opportunity gates already identify far-sigma, narrow-width and thin-credit candidates, but those gates are soft and release candidates into research ranking.
+- Entry eligibility remained fail-closed during the observed session. The defect is supply evidence, calibration integrity and research ordering, not an identified notification bypass.
+
+### Implemented Shadow Contract
+
+- Added `pc2_supply_quality_shadow_v1` before ranking and before the top-30/top-200/Android persistence caps.
+- It records uncapped in-memory generated-plus-rejected credit-candidate distributions by exact `index | direction | trade mode` slice.
+- Recorded metrics include credit/width ratio, the diagnostic credit-to-risk alias, sigma distance and premium edge, with min, q05, q10, q25, median, q75 and max.
+- Candidates receive a `generationQualityShadow` annotation. Existing credit-floor and non-positive-edge failures are evidence flags only.
+- No candidate is removed, no rank key changes, entry eligibility is unchanged and notifications are unchanged.
+- The derived floor remains explicitly `PENDING_OUTCOME_CALIBRATION`; threshold and percentile target are null. A percentile must be selected from out-of-sample managed outcomes, not chosen as a hidden policy constant.
+- A stable SHA-256 sample of up to 16 flagged candidates per poll is preserved with full legs. The cap limits evidence payload size; it is not a trading threshold.
+- Post-close evaluation now includes these samples with role `supply_shadow`, allowing later measurement of profitable candidates that a future floor would have suppressed.
+- A measurement-only counterfactual records top-menu composition with and without candidates carrying existing quality flags. It does not modify the displayed or executable menu.
+
+### C3 and Android History Repair
+
+- C3 now writes poll-level candidate-supply rows from the uncapped shadow distribution rather than deriving these slices from capped ranked evidence.
+- Rows use exact index, direction and trade-mode slices and retain population counts, quantiles and uncapped-union provenance in `extra_json`.
+- C3 history seeding now keeps these slice keys separate instead of merging every candidate metric into the generic `MARKET` series.
+- Android loads only prior-session sliced rows (`session_date < today`) into a separate `pc2SupplyQualityHistory` bridge.
+- The bridge is deliberately separate from `premiumHistory`; therefore it cannot silently activate or alter the existing live percentile gates.
+- Existing global C3/B1 behavior is unchanged. No Supabase migration was required because the existing percentile-history columns and snapshot `context_json` carry the new evidence.
+
+### Validation and Release State
+
+- Focused shadow/C3/selector/Android-contract suite: 25 tests passed.
+- Full Python discovery: 257 tests run; 256 passed. The only failure remains the pre-existing Phase 5 gate-registry metadata mismatch.
+- Python compilation and `git diff --check` passed before versioning.
+- Android APK compilation remains delegated to GitHub CI because this environment has no JDK 17/Android SDK.
+- Synchronized runtime identity prepared:
+  - Android: `versionName = 2.5.80`, `versionCode = 411`.
+  - Python: `BRAIN_VERSION = 2.5.80`.
+  - PWA: `v2.5.80 · b411`.
+
+### Next Measurement Decision
+
+1. Accumulate sliced shadow rows and sampled managed outcomes across multiple sessions.
+2. Run out-of-sample threshold selection by index, direction and trade mode, including positive-edge recall and profitable-suppressed-candidate rate.
+3. Review the resulting floor and fallback hierarchy before authorizing any menu suppression.
+4. Keep the current paper entry contract unchanged until that review explicitly promotes the shadow.
