@@ -19623,3 +19623,33 @@ git -C /abs/path/to/repo \
   - remote Batch F candle rows verified: `32,392`
   - this equals `4` metrics x `2` indices for every persisted snapshot in the completed range.
 - The candle contribution remains capped at `+/-0.03` in paper-mode ranking and remains non-veto, non-live evidence until a later outcome study validates any stronger authority.
+
+## 2026-08-14 - Current PC2 Release and Backfill State
+
+### Pushed State
+
+- The synchronized PC2 paper-research release is pushed, not merely prepared.
+  - `Marketapp` main: `d8cd211a9c7f265c8a8a1b114cd096fde9c5e914`
+    - PC2 paper-primary selector and Batch F paper supply/candle behavior.
+  - `Marketapp` main: `ec1b4987db4f01cfee0b4ed89427c67fd7945859`
+    - reusable resumable Batch F candle backfill tool.
+  - `MarketVivi` main: `b5cef39b59063498ef5640c18056f53137a57e89`
+    - documented release and verified backfill state.
+- Runtime release identity remains aligned:
+  - Android/Python: `v2.5.76 / b407`.
+  - PWA: `v2.5.76 / b407`.
+- CI still needs to validate the Android APK because this environment has no JDK 17 or Android SDK. Phone installation/update confirmation is still a separate live check.
+
+### Operational Boundary
+
+- PC2 is primary only for paper candidate selection.
+- Existing construction, capital, direction-safety, EV, and execution-readiness checks remain constraints.
+- Batch F widths expand only paper candidate supply when strikes are valid.
+- Batch F candle context is a bounded `+/-0.03` ranking input. It is neither a hard veto nor an automatic-trade trigger.
+- Historical candle-percentile rows provide evidence for analysis; they do not retroactively alter past decisions.
+
+### Next Evidence Work
+
+1. Confirm the phone installs `v2.5.76 / b407` and completes the next post-close ML evaluation with teacher research present.
+2. Run an outcome study joining `pc2f_candle_*` rows with generated/rejected candidate outcomes. Measure whether the bounded candle signal improves top-1 selection, separately for NF and BNF, before changing its authority or cap.
+3. Keep sandbox/live deterministic ordering unchanged until the paper-study result supports a separate decision.
