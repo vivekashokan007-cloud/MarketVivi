@@ -19653,3 +19653,42 @@ git -C /abs/path/to/repo \
 1. Confirm the phone installs `v2.5.76 / b407` and completes the next post-close ML evaluation with teacher research present.
 2. Run an outcome study joining `pc2f_candle_*` rows with generated/rejected candidate outcomes. Measure whether the bounded candle signal improves top-1 selection, separately for NF and BNF, before changing its authority or cap.
 3. Keep sandbox/live deterministic ordering unchanged until the paper-study result supports a separate decision.
+
+## 2026-08-14 - PC2 Paper Selector Audit Fix: v2.5.77 / b408
+
+### Why This Release Exists
+
+- A technical audit found two unintended lexicographic inputs in the PC2 paper-primary selector:
+  - raw soft PC2 gate-failure count; and
+  - number of gates whose percentile calibration had matured.
+- Both values are useful diagnostics but are not measures of candidate quality. In particular, the gate-failure count reintroduced a hard-barrier effect even though soft-gate severity was already represented proportionally in `adjustedEdgePerRisk`.
+
+### Corrected Paper Ranking
+
+- The PC2 paper selector now orders only by:
+  1. existing capital/direction safety eligibility;
+  2. bounded `contextPercentileScore` descending;
+  3. `adjustedEdgePerRisk` descending, including the already-applied proportional soft-gate opportunity penalty;
+  4. `probProfit` descending; then candidate id for deterministic ties.
+- Soft-gate failure count and percentile-authority count are persisted inside `pc2PaperSortComponents` as diagnostics only. They no longer alter rank directly.
+- This release remains paper-only. Sandbox and live paths retain their existing deterministic behavior. Construction, capital, direction, EV, and execution-readiness constraints remain unchanged.
+
+### Outcome-Study Evidence
+
+- Each eligible menu now records an immutable deterministic pseudo-random control candidate. Its SHA-256 seed, menu fingerprint, algorithm, and selected candidate id are persisted under `snapshot_pc2_paper_primary.random_control`.
+- The control is drawn from the full eligible menu before the ranked-evidence display cap and never affects the PC2 selection. It provides a reproducible baseline for post-close outcome comparison.
+- Every candidate now retains `pc2PaperSortComponents`, `pc2PaperSortKey`, and `pc2PaperRandomControl` in raw snapshots and the Android teacher-research compact payload.
+
+### Candle Evidence Integrity
+
+- Batch F candle data is reconstructed from a three-point spot proxy, not true index OHLC candles.
+- Wick-dependent patterns such as hammer and marubozu remain recorded but are excluded from the bounded candle score until true index OHLC validation is available.
+- Only body-based engulfing/harami patterns can contribute to the paper score. The overall Batch F cap remains `+/-0.03`; this is still evidence only, never a hard veto or trade trigger.
+- New/re-run candle-backfill rows explicitly store `reconstruction_method=3pt_spot_proxy`, `points_used=3`, and `shadow_reliability=LOW`.
+
+### Synchronized Release
+
+- Android: `versionName = 2.5.77`, `versionCode = 408`.
+- Python: `BRAIN_VERSION = 2.5.77`.
+- PWA: visible label `v2.5.77 · b408` and title updated.
+- Both repositories must be committed and pushed together. CI remains responsible for APK validation because local JDK 17/Android SDK are unavailable.
