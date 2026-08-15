@@ -19859,3 +19859,37 @@ git -C /abs/path/to/repo \
 2. Run out-of-sample threshold selection by index, direction and trade mode, including positive-edge recall and profitable-suppressed-candidate rate.
 3. Review the resulting floor and fallback hierarchy before authorizing any menu suppression.
 4. Keep the current paper entry contract unchanged until that review explicitly promotes the shadow.
+
+## 2026-08-15 - Evaluation Role-Routing Recovery: v2.5.81 / b412
+
+### Failure Reconstruction Without Device Logs
+
+- The 14 Aug evaluation was partial rather than complete:
+  - `ml_evaluation_outcomes`: `0` rows;
+  - `ml_recommendation_outcomes`: `13,755` rows;
+  - `ml_rejected_candidate_outcomes`: `670` rows;
+  - `ml_context_percentile_history`: `0` rows.
+- The save sequence writes evaluation, recommendation and rejected outcomes before teacher research and C3.
+- `ml_evaluation_outcomes` intentionally permits only `primary` and `secondary` roles.
+- v2.5.80 added evaluated supply-quality samples with role `supply_shadow`. `buildEvaluationRows` excluded only `rejected`, so a `supply_shadow` row could enter a production-teacher upsert chunk and cause Supabase to reject the entire chunk.
+- Recommendation and rejected writes continued, explaining the partial database state. The failed core save then returned before teacher research and C3.
+
+### Correction
+
+- `buildEvaluationRows` now admits only normalized `primary` and `secondary` roles.
+- Blank legacy roles still normalize to `secondary`.
+- Experimental roles, including `supply_shadow`, remain identifiable by role in `ml_recommendation_outcomes` and cannot abort production teacher persistence.
+- Rejected candidates continue through their dedicated `ml_rejected_candidate_outcomes` path.
+- Added a source-contract regression test proving experimental roles are excluded from the production teacher table while recommendation routing remains available.
+
+### Recovery Procedure
+
+- Install v2.5.81 / b412 and use `Retry Eval` for 14 Aug.
+- The resumable local evaluation output should be reused when still present; otherwise the session can be recomputed from saved snapshots and chain data.
+- Completion requires nonzero 14 Aug `ml_evaluation_outcomes`, a ready teacher research report and independent C3 finalization status.
+
+### Synchronized Runtime Identity
+
+- Android: `versionName = 2.5.81`, `versionCode = 412`.
+- Python: `BRAIN_VERSION = 2.5.81`.
+- PWA: `v2.5.81 · b412`.
