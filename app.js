@@ -3843,7 +3843,7 @@ function setStage2AGuardModeFromUI(mode) {
             alert('Native bridge not available.');
             return;
         }
-        const ok = bridge.setStage2AGuardMode(String(mode || 'shadow'));
+        const ok = bridge.setStage2AGuardMode(String(mode || 'paper'));
         if (!ok) {
             alert('Could not update Stage 2A mode.');
             return;
@@ -5402,7 +5402,7 @@ function renderML(snapshot = null) {
     const brainNotification = brain?.brain_notification || {};
     const brainNotificationMeta = brain?.brain_notification_meta || {};
     const notificationMode = String(snap?.notificationTransportMode || brainNotificationMeta.mode || 'live');
-    const stage2aMode = String(snap?.stage2aGuardMode || 'shadow');
+    const stage2aMode = String(snap?.stage2aGuardMode || 'paper');
     const stage2a = safeParseNB(brain?.stage2a, brain?.stage2a || {});
     const notificationDispatched = brainNotificationMeta.dispatched === true;
     const notificationNotify = brainNotification.notify_user === true;
@@ -5962,10 +5962,11 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Stage 2A Teacher Guard</span>
                 </div>
                 <div class="brain-detail">
-                    Ranking mode is controlled here. Shadow computes teacher ranking and logs the comparison; live lets teacher expectancy drive ranking with hard WAIT preserved.
+                    Paper mode applies covered teacher expectancy as a bounded ranking modifier. It never creates a hard WAIT; unseen, thin, and low-confidence buckets remain neutral.
                     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
                         <button onclick="setStage2AGuardModeFromUI('off')" class="btn-paper" style="padding:7px 10px;font-size:11px;${stage2aMode === 'off' ? '' : 'opacity:.75'}">Off</button>
-                        <button onclick="setStage2AGuardModeFromUI('shadow')" class="btn-primary" style="padding:7px 10px;font-size:11px;${stage2aMode === 'shadow' ? '' : 'opacity:.75'}">Shadow</button>
+                        <button onclick="setStage2AGuardModeFromUI('paper')" class="btn-primary" style="padding:7px 10px;font-size:11px;${stage2aMode === 'paper' ? '' : 'opacity:.75'}">Paper active</button>
+                        <button onclick="setStage2AGuardModeFromUI('shadow')" class="btn-paper" style="padding:7px 10px;font-size:11px;${stage2aMode === 'shadow' ? '' : 'opacity:.75'}">Shadow</button>
                         <button onclick="setStage2AGuardModeFromUI('live')" class="btn-paper" style="padding:7px 10px;font-size:11px;${stage2aMode === 'live' ? '' : 'opacity:.75'}">Live</button>
                     </div>
                     <div style="margin-top:6px;color:var(--text-muted)">
@@ -5976,7 +5977,7 @@ function renderML(snapshot = null) {
                 </div>
             </div>
             <div class="brain-detail" style="margin-top:8px;color:var(--text-muted)">
-                Stage 2A defaults to shadow. Do not switch to live until the logged shadow changes are reviewed against post-close teacher evidence.
+                Paper is the default. Live retains the legacy hard-WAIT experiment and is not required for paper trading.
             </div>
         </section>
     `;
