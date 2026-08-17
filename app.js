@@ -481,6 +481,39 @@ function todayNativeSessionActive(serviceStatus = null, latestPoll = null, pollH
     );
 }
 
+function reconcileNativeSessionUi(snapshot = null) {
+    if (!nativeBridge()) return false;
+    const snap = snapshot || renderSnapshot();
+    const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
+    const latestPoll = snap?.latestPoll || latestPollData(snap);
+    const pollHistory = snap?.pollHistory || readNativeJson('getPollHistory', []);
+    const baseline = getTodayNativeBaseline(snap);
+    // sessionActive means today's baseline/data exists even after an explicit
+    // stop. Only the running native service owns a session that should relock
+    // a freshly recreated WebView.
+    const nativeServiceOwnsSession = serviceStatus?.running === true;
+    if (!baseline || !nativeServiceOwnsSession || !todayNativeSessionActive(serviceStatus, latestPoll, pollHistory, baseline)) {
+        return false;
+    }
+
+    STATE.morningExpandedAfterLock = false;
+    STATE.pollHistory = Array.isArray(pollHistory) ? pollHistory : STATE.pollHistory;
+    const historyPollCount = Array.isArray(pollHistory) ? pollHistory.length : 0;
+    const servicePollCount = Number(serviceStatus?.polls || 0);
+    STATE.pollCount = Math.max(historyPollCount, servicePollCount, Number(STATE.pollCount || 0));
+    collapseMorning({ force: true });
+    const lockBtn = document.getElementById('btn-lock');
+    if (lockBtn) {
+        lockBtn.textContent = 'Watching...';
+        lockBtn.disabled = true;
+    }
+    document.querySelectorAll('.morning-input').forEach(el => { el.disabled = true; });
+    const watchEl = document.getElementById('watch-status');
+    if (watchEl) watchEl.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
+    updateLockScanUi();
+    return true;
+}
+
 function nextAutoStartText(serviceStatus) {
     const ts = Number(serviceStatus?.autoStartAt || 0);
     if (!Number.isFinite(ts) || ts <= 0) return '';
@@ -2353,6 +2386,7 @@ window.syncFromNative = function(dataJson) {
             } catch (e) {
                 console.warn('[syncFromNative] watch-status refresh failed:', e.message);
             }
+            reconcileNativeSessionUi(snapshot);
             renderAll();
             return;
         }
@@ -2441,6 +2475,7 @@ window.syncFromNative = function(dataJson) {
             }
         }
         
+        reconcileNativeSessionUi();
         renderAll();
     } catch(e) {
         console.warn('[b108] syncFromNative error:', e.message);
@@ -6962,6 +6997,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    // Restore local theme and the native-owned locked session before any cloud
+    // reads. Activity/WebView recreation must not expose an unlocked morning
+    // form while asynchronous boot work is still running.
+    try { initTheme(null); } catch (e) { console.warn('[boot] early theme restore failed:', e.message); }
+    try { reconcileNativeSessionUi(); } catch (e) { console.warn('[boot] early native session restore failed:', e.message); }
+
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
     try { if (typeof DB !== 'undefined' && DB.init) DB.init(); } catch (e) { console.warn('[boot] DB.init skipped:', e.message); }
@@ -7046,17 +7087,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const todayBaseline = getTodayNativeBaseline();
     if (todayBaseline && readNativeJson('getServiceStatus', {}).running) {
         console.log(`[b162] Restored active service: ${readNativeJson('getPollHistory', []).length} polls restored`);
-        STATE.morningExpandedAfterLock = false;
-        collapseMorning({ force: true });
-        const lockBtn = document.getElementById('btn-lock');
-        if (lockBtn) {
-            lockBtn.textContent = 'Watching...';
-            lockBtn.disabled = true;
-        }
-        document.querySelectorAll('.morning-input').forEach(el => el.disabled = true);
-        const watchEl = document.getElementById('watch-status');
-        if (watchEl) watchEl.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
-        updateLockScanUi();
+        reconcileNativeSessionUi();
     } else {
         updateWatchStatusHint(readNativeJson('getServiceStatus', {}));
     }
