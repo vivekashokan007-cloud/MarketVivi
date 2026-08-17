@@ -19893,3 +19893,104 @@ git -C /abs/path/to/repo \
 - Android: `versionName = 2.5.81`, `versionCode = 412`.
 - Python: `BRAIN_VERSION = 2.5.81`.
 - PWA: `v2.5.81 · b412`.
+
+## 2026-08-16 - PC2 Authority Audit and Resilient Notification Evidence: v2.5.84 / b415
+
+### Current PC2 Operating Model
+
+- PC2 is active for paper-research ordering, but it is not an unbounded replacement for deterministic safety controls.
+- The paper selector preserves construction, capital, direction, execution, economics and entry-eligibility protections. Percentiles provide bounded comparative evidence rather than a new hidden hard-gate system.
+- Ranking authority now requires sufficient support, non-flat historical diversity, jackknife stability, censor checks where applicable, and historical-population provenance for variables that need it.
+- Current-menu cross-sectional percentiles are explicitly diagnostic only. They cannot masquerade as historical calibration.
+- PC2 composite and supply-quality records remain auditable evidence. Supply-quality thresholds remain pending outcome calibration and do not remove candidates or independently block an entry.
+
+### Corrected Notification Failure Mode
+
+- A final audit found that flat/constant historical series could incorrectly qualify as percentile evidence for sigma and position-management notifications.
+- Added `_pc2_notification_percentile_evidence` in the Python brain. Percentile notification authority now requires:
+  - at least 30 historical observations;
+  - non-flat historical diversity;
+  - jackknife stability ratio no greater than `0.10`; and
+  - a valid percentile result.
+- Both market sigma notifications and position-management alert paths use the same helper. They explicitly state whether percentile evidence or a fallback rule was used.
+- The selected historical context is correctly attributed: a valid 60-session cell is reported as `window=60`, rather than being mislabeled as 30.
+- When percentile evidence is unavailable, the existing hard safety rule remains available. For example, a true hard two-sigma move can still alert even if the historical series is unusably flat.
+
+### God Mode Audit Results
+
+- Adversarial checks confirmed that valid 30- and 60-session histories retain authority and report the correct source window.
+- Constant/low-diversity histories cannot produce percentile-driven sigma or premature position-exit alerts.
+- The hard-fallback path remains intact when the underlying absolute safety threshold is actually breached.
+- Caller tracing confirmed no hidden notification caller bypasses the helper.
+- Broader PC2 authority paths for width, cross-market context, construction/ranking and candidate-population provenance were inspected for the same support/stability/diversity weaknesses.
+- Validation completed successfully:
+  - `411` pytest tests passed;
+  - `289` unittest tests passed;
+  - Python compilation passed; and
+  - `git diff --check` passed.
+
+### Release and Repository State
+
+- Pushed to both `main` branches on 2026-08-16:
+  - `Marketapp`: `8d2160b` - `Promote resilient PC2 notification evidence`.
+  - `MarketVivi`: `18b68c0` - `Sync PWA release v2.5.84`.
+- Runtime identity is synchronized:
+  - Android/Kotlin: `versionName = 2.5.84`, `versionCode = 415`.
+  - Python brain: `BRAIN_VERSION = 2.5.84`.
+  - PWA: visible `v2.5.84 · b415` and matching title/cache revision.
+- Generated forensic and backfill reports remain local and intentionally uncommitted. One generated backfill-output directory is approximately 96 MB; reusable source tools and regression tests were committed instead.
+
+### Remaining Validation Boundaries
+
+1. GitHub CI and a phone installation must validate the Android APK because this environment still has no JDK 17/Android SDK.
+2. Code-level correctness does not prove profitability. Continue walk-forward replay, post-close teacher evaluation, and paper-session outcome analysis before any real-money decision.
+3. Confirm the next completed post-close evaluation produces all three required artifacts: production evaluation rows, teacher research artifact, and independent C3 percentile finalization.
+4. Keep generated research reports outside Git unless a deliberately curated, size-reviewed evidence artifact is needed.
+
+## 2026-08-17 - Background Recovery and Compact Evaluation Persistence: v2.5.89 / b420
+
+### Incident Findings
+
+- The Android foreground market service was not restarting when the app was moved to the background. The visible reset came from Activity/WebView recreation, which rebuilt an initially unlocked PWA surface while native polling continued.
+- Live brain snapshot payloads had grown to roughly 8-10 MB because raw option-chain and broad research context were crossing Python, Kotlin, local storage and Supabase for every poll.
+- The oversized snapshot POST could time out. The previous fallback then attempted to write snapshot-shaped data to the unrelated `ml_poll_sequences` table, which masked the real `ml_brain_snapshots` failure.
+- PC2 authority telemetry and generated-candidate evidence were nested under successful main-snapshot persistence, so one failed snapshot could suppress independent forensic evidence.
+- Compact snapshots did not retain every field needed by PC2, teacher reconstruction, rejected-candidate analysis, margin diagnostics and Build 3 A/B review.
+
+### Implemented Corrections
+
+- Added `android_compact_v1` snapshot generation. Raw NF/BNF option chains are removed before persistence while generated candidates, ranked candidates, rejected candidates, evaluation legs, PC2 authority decisions, context percentiles and teacher-forensic evidence are retained.
+- Kotlin applies a second explicit persistence compaction contract and records raw-versus-compact payload sizes. The local cache keeps enough disk capacity for a full session but releases its in-memory index under Android background memory pressure.
+- Teacher entry reconstruction accepts both full and compact leg spellings, including `side`, `type`/`optionType`, and `entry_ltp`.
+- Snapshot persistence now targets only the canonical `ml_brain_snapshots` table. The incompatible `ml_poll_sequences` fallback was removed from snapshot save and fetch paths.
+- PC2 authority telemetry and compact generated-candidate writes execute independently of the main snapshot result. Poll persistence is marked complete only when the required snapshot and generated-candidate evidence both succeed.
+- Android now records Activity create/save/pause/resume/stop/destroy events, memory-trim events and WebView renderer loss. A dead renderer is detached and destroyed before Activity recreation.
+- PWA startup restores the local theme and a native-owned active session before asynchronous cloud reads. It relocks only when the native service is actually running, so an old baseline cannot relock a deliberately stopped session.
+- Added and committed the additive `ab_week1_decisions` migration for `effective_gate_reason`, `a8_shadow_evidence_reason`, `a8_gate_mode`, and `n_ev_below_floor_released_to_ranking`. The same columns were already applied to the connected Supabase project during diagnosis.
+
+### Audit and Verification
+
+- A synthetic stress snapshot retained 30 generated candidates, 350 rejected candidates and 30 evaluation-leg records while removing both raw option chains; the resulting compact JSON was approximately 165 KB.
+- Full Python unittest suite passed: `306/306`.
+- Python compilation passed for `brain.py` and `c3_percentile_finalizer.py`.
+- PWA JavaScript syntax and both repository diff checks passed.
+- No JDK/Android SDK is available in this environment, so the Kotlin/Android APK build remains a GitHub CI and phone-install validation boundary.
+
+### Release and Repository State
+
+- Pushed to both `main` branches on 2026-08-17:
+  - `Marketapp`: `ade8c91` - `Harden snapshot persistence and session recovery`.
+  - `MarketVivi`: `174822e` - `Restore active sessions after WebView recreation`.
+- Runtime identity is synchronized:
+  - Android/Kotlin: `versionName = 2.5.89`, `versionCode = 420`.
+  - Python brain: `BRAIN_VERSION = 2.5.89`.
+  - PWA: visible `v2.5.89 · b420`, title `v2.5.89`, and `app.js?v=1302`.
+- Generated forensic/backfill reports and `__pycache__` remain local and intentionally uncommitted.
+
+### Required Next Phone Checks
+
+1. Install the GitHub-built `v2.5.89` APK and start a normal paper session.
+2. Background and reopen the app several times. Confirm the poll count continues, the locked session restores immediately, and morning inputs do not reappear unlocked.
+3. Review Logs for `ACTIVITY_*`, `WEBVIEW_RENDERER_GONE`, `TRIM_MEMORY`, `LOCAL_SNAPSHOT_MEMORY_RELEASED`, and `ML_SNAPSHOT_PERSISTENCE_COMPACT` evidence.
+4. After market close, confirm `ml_brain_snapshots`, generated/rejected candidate evidence, PC2 authority telemetry, teacher research and C3 finalization all complete for the same session.
+5. Continue treating profitability and strategy quality as separate outcome-validation questions; this release repairs lifecycle and evidence persistence, not market-edge proof.
