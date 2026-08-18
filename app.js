@@ -2840,7 +2840,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             // Cost & calibration
             est_cost: cand.estCost ?? null,
             est_cost_pct: cand.estCostPct ?? null,
-            net_max_profit: cand.netMaxProfit ?? null,
+            net_max_profit: cand.netMaxProfitAfterFriction ?? cand.spreadNetMaxProfit ?? null,
             upstox_pop: cand.upstoxPop ?? null,
             event_driven: false  // default false — trader marks manually if event-driven
         }
@@ -4938,7 +4938,7 @@ function renderCandidateCard(cand, atm, rank) {
         </div>
 
         <div class="v1-target">🎯 Target: ₹${localeNumberOrFallback(cand.targetProfit)} | 🔴 SL: ₹${localeNumberOrFallback(cand.stopLoss)}${cand.intradayTheta && (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? ' <span style="font-size:9px;color:var(--text-muted)">(intraday Θ)</span>' : ''}</div>
-        ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${localeNumberOrFallback(cand.estCost)} (${cand.estCostPct}% of max) · Net profit: ₹${localeNumberOrFallback(cand.netMaxProfit ?? 0)}</div>` : ''}
+        ${cand.estCost ? `<div class="v1-cost" style="font-size:10px;color:${cand.costWarning ? 'var(--danger)' : 'var(--text-muted)'};padding:2px 0">${cand.costWarning ? '⚠️' : '💸'} Est. cost: ₹${localeNumberOrFallback(cand.estCost)} (${cand.estCostPct}% of max) · Net after costs: ₹${localeNumberOrFallback(cand.netMaxProfitAfterFriction ?? cand.spreadNetMaxProfit ?? 0)}</div>` : ''}
 
         <div class="v1-forces">
             ${forceIcon(forces.f1)}Δ ${forceIcon(forces.f2)}Θ ${forceIcon(forces.f3)}IV · <span style="color:var(--text-muted)">${familyTier}</span>${cand.wallTag ? ' 🛡️' : ''}${cand.gammaTag ? ` <span style="color:var(--danger)">${cand.gammaTag}</span>` : ''}
