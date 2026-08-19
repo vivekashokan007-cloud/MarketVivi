@@ -20176,3 +20176,131 @@ git -C /abs/path/to/repo \
 - Android/Kotlin, Python brain and PWA identities are synchronized at `v2.5.96 / b427`.
 - The first push placed the runtime changes under the already-used `v2.5.95 / b426` identity. The immediate synchronized `v2.5.96 / b427` follow-up restores build-pure evidence and update detection.
 - Generated research reports, replay output directories and exploratory tools remain intentionally untracked and must not be included in the release.
+
+## 2026-08-19 - v2.5.96 Deployment Record and Current Operating State
+
+This section supersedes earlier wording that describes the August 18-19
+selector work as local-only. The work is deployed to both repositories with the
+synchronized release identity below.
+
+### Deployed Release Identity
+
+- PWA display/cache release: **v2.5.96 / b427** (`app.js?v=1308`).
+- Android app release: **versionName 2.5.96 / versionCode 427**.
+- Python brain release: **BRAIN_VERSION 2.5.96**.
+- Only rows stamped with **app_version=2.5.96** and
+  **brain_version=2.5.96** are valid evidence for this selector and payload
+  change. The briefly pushed v2.5.95 build is not valid evidence for the new
+  behavior.
+
+### Git Deployment Evidence
+
+- Marketapp implementation: `44cb3d0` (`Finalize PC2 paper authority and compact evidence`).
+- Marketapp synchronized version: `ceb8dd1` (`Bump Marketapp to v2.5.96`).
+- MarketVivi knowledge update: `1996969` (`Update project knowledge for v2.5.95`).
+- MarketVivi synchronized PWA version: `badcf80` (`Bump PWA to v2.5.96`).
+- Both repositories were verified at **0 ahead / 0 behind** relative to
+  `origin/main` after push.
+
+### Supabase State
+
+- Migration `ml_generated_candidate_versions` was applied to project
+  `fdynxkfxohbnlvayouje`.
+- `ml_generated_candidates` now stores `app_version` and `brain_version`.
+- RLS remains enabled and two policies were present after migration.
+- Recent brain snapshot payloads were approximately **617-643 KB**. This is a
+  database/storage concern rather than direct evidence of Android RAM use.
+- Candidate evidence sent through the phone bridge is compacted and duplicate
+  heavy structures are removed before transfer.
+- Android logs include bridge payload byte counts so future memory or restart
+  reports can be correlated with actual transfer size.
+
+### Active Decision Behavior
+
+- WAIT is classified instead of being treated as one undifferentiated state.
+- Hard failures such as invalid economics, unusable data or failed authority
+  checks remain WAIT/MONITOR.
+- A preliminary WAIT may resolve only when an eligible PC2 primary candidate
+  passes the final paper-entry authority checks.
+- Neutral-market structures receive explicit market-fit confidence instead of
+  inheriting directional confidence semantics.
+- PC2 remains the active paper authority. The app is observation-only and no
+  real-money execution is authorized.
+
+### Verification Completed
+
+- Focused selector and authority suite: **95/95 passed**.
+- Full Python suite: **322/322 passed**.
+- Python compile checks and repository diff checks passed.
+- Supabase schema, migration and RLS state were verified after deployment.
+- Android compilation was not run locally because this workspace has no
+  Java/JDK. GitHub CI and the installed phone build remain the Android release
+  verification path.
+
+### Evidence to Collect From the Next Live Session
+
+1. Confirm the phone reports **v2.5.96 / b427** before using its rows as evidence.
+2. Confirm generated-candidate rows carry both synchronized version fields.
+3. Review the distribution of hard WAIT, preliminary WAIT and PC2-approved entries.
+4. Verify that preliminary WAIT cannot promote a candidate with negative net
+   economics, invalid ML data or failed entry confidence.
+5. Compare selected candidates against profitable rejected alternatives after
+   the post-close teacher evaluation.
+6. Verify daily teacher research, Class A correctness, C3 percentile
+   finalization and PC2 authority telemetry after market close.
+7. Review Android lifecycle and bridge-payload logs for further background
+   restart or memory-pressure events.
+
+### Remaining Research and Operational Work
+
+- The gross-versus-net objective mismatch and legacy sort-order defects were
+  corrected, but this does not prove that the selector now chooses the best
+  available candidate.
+- Continue resumable, day-by-day holdout and path-level replay. Do not tune on
+  aggregate in-sample improvement alone.
+- Measure net expectancy, managed-exit capture, drawdown and selection uplift
+  by index, strategy family, regime and time bucket.
+- Investigate every session where a rejected candidate materially outperforms
+  the selected candidate, including the exact ranking tuple and authority reason.
+- Monitor Supabase row and payload growth while keeping phone bridge payloads bounded.
+- Untracked forensic reports and experimental tools remain intentionally local
+  until separately reviewed and approved for repository inclusion.
+
+## 2026-08-19 - v2.5.97 Position Context Warning Fix
+
+### Release Identity
+
+- Android app: **versionName 2.5.97 / versionCode 428**.
+- Python brain: **BRAIN_VERSION 2.5.97**.
+- PWA display/cache identity: **v2.5.97 / b428** with `app.js?v=1309`.
+- This release supersedes v2.5.96 for evidence gathered after the phone updates.
+
+### Fix Shipped
+
+- Low control-index signal coverage is no longer treated as position mark
+  incompleteness when the live option mark is full.
+- Android position notifications should no longer say **Position Data
+  Incomplete** for the CI-only case seen on the 2026-08-19 BNF/NF paper
+  positions.
+- Position verdict text now distinguishes:
+  - **Incomplete live data**: option quotes/mark are partial or unavailable.
+  - **Context signal coverage limited**: CI/control-index context is weak, but
+    option quotes and P&L are still computable.
+- Context-only danger from low CI plus OI-wall/proximity wording is held at
+  `HOLD / MONITOR` when the mark is full, instead of producing a false
+  `EXIT SOON`.
+- Genuine risk exits are preserved: deep loss, break-even breach, phase failure
+  and full-context danger can still emit exit actions.
+- Ambiguous phrase `Sell past OI wall - no protection` was replaced by
+  `Sell past OI wall - OI-wall support absent`.
+
+### Verification
+
+- Focused Python suite passed: **112/112**.
+- `brain.py` compile check passed.
+- `git diff --check` passed for the changed repositories.
+- Direct replay covered:
+  - full mark + low CI: `HOLD / MONITOR`, context warning only.
+  - full mark + normal CI: `EXIT / SOON` can still fire.
+  - full mark + deep loss + low CI: `EXIT / NOW` still fires.
+  - partial mark + low CI: still reports incomplete live data.
