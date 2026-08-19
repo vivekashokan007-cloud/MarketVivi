@@ -19994,3 +19994,184 @@ git -C /abs/path/to/repo \
 3. Review Logs for `ACTIVITY_*`, `WEBVIEW_RENDERER_GONE`, `TRIM_MEMORY`, `LOCAL_SNAPSHOT_MEMORY_RELEASED`, and `ML_SNAPSHOT_PERSISTENCE_COMPACT` evidence.
 4. After market close, confirm `ml_brain_snapshots`, generated/rejected candidate evidence, PC2 authority telemetry, teacher research and C3 finalization all complete for the same session.
 5. Continue treating profitability and strategy quality as separate outcome-validation questions; this release repairs lifecycle and evidence persistence, not market-edge proof.
+
+## 2026-08-17 - Lifecycle Stabilization Follow-ups: v2.5.90 through v2.5.93
+
+### Why More Releases Were Required
+
+- Phone evidence after v2.5.89 showed that Android could still recreate the Activity/WebView under background memory pressure even while the foreground polling service remained alive.
+- Snapshot payload retention and the local evaluation cache could still create excessive memory and disk churn during a full session and post-close evaluation.
+- Restoring only WebView state was insufficient. The latest native brain result and active-session identity needed an application-scoped owner that survives Activity replacement.
+- Replaying PC2 authority evidence after recovery needed an idempotent Supabase write contract so a retry could not create duplicate authority rows.
+
+### Deployed Corrections
+
+- **v2.5.90 / b421 - bounded snapshot memory:** tightened compaction and memory release across live polling, local cache and evaluation paths. Added regression coverage for compact-payload completeness and bounded snapshot handling.
+- **v2.5.91 / b422 - background recreation memory path:** added application-scoped `BrainResultStore`, hardened Activity/WebView restoration, and kept the latest native brain result available when the visible Activity is recreated.
+- **v2.5.92 / b423 - reduced local cache churn:** avoided unnecessary local snapshot-cache rewrites while preserving resumable evaluation evidence.
+- **v2.5.93 / b424 - idempotent PC2 replay:** made recovered PC2 authority persistence safe to replay without duplicate rows.
+
+### Repository and Runtime State
+
+- Pushed Android/Python history through `cb8e67a` (`Make PC2 authority replay idempotent`).
+- Pushed PWA history through `520ed6e` (`Bump PWA to v2.5.93`).
+- The deployed runtime identity is synchronized at:
+  - Android/Kotlin: `versionName = 2.5.93`, `versionCode = 424`;
+  - Python brain: `BRAIN_VERSION = 2.5.93`;
+  - PWA: `v2.5.93 · b424`.
+- These releases address lifecycle, persistence and replay reliability. They do not by themselves prove better strategy selection.
+
+## 2026-08-17 - Post-close Evaluation Result and Evidence Boundary
+
+### Completed Evaluation
+
+- The 17 Aug post-close evaluation completed successfully on the phone while the visible app was `v2.5.92 · b423`.
+- The market session was partial: `72/78` polling slots were present and `6` slots were missed. Evaluation completion must therefore not be interpreted as full-session data completeness.
+- Evaluation processed `26/26` available snapshots and produced/persisted `5,300` outcomes:
+  - `5,000` production evaluation rows;
+  - `5,000` recommendation rows in the separate recommendation path; and
+  - `300/300` rejected-candidate research outcomes.
+- Teacher research was generated successfully and the Class A correctness gate passed:
+  - `25` chosen snapshots;
+  - `25` generated-ready, rejected-ready, context-ready and comparison-ready snapshots;
+  - `5,000` outcome rows; and
+  - `25` chosen rows.
+- The chosen-versus-menu artifact retained `1,000` rows: `947` NF intraday rows and `53` BNF intraday rows. The chosen set contained `2` NF and `4` BNF rows.
+
+### Strategy-quality Evidence
+
+- Daily teacher research reported that the chosen candidate was not the best available candidate in any of the `25` comparable snapshots.
+- A better candidate existed in all `25`, with reported average uplift of approximately `0.248R`.
+- The teacher summary and the smaller chosen-review panel use different scopes and must not be merged:
+  - daily chosen-teacher scope: `25` rows, approximately `0.02R` average, `0.0%` success;
+  - selected shadow-review scope: `6` rows, approximately `-0.06R`, `0.0%` success.
+- This was decisive evidence that persistence was working while candidate selection still had a material objective/ranking defect.
+- The screenshots and exported log confirm evaluation and teacher generation, but they do not independently prove that daily C3 percentile finalization completed for 17 Aug. C3 status remains a separate artifact that must be checked explicitly.
+
+## 2026-08-18 to 2026-08-19 - Net-objective and Selector Research: Local Only
+
+### Deployment Boundary
+
+- No selector-research change in this section is deployed to the phone.
+- `Marketapp` has one local commit beyond `origin/main`:
+  - `84c20bf` - `Use net economics for candidate authority`.
+- `MarketVivi` has one corresponding local commit beyond `origin/main`:
+  - `80b8254` - `Show friction-adjusted net candidate profit`.
+- Those commits synchronize the local Android, Python brain and PWA identity at `v2.5.94 / b425`, but they have not been pushed.
+- Additional selector, PC2 evidence-completeness, version-stamping and snapshot-compaction changes are still uncommitted in the `Marketapp` working tree. Therefore even the local `v2.5.94` commit is not the complete current research state.
+
+### Confirmed Root Cause
+
+- The deterministic sort tuple allowed legacy family, Varsity and teacher heuristics to outrank candidate economics.
+- This could preserve a familiar candidate even when another construction-safe candidate had better expected money after estimated round-trip friction.
+- Net economics is a real correction, but replay proved it is not the only missing variable.
+
+### Historical Replay Results
+
+- Across `594` outcome-joined menus from `596` replayed live-generated menus:
+
+| Selector | Mean R | Positive outcomes |
+|---|---:|---:|
+| Stored primary | `0.076565R` | `29.125%` |
+| Maximum gross premium edge | `0.107004R` | `45.960%` |
+| Maximum net edge proxy | `0.106543R` | `43.434%` |
+| Maximum net edge per risk | `-0.045826R` | `28.620%` |
+
+- On Claude's requested single-build dates, 3, 4, 10, 12 and 13 Aug, `237` joined menus produced:
+
+| Selector | Mean R | Positive outcomes |
+|---|---:|---:|
+| Stored primary | `-0.117196R` | `12.236%` |
+| Maximum gross premium edge | `-0.041514R` | `29.958%` |
+| Maximum net edge proxy | `-0.040730R` | `24.473%` |
+| Maximum net edge per risk | `-0.075327R` | `25.316%` |
+
+- The replay rejected `net edge / risk` as the first economic key. It over-promoted tiny-credit structures whose ratio looked attractive mainly because of a small denominator.
+- Raw net edge improved selection but did not close the problem. The live-generated oracle averaged `0.254805R`, leaving roughly `0.148R` per menu unexplained after the simple net objective.
+
+### Current Uncommitted Selector Design
+
+- Deterministic ordering is currently being tested as:
+  1. existing capital and direction safety;
+  2. raw `netPremiumEdge` after friction;
+  3. legacy family, teacher and context heuristics as later tie-breakers; and
+  4. `adjustedEdgePerRisk` only as a later tie-breaker and diagnostic.
+- The local rank fingerprint is `build3_rank_v6_safety_then_raw_net_economics`.
+- Missing net economics fails closed for candidates produced under the net-economics contract. Gross edge remains only a compatibility fallback for older evidence.
+- This ordering is evidence-backed relative to the previous heuristic-first tuple, but it is not yet a complete profitable selector.
+
+### PC2 Experiment and Safe Local Corrections
+
+- Exact PC2 replay was possible for only `97` menus and `95` outcome-joined decisions from two mixed-build sessions. Older rows did not retain all selector inputs.
+- The current `70/30` index-direction/context blend averaged approximately `-0.023686R` with `13.684%` positive outcomes.
+- A global `90/10` economics/context blend averaged approximately `-0.004132R` with `52.632%` positive outcomes, a `+0.023267R` mean improvement over stored primary in this small sample.
+- The winning scope changed by day. Two mixed-version sessions are not sufficient evidence to promote new active PC2 weights or reference scope.
+- Safe evidence-completeness changes being tested locally are:
+  - research normalization includes every capital-safe, direction-safe candidate with valid economics, including monitor-only rows;
+  - entry normalization remains restricted to candidates that pass the existing entry contract;
+  - WAIT menus can receive a research winner without authorizing an entry;
+  - PC2 selection reruns after final readiness/eligibility so persisted authority cannot point to a stale primary; and
+  - local selector schema is advanced to `pc2_paper_primary_v4`.
+
+### Evidence Contract Improvements Under Test
+
+- Generated and rejected candidate rows now stamp `app_version` and `brain_version` so mixed-build evidence can be separated in future studies.
+- Migration `20260818_ml_generated_candidate_versions.sql` adds nullable version columns to `ml_generated_candidates`. It was applied to Supabase on 19 Aug and is included in the pending repository push.
+- `android_compact_v3` removes the duplicate generated-candidate copy only when every generated ID is already represented in the complete ranked menu. Full ranked and rejected evidence remains available.
+
+### Verification Completed Locally
+
+- Python compilation passed.
+- Focused selector/economics tests passed: `23` tests.
+- Full Python unittest discovery passed: `313` tests.
+- Historical net-objective replay completed for `596` menus.
+- Exact PC2 replay completed for `97` menus and `95` joined decisions.
+- Android/Kotlin compilation was not run because this environment has no JDK 17/Android SDK. GitHub CI and a phone installation remain mandatory before deployment.
+
+### Current Research Conclusion
+
+- The project has moved beyond merely identifying that the stored primary was poor: it has isolated one concrete ordering defect and rejected one plausible but harmful replacement objective.
+- The remaining residual is still large. Next experiments must separate, in order:
+  1. raw net edge versus a bounded absolute-risk penalty;
+  2. NF-versus-BNF index choice within the same family;
+  3. width and protection placement within the selected family/index;
+  4. context-percentile contribution using leave-one-day-out validation; and
+  5. ML out-of-distribution behavior as an abstention problem, not another ranking weight.
+- No policy should replace paper authority until it improves mean R and downside by day, remains stable on single-build holdouts, and preserves all safety and entry contracts.
+- Detailed local evidence is in `Marketapp/reports/SELECTOR_EXPERIMENT_FINDINGS_20260818.md`. Generated replay directories and tools remain intentionally untracked.
+
+## 2026-08-19 - PC2 WAIT Authority, Neutral Market Fit and Payload Audit: v2.5.95
+
+### Active Paper-authority Corrections
+
+- WAIT is now classified rather than treated as one undifferentiated terminal state:
+  - preliminary strategy uncertainty may be resolved by an exact entry-eligible PC2 paper primary;
+  - hard safety, risk and data-quality WAIT states remain binding; and
+  - STOP remains binding.
+- PC2 paper finalization resolves the verdict to the exact selected candidate only after final eligibility and readiness checks. A missing, stale or ineligible primary fails closed to hard WAIT.
+- Neutral structures no longer inherit directional confidence as their market-fit score. Iron Condor and Iron Butterfly entry confidence is based on bounded range suitability, trend persistence and cross-index agreement, then constrained by ML confidence.
+- Unknown strategy families and neutral strategies without sufficient regime evidence fail closed.
+
+### Supabase and Android Payload Corrections
+
+- Generated and rejected candidate evidence now carries `app_version` and `brain_version` for build-pure forensic analysis.
+- Supabase migration `ml_generated_candidate_versions` was applied successfully to project `fdynxkfxohbnlvayouje`.
+- `ml_generated_candidates` retained RLS with two policies after the migration.
+- Android snapshot compaction removes the duplicate generated-candidate array only when the complete ranked menu already contains every generated candidate ID.
+- Compact candidate evidence retains the selected PC2 sort components and bounded strategy-market-fit diagnostics while dropping duplicate research/entry sort copies.
+- Native snapshot persistence logs context, top-candidate and approximate total payload byte counts for phone RAM diagnosis.
+
+### Payload Audit
+
+- Recent snapshot rows were approximately `617-643 KB` across the audited context, top-candidate and verdict payloads, below the Android snapshot caps.
+- The main avoidable memory cost was duplicate candidate evidence and repeated transient serialization, not a single oversized Supabase row.
+- PC2 authority rows remained individually small, but their high row count is a database-volume concern and should not be confused with Android heap pressure.
+
+### Validation and Release Boundary
+
+- Focused selector, entry, payload and guard contracts passed: `95/95`.
+- Full Python unittest discovery passed: `322/322`.
+- `python3 -m py_compile app/src/main/python/brain.py` and `git diff --check` passed.
+- Android/Kotlin compilation remains unavailable locally because Java/JDK 17 and the Android SDK are absent; GitHub CI and phone installation remain mandatory.
+- Android/Kotlin, Python brain and PWA identities are synchronized at `v2.5.95 / b426`.
+- Generated research reports, replay output directories and exploratory tools remain intentionally untracked and must not be included in the release.
