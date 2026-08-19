@@ -20140,7 +20140,7 @@ git -C /abs/path/to/repo \
 - No policy should replace paper authority until it improves mean R and downside by day, remains stable on single-build holdouts, and preserves all safety and entry contracts.
 - Detailed local evidence is in `Marketapp/reports/SELECTOR_EXPERIMENT_FINDINGS_20260818.md`. Generated replay directories and tools remain intentionally untracked.
 
-## 2026-08-19 - PC2 WAIT Authority, Neutral Market Fit and Payload Audit: v2.5.95
+## 2026-08-19 - PC2 WAIT Authority, Neutral Market Fit and Payload Audit: v2.5.96
 
 ### Active Paper-authority Corrections
 
@@ -20173,5 +20173,6 @@ git -C /abs/path/to/repo \
 - Full Python unittest discovery passed: `322/322`.
 - `python3 -m py_compile app/src/main/python/brain.py` and `git diff --check` passed.
 - Android/Kotlin compilation remains unavailable locally because Java/JDK 17 and the Android SDK are absent; GitHub CI and phone installation remain mandatory.
-- Android/Kotlin, Python brain and PWA identities are synchronized at `v2.5.95 / b426`.
+- Android/Kotlin, Python brain and PWA identities are synchronized at `v2.5.96 / b427`.
+- The first push placed the runtime changes under the already-used `v2.5.95 / b426` identity. The immediate synchronized `v2.5.96 / b427` follow-up restores build-pure evidence and update detection.
 - Generated research reports, replay output directories and exploratory tools remain intentionally untracked and must not be included in the release.
