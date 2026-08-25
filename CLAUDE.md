@@ -1,8 +1,26 @@
-# Market Radar v2.1 — CLAUDE.md
+# Market Radar v2.6.0 — CLAUDE.md
 
-> **Build**: b107 · **Last Updated**: April 15, 2026
+> **PWA build**: b431 (v2.6.0) · **Last Updated**: August 25, 2026
 > **Repo**: github.com/vivekashokan007-cloud/MarketVivi
 > **Live**: vivekashokan007-cloud.github.io/MarketVivi
+
+---
+
+## 0. Architecture status — read this first
+
+This doc was frozen at b107/April 2026 for four months and drifted badly out of sync with the live system. As of the August 2026 god-mode audit of the brain, the authority structure is:
+
+- **`Marketapp` (Android/Kotlin, Chaquopy-embedded `app/src/main/python/brain.py`) is the sole authoritative brain.** All candidate generation, ranking, and the PC2 paper-primary selector (v5) run there, on-device, every 5-minute poll. See `Marketapp/CLAUDE.md` for its architecture — that is now the canonical brain documentation.
+- **This repo's embedded Python brain — `BRAIN_PYTHON` inside `app.js`, and the standalone `brain.py` copy in this repo — is vestigial.** No live call path into it was found during the audit, but this was not exhaustively proven (dead code, not confirmed-dead code — flagged as an open item, not a settled fact). Do not treat anything in Section 6 below (the Pyodide `brain.py` structure) as describing the live decision-making brain; it describes a superseded, pre-migration architecture that this PWA still ships.
+- **This PWA (`index.html`/`app.js`/`api.js`/`db.js`/`bs.js`) is still the live UI** — the Android app wraps it in a WebView (see `Marketapp/CLAUDE.md` § Project overview). Candidate generation logic that lives in `app.js` (Section 5 below, e.g. `generateCandidates()`/`rankCandidates()` at the JS layer) should be treated the same way: verify against the live Chaquopy `brain.py` before trusting it as current, since the two have been known to drift.
+- **Constants below are stale in places** — most importantly `MAX_SIGMA_OTM` (Section 10.4/14 below say `0.8`; the live governing value in the authoritative brain is **`1.15`**, and as of v2.6.0 it's no longer a hard cap but the threshold for an exponential de-rate — see "Selector & sigma architecture (v2.6.0)" below). Treat every numeric constant in this file as a historical snapshot, not a live source of truth, until re-verified against `Marketapp/app/src/main/python/brain.py`.
+
+### Selector & sigma architecture (v2.6.0, live in Marketapp brain.py — NOT in this repo's brain.py)
+
+- Candidate ranking authority is `_pc2_paper_primary_sort_key` (v5): `safety_ineligible` → **absolute net premium edge after sigma de-rate** (`rank_edge_effective`) → `context_percentile_score` → `prob_profit` → `candidate_id`. This replaced an edge-per-risk / composite-score ordering — empirically, edge-per-risk selection measured worst (-0.17R to -0.28R) on a realistic top-2-picks/day basis.
+- `MAX_SIGMA_OTM=0.8` (Section 10.4/14 below) is stale on two counts: the live value is `1.15`, and it is no longer a hard/soft cap on eligibility — it is now the threshold above which an exponential half-life de-rate (`0.5 ** (excess_sigma/0.5)`, floor `0.05`) shrinks a candidate's ranked edge. It still never vetoes a candidate outright. This exists because oracle-vs-brain analysis showed the live brain was picking candidates 2-4x further OTM than optimal, and credit candidates beyond the old `0.8` threshold won only 5.7% of the time historically.
+- `MIN_SIGMA_OTM=0.5` is unchanged and still live.
+- A multi-session (multi-day) holding-period evaluator has been **scoped but not built** (`Marketapp/brain_audit/SCOPE_multi_session_evaluator.md`) — Phase 1 offline analysis shows real promise (win rate 40.7%→71.4% from day 0→7 hold) but at a real cost (max-loss realization 0.56%→10.71%), and a critical data-quality gate (9-19% impossible/stale option prints at longer horizons) must be solved first. This is the next major open architectural question for the project — not yet decided.
 
 ---
 
@@ -181,7 +199,9 @@ exportAllData() → Supabase queries → XLSX → upload to Storage bucket
 
 ---
 
-## 6. brain.py Structure (3,089 lines / 77 functions)
+## 6. brain.py Structure (3,089 lines / 77 functions) — ⚠️ VESTIGIAL, see § 0
+
+**This section describes this repo's own embedded/Pyodide brain, which is not confirmed to be on any live call path (§ 0).** The authoritative brain is `Marketapp/app/src/main/python/brain.py` (21,900+ lines as of v2.6.0, Chaquopy on-device), a materially different and much larger codebase — do not use this section as a description of current decision logic. Kept below only as a historical record of the pre-migration architecture.
 
 The Python brain runs in Pyodide (WebAssembly) every 5 minutes. It receives JSON data and returns JSON with market intelligence, position verdicts, candidate evaluation, and timing/risk insights.
 
@@ -310,10 +330,10 @@ Fallback math engine when Upstox chain greeks are unavailable.
 
 **Overrides**: VIX ≥ 24 → debit co-PRIMARY. Range detected → IC/IB PRIMARY. IB blocked for real trades (margin ₹1.1L).
 
-### 10.4 Strike Selection
-- **MIN_SIGMA_OTM = 0.5** — credit sells must be ≥0.5σ from ATM (backtest: ATM = too risky)
-- **MAX_SIGMA_OTM = 0.8** — soft cap (backtest: cliff at 0.8σ → win rate drops 32pts)
-- **Sweet spot: 0.5–0.8σ** — 66–84% win rate across 8,372 backtested trades
+### 10.4 Strike Selection — ⚠️ stale, see § 0 for live values
+- **MIN_SIGMA_OTM = 0.5** — credit sells must be ≥0.5σ from ATM (backtest: ATM = too risky). Still live.
+- **MAX_SIGMA_OTM = 0.8** *(this repo's stale value)* — live authoritative value is **1.15**, and as of v2.6.0 it is a soft de-rate threshold (exponential decay of ranked edge), not a cap. See § 0.
+- **Sweet spot: 0.5–0.8σ** — 66–84% win rate across 8,372 backtested trades (original backtest basis; not re-validated against the 1.15 threshold or the v2.6.0 sigma de-rate).
 - **MIN_WIDTH**: NF 150, BNF 400 (prevent stop-loss hunting on narrow spreads)
 
 ### 10.5 Candidate Ranking (10 levels)
@@ -349,6 +369,7 @@ sell_ltp, buy_ltp, max_profit, max_loss, is_credit NUMERIC
 entry_* (60+ snapshot fields), exit_* (18 fields)
 journey_stats JSONB, created_at, updated_at TIMESTAMPTZ
 ```
+⚠️ **113 columns live** as of 2026-08-25 (verified against Supabase directly), not the count implied above — the schema grew with net-economics, sigma-penalty, and four-leg fields from the Android brain's PC2 selector work and was never backfilled into this doc. Treat this as illustrative, not exhaustive; check the live schema before relying on a specific column name.
 
 ### chain_snapshots
 ```
@@ -412,13 +433,15 @@ key TEXT PK, value JSONB, updated_at TIMESTAMPTZ
 
 ## 14. Constants (SACRED — don't change without data)
 
+⚠️ This is this repo's (PWA/embedded-brain) constant set, last confirmed April 2026. `MAX_SIGMA_OTM` in particular is stale — see § 0 for the live authoritative value (`1.15`, soft de-rate not hard cap, as of v2.6.0). Verify any other value here against `Marketapp/app/src/main/python/brain.py`'s `_CONST` dict before relying on it for live behavior; lot sizes as of v2.6.0 also prefer live chain metadata over these constants when available (`Marketapp/CLAUDE.md` § M1.1).
+
 ```
 CAPITAL=250000, NF_LOT=65, BNF_LOT=30, MAX_RISK=10%
 NF_WIDTHS: [100,150,200,250,300,400]
 BNF_WIDTHS: [200,300,400,500,600,800,1000]
 IV: LOW≤15, NORMAL 16-19, HIGH≥20, VERY_HIGH≥24
 PCR: >1.2 BULL, <0.9 BEAR (near-ATM, contrarian)
-Strike: MIN_SIGMA_OTM=0.5, MAX_SIGMA_OTM=0.8
+Strike: MIN_SIGMA_OTM=0.5, MAX_SIGMA_OTM=0.8 (stale — live=1.15, see § 0)
 Width: MIN_NF=150, MIN_BNF=400
 Time: first 15min suppressed, 11:30-14:30 sweet spot
 Poll: 5min light, 30min routine notify, auto-stop after market
@@ -431,6 +454,8 @@ STT: 0.15% options, 0.05% futures
 ---
 
 ## 15. Known Issues
+
+⚠️ These are this PWA repo's own known issues, last reviewed April 2026 — not re-audited in the August 2026 pass, which focused on the authoritative Android brain (see `Marketapp/CLAUDE.md` § "Audit fixes shipped in v2.6.0" and § "Still open / deferred", and `Marketapp/brain_audit/AUDIT_FINAL_VERIFIED.md` for the full findings register). Re-verify before acting on any item below.
 
 ### Critical
 - **Excel download fails in APK WebView** — file uploads to Supabase Storage but WebView blocks JS download triggers. Workaround: download from Supabase dashboard.
