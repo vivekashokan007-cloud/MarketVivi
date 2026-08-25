@@ -1,3 +1,106 @@
+## 2026-08-25 — Current State: v2.6.0 / b431 · v5 selector + sigma de-rate PROVEN working; observability trap logged
+
+**Verified against:** `brain.py` HEAD `a78fe41` (Marketapp) / `e5a0564` (MarketVivi), live Supabase 2026-08-25, on-device log capture.
+**Evidence law:** every claim VERIFIED (file:line / query / hand-check) or INFERRED. Two prior claims from earlier in this same session were wrong and are retracted here — see §I.
+
+### §A · What was done this session
+
+- **CLAUDE.md refresh, both repos**, brought current to v2.6.0/b431 and pushed. Marketapp `034aa6b → a78fe41`, MarketVivi `f0921a2 → e5a0564`. Both include the observability trap warning below so future sessions do not repeat this session's mistake.
+- **Family-allocation review** completed (`brain_audit/FAMILY_ALLOCATION_REVIEW_20260825.md`) — full follow-through on the §6 secondary finding from `ORACLE_VS_BRAIN_SIGMA_20260824.md`.
+- **Repeatable check saved** (`brain_audit/CHECK_family_allocation.sql`) — parameterised, self-guards on `INSUFFICIENT_DATA`, defaulted to grade the shipped v5 selector once ≥10 v5 days exist.
+- **Live investigation of "fixes not producing intended result"** on the phone after restart — traced to observability, not code.
+- ⚠️ `brain_audit/` is scratch-space and not under version control. If the family review, the SQL check, or the sigma discriminator doc are to survive this session, they must be moved into `Marketapp/brain_audit/` and committed. Currently they exist only as files delivered into the chat.
+
+### §B · 🟢 v2.6.0 fixes PROVEN working (retracts earlier same-session claim to the contrary)
+
+Decisive arithmetic tests on today's 318 candidates in `top_candidates_json → pc2PaperSortComponents`:
+
+| test | expected if fix live | observed |
+|---|---|---|
+| `rank_edge_value` differs from gross `premiumEdge` | differs on all rows by ≈ friction | **318/318 differ**, `avg_gross=-2248.0`, `avg_rank=-2437.5` (≈₹190 friction wedge, both directions) |
+| Sigma factor matches `0.5^((σ−1.15)/0.5)` for over-ceiling rows | exact match to 4dp | **145/145** ✓ |
+| `sigma_excess_over_ceiling` matches `σ − 1.15` | exact | **145/145** ✓ |
+| Negative-edge amplification matches `raw × (2 − factor)` | exact | **245/245** ✓ |
+| Sigma factor = 1.0 exactly for at/under-ceiling | exact | **100/100** ✓ |
+| `rank_economics_basis` label | `NET_AFTER_TEACHER_FRICTION` | ✓ on 318/318 |
+
+Hand-check: `−1063 × (2 − 0.550953) = −1540.337` vs stored `−1540.337431`. **The v5 net-edge authority is the ranking authority, and the sigma de-rate fires as coded.**
+
+### §C · 🔴 Observability trap — the reason this looked broken (P1, highest-priority open)
+
+`primary_candidate_json` is built at `brain.py:18251` as a **hand-written field whitelist that does NOT include** `netPremiumEdge`, `netEconomicsVersion`, `sigmaPenaltyFactor`, `rankEdgeEffective`, or `sigmaOTM`. Those fields read as `null` in Supabase **even when computed correctly**. The same fields are also lost from `top_candidates_json` in the brain→Kotlin bridge round-trip. The only surviving source of truth is `top_candidates_json → pc2PaperSortComponents`.
+
+Second observability gap: `entryEligibility.reasons` is `null` on all 318 rows today, so the *reason* a candidate was gated (e.g. `expected_value_not_positive`, `brain.py:14098`) cannot be confirmed from stored data, only INFERRED from code.
+
+Cost this session: reading these nulls, the v5 fixes were twice declared "inert in production" (retracted in §I) before the pc2PaperSortComponents path was inspected. Neither the family-allocation check nor any A/B of v5 vs v4 can measure the shipped selector until this is fixed.
+
+### §D · WAIT today is EV-driven and correct — not a v5 regression
+
+Today's phone symptom (IC surfaced at ₹32–50 profit / ₹3,200 risk) triggered a full review. Findings, in order of evidence strength:
+
+- **Full menu is 100% non-positive EV.** `ml_generated_candidates` 2026-08-25: **968/968 candidates have `premium_edge ≤ 0`** (best −₹172, worst −₹18,239). Not a sample — the whole generation.
+- **`entryEligible = false` on all 318 rows** in `top_candidates_json`. Gate at `brain.py:14098` triggers on `premium_edge <= 0`. This means WAIT.
+- **`action = WAIT`, `verdict_action = WAIT`, `pc2PaperPrimaryEligible = false`** on all 35 snapshots today. The system is correctly saying WAIT.
+- **The "surfaced primary" is not a recommendation card** — per `brain.py:18192` comment, `primary_candidate_json` is "the #1 surfaced recommendation (ML truth target)", i.e. the training label persisted on every poll, populated even during WAIT.
+- **Control days prove the pipe works.** 08-19 had 448/450 positive-EV butterflies (best +₹1,610); app said SELL PREMIUM with 40 eligible. 08-21 had 439 positive (best +₹1,818), 71 eligible. 08-24 had 4 positive / 3,800 total → all-WAIT under **v4**. All-WAIT days predate v5 and track the market, not the fix.
+- **0-DTE + VIX ~11 context.** Today is expiry Monday; generation emitted only IC + IB at ~¼ normal volume (968 vs ~3,800 typical). Expiry-day credits could not beat friction.
+
+### §E · Sigma de-rate — verified blind spots
+
+The mechanism works, but its practical impact is bounded — worth recording so nobody expects miracles from it:
+
+- **Never applies to IRON_BUTTERFLY.** Butterflies sell at-the-money and carry no `sigmaOTM`. `_sigma_distance_penalty` returns factor `1.0`. IB has taken ~39% of primary picks historically — the de-rate is blind to all of them by design (absence of a sigma reading is deliberately not treated as a fault).
+- **On an all-negative menu it barely reorders.** Today it changed the #1 pick in only **2 of 34** snapshots. Its intended effect — demoting far-OTM candidates when *positive* edges compete — cannot manifest when nothing is positive.
+- **Ranking only, never generation.** Sole call site is `_pc2_paper_primary_sort_components` (`brain.py:13590`). If generation looks off (as today), the sigma de-rate is not the cause.
+
+### §F · Teacher coverage collapsed to 100% `unseen` from 2026-08-11 (separate open issue)
+
+`_stage2a_annotate_candidates` (`brain.py:221`) does an exact 4-tuple bucket lookup `(strategy_type, regime_bucket, vix_bucket, dte_bucket)`; any miss → `unseen`. Around 08-11 VIX fell below 12 and stuck. The teacher table has no `VIX_LT_12` history, so every live candidate since then maps to an empty bucket (`teacher_bucket_n=0`).
+
+Verified breakdown of ALL primaries in Supabase, all time:
+- `covered_positive` 222 · `covered_negative` 352 · `unseen` 944 (first 08-11) · `null` 3,222
+- max `teacher_bucket_n = 865` pre-08-11 (real support); 0 post-08-11.
+
+This is a hard VIX-band gate that fails to zero rather than degrading — exactly the pattern the percentile/lexicographic architecture exists to avoid.
+
+**Impact is bounded under v5:** the teacher signal is evidence-only, not ordering authority. So it does not explain today's WAIT (net economics do not depend on teacher coverage — verified via `_apply_net_economics` at `brain.py:10845`, which uses gross + friction with a gross-prob fallback).
+
+**Fix candidate (not yet built):** nearest-covered-VIX-band fallback in the coverage layer, or a coarser VIX-agnostic bucket for `unseen` rows.
+
+### §G · Family-allocation review — corrections to §6 of ORACLE_VS_BRAIN_SIGMA (2026-08-24)
+
+Full document: `brain_audit/FAMILY_ALLOCATION_REVIEW_20260825.md`. Headline corrections:
+
+- **The brain's positive book (+39.6 R-units) is ONE cell on ONE day.** 08-11 IRON_BUTTERFLY-NF: +1.514R on 52 picks, contributing +78.7 R-units. Ex that cell, the other 836 primaries sum to **−39.1 R-units, mean −0.047R.** Fails the project's own leave-one-day-out bar not at 40% but >100%.
+- **Family choice is worse than random** (bias-corrected, ex-08-11): family_vs_random = **−0.032R**. Bonus: **within-family strike skill = +0.035R** (the v5 net-edge/sigma work — real but small).
+- **Naive "swap BEAR_CALL → butterflies" is refuted.** On the 279 snapshots where the brain chose BEAR_CALL, IB/IC was available only 37% of the time and averaged −0.233R when present. **BEAR_CALL is a market-state marker** (best-family-available ≤ 0R on 68% of its snapshots), not a wrong-family error.
+- **Fairness caveat, essential:** all 888 primaries analysed were selected by pre-v5 selectors (v3/v4/none). Zero v5 outcomes existed at review time. The review grades the baseline v5 must beat, not v5 itself.
+
+The saved SQL check (`CHECK_family_allocation.sql`) runs this decomposition parameterised by selector version; run it once ≥10 v5 days exist.
+
+### §H · Retractions this session — 43 (was 41, +2 today)
+
+Both today's retractions are the same class as most of the prior 41: reading a snapshot as a record.
+
+**#42.** Claimed "both v2.6.0 fixes are inert in production" and "netPremiumEdge is absent on all v5 primaries — the fixes never engage." **False.** The reading came from `primary_candidate_json` — the one serializer that omits precisely those fields. `pc2PaperSortComponents` inside `top_candidates_json` proved them live (§B). Retracted the next turn on partial evidence; fully disproven this turn by six independent arithmetic tests.
+
+**#43.** Claimed teacher-coverage collapse to `VIX_LT_12` was the cause of today's WAIT and the missing net economics. **False.** `_apply_net_economics` (`brain.py:10845`) has no teacher dependency at all — it computes from gross + friction with a gross-prob fallback. The coverage collapse is real (§F) but only affects the teacher signal, which is evidence-only under v5. Today's WAIT is EV-driven, verified via control days (§D).
+
+### §I · Active open items (updated ordering)
+
+1. **P1 — selector observability** (§C). Persist `netPremiumEdge`, `rankEdgeEffective`, `sigmaPenaltyFactor`, `rankEconomicsBasis` + `entryEligibility.reasons` into `primary_candidate_json`. Without this the A/B is unmeasurable and today's diagnosis pattern will repeat. **Highest priority.**
+2. **P2 — no-trade UX framing.** When `action=WAIT`, the surfaced "primary card" reads as a recommendation. Fix by rendering WAIT differently in the PWA, or by stamping a `surfaced_as` flag in brain.py the UI keys off. Blocked until §C proves the flag correctness.
+3. **Multi-session (multi-day) holding-period evaluator** — Phase 1 offline harness in `brain_audit/SCOPE_multi_session_evaluator.md`. Still the largest architectural open item; still awaiting explicit sign-off before build.
+4. **P4 — supply quality.** Generation emits candidates whose credit can't beat friction (today: 373 of 681 IC rows worse than 1:20 R/R). Not safety-critical since WAIT already fires; still worth suppressing at generation to cut menu noise.
+5. **Teacher-coverage `VIX_LT_12` fallback** (§F). Bounded under v5 but worth building — the "hard VIX-band gate that fails to zero" is exactly the architectural pattern this project rejects.
+6. **PAT rotation still not confirmed.** The PAT pasted 2026-08-24 (`ghp_2CJK1aQlx7ei…`) is still live; used this turn to push v2.6.0/b431 CLAUDE.md updates. Rotate at github.com/settings/tokens.
+
+### §J · One-line state
+
+**v2.6.0/b431 is on-device and the shipped fixes work as coded — proven arithmetically today, not just unit-tested. The visible symptom that triggered this investigation ("app not producing intended results") is the observability layer, not the decision layer: WAIT is EV-driven and correct on a 0-DTE VIX-11 tape, but neither the phone nor Supabase can display why. P1 (persist the sort-component fields) unblocks every downstream A/B and is now the critical path.**
+
+---
+
 ## 2026-08-13 - Current State: v2.5.73 / b404 C3 Auto Finalization Shipped, Teacher Research Watch
 
 ### Post-Retry Backfill Verification
