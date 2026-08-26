@@ -1,3 +1,144 @@
+## 2026-08-26 — Current State: v2.6.1 / b432 · Oracle gap decomposed; 4-leg structural bias found; 3 fix candidates KILLED by evidence
+
+**Verified against:** `brain.py` HEAD `bdaf251` (Marketapp) / `97e7807` (MarketVivi), live Supabase through 2026-08-26.
+**Evidence law:** every claim VERIFIED (query / file:line / hand-check) or INFERRED.
+**Headline:** a full day of adversarial analysis **removed three of four proposed fixes** and left the two lowest-risk ones standing. Nothing was implemented. Three of my own claims were retracted (§I).
+
+### §A — What was done
+
+Read-only analysis only. **No code changed today.** Deliverables (all in `brain_audit/`, still un-versioned scratch — see §J.6):
+- `ORACLE_GAP_DECOMPOSITION_20260826.md` — oracle gap pricing, ex-ante reachability, ranking-code audit
+- `LEG_COUNT_BIAS_20260826.md` — 4-leg structural bias, v2 natural experiment, Varsity class accuracy, scope
+
+### §B — 🟢 The oracle gap is CORRECTLY PRICED (adversarial test failed to break it)
+
+Hypothesis tested and **refuted**: since `r_multiple = managed_pnl / (0.6 × gross max_loss)`, the oracle might be picking tiny-denominator structures, making the gap an accounting artifact.
+
+| | Oracle | Brain | |
+|---|---:|---:|---|
+| mean R | +0.2681 | −0.0264 | gap **+0.2945R** |
+| mean P&L (rupees) | **+₹688** | −₹32 | gap **+₹719** |
+| win rate | 91.6% | 28.0% | |
+| `risk_at_entry` | **5,316** | 3,802 | oracle picks **1.4× BIGGER** |
+
+Oracle wins in **rupees** while picking **larger** structures — the opposite of denominator-gaming. **The prior oracle findings were correctly priced.** (957 snapshots, 22 days.)
+
+### §C — Only ~19% of the oracle gap is reachable ex-ante; ~81% is direction
+
+Best ex-ante rule (no hindsight) is `tp_threshold / friction_cost`: **+0.0288R / +₹374 / 58.0% win** vs brain's −0.0264R / −₹32 / 28.0%. That recovers **0.0552 of the 0.2945 gap ≈ 19%**.
+
+⚠️ **The mean-R claim FAILS the project bar** — dropping 2026-08-25 flips the sign (that day = **177.5%** of the effect). **Not recommended as an alpha source.** What survives is a variance claim: stdev **0.0986 vs 0.3317** (3.4× lower), worst day **−0.33 vs −0.94**. It is a **risk-control filter, not a return generator** — it clipped the 08-25 blow-up and also missed the 08-11 windfall.
+
+**The remaining ~81% is direction/hindsight and is NOT a brain defect to fix.**
+
+### §D — 🔴 RANKING-CODE AUDIT: nothing rewards high R:R — the real flaw is elsewhere
+
+Question asked: what in the ranking rewards high reward:risk / low breakeven win-rate? **Answer: nothing does.**
+
+- The only explicit term is `adjustedEdgePerRisk = premium_edge / max_loss` (`brain.py:11582`), key 9 of `build3_rank_v6`. **v5 already demoted it to evidence-only** — confirmed live (`adjusted_edge_per_risk: -1.345247` stamped while sort keys on `rank_edge_effective: -382`). `deterministic_rank` agrees with the actual primary only **25.9%** of the time.
+- **No breakeven-win-rate term exists in any ranking key** (grep: display/diagnostic uses only).
+- "lowest breakeven" and "best tp/risk" select the **identical candidate on 957/957 snapshots** — mathematically the same ranking.
+
+**🔴 THE ACTUAL FLAW — absolute-EV degenerates on negative menus.** On a healthy menu, absolute EV favours bigger structures. When **every** candidate is negative-EV (968/968 on 08-25), "maximize EV" becomes "minimize |EV|", and since `EV = prob × net_profit − (1−prob) × net_loss` is least-negative when `net_loss` is smallest, **the smallest structure wins — which carries the heaviest relative friction.**
+
+Within the same R:R quintile the brain picks structures ~30% smaller with ~53% heavier friction than the oracle (Q5: size 3,005 vs 4,228; friction/risk 0.1333 vs 0.0873; R −0.0283 vs +0.3614).
+
+### §E — 🔴 4-LEG STRUCTURAL BIAS (answers "do 4-leg strategies have an undue advantage?")
+
+**Both market-adjustment and undue advantage are real; the undue advantage dominates. It predates v5.**
+
+Supply IS regime-responsive (4-leg share swings **1.7% → 95.3%** by day). But on fair fights (snapshots offering both classes):
+
+| | 2-leg | 4-leg |
+|---|---:|---:|
+| share of **supply** | 87.7% | **12.3%** |
+| share of **primaries** | 16.9% | **83.1%** |
+| realized R (class) | −0.0310 | **−0.1142** |
+| mean P&L (rupees) | −₹167 | **−₹327** |
+| friction / risk | 0.0249 | **0.1397** |
+
+**12.3% of supply takes 83.1% of primaries — 6.8× over-selection — of a class losing 2× more actual money.**
+
+**Mechanism is geometry, not a ranking term.** A 4-leg sells two spreads, so at width 100 it collects **20× the credit** (34.33 vs 1.70 pts), giving a **16× bigger EV numerator** (2,232 vs 140) and a **33% smaller denominator** (max_loss 4,268 vs 6,360). Absolute-EV ranking therefore favours it automatically. Same pattern at widths 150 and 200.
+
+Long-standing across selectors: pre-v2 **100%**, v2 **0%**, v3 **100%**, v4 **83.5%** four-leg primaries.
+
+**VERIFIED not a metric artifact:** recomputing R with a friction-inclusive denominator improves 4-leg by 17.7% (−0.1332 → −0.1096) but the gap only narrows 4.3× → 3.6×; in rupees (denominator-free) 4-leg still loses 2× more. **~18% artifact, ~82% genuine.**
+
+### §F — ❌ v2 NATURAL EXPERIMENT: percentile-led revert REFUTED
+
+v2 selected 0% four-leg — an apparent precedent for class exclusion. Investigated:
+- v2 ran **exactly one day** (2026-08-14, 71 snapshots). **n=1.**
+- v2 did **NOT** exclude 4-leg by rule: 116 in watchlist, 30 pc2-eligible, **best rank achieved 132** of ~700. It was ranked and lost.
+- v2's sort key led with **`context_percentile_score`** (scale-invariant); v3+ lead with absolute economics. Corroborated by `84c20bf 2026-08-18 "Use net economics for candidate authority"`.
+- On 08-14 v2's picks beat the declined 4-leg **4× in R, 32× on worst case** — but **win rate 0.0%** (lost small, never won).
+
+**Refuted by wider replay:** applying a percentile-led ordering across the v4 era (6 sessions, 3,636 candidates) selects **MORE** 4-leg — **88.4% vs actual 76.5%** — because 4-leg scores *higher* on context percentile (+0.0039 vs −0.1001).
+
+> **v2's 0%-four-leg was a day-specific artifact of 2026-08-14. Reverting the primary authority to context percentile would make the bias WORSE. Candidate P: dead.**
+
+⚠️ **Concrete proof P1 mattered:** the net-edge arm of that replay was **not computable** — `rank_edge_value` is NULL on every pre-b432 row. Only the percentile arm could be reconstructed. From b432 forward this replay is fully reconstructible.
+
+### §G — ❌ VARSITY CLASS ACCURACY: 23.9% — Candidate A REFUTED, and a SECOND bias found
+
+`varsityTier` is **NULL on all 11,560 watchlist rows** (another serialization gap — add to P1 list). Regime call recovered from `verdict_json->>'strategy'` (689 non-WAIT snapshots).
+
+On snapshots with both classes available (n=352):
+
+| regime call | snapshots | correct | **accuracy** |
+|---|---:|---:|---:|
+| regime said 2-leg | 14 | 14 | 100.0% ⚠️ n=14, not meaningful |
+| regime said **4-leg** | **338** | 70 | **20.7%** |
+| **ALL** | **352** | 84 | **23.9%** |
+
+**23.9% against a 50% coin-flip baseline.** Candidate A would hand class authority to a mechanism anti-correlated with the right answer. **Candidate A: dead.**
+
+**🔴 NEW — a SECOND, independent 4-leg bias.** The regime layer names a 4-leg family on **338/352 = 96.0%** of mixed snapshots and is wrong **79.3%** of those. So over-selection has **two sources**: (1) ranking geometry (§E), (2) the regime/verdict layer. **Fixing ranking alone would not remove bias #2** — which is the strongest argument that the fix must be a *no-trade gate*, since a gate suppresses bad output regardless of which layer produced it.
+
+### §H — ✅ PROBABILITY MODEL: well calibrated. The ≥80% bucket is a GROSS-vs-NET definitional gap
+
+| predicted bucket | n | predicted | ever in profit |
+|---|---:|---:|---:|
+| <20% | 665 | 0.137 | 0.761 |
+| 20–40% | 1,993 | 0.310 | 0.342 |
+| 40–60% | 2,490 | 0.495 | 0.482 |
+| 60–80% | 1,728 | 0.665 | 0.378 |
+| **≥80%** | **3,691** | **0.976** | **0.027** |
+
+Below 80% the model is **near-perfectly calibrated** (0.449 predicted vs **0.447** realized, n=6,876). The ≥80% bucket is the far-OTM flood: **avg σOTM 4.53**, avg TP target **₹32** against **₹123** friction, **93.5% cannot profit** (tp ≤ friction).
+
+> **The model is right — a 4.5σ OTM spread genuinely won't be reached. It measures P(spot misses strike), not P(profit after friction). Not a calibration failure; a definitional gap.** Note EV already neutralises it, because `net_profit = max(gross_profit − friction, 0)` floors at 0.
+
+**And the 4-leg hypothesis is refuted in the opposite direction:** on the tradeable population, `prob_profit` **UNDER**-predicts for both classes, and *more* for 4-leg (2-leg −0.068, 4-leg −0.127). **prob_profit is conservative for two-sided structures, not generous. The 4-leg over-selection is purely geometry (§E).**
+
+### §I — Retractions this session — 46 (was 43, +3 today)
+
+All three are the same class as most of the prior 43: **asserting a mechanism before executing the test.**
+
+**#44.** "The brain is seduced by high reward:risk / low breakeven." **Too strong.** By quintile the brain picks Q5 (highest R:R) **74.0%** — but the oracle picks Q5 **70.0%**. A 4pp difference, not a distinguishing defect. The aggregate means were real but were a *symptom* of structure-size/friction selection, not evidence of an R:R-seeking objective.
+
+**#45.** "Iron butterflies show impossible pricing (credit >90% of width) — a construction bug." **Wrong.** Verified from actual legs: credit 45.75 vs stored 45.9; maxProfit 2,974 vs 2,984; maxLoss 276 vs 266 — arithmetic exact. These are *off-centre* butterflies (centre ~68 pts below spot). The brain priced it correctly (`prob_profit: 0.034`, `net_premium_edge: −382`) and correctly refused it. Supply-composition issue, not a pricing defect.
+
+**#46.** "The probability model is inverted and severely broken." **Wrong.** It is near-perfectly calibrated below 80% (§H). The ≥80% anomaly is a gross-vs-net definitional gap on the far-OTM flood, not a calibration failure. Retracted within the same turn after running the reconciliation.
+
+### §J — Open items (revised ordering)
+
+1. **P1 follow-on persistence** — add `varsityTier` (§G) and `entryEligibility.reasons` to `primary_candidate_json`. Both blocked measurement today.
+2. **Candidate M — friction-inclusive R metric** as a NEW parallel column + `label_version` bump. `netMaxLossAfterFriction` already exists (`brain.py:10887`). **Precondition for honest measurement of everything else.** Never overwrite historical labels in place.
+3. **Candidate N — no-trade gate** (`max(rank_edge_effective) <= 0 → surface nothing`). **Now supported by four convergent lines**: family review §4, oracle decomp §4, absolute-EV degeneracy (§D), and the two-source 4-leg bias (§G).
+4. **Supply quality** — 93.5% of the ≥80%-prob bucket cannot profit; 42.6% of butterfly supply is off-centre. Suppressing at generation cuts noise; does not fix selection (the brain already refuses them).
+5. **Multi-session evaluator** — still unbuilt, still the largest architectural open item. §H's exit-truncation gap (2-leg: 72.1% ever-profitable vs 46.2% managed-win) strengthens the case.
+6. ⚠️ **`brain_audit/` is NOT under version control.** Five analysis documents now exist only as chat deliverables on an ephemeral container. `Marketapp/CLAUDE.md` and this file both reference them by path. **They must be committed into `Marketapp/brain_audit/` or they are lost.**
+7. **PAT rotation still unconfirmed** (`ghp_2CJK1aQlx7ei…`), used four times in this session.
+
+**KILLED by evidence today — do not revisit without new data:** Candidate P (percentile-led revert, §F) · Candidate A (class-partitioned ranking via regime, §G) · "probability model is broken" (§H) · "reallocate BEAR_CALL → butterflies" (family review §4).
+
+### §K — One-line state
+
+**The oracle gap is real and correctly priced, but only ~19% of it is reachable ex-ante and the rest is direction. The brain's core flaw is that absolute-EV ranking degenerates into a smallest-structure / maximum-friction selector on negative-EV menus, which is why 12.3% of supply (4-leg) takes 83.1% of primaries while losing 2× more money — compounded by a second, independent 4-leg bias in the regime layer that is wrong 79% of the time. Three of four proposed fixes died under test; what remains is the friction-inclusive metric and the no-trade gate, now backed by four convergent lines of evidence.**
+
+---
+
 ## 2026-08-25 — Current State: v2.6.0 / b431 · v5 selector + sigma de-rate PROVEN working; observability trap logged
 
 **Verified against:** `brain.py` HEAD `a78fe41` (Marketapp) / `e5a0564` (MarketVivi), live Supabase 2026-08-25, on-device log capture.
