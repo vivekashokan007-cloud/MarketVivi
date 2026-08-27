@@ -1,3 +1,18 @@
+## 2026-08-27 — Current State: v2.6.2 / b433 · Entry eligibility persisted; Candidate N no-positive-edge WAIT gate live
+
+**Implemented and pushed scope:**
+- Android/Python snapshot compaction now preserves compact `entryEligibility` on ranked candidates so Supabase/local snapshots carry the paper-entry reason contract without re-inflating Android payloads.
+- PC2 paper selector advanced to `pc2_paper_primary_v6`.
+- Candidate N no-trade gate is live: if all entry-eligible candidates have non-positive `rank_edge_effective`, PC2 forces WAIT with `pc2_menu_no_positive_effective_edge`; research/watchlist evidence is still retained.
+- Existing no-entry WAIT path remains separate as `pc2_no_entry_eligible_candidate`.
+- Kotlin ML evaluation save path keeps streamed/local checkpoint hardening for lower phone RAM pressure and resumable retry behavior.
+
+**Verification before push:**
+- `python3 -m py_compile app/src/main/python/brain.py`
+- `PYTHONPATH=app/src/main/python python3 -m unittest app/src/main/python/tests/test_pc2_paper_primary.py app/src/main/python/tests/test_snapshot_payload_compaction.py app/src/main/python/tests/test_entry_eligibility.py app/src/main/python/tests/test_net_economics_authority.py`
+
+**Synchronized release target:** Android/Python/PWA `v2.6.2 / b433`, PWA `app.js?v=1315`.
+
 ## 2026-08-26 — Current State: v2.6.1 / b432 · Oracle gap decomposed; 4-leg structural bias found; 3 fix candidates KILLED by evidence
 
 **Verified against:** `brain.py` HEAD `bdaf251` (Marketapp) / `97e7807` (MarketVivi), live Supabase through 2026-08-26.
@@ -20519,6 +20534,16 @@ synchronized release identity below.
 - PWA display/cache identity: **v2.5.97 / b428** with `app.js?v=1309`.
 - This release supersedes v2.5.96 for evidence gathered after the phone updates.
 
+### Git Deployment Evidence
+
+- Marketapp commit pushed to `origin/main`: `669e9ba`
+  (`Fix position context warning semantics`).
+- MarketVivi commit pushed to `origin/main`: `502e7e7`
+  (`Bump PWA to v2.5.97`).
+- After push and fetch, both local `HEAD` values matched their respective
+  `origin/main` refs.
+- The Git remotes remained clean HTTPS remotes without embedding credentials.
+
 ### Fix Shipped
 
 - Low control-index signal coverage is no longer treated as position mark
@@ -20548,3 +20573,14 @@ synchronized release identity below.
   - full mark + normal CI: `EXIT / SOON` can still fire.
   - full mark + deep loss + low CI: `EXIT / NOW` still fires.
   - partial mark + low CI: still reports incomplete live data.
+
+### Next Live Evidence Required
+
+- Confirm the installed phone reports **v2.5.97 / b428** before using any new
+  rows as evidence for this patch.
+- Re-check an active paper position where quotes are full but CI/control-index
+  signal coverage is below 60%.
+- Expected result: card/alert wording should say **Context signal coverage
+  limited**, not **Position Data Incomplete**.
+- If quotes are partial or unavailable, **Position Data Incomplete** remains
+  valid and should still appear.
