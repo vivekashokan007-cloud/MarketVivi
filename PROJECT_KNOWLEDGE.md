@@ -20584,3 +20584,128 @@ synchronized release identity below.
   limited**, not **Position Data Incomplete**.
 - If quotes are partial or unavailable, **Position Data Incomplete** remains
   valid and should still appear.
+
+## 2026-08-31 - v2.6.9 Zero-Outcome Teacher Telemetry and Synchronous Release
+
+### Release Identity
+
+- Android app: **versionName 2.6.9 / versionCode 440**.
+- Python brain: **BRAIN_VERSION 2.6.9**.
+- PWA display/cache identity: **v2.6.9 / b440** with `app.js?v=1318`.
+- This is the current synchronized release after the 2026-08-31 zero-output
+  evaluation fix.
+
+### Git Deployment Evidence
+
+- Marketapp commits pushed to `origin/main`:
+  - `6a45157` - `Fix release-blocking teacher tests`
+  - `2879ed2` - `Fix PC2 symmetric sigma ranking band`
+  - `4dd53c2` - `Add teacher drop telemetry for zero-output evaluations`
+- MarketVivi commit pushed to `origin/main`: `dd78794`
+  (`Bump PWA to v2.6.9`).
+- Both repositories were pushed as a synchronized release: Android, PWA and
+  Python brain version identifiers all match **2.6.9 / b440**.
+- Known local-only noise after release: untracked research/cache folders such
+  as `reports/`, `tools/`, and `__pycache__/` are not release artifacts.
+
+### Problem Addressed
+
+- Some post-close evaluation runs can legitimately produce zero teacher
+  outcomes because every evaluated candidate is dropped before a managed
+  teacher outcome is computable.
+- Before this release, that case looked too similar to a broken teacher
+  research artifact:
+  - evaluation could be marked **DONE**,
+  - no teacher research report artifact was available,
+  - the bridge could later classify the state as stale/failed research,
+  - the app did not preserve enough evidence to explain the zero-output path.
+- This made retry/debug decisions unclear and could create repeated "teacher
+  artifact failed" style states even when the true issue was "no evaluable
+  teacher outcome existed".
+
+### Fix Shipped
+
+- `brain.py` now records bounded teacher drop telemetry while evaluating
+  candidates.
+- Drop counters and sample rows are collected across all relevant roles:
+  `primary`, `secondary`, `supply_shadow`, and `rejected`.
+- Managed teacher outcome paths now explain why a row was dropped, including:
+  - `max_profit_missing_or_non_positive`
+  - `candidate_path_empty`
+  - `entry_execution_basis_unavailable`
+  - `entry_round_trip_cost_unavailable`
+  - `risk_at_entry_non_positive`
+  - `path_round_trip_cost_unavailable`
+  - `managed_pnl_unavailable`
+- Android `MarketMLService` now merges these drop counters/samples across
+  batches and persists them into local evaluation status.
+- Batch progress and final status messages include teacher drop summaries when
+  a batch or day produces zero outcomes.
+- Forced retry now bypasses the previous "already done today" short-circuit and
+  actually recomputes/replays the evaluation path.
+- `NativeBridge` now distinguishes:
+  - **zero-output DONE with teacher drop evidence** -> report status
+    `NOT_APPLICABLE`
+  - **produced/persisted outcomes but report missing/unreadable** -> real
+    `FAILED_RESEARCH`, retry remains appropriate.
+
+### Verification
+
+- `python3 -m py_compile app/src/main/python/brain.py` passed in Marketapp.
+- `node --check app.js` passed in MarketVivi.
+- `git diff --check` passed in both repositories before release push.
+- Android/Kotlin compile could not be run in this environment because Java/JDK
+  is unavailable: `JAVA_HOME` is not set and no `java` command exists.
+
+### Next Live Evidence Required
+
+- Confirm the installed phone reports **v2.6.9 / b440** before treating new
+  app behavior as evidence for this release.
+- On the next post-close evaluation or retry:
+  - if outcomes are produced, teacher research, Class A, and teacher metrics
+    should behave normally;
+  - if zero outcomes are produced, ML status should preserve teacher drop
+    reasons and should not loop as a broken teacher artifact;
+  - if outcomes exist but the teacher report artifact is missing, the state
+    should still be retryable as a real failed research case.
+- Continue checking that Class A and teacher metrics are build-pure against
+  app/brain/PWA **2.6.9** evidence only.
+
+## 2026-09-01 - v2.6.10 Release-Blocking Evaluator Test Fix
+
+### Release Identity
+
+- Android app: **versionName 2.6.10 / versionCode 441**.
+- Python brain: **BRAIN_VERSION 2.6.10**.
+- PWA display/cache identity: **v2.6.10 / b441** with `app.js?v=1319`.
+- This release supersedes the failed **v2.6.9 / b440** Android release attempt.
+
+### Failure Found
+
+- The GitHub signed-release workflow for Marketapp failed before APK build at
+  the Python safety suite.
+- Failing tests were in `test_pc2_supply_quality_shadow.py`:
+  - `test_post_close_evaluator_includes_shadow_sample`
+  - `test_post_close_evaluator_preserves_directional_generation_membership`
+- Root cause: the evaluator now calls `_eval_single_candidate` with keyword
+  telemetry arguments such as `drop_sink`, while those unit-test mocks still
+  used the older positional-only lambda signature. Under test, the mock raised
+  `unexpected keyword argument 'drop_sink'`, the evaluator caught it as a
+  supply-shadow error, and no outcome was emitted.
+
+### Fix Shipped
+
+- `test_pc2_supply_quality_shadow.py` mocks now accept `**_kwargs`, matching the
+  current evaluator contract without weakening the production path.
+- `_evaluate_snapshot_outcomes` now explicitly preserves dict-valued
+  `context_json` before falling back to JSON parsing. This keeps fixture and
+  bridge paths robust when context is already decoded.
+
+### Verification
+
+- `PYTHONPATH=app/src/main/python python -m unittest app/src/main/python/tests/test_pc2_supply_quality_shadow.py`
+  passed: **9 tests OK**.
+- Release safety command passed:
+  - `python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_temporal.py`
+  - `PYTHONPATH=app/src/main/python python -m unittest discover -s app/src/main/python/tests -p 'test_*.py'`
+  - result: **336 tests OK**.
