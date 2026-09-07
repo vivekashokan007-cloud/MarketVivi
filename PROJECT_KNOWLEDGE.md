@@ -21210,3 +21210,15 @@ synchronized release identity below.
   the EV estimator against realized distributions, and establish enough
   consistent labelled support before changing model-training policy. Do not
   alter live entry thresholds from these audit observations alone.
+
+## 2026-09-07 - Remaining-Findings Test Run
+
+- The post-release verification report is recorded in
+  [AUDIT_REMAINING_FINDINGS_TEST_20260907.md](AUDIT_REMAINING_FINDINGS_TEST_20260907.md).
+- The Marketapp full suite passed **364 tests**; eight focused daily-risk,
+  evaluation-quote-contract, and net-economics tests also passed. PWA JavaScript
+  syntax passed.
+- Direct execution confirmed both retraining entry points remain intentionally
+  disabled pending canonical label unification. The report identifies the
+  outstanding valuation-label, evaluator, historical-coverage, EV-validation,
+  and device/forward-paper evidence requirements.
