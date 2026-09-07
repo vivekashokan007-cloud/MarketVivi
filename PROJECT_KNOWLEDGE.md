@@ -21222,3 +21222,22 @@ synchronized release identity below.
   disabled pending canonical label unification. The report identifies the
   outstanding valuation-label, evaluator, historical-coverage, EV-validation,
   and device/forward-paper evidence requirements.
+
+## 2026-09-07 - Remaining Audit Read-Only Evidence Review
+
+- Full evidence report:
+  [AUDIT_REMAINING_EVIDENCE_20260907.md](AUDIT_REMAINING_EVIDENCE_20260907.md).
+- Read-only database audit found 266 closed trades, but only 95 net-labelled
+  rows and 10 gross/net outcome disagreements. This supports keeping training
+  disabled pending canonical net-label unification.
+- Position ticks are mostly executable (23,652/23,793), but the nearest
+  pre-close tick did not directly reconcile to stored close P&L on the 94
+  trades with a tick in the preceding ten minutes. This requires traceable
+  close-quote/tick identity; it is not proof that a particular close is wrong.
+- Teacher outcome primary rows average −₹31.13 in the currently usable corpus.
+  The apparent primary-versus-secondary comparison is descriptive only because
+  candidate rows are correlated and lack final eligibility/capacity controls.
+  An exact outcome-to-generated-menu join returned zero rows, preventing a
+  faithful active-rank correlation test.
+- Supabase contains no v2.6.17 snapshot yet; the pushed release has not received
+  device/runtime telemetry verification. No production data or policy changed.
