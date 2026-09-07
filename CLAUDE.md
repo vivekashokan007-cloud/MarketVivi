@@ -1,6 +1,6 @@
-# Market Radar v2.6.0 — CLAUDE.md
+# Market Radar v2.6.15 — CLAUDE.md
 
-> **PWA build**: b431 (v2.6.0) · **Last Updated**: August 25, 2026
+> **PWA build**: b446 (v2.6.15) · **Last Updated**: September 7, 2026
 > **Repo**: github.com/vivekashokan007-cloud/MarketVivi
 > **Live**: vivekashokan007-cloud.github.io/MarketVivi
 
