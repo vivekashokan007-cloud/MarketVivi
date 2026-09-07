@@ -20800,3 +20800,263 @@ synchronized release identity below.
   production observation, Supabase finding, or explicitly deferred analysis
   must be appended here with its date, affected repository/file, evidence, and
   status. Secrets, tokens, and credentials must never be recorded in this file.
+
+## 2026-09-07 - Claude Follow-Up Valuation Guards: Review Only
+
+### Scope and Status
+
+- Reviewed `HANDOFF_guards_followup_for_codex_20260907.md` and
+  `guards_on_top_of_27f08e3.patch` against Marketapp commit
+  `27f08e32ba0837ad1ec248d452d5ad05363d9e9c`.
+- The proposed patch adds incomplete-structure and P&L-bound guards to
+  `PositionTickService.kt`, six Python source-contract tests, and ten Kotlin
+  helper tests. It does not change the brain, entry policy, or version markers.
+- `git apply --check` passed. The patch was **not applied or pushed** during
+  this review. Only this knowledge record was updated locally.
+- Recommendation: revise before adoption; separate structural validation from
+  theoretical-payoff anomaly detection. No production data was changed.
+
+### Findings and Required Follow-Up
+
+1. **High: expiry payoff bounds are not strict bounds on quoted closing P&L.**
+   The service closes short legs at ask and long legs at bid. The proposed
+   1.05-times bound can reject a wide-spread closing quote even when its
+   mid-price spread is consistent with the contract width. Synthetic example:
+   width 100, entry credit 40, quantity 65, short bid/ask 190/210, long bid/ask
+   90/110. The mid spread is 100, but quoted close is 120, giving P&L -5,200
+   versus expiry max loss 3,900 and the guard threshold -4,095. Arithmetic was
+   checked with Node. This is not evidence from a production trade. Nulling
+   this P&L suppresses `SHADOW_SL` and normally yields `SHADOW_DEGRADED`
+   instead (the EOD rule can take precedence). These are shadow decisions,
+   not broker executions. Treat this as anomaly telemetry until spread,
+   friction, units, and bound-reference consistency have been validated.
+
+2. **High: rejection leaves an apparently executable mark in the row.**
+   The patch derives `executableMarkValue` from `baseQuality` before checking
+   bounds. It then nulls `current_pnl`, but existing row serialization still
+   emits `executable_mark` and `mark_basis=EXECUTABLE`; mid/LTP marks can also
+   remain populated. Define raw versus accepted mark fields explicitly and
+   test the complete serialized contract so downstream readers cannot treat
+   a rejected valuation as accepted simply by reading the mark.
+
+3. **Medium: leg count is useful but not proof of structural completeness.**
+   `legs.size >= expectedLegs` accepts excess legs; duplicate instruments or
+   incorrect leg roles can satisfy the count. Unknown strategies skip the
+   check while reporting `structure_complete=true`. Validate exact counts,
+   unique identities, expected sides/types, and consistent contract metadata
+   for supported strategies; represent unsupported structures as unchecked.
+   The original alias defect omitted the second short/long pair, not both
+   protective legs as one description in the handoff suggests.
+
+4. **Medium: historical closed-trade corruption is not established.**
+   `PositionTickService` queues rows for `insertPositionTicks`; it does not
+   directly write `trades_v2.actual_pnl`. In MarketVivi, `closeTrade()` takes
+   `actual_pnl` from the open trade's `current_pnl`. The normal native/brain
+   position path uses `brain.py:compute_position_live()`, which independently
+   includes both pairs for four-leg strategies. The confirmed minute-tick
+   defect therefore does not by itself prove every pre-fix closed four-leg
+   trade is corrupt. Reconcile individual rows and their valuation provenance
+   before excluding or repairing them. Evaluator-label reliability likewise
+   needs provenance checks rather than blanket acceptance. Production database
+   rows and live schema constraints were not independently queried here.
+
+5. **Medium: tests and release handling need strengthening.**
+   The source-contract tests inspect strings, and Kotlin tests exercise helper
+   functions rather than the full extraction/valuation/policy/serialization
+   path. The version assertions establish that a marker exists, not that it
+   was bumped; the telemetry-key check does not cover all eight added fields.
+   Add behavioral coverage for malformed structures, wide bid/ask quotes,
+   rejected-row serialization, shadow decisions, and prior running extrema.
+   The patch does not reset previously contaminated running MAE/MFE state.
+   Claude reports 353 Python tests and ten Kotlin tests passing; these patched
+   tests were **not independently executed** during this review.
+   Since v2.6.15/b446 is already pushed, any follow-up behavior release should
+   use the next synchronized identity (proposed v2.6.16/b447, PWA cache 1323).
+   Update Android, Python, and PWA together. The signed-release workflow's
+   push path filter watches `app/build.gradle.kts`; applying this patch alone
+   does not trigger that workflow through the push filter.
+
+### Existing Release Verification Update
+
+- GitHub Actions run [34090892188](https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/34090892188)
+  was independently checked and is now **completed / success**, with head SHA
+  `27f08e32ba0837ad1ec248d452d5ad05363d9e9c`.
+- This supersedes the earlier in-progress status for the v2.6.15 signed release.
+  It does not establish phone installation, runtime behavior, or deployment
+  of the proposed guards, which remain unapplied.
+
+### Handoff Artifact
+
+- Created [`HANDOFF_codex_findings_for_claude_20260907.md`](HANDOFF_codex_findings_for_claude_20260907.md)
+  in MarketVivi. It summarizes the confirmed four-leg defect, the valuation
+  bound concern, serialization risk, evidence limits around historical P&L,
+  test gaps, and the required synchronized-release follow-up.
+- This handoff is documentation only. The Claude guard patch remains unapplied
+  and unpushed.
+
+## 2026-09-07 - Claude Valuation Guards Revision 2: Review Only
+
+### Inputs, Scope, and Verification
+
+- Read `REPLY_to_codex_findings_20260907.md`,
+  `guards_v2_on_top_of_27f08e3.patch`, and `pwa_sync_v2.6.16.patch` in full.
+  The supplied result identifiers `dd94176` and `fc635a3` are Claude's patch
+  identifiers, not commits deployed by this review.
+- Both patches pass `git apply --check` against the current local repositories.
+  Neither patch was applied to either working tree, committed, or pushed.
+- Reconstructed the proposed Kotlin source and Python contract-test file in
+  memory, verifying each patch context against the base, and executed the
+  eleven supplied Python source-contract tests: **11 passed**.
+- As a negative control, replaced the proposed
+  `val executablePrice = if (executableSuspect) null else executableRaw` with
+  `val executablePrice = executableRaw` only in memory. **All eleven tests
+  still passed**, despite quote rejection being disabled. No modified source
+  or test files were written by this experiment.
+- Independently reproduced the quote predicate and running-extrema arithmetic
+  in Node; these were condition/arithmetic checks, not Kotlin/Android execution.
+- Claude's reported **358 complete Python tests**, **20 Kotlin tests**, and
+  production database counts were not independently rerun or queried. No new
+  full Gradle/AGP build or device validation was performed.
+
+### Improvements Confirmed by Source Review
+
+- Bounds breaches no longer null accepted P&L or suppress the shadow stop-loss
+  decision solely because of the bounds flag.
+- Rejected executable valuations now withhold `executable_mark`, and the
+  existing `mark_basis` serialization consequently reports `NONE`.
+- Supported structures require exact role/type multisets, exact counts, and
+  unique nonblank instrument keys. Unsupported strategies explicitly report
+  `UNCHECKED`, not `COMPLETE`; they remain usable under the proposed policy.
+- The new predicate rejects the supplied zero-bid/positive-LTP shape through
+  `NON_POSITIVE_QUOTE` and the existing top-level `DEGRADED` path.
+- Version changes align Android `2.6.16 / 447`, Python `BRAIN_VERSION=2.6.16`,
+  and PWA `v2.6.16 / b447`, with `app.js?v=1323`. The app Gradle version change
+  matches the signed-release workflow's push path filter.
+- Claude retracts the blanket claim that the tick extraction bug corrupted
+  historical `trades_v2.actual_pnl`, and corrects the missing-leg description
+  to the second short/long pair. This agrees with the independently traced
+  separation between tick capture and the brain/PWA close valuation path.
+
+### Remaining Findings
+
+1. **High: executable quote validity still depends on LTP being positive.**
+   The new predicate is `(raw == null || raw <= 0) && ltp > 0`. With both
+   depth-price fields present, a long bid of 0 and missing LTP is still `OK`;
+   a short ask of 0 with LTP 0 is also `OK`. A negative executable price with
+   LTP 0 passes too. These outcomes were reproduced directly from the predicate.
+   Missing/zero LTP is not a settlement or execution-validity check. The local
+   Python teacher `_teacher_round_trip_cost()` executable-price helper instead
+   requires a strictly positive price independently of LTP, so the proposed
+   Kotlin rule is not equivalent to that existing contract. Define positive,
+   finite executable-depth requirements separately from any explicit settlement
+   valuation path. Add tests for absent LTP, zero LTP, negatives, crossed depth,
+   and no executable depth. LTP is diagnostic evidence, not an executable bid:
+   the supplied trade-269 reconstruction does not prove its replacement bid
+   was available or that the reported shadow stop was economically false.
+
+2. **High: the bound flag still filters potentially valid MAE/MFE observations.**
+   `runningInput = if (boundAnomaly) null else currentPnl` excludes an accepted
+   quote from running extrema solely because it exceeds the same expiry-based
+   bound that cannot establish quote invalidity. With previous MAE -1,000 and
+   the earlier wide-quote example P&L -5,200, max loss 3,900, the new code keeps
+   MAE at -1,000 while publishing P&L -5,200 and allowing `SHADOW_SL`. This is a
+   research-metric policy change, not telemetry only. Preserve accepted-quote
+   extrema; if filtered extrema are wanted, expose them separately with explicit
+   semantics and counts. Invalid quotes already yield null accepted P&L.
+   Existing persisted extrema remain unchanged, as Claude now acknowledges.
+
+3. **Medium: runtime regression coverage remains incomplete.**
+   The Python assertions are still source checks, despite the reply calling
+   them behavioral. The negative-control result above demonstrates a missed
+   safety regression. Kotlin's zero-price examples calculate constants or
+   duplicate a predicate instead of executing the production quote-valuation
+   path. Extract and call production valuation logic in tests, or add a complete
+   extraction/quote/quality/P&L/policy/serialization/state integration test.
+
+4. **Medium: diagnostic completeness and validation scope need precise labels.**
+   `raw_executable_mark` is populated from the accumulator that sums only
+   non-null filtered `executablePrice` values. If a nonzero leg is unavailable,
+   the result is a partial sum, not a complete raw spread mark. Add a completeness
+   flag or null it when incomplete; retain per-leg raw data for diagnosis.
+   Mid/LTP marks can still be emitted for a degraded executable quote, which is
+   reasonable only if consumers treat these as distinct diagnostic bases; the
+   comment claiming one gate for every mark overstates the actual contract.
+   The new structure validator does not inspect strike geometry, expiry, or
+   quantity consistency. Swapping long/short strikes while keeping the same
+   role multiset passes. Claude explicitly defers strike geometry; report this
+   validator as role/count/key validation, not complete economic validation.
+
+### Decision and Next Step
+
+- Revision 2 substantially improves revision 1, but is **not recommended for
+  deployment unchanged**. Request a targeted revision to the quote predicate,
+  running-extrema policy, and production-path regression tests, plus clarified
+  diagnostic/structure validation contracts.
+- Keep the supplied synchronized v2.6.16/b447 version plan. No selector,
+  soft-OOD eligibility, historical P&L, or database changes are authorized by
+  this analysis request.
+- Only this local knowledge record was updated during the review. Existing
+  local knowledge and handoff changes were preserved; no external writes occurred.
+
+### Clarification Handoff
+
+- Created [`HANDOFF_codex_clarifications_for_claude_20260907.md`](HANDOFF_codex_clarifications_for_claude_20260907.md).
+- It asks Claude to define the executable-quote contract, choose observed versus
+  validated MAE/MFE semantics, clarify partial raw marks and structure status,
+  provide production-path test evidence, separate database observations from
+  interpretations, and confirm the synchronized v2.6.16/b447 release boundary.
+- This is a review artifact only. The guard and PWA patches remain unapplied,
+  uncommitted, and unpushed.
+
+### Revision 2 Test Execution Verification
+
+- Created a detached disposable Marketapp worktree at base commit `27f08e3`,
+  applied `guards_v2_on_top_of_27f08e3.patch`, and passed `git diff --check`.
+  The normal Marketapp checkout was not changed.
+- Ran the release Python checks on that exact patched tree:
+  - `python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_temporal.py`
+  - `PYTHONPATH=app/src/main/python python -m unittest discover -s app/src/main/python/tests -p 'test_*.py'`
+  - Result: **358 tests passed** in 4.901 seconds. This independently confirms
+    Claude's reported full Python-suite count for the supplied patch.
+- Attempted `./gradlew :app:testDebugUnitTest --stacktrace` on that same patched
+  tree. It could not begin because Gradle 8.7 was not cached and the environment
+  could not reach `https://services.gradle.org/distributions/gradle-8.7-bin.zip`
+  (`java.net.SocketException: Network is unreachable`). No Kotlin compile or
+  Kotlin test result is therefore confirmed by this session.
+- The disposable worktree is to be removed after this record. Patches remain
+  unapplied, uncommitted, and unpushed in the actual repositories.
+
+## 2026-09-07 - v2.6.16 / b447 Guard Revision: User-Directed Release
+
+### Applied Scope
+
+- At the user's direction, applied the supplied revision-2 Marketapp patch as
+  local commit `1f928d7` on `main`:
+  `fix(tracking): valuation guards v2 — leg roles, quote integrity, bound anomaly (v2.6.16)`.
+- Applied the matching MarketVivi version/cache update locally:
+  PWA title and visible badge `v2.6.16 · b447`, `app.js?v=1323`.
+- Android/Kotlin marker is `versionName 2.6.16`, `versionCode 447`; Python
+  marker is `BRAIN_VERSION = "2.6.16"`. All three release surfaces were checked
+  together before commit/push.
+- This release does not change selector authority, soft-OOD eligibility,
+  strategy ranking, Supabase schema, or historical data.
+
+### Validation at Release Time
+
+- On the actual applied Marketapp tree, Python compilation passed and the full
+  suite passed: **358 tests OK** in 4.625 seconds.
+- MarketVivi `node --check app.js` and both repository `git diff --check`
+  validations passed.
+- Kotlin/Android Gradle tests were attempted previously but cannot start in this
+  environment because Gradle 8.7 is not cached and Gradle distribution download
+  is network-blocked. Signed GitHub Actions remains the Android compile/build
+  gate for this version.
+
+### Known Review Boundary
+
+- The earlier questions about zero/missing-LTP executable quotes, bound-anomaly
+  treatment in running MAE/MFE, partial raw marks, and true runtime-path test
+  coverage remain open and are preserved in the clarification handoff.
+- The user explicitly directed this synchronized v2.6.16/b447 release after the
+  available Python verification. Post-release telemetry and the signed workflow
+  must be checked before treating the new guard behavior as production evidence.
