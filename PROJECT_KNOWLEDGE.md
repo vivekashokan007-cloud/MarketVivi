@@ -21192,3 +21192,21 @@ synchronized release identity below.
 - Android compilation could not start locally because Gradle 8.7 is not cached
   and this environment blocks its distribution download. The signed GitHub
   workflow is the remaining Android compile/build gate.
+
+### Publication and Audit-Scope Status
+
+- Marketapp release commit `ff771e9f638aa1c6289ebc6ac0b79e1eecd9c197`
+  (`fix(risk): enforce final verdict and preserve ranking control`) was pushed
+  to `main` and its remote branch head was verified.
+- MarketVivi release commit `df2a49c9048eadea413e1888dfddef79f5e972c5`
+  (`fix(pwa): align entries with final brain verdict`) was pushed to `main` and
+  its remote branch head was verified.
+- The completed implementation covers the actionable control-plane findings:
+  comparator provenance, final entry authority, daily-loss state continuity,
+  close-event durability, and ranking observability. It does **not** establish
+  future profitability and does not implement every research recommendation.
+- Remaining evidence-led work: reconcile executable valuation and friction-net
+  outcome labels, run chronological capacity-constrained evaluation, validate
+  the EV estimator against realized distributions, and establish enough
+  consistent labelled support before changing model-training policy. Do not
+  alter live entry thresholds from these audit observations alone.
