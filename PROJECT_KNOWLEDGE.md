@@ -21083,3 +21083,8 @@ synchronized release identity below.
 - The matching MarketVivi `v2.6.16 · b447` / `app.js?v=1323` commit is being
   pushed after that successful APK release so public version surfaces remain
   ordered and synchronized.
+
+- MarketVivi release and documentation commits through
+  `45cc72f06484d17faa158bcecb60511111b0640d` were pushed successfully to
+  `main`. The PWA now advertises the same v2.6.16/b447 identity as the released
+  Android/Python build.
