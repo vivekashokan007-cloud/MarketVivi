@@ -1,3 +1,56 @@
+## 2026-09-07 — Review of Claude's dual-audit reply: corrections verified
+
+- Full review: [REVIEW_CLAUDE_DUAL_AUDITS_20260907.md](REVIEW_CLAUDE_DUAL_AUDITS_20260907.md).
+- Claude's 95-record net cohort and 79.6% gross concentration in flagged history are **reported new DB evidence**; their arithmetic checks, but no fresh database verification was performed in this review.
+- **Correction to Claude §7:** retired context_json.snapshot_watchlist is not the only eligibility source. Direct take_poll_snapshot execution preserved true entryEligible on primary/top/ranked candidates while dropping the old watchlist key. Earlier production query independently found 263 eligible SELL PREMIUM outcomes. The evaluator is coverage-limited, not blocked by eligibility being universally false.
+- **Correction to Claude §3:** current Android compaction removes dailyPnl/dailyTradeCount even when supplied. Direct test with −₹2,500 / two trades preserved STOP in the verdict but omitted both inputs. Missing production-writer concern remains; snapshot key absence does not prove dead runtime wiring.
+- **Comparator incidence qualification:** defect remains confirmed, but 239/735 is a reported discrepancy fraction. Without filtering active, non-null actual PC2 choices and matching primary identity, it is not a precise corruption rate. A no-eligible-primary test correctly returned changed=false.
+- **Cost qualification:** current fee helper already adds zero extra slippage. Actual bridge still subtracts fees from supplied gross P&L and reconstructs entry bid/ask from recorded LTP values. Nonzero-spread fixture produced teacher net ₹77.62 versus live-bridge net ₹197.58. This proves valuation-path non-equivalence, not historical error magnitude.
+- Use verified/flagged/unknown historical cohorts: NULL flags are not proof of clean valuation. Preserve raw history; the reported flagged gross share is not the measured fictitious-profit share.
+- GO renderer defect and comparator-provenance fix remain accepted. Historical on-screen GO incidence, trade 269's tick reconstruction, and Claude's separate 363-test tree remain unverified here.
+- **46 focused existing tests passed**, plus snapshot, selector and valuation diagnostic calls. Prior 358-test full-suite result applies to the unchanged local release; Claude's 363 result requires its separate commit/patch identity.
+- Only documentation/knowledge changed. Android/Python/PWA remain **2.6.16 / b447 / cache 1323**. No runtime, database, model, commit or push changes.
+
+---
+
+## 2026-09-07 — Ranking audit addendum; quantitative comparison pending
+
+- Report: [AUDIT_RANKING_20260907.md](AUDIT_RANKING_20260907.md). Pending read-only comparisons: [AUDIT_RANKING_20260907.sql](AUDIT_RANKING_20260907.sql).
+- Confirmed final paper ranking: eligible before monitor; absolute net edge after sigma adjustment; context, probability, then ID tie-breakers. Composite/teacher/edge-risk diagnostics are not direct final paper sort keys. A ₹1 edge difference dominated context in a direct test.
+- **Comparator diagnostic defect reproduced:** calling PC2 again on its previous output replaces the deterministic comparator with the PC2 winner and changes the difference flag from true to false. Production snapshot 5391 stores primary deterministic rank 7 but the same ID as both PC2 and deterministic shadow with changed=false. Preserve the true comparator from the deterministic pass and compare equally eligible candidates.
+- **GO/verdict UI defect reproduced:** actual renderWatchlist emitted GO for WAIT and STOP fixtures whenever one candidate retained entryEligible=true. This is a rendering finding, not proof of a broker-order bypass.
+- Card #1 restarts per index and NF renders first; it is not a global rank. Legacy EV/₹1K differs from active net ranking edge. Snapshot 5391: legacy ev −₹315, gross premiumEdge ₹935, effective net edge ₹581.
+- Snapshot 5391: 663 ranked, four entry-eligible, selected NF butterfly research/deterministic rank 7. A BNF research leader is not necessarily an eligible alternative; rank 7 winning is not by itself a sorting bug.
+- Missing sigma intentionally receives factor 1. Direct test flipped a ₹1,400 candidate's effective edge from ₹175 to ₹1,400 by removing sigma. Test family-appropriate geometry before changing this policy; do not assign directional penalties indiscriminately to neutral structures.
+- Alternative ranked-record compaction drops active sort evidence even where the primary retains it. The inspected 200/663 retained menu cannot support a faithful full-menu economics replay.
+- **45 existing ranking/eligibility/net-economics tests passed**, plus targeted selector and real-renderer diagnostic calls. Recent filtered outcome pair uniqueness was verified (89,219 rows / distinct snapshot-candidate pairs).
+- Automatic approval review rejected the larger Supabase same-poll performance, consistency-count and coverage queries because the account usage limit was reached. No results are inferred, and no alternate database route was attempted. Whether PC2 beats its same-poll eligible alternatives remains unverified.
+- Recommended sequence: repair comparator/UI agreement; persist/display actual ranking evidence; complete matched comparisons; then test objective changes on untouched sessions with portfolio constraints.
+- Only audit documents and this knowledge record changed. Runtime/database/model/GitHub state and synchronized **2.6.16 / b447 / cache 1323** remain unchanged.
+
+---
+
+## 2026-09-07 — Profitability audit: evidence, not a profitable-strategy claim
+
+Current audited release remains Android/Python/PWA **v2.6.16 / b447**, PWA cache **1323**. Marketapp HEAD `1f928d7`; MarketVivi baseline HEAD `54af42c`.
+
+- Full findings and ranked acceptance plan: [AUDIT_PROFITABILITY_20260907.md](AUDIT_PROFITABILITY_20260907.md).
+- Reproducible read-only queries: [AUDIT_PROFITABILITY_20260907.sql](AUDIT_PROFITABILITY_20260907.sql).
+- Matched 94 closed-paper cost-labelled trades: gross ₹19,393.00, estimated costs ₹21,212.21, net **−₹1,819.21**; 10 gross winners become net non-winners. Only 94/265 total closed records have net labels. Arithmetic reconciles, but valuation/fill provenance is not thereby established.
+- Eligible SELL PREMIUM teacher cohort: 263 overlapping hypothetical outcomes over five sessions average **+₹52.01 net**; WAIT/ineligible cohort: 168 outcomes average **−₹215.96**. Three of five eligible session means are negative. A 25% estimated-cost stress turns its mean to about −₹9.20. This is promising but fragile observational evidence, not a portfolio backtest or causal gate comparison.
+- Existing positive-net-edge and menu-abstention gates were confirmed. Do not re-add them or weaken OOD based on high model scores.
+- EV helper uses probability-of-profit multiplied by payoff extrema. A synthetic direct-function counterexample returned +₹325 proxy despite −₹715 true expectation for a distribution with identical profit probability/bounds. This proves a target-identification limitation, not actual market miscalibration; the previous calibration retractions remain respected.
+- Persisted BNF candidate samples September 2–4 were 100% OOD. Both nightly and online training entry points deliberately return before training, pending label unification. Empty database model history does not mean no bundled/device model.
+- OOD skips neutral market-fit computation and can produce secondary unavailable-confidence reasons despite valid regime data; do not count these as independent root causes.
+- Main position marks remain LTP-based; PWA gross canonical labels and separate net labels are not yet one training/execution contract. Tick-service guard improvements do not establish executable fills for every close.
+- Daily-loss stop defaults missing inputs to zero. No production writer for the exact dailyPnl/dailyTradeCount inputs was found in inspected code. Helper test: absent inputs allow preliminary ACTIONABLE; explicit −₹2,500 loss produces STOP. Runtime wiring still needs verification; compact snapshot omission alone is not proof.
+- Latest inspected snapshot 5456 (14:40:45 IST) retained 30/659 generated candidates and 200/659 ranked-evidence candidates, limiting whole-menu retrospective conclusions.
+- Prioritize valuation/net-label provenance and risk-state integration tests, then capacity-constrained chronological evaluation, EV-estimator challengers, support-aware offline training, and execution/exit experiments. Preserve rejected historical shortcuts (percentile-first revert, hindsight oracle, unvalidated family rules).
+- Validation: **358 Python tests passed**, JS syntax passed, targeted diagnostic calls completed. Historical outcome evidence ends September 4 and does not validate today's 2.6.16 profitability.
+- Supabase audit and Postgres guidance shaped read-only, same-cohort aggregation and explicit missing-label handling. No production/database/model/runtime changes, trades, commit or push were made. Only audit documentation and this knowledge record changed.
+
+---
+
 ## 2026-08-27 — Current State: v2.6.2 / b433 · Entry eligibility persisted; Candidate N no-positive-edge WAIT gate live
 
 **Implemented and pushed scope:**
@@ -21088,3 +21141,54 @@ synchronized release identity below.
   `45cc72f06484d17faa158bcecb60511111b0640d` were pushed successfully to
   `main`. The PWA now advertises the same v2.6.16/b447 identity as the released
   Android/Python build.
+
+## 2026-09-07 - v2.6.17 / b448 Final-Authority and Daily-Risk Release
+
+### Evidence Reviewed
+
+- Reviewed Claude's `REPLY_to_codex_review_r2_20260907.md` and the prior audit
+  handoffs. Its reported production query evidence is recorded as reported,
+  not independently re-run: 5,467 snapshots, entry eligibility persisted in
+  primary/top/ranked candidate surfaces, and eight reported loss days with no
+  observed STOP snapshot.
+- Independently confirmed the code path that caused the comparator defect:
+  `select_pc2_paper_primary` is called repeatedly after it PC2-orders the
+  ranked list, so treating input position zero as the deterministic control
+  could compare PC2 with itself.
+- Independently confirmed that compact Android snapshot mode omitted several
+  PC2 ordering inputs, and that daily P&L fields supplied only through context
+  could be absent from persisted compact context.
+
+### Applied Runtime Changes
+
+- PC2 now receives and preserves the deterministic candidate-id order before
+  its first selection. Comparator telemetry distinguishes the deterministic
+  research top from the deterministic **final entry-eligible** control, and
+  `changed_from_deterministic` uses that entry-policy control.
+- Android/Python derives `dailyPnl` and `dailyTradeCount` from same-session
+  closed/open local trades and persists `daily_risk_state_v1` with snapshots.
+  The native bridge records a closed trade before the PWA awaits its remote
+  update, so the next brain poll can enforce the existing `daily_loss_limit`
+  STOP after a UI reload or delayed Supabase write.
+- The PWA uses the final verdict plus final primary candidate as the only entry
+  authority. Its banner shows GO only for a final-authorized candidate; STOP
+  and monitor candidates have both real and paper entry controls locked, and
+  the direct trade function repeats the same check.
+- Android compact ranked evidence now retains PC2 selector, economics,
+  percentile, friction, and sigma-de-rate inputs needed to explain a rank.
+
+### Release Identity
+
+- Android/Kotlin: `versionName 2.6.17`, `versionCode 448`.
+- Python: `BRAIN_VERSION = "2.6.17"`.
+- PWA: visible `v2.6.17 · b448`, `app.js?v=1324`.
+
+### Validation at Release Time
+
+- Added regression tests for deterministic-comparator preservation, compact
+  ranking telemetry, and local same-day loss derivation producing the existing
+  STOP verdict. The full Python suite passed: **364 tests**. JavaScript syntax
+  and Git whitespace checks passed for both repositories.
+- Android compilation could not start locally because Gradle 8.7 is not cached
+  and this environment blocks its distribution download. The signed GitHub
+  workflow is the remaining Android compile/build gate.

@@ -2528,6 +2528,59 @@ function canPaperTrade(indexKey) {
     return paperCount < 5; // 5 per index, 10 total — calibration needs data
 }
 
+// A candidate can be structurally entry-ready yet still be excluded by the
+// final brain verdict (daily STOP, PC2 abstention, or a different final
+// primary). Keep the UI and every entry path bound to that final authority.
+function finalEntryAuthorization(candidate) {
+    const verdict = bd?.verdict || {};
+    const gate = verdict.decision_gate || {};
+    const action = String(verdict.action || '').toUpperCase();
+    const gateState = String(gate.state || '').toUpperCase();
+    const actionable = gateState === 'ACTIONABLE'
+        && (action === 'BUY PREMIUM' || action === 'SELL PREMIUM');
+    if (!actionable) {
+        return {
+            allowed: false,
+            reason: gate.reason || verdict.reasoning || 'Final brain verdict is not actionable',
+        };
+    }
+    const primaryId = verdict.execution_candidate_id
+        ?? bd?.pc2_paper_primary?.pc2_primary_candidate_id;
+    if (primaryId == null || String(primaryId) === '') {
+        return { allowed: false, reason: 'Final verdict has no executable candidate' };
+    }
+    if (String(candidate?.id) !== String(primaryId)) {
+        return { allowed: false, reason: 'A different candidate is the final brain selection' };
+    }
+    if (candidate?.entryEligible !== true) {
+        return { allowed: false, reason: 'Candidate is monitor-only under backend entry rules' };
+    }
+    const readiness = candidate?.executionReadiness || {};
+    if (readiness.ready !== true && candidate?.executionReady !== true) {
+        return { allowed: false, reason: 'Execution readiness is not confirmed' };
+    }
+    return { allowed: true, reason: '' };
+}
+
+function recordClosedTradeToNative(trade, closePatch) {
+    const bridge = window.NativeBridge || window.AndroidBridge;
+    if (!bridge?.recordClosedTrade || !trade?.id) return;
+    const record = {
+        id: trade.id,
+        status: 'CLOSED',
+        exit_date: closePatch.exit_date,
+        actual_pnl: closePatch.actual_pnl,
+        net_pnl: closePatch.net_pnl,
+        paper: !!trade.paper,
+        execution_mode: trade.execution_mode || trade.trade_mode || null,
+    };
+    try {
+        bridge.recordClosedTrade(JSON.stringify(record));
+    } catch (error) {
+        console.warn('Native closed-trade risk ledger update failed:', error);
+    }
+}
+
 function findCandidateById(candidateId) {
     return (bd.watchlist || []).find(c => String(c.id) === String(candidateId))
         || (bd.generated_candidates || []).find(c => String(c.id) === String(candidateId))
@@ -2640,6 +2693,11 @@ async function previewSandboxOrder(candidateId) {
 async function takeTradeImpl(candidateId, isPaper = false) {
     const cand = findCandidateById(candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+    const finalAuthorization = finalEntryAuthorization(cand);
+    if (!finalAuthorization.allowed) {
+        alert(`Entry blocked: ${finalAuthorization.reason}. Refresh the brain result before taking a trade.`);
+        return;
+    }
     const forces = cand.forces || { aligned: 0, f1: 0, f2: 0, f3: 0 };
     const latestPoll = safeParseNB(NativeBridge.getLatestPoll?.(), {});
     let pollHistory = safeParseNB(NativeBridge.getPollHistory?.(), []);
@@ -3350,6 +3408,10 @@ async function closeTrade(tradeId, exitReason) {
                 timeline: trade._journey?.timeline || []
             }
         };
+        // Persist the risk-relevant close locally before the remote write. The
+        // next native brain poll can enforce the daily STOP even if Supabase is
+        // slow or this WebView reloads.
+        recordClosedTradeToNative(trade, closePatch);
         const closeSynced = await DB.updateTrade(trade.id, closePatch);
         if (!closeSynced) {
             addNotificationLog('Trade Close Sync Failed', `${trade.id}: closed locally but Supabase update failed. Check Logs tab.`, 'urgent');
@@ -4717,17 +4779,22 @@ function renderWatchlist(snapshot = null) {
     // Display-only: Python/Kotlin brain owns candidate generation, ranking, and watchlist selection.
     const brainWatchlist = Array.isArray(bd.watchlist) ? bd.watchlist : [];
     const entryReadyCandidates = brainWatchlist.filter(c => c?.entryEligible === true);
-    const executable = entryReadyCandidates.length;
+    const brainVerdict = bd.verdict || {};
+    const finalAuthorizedCandidates = brainWatchlist.filter(c => finalEntryAuthorization(c).allowed);
+    const executable = finalAuthorizedCandidates.length;
     const total = (bd.generated_candidates || []).length;
 
     // ═══ GO VERDICT BANNER ═══
     const biasLabel = bd.effective_bias?.label || latestPoll?.bias?.label || baseline?.bias?.label || 'NEUTRAL';
     const vix = latestPoll?.vix || baseline?.vix || 0;
     const modeLabel = STATE.tradeMode === 'intraday' ? '⚡ INTRADAY' : '📅 SWING';
-    const goClass = executable >= 1 ? 'go-banner go-green' : brainWatchlist.length ? 'go-banner go-yellow' : 'go-banner go-grey';
-    const goIcon = executable >= 1 ? '✅' : brainWatchlist.length ? '🟡' : '⏹';
+    const finalGateState = String(brainVerdict.decision_gate?.state || '').toUpperCase();
+    const finalAction = String(brainVerdict.action || '').toUpperCase();
+    const finalStop = finalGateState === 'STOP' || finalAction === 'STOP';
+    const bannerState = executable >= 1 ? 'GO' : finalStop ? 'STOP' : brainWatchlist.length ? 'MONITOR' : 'WAIT';
+    const goClass = bannerState === 'GO' ? 'go-banner go-green' : bannerState === 'MONITOR' ? 'go-banner go-yellow' : 'go-banner go-grey';
+    const goIcon = bannerState === 'GO' ? '✅' : bannerState === 'STOP' ? '🛑' : bannerState === 'MONITOR' ? '🟡' : '⏹';
 
-    const brainVerdict = bd.verdict || {};
     const marketThesis = brainVerdict.market_thesis || {};
     const displayedStrategy = brainVerdict.strategy || marketThesis.strategy;
     const displayedAction = brainVerdict.strategy ? brainVerdict.action : marketThesis.action;
@@ -4739,8 +4806,9 @@ function renderWatchlist(snapshot = null) {
         || brainVerdict.strategy === 'IRON_BUTTERFLY';
 
     let html = `<div class="${goClass}">
-        <div class="go-title">${goIcon} ${executable >= 1 ? 'GO' : brainWatchlist.length ? 'MONITOR' : 'WAIT'} · ${modeLabel}</div>
-        <div class="go-detail">${executable} entry-ready · ${brainWatchlist.length} monitor/watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        <div class="go-title">${goIcon} ${bannerState} · ${modeLabel}</div>
+        <div class="go-detail">${executable} final-authorized · ${entryReadyCandidates.length} backend entry-ready · ${brainWatchlist.length} monitor/watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        ${!executable && brainVerdict.decision_gate?.reason ? `<div class="go-detail" style="font-size:11px;color:var(--warn)">Final gate: ${brainVerdict.decision_gate.reason}</div>` : ''}
         ${STATE.brainRefreshPending ? `<div class="go-detail" style="font-size:11px;color:var(--accent)">🔄 Refreshing ${STATE.tradeMode.toUpperCase()} candidates...</div>` : ''}
         ${(() => {
             if (!STATE.lastScanTime) return '';
@@ -4822,6 +4890,8 @@ function renderCandidateCard(cand, atm, rank) {
     const execGate = execReady.gate || cand.executionGate || 'WAIT';
     const backendExecOk = execReady.ready === true || cand.executionReady === true;
     const entryEligible = cand.entryEligible === true;
+    const finalAuthorization = finalEntryAuthorization(cand);
+    const finalEntryAllowed = finalAuthorization.allowed;
     const entryEligibility = cand.entryEligibility || {};
     const entryReasons = Array.isArray(entryEligibility.reasons) ? entryEligibility.reasons : [];
     const researchRank = Number.isFinite(Number(cand.pc2PaperResearchRank))
@@ -4829,10 +4899,11 @@ function renderCandidateCard(cand, atm, rank) {
     const entryRank = Number.isFinite(Number(cand.pc2PaperRank))
         ? Number(cand.pc2PaperRank) : null;
     const familyTier = cand.varsityTier === 'PRIMARY' ? 'Family fit: PRIMARY' : 'Family fit: ALLOWED';
-    const execOk = backendExecOk && entryEligible;
+    const execOk = backendExecOk && entryEligible && finalEntryAllowed;
     const execReasons = [
         ...(Array.isArray(execReady.reasons) ? execReady.reasons : []),
         ...entryReasons,
+        ...(!finalEntryAllowed ? [finalAuthorization.reason] : []),
     ];
     const execMode = execReady.mode || 'paper';
     const rrValue = (typeof cand.maxProfit === 'number' && typeof cand.maxLoss === 'number' && cand.maxLoss > 0)
@@ -4848,6 +4919,7 @@ function renderCandidateCard(cand, atm, rank) {
     const marginInfo = marginDisplay(cand);
     const evCapitalBase = marginInfo.source === 'UPSTOX' ? marginInfo.value : peakCash(cand);
     const alignLabel = backendBlocked ? '⛔ BLOCKED BY BRAIN' :
+        !finalEntryAllowed ? '🟡 MONITOR — FINAL VERDICT' :
         !entryEligible ? '🟡 MONITOR — NO ENTRY EDGE' :
         forces.aligned === 3 && economicallyStrong ? '🟢 ALIGNED — Entry Ready' :
         forces.aligned === 3 ? '🟡 STRUCTURE OK — Review Edge' :
@@ -4990,7 +5062,10 @@ function renderCandidateCard(cand, atm, rank) {
                     : '';
                 const weakEconomicsText = weakEconomicsReasons.length ? weakEconomicsReasons.join(' | ') : 'Economics weak';
                 const entryBlockedText = entryReasons.length ? entryReasons.join(' | ') : 'Candidate did not pass backend entry eligibility';
-                const realBtn = execBlocked
+                const finalBlockedText = finalAuthorization.reason || 'Final brain verdict does not authorize this candidate';
+                const realBtn = !finalEntryAllowed
+                    ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${finalBlockedText}">⛔ VERDICT WAIT</button>`
+                    : execBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
                     : !entryEligible
                     ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${entryBlockedText}">⚠️ MONITOR ONLY</button>`
@@ -5001,7 +5076,9 @@ function renderCandidateCard(cand, atm, rank) {
                     : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)"${oodTitle}>📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}${cand.mlOodBlocked || cand.mlOodFlag || cand.mlOod ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
-            <button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>
+            ${finalEntryAllowed
+                ? `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>`
+                : `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${finalAuthorization.reason}">📋 PAPER LOCKED</button>`}
         </div>
     </div>`;
 }
