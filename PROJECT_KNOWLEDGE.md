@@ -20708,4 +20708,95 @@ synchronized release identity below.
 - Release safety command passed:
   - `python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_temporal.py`
   - `PYTHONPATH=app/src/main/python python -m unittest discover -s app/src/main/python/tests -p 'test_*.py'`
-  - result: **336 tests OK**.
+- result: **336 tests OK**.
+
+## 2026-09-07 - v2.6.15 / b446 Synchronized Four-Leg and Teacher-Report Safety Release
+
+### Release Identity
+
+- Android/Kotlin app: **versionName 2.6.15 / versionCode 446**.
+- Python brain: **BRAIN_VERSION 2.6.15**.
+- PWA display/cache identity: **v2.6.15 / b446** with `app.js?v=1322`.
+- The Android, Python, and PWA markers were checked together before push and
+  are intentionally kept synchronized for future release evidence.
+
+### Analysis and Decision Boundary
+
+- Claude's handoff was reviewed against the checked-out source before editing.
+- The safe fixes were separated from the proposed soft-OOD entry-policy change.
+- The soft-OOD eligibility relaxation was **not** included in this release.
+- The existing hard OOD entry gate remains unchanged and continues to fail
+  closed for the current v2.6.12-era policy path.
+- No Supabase data, schema, RLS policy, or historical P&L rows were changed.
+
+### Fixes Shipped
+
+1. **Root Gradle repair**
+   - Restored `Marketapp/build.gradle.kts` to a top-level plugin-management
+     file.
+   - Android module configuration remains in `app/build.gradle.kts`.
+   - This is required for the Android project to configure correctly and for
+     the signed-release workflow to be path-triggered by the app module.
+
+2. **Four-leg position tracking**
+   - `PositionTickService` now reads the PWA's persisted second-leg fields:
+     `sell_instrument_key2`, `buy_instrument_key2`, `sell_strike2`,
+     `buy_strike2`, and their camelCase equivalents.
+   - Legacy `sell2_*` / `buy2_*` aliases remain supported.
+   - This prevents IC/IB position valuation from silently omitting the second
+     short/long pair.
+
+3. **Teacher-research report memory hardening**
+   - `NativeBridge` now streams the local evaluation-outcomes JSON file with
+     `JsonReader` instead of first materializing the complete raw string and
+     parsed `JSONArray`.
+   - Outcome compaction is shared between local streamed rebuilds and the
+     existing remote-`JSONArray` path, preserving whitelist, rejected-row cap,
+     and `price_integrity=FAIL` scrubbing behavior.
+   - Only the compacted result accumulates in memory; the raw outcomes file is
+     never loaded in full during the local report rebuild.
+
+4. **Regression coverage**
+   - Added Android source-contract checks for streamed outcomes, four-leg field
+     aliases, and Android/Python release-version alignment.
+
+### Verification Before Push
+
+- Python compile checks passed for `brain.py` and `ml_temporal.py`.
+- Complete Marketapp Python suite passed: **347 tests OK**.
+- MarketVivi JavaScript syntax check passed with `node --check app.js`.
+- `git diff --check` passed for both repositories.
+- Local Android Gradle compilation could not be run because Gradle 8.7 was not
+  cached and the environment could not reach `services.gradle.org`.
+- The Android GitHub Actions workflows are the compile/release gate for this
+  build.
+
+### Git Deployment Evidence
+
+- Marketapp commit pushed to `main`: [`27f08e3`](https://github.com/vivekashokan007-cloud/Marketapp/commit/27f08e32ba0837ad1ec248d452d5ad05363d9e9c)
+  (`fix(android): repair four-leg tracking and report memory`).
+- MarketVivi commit pushed to `main`: [`b43ea9a`](https://github.com/vivekashokan007-cloud/MarketVivi/commit/b43ea9a0848f4feb95c589665244cf4043abff42)
+  (`chore(pwa): align release marker to v2.6.15`).
+- Both local working trees were clean after push.
+- At the time this entry was recorded, the Debug APK Validation workflow had
+  completed successfully. The Signed Release workflow was still **in progress**:
+  [run 34090892188](https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/34090892188).
+
+### Required Field Verification After Installation
+
+- Confirm the phone reports **v2.6.15 / b446** before using new rows as
+  production evidence.
+- Reopen the ML tab after a post-close evaluation and confirm the log contains
+  `teacher research outcome payload compacted (streamed)` and the report reaches
+  `READY` without an OOM.
+- Open or monitor an IC/IB paper position and confirm all four legs appear in
+  the position valuation payload and P&L mark.
+- Confirm the PWA header shows **v2.6.15 · b446** and the Android bridge still
+  reports the same brain/app version.
+
+### Project Knowledge Maintenance Rule
+
+- Every subsequent code change, release-marker change, validation result,
+  production observation, Supabase finding, or explicitly deferred analysis
+  must be appended here with its date, affected repository/file, evidence, and
+  status. Secrets, tokens, and credentials must never be recorded in this file.
