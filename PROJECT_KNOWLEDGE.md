@@ -21060,3 +21060,16 @@ synchronized release identity below.
 - The user explicitly directed this synchronized v2.6.16/b447 release after the
   available Python verification. Post-release telemetry and the signed workflow
   must be checked before treating the new guard behavior as production evidence.
+
+### Push Status
+
+- Local commits are ready for publication: Marketapp `1f928d7` and MarketVivi
+  `1bfdba2`.
+- Direct `git push origin main` could not authenticate because the shell has no
+  GitHub username/credential configured (`could not read Username`).
+- The connected GitHub integration can read the repositories but rejected write
+  operations with `403 Resource not accessible by integration`.
+- No remote branch, GitHub release, workflow run, Supabase data, or production
+  deployment was changed by this failed publication attempt. Reconnect GitHub
+  with repository Contents read/write permission, then push these exact local
+  commits and verify the signed-release workflow.
