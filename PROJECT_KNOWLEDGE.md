@@ -21241,3 +21241,75 @@ synchronized release identity below.
   faithful active-rank correlation test.
 - Supabase contains no v2.6.17 snapshot yet; the pushed release has not received
   device/runtime telemetry verification. No production data or policy changed.
+
+
+## 2026-09-08 — Claude Remaining-Audit Reply / Guards v3 Review
+
+Full review: [REVIEW_CLAUDE_GUARDS_V3_20260908.md](REVIEW_CLAUDE_GUARDS_V3_20260908.md).
+Read-only queries: [REVIEW_CLAUDE_GUARDS_V3_20260908.sql](REVIEW_CLAUDE_GUARDS_V3_20260908.sql).
+
+### Scope and authoritative corrections
+
+- Reviewed the actual `guards_v3_on_top_of_ff771e9.patch` against Marketapp
+  `ff771e9`, applying it only to a detached worktree. Main runtime code and
+  release identities remain v2.6.17/b448; no runtime patch was pushed or deployed.
+- Our earlier statement that the exact-join failure blocked historical ranking
+  analysis is superseded. Independently recovered 32,507 one-to-one pairs across
+  ten sessions at ±150 seconds, with zero strategy/index/mode mismatches and
+  32,471 clean teacher managed-net outcomes. A 60-second window loses 400 pairs;
+  300 seconds causes fan-out. Report coverage and pairing sensitivity.
+- The nine unrestricted exact matches all have `LEGACY_PRE_S1` integrity;
+  the earlier clean-teacher query correctly returned zero. The discrepancy was
+  filtering, not an inconsistent database result.
+- All 36 matched historical four-leg ticks contain only two legs and lack a
+  guard-version marker, strongly supporting the known tracking defect. This
+  does not certify close labels, or make all two-leg differences acceptable.
+- Teacher primary mean gross/net/friction reproduces as ₹201.53/−₹31.13/₹232.66;
+  secondary as ₹8.23/−₹137.35/₹145.58. These are descriptive correlated-row
+  averages, not validated selector skill or a universal cost threshold. Current
+  ranking already incorporates net premium edge.
+
+### Reopened durability and test-coverage findings
+
+- **The prior claim that close-event durability is complete is withdrawn.**
+  `getClosedTrades()` returns `[]` on fetch/parse failure; cloud bootstrap
+  overwrites the local ledger, including pending closes, with its response.
+  Direct Python execution confirmed that replacing a pending ₹3,213.90 loss
+  close with an empty ledger changes STOP/daily_loss_limit to ACTIONABLE and
+  resets dailyPnl to zero. This is an existing ff771e9 defect, not caused by
+  v3. Device reproduction remains open. Preserve pending closes until explicit
+  remote acknowledgement and distinguish failed/stale reads from empty truth.
+- Configured unittest discovery passes **369 tests** on v3, but skips **134**
+  standalone test functions. Direct invocation produced **132 passes and two
+  failures** in gamma/wall producer-count assertions. Both also fail on the
+  unpatched baseline and expect three producers despite a fourth shadow path.
+  The earlier “complete/full suite passed” wording was too broad. Repair test
+  collection and review those assertions. The 12 net-economics/backtest tests
+  are included in the 132 passes, not counted again.
+- Actual extracted Kotlin valuation tests pass **20/20** under Kotlin 1.9.22 /
+  JUnit 4.13.2. Mutating away positivity/crossed/unsupported guards causes
+  2/1/1 expected failures. These are behavioral tests, but do not compile the
+  full Android adapter or exercise preferences, bridge persistence or device I/O.
+
+### v3 contract and release follow-ups
+
+- New quote handling rejects non-positive executable sides, crossed books and
+  unsupported structures. It also accepts positive close-side-only quotes
+  while per-leg status can remain NO_DEPTH: document/test this change from v2.
+- rawMarkComplete means complete prices for resolved legs, not necessarily all
+  required strategy legs. A rejected two-leg butterfly still reports a raw
+  mark and rawMarkComplete=true. Clarify diagnostics before relying on them.
+- The extrema test does not exercise running-state persistence. Observed raw
+  extrema and cleaned research statistics must remain distinguishable.
+- The patch changes no build/version file. Signed release automation watches
+  only app/build.gradle.kts, so pushing this patch alone does not publish a
+  signed APK. A subsequent release needs a new synchronized Kotlin/brain/PWA
+  identity and increasing Android build code, then build/device verification.
+- Latest observed snapshot remains v2.6.16 (2026-09-07 10:10:41 UTC); v2.6.17
+  runtime evidence is still absent. Absence of telemetry does not prove the
+  app has never been installed. Shared comparator provenance must be verified;
+  a nonzero disagreement count is not itself a required correctness invariant.
+
+Reproduction harness and validation output are under `audit/guards_v3_*20260908*`.
+Canonical net-label reconstruction, chronological capacity-constrained ranking
+comparison, empirical EV validation and device/forward-paper checks remain open.

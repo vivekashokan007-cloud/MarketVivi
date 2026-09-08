@@ -1,5 +1,12 @@
 # Remaining Audit — Read-Only Evidence Review
 
+> Follow-up correction (2026-09-08): the checked ±150-second join recovers
+> 32,507 one-to-one menu/outcome pairs across ten sessions. Historical analysis
+> is runnable; the failed exact join was not a sufficient blocker. The large
+> four-leg tick gaps are strongly associated with the known pre-guard missing
+> second pair. See [the v3 review](REVIEW_CLAUDE_GUARDS_V3_20260908.md) for
+> independently rerun evidence, denominator corrections and remaining controls.
+
 **Date:** 2026-09-07  
 **Scope:** valuation/labels, ranking-evaluation evidence, telemetry coverage,
 training readiness, and release/runtime verification.  

@@ -1,0 +1,85 @@
+Guards v3 review, 2026-09-08 UTC
+Baseline Marketapp ff771e9; patch tested only in detached worktree.
+
+Python unittest discover: 369 tests, OK (4.595s).
+Additional standalone sweep and Kotlin results follow.
+Reproduction harness exit 1 is expected for the two baseline assertion failures.
+
+baseline JUnit version 4.13.2
+....................
+Time: 0.03
+
+OK (20 tests)
+
+
+positivity JUnit version 4.13.2
+.E..................E.
+Time: 0.03
+There were 2 failures:
+1) zeroExecutablePriceIsRejectedEvenWhenLtpIsAlsoZero(com.marketradar.app.PositionTickGuardsTest)
+java.lang.AssertionError
+	at org.junit.Assert.fail(Assert.java:87)
+	at org.junit.Assert.assertTrue(Assert.java:42)
+	at org.junit.Assert.assertFalse(Assert.java:65)
+	at org.junit.Assert.assertFalse(Assert.java:75)
+	at com.marketradar.app.PositionTickGuardsTest.zeroExecutablePriceIsRejectedEvenWhenLtpIsAlsoZero(PositionTickGuardsTest.kt:178)
+2) zeroExecutablePriceContradictedByLtpIsRejected_trade269(com.marketradar.app.PositionTickGuardsTest)
+org.junit.ComparisonFailure: expected:<[DEGRADED]> but was:<[OK]>
+	at org.junit.Assert.assertEquals(Assert.java:117)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at com.marketradar.app.PositionTickGuardsTest.zeroExecutablePriceContradictedByLtpIsRejected_trade269(PositionTickGuardsTest.kt:152)
+
+FAILURES!!!
+Tests run: 20,  Failures: 2
+
+
+crossed JUnit version 4.13.2
+........E............
+Time: 0.029
+There was 1 failure:
+1) crossedQuoteIsRejectedAndCounted(com.marketradar.app.PositionTickGuardsTest)
+java.lang.AssertionError: expected:<1> but was:<0>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at com.marketradar.app.PositionTickGuardsTest.crossedQuoteIsRejectedAndCounted(PositionTickGuardsTest.kt:193)
+
+FAILURES!!!
+Tests run: 20,  Failures: 1
+
+
+unsupported JUnit version 4.13.2
+....E................
+Time: 0.032
+There was 1 failure:
+1) unsupportedStrategyNeverReachesOk(com.marketradar.app.PositionTickGuardsTest)
+org.junit.ComparisonFailure: expected:<[STRUCTURE_UNCHECKED]> but was:<[OK]>
+	at org.junit.Assert.assertEquals(Assert.java:117)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at com.marketradar.app.PositionTickGuardsTest.unsupportedStrategyNeverReachesOk(PositionTickGuardsTest.kt:234)
+
+FAILURES!!!
+Tests run: 20,  Failures: 1
+
+
+{"file": "test_bs_primitives_phaseA.py", "passed": 6, "failures": []}
+{"file": "test_build3_a8_nf_ab.py", "passed": 14, "failures": []}
+{"file": "test_chain_interp_a8.py", "passed": 8, "failures": []}
+{"file": "test_context_a6.py", "passed": 6, "failures": []}
+{"file": "test_gamma_a4.py", "passed": 10, "failures": [{"name": "test_three_call_sites_after_a4a", "error": "Expected 3 _gamma_tag call sites, found 4: ['shadow_candidate', 'cand', 'ic', 'ib']"}]}
+{"file": "test_net_economics_authority.py", "passed": 10, "failures": []}
+{"file": "test_net_objective_backtest_tool.py", "passed": 2, "failures": []}
+{"file": "test_phase_b.py", "passed": 50, "failures": []}
+{"file": "test_phase_c.py", "passed": 16, "failures": []}
+{"file": "test_stage1_strike_pair_truncation.py", "passed": 3, "failures": []}
+{"file": "test_wall_a5.py", "passed": 7, "failures": [{"name": "test_three_wall_sites_after_a5", "error": "Expected exactly 3 wallTag tag-set lines (cand/ic/ib), found 4: ['shadow_candidate', 'cand', 'ic', 'ib']. A.5 producer-detection discipline violated."}]}
+Standalone total: 132 passed; 2 failed
+
+Additional actual Kotlin probes:
+ONE_SIDED quality=OK accepted=true pnl=-450.0 statuses=[NO_DEPTH, NO_DEPTH]
+MISSING_PAIR quality=STRUCTURE_INCOMPLETE accepted=false rawComplete=true raw=65.0
+
+Actual Python daily-risk transition:
+pending_close: STOP / daily_loss_limit (dailyPnl=-3213.90)
+after replacement with []: ACTIONABLE / market_thesis_actionable (dailyPnl=0.00)
