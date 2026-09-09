@@ -21383,3 +21383,34 @@ Marketapp ff771e9, v2.6.17/b448. No runtime policy, model, data or version chang
 
 Read-only SQL and reproduction artifacts accompany the review. Documentation is
 committed locally; no runtime patch or deployment was performed in this review.
+
+
+## 2026-09-09 — v2.6.18 / b449 Safety-State Release
+
+Release record: [RELEASE_2.6.18_20260909.md](RELEASE_2.6.18_20260909.md).
+
+- Android/Kotlin is versionName 2.6.18 / versionCode 449; canonical Python brain
+  is BRAIN_VERSION 2.6.18; PWA surface is v2.6.18/b449 and app.js?v=1325.
+- `recordClosedTrade` now persists a bounded pending-close journal. Bootstrap only
+  reconciles it after a successful parsed Supabase response and retains unacknowledged
+  closes, preventing a stale/empty remote response from clearing the daily-loss input.
+  PWA setClosedTrades is treated as unacknowledged input and cannot clear journal rows.
+- `snapshot_daily_risk_state` is now retained by EvaluationLocalCache's production
+  persistence and summary compactors plus NativeBridge and MarketML teacher compactors.
+  The prior Python-only test was insufficient: direct Python-to-Kotlin review showed
+  compaction dropped both zero and loss state. New JVM tests cover the main
+  persistence path; field verification remains required after APK installation.
+- Position tick valuation contains Claude's v3 pure valuation extraction and direct
+  behavioral tests, extended as guards v4: accepted valuations require two-sided
+  depth; rawMarkComplete means a full supported structure, not just resolved legs.
+  `position_tick_guards_v4_complete_book_position` distinguishes new rows from v3.
+- Standard unittest discovery now runs the previously missed top-level legacy test
+  functions. Two stale gamma/wall producer assertions were corrected to the actual
+  four producers. Full configured suite now passes 504 tests.
+- Soft-OOD eligibility remains entry_eligibility_v5 fail-closed. It was intentionally
+  excluded from earlier release scope and was not changed here. September 9 observed
+  v5 ACTIONABLE NF entries; this release does not claim that model OOD candidates
+  should trade or that any candidate is profitable.
+- Python compilation, 504 Python tests, JS syntax and diff checks passed. Android
+  compilation could not run locally because Gradle 8.7 cannot download here; the
+  path-triggered signed GitHub workflow is the remaining build/release gate.
