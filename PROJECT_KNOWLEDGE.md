@@ -21414,3 +21414,128 @@ Release record: [RELEASE_2.6.18_20260909.md](RELEASE_2.6.18_20260909.md).
 - Python compilation, 504 Python tests, JS syntax and diff checks passed. Android
   compilation could not run locally because Gradle 8.7 cannot download here; the
   path-triggered signed GitHub workflow is the remaining build/release gate.
+
+## 2026-09-09 — Evening evaluation and notifications audit
+
+Full report: [AUDIT_EVALUATION_NOTIFICATIONS_20260909.md](AUDIT_EVALUATION_NOTIFICATIONS_20260909.md).
+Reproducible local probes: [audit/evaluation_notification_20260909.py](audit/evaluation_notification_20260909.py).
+
+- Reviewed Marketapp 9c29428 and MarketVivi 2f629d9, v2.6.18/b449. The signed
+  release and debug workflows subsequently passed (runs 34317010727 and
+  34317010746, as checked earlier in this conversation). CI success does not
+  establish phone lifecycle, memory, or notification delivery validation.
+- Retry resets persisted total/completed progress before checking resume;
+  nonempty sessions restart and reset output despite resume/save-replay messages.
+- Evaluation has no service-level duplicate-job guard; the reminder tap can start
+  overlapping runs against shared files, and actions independently stop foreground
+  service status. Final outcome processing still loads full arrays into memory.
+- Actual Python probes reproduced swallowed setup notifications behind position
+  risk, undispatched operational warnings marked seen, and suppression after risk
+  clears and returns. Risk re-entry needs an explicit episode/cooldown policy.
+- Two injected snapshot failures yielded batch ok=true/end=2 with zero outputs;
+  Kotlin lacks cumulative failure accounting before its successful-empty DONE path.
+- EOD probe retained a valid earlier P&L but assigned the later unusable quote's
+  exit timestamp. Preserve exact price/timestamp/fee attribution in the fix.
+- Further source findings cover reminder catch-up, cooperative timeout/liveness,
+  report-versus-canonical completion, upload verification scope, weekly/monthly
+  boundaries, and notification dispatch/permission/status observability.
+- Existing full Python suite: 504 passed. Six characterization probes reproduced
+  gaps (five Python behaviors and one Kotlin source-order proof). This is not
+  on-device verification and not evidence that these gaps have been fixed.
+- Runtime database review was blocked: automatic approval review rejected the
+  first read-only schema query because of a usage limit. No alternative database
+  route was attempted and no new production counts are claimed.
+- Audit-only work: report, probes, and knowledge updated locally. No runtime,
+  version, database, model, notification policy, or external repository mutation.
+  Training remains disabled. Implementation priorities are recorded in the report.
+
+## 2026-09-09 — Review of Claude's evaluation/notification response
+
+Review: [REVIEW_CLAUDE_EVAL_HANDOFF_20260909.md](REVIEW_CLAUDE_EVAL_HANDOFF_20260909.md).
+
+- Claude corroborates E1/E4/E5/E7 and identifies QUOTE_CONTRACT text lagging
+  guards-v4 complete-book enforcement; source verification agrees. Other audit
+  findings were not independently reproduced by Claude according to the handoff.
+- Claude reports 36/77 daily-risk-bearing snapshots, 53 ACTIONABLE snapshots,
+  two open trades and September 1–8 outcome totals. These remain attributed
+  evidence, not a new independent database verification. Runtime queries were
+  not retried after the automatic usage-limit rejection.
+- Supplied outcome counts do not prove clean completion, absence of retries,
+  full expected candidate coverage, or successful reports. Legacy H2 integrity
+  does not establish managed-exit timestamp integrity. Audit severity remains
+  High where documented; production incidence is still unknown, not disproven.
+- The two quoted entry timestamps precede the recorded v2.6.18 signed-release
+  workflow. Earlier September 9 evidence already recorded 14 ACTIONABLE v2.6.17
+  snapshots. Do not attribute first successful entries to v2.6.18 from these data.
+- Fresh bundled-model DTE sweep accepts 5–9 and flags 10/20 with other features
+  in range. This contradicts the asserted DTE-6-only unlocking mechanism.
+  Aggregate OOD counts cannot identify every cause or distinguish soft/hard OOD.
+- Higher mean estimated premium edge is not demonstrated net advantage. The
+  evaluator can measure ineligible research candidates without allowing entries.
+  Recommendation remains recovery/label/notification correctness first, with
+  separate offline/shadow OOD comparison before eligibility changes.
+- Six standalone characterization probes still reproduce; they are separate
+  from the earlier 504-test suite. No runtime/policy/version/external write and
+  no message to Claude. Risk re-entry cooldown design remains explicit work.
+
+## 2026-09-09 — Claude's corrected evaluation reply reviewed
+
+Review: [REVIEW_CLAUDE_EVAL_REPLY_R2_20260909.md](REVIEW_CLAUDE_EVAL_REPLY_R2_20260909.md).
+
+- Claude withdraws the six disputed claims and accepts evaluation recovery,
+  label attribution and notification correctness before eligibility relaxation.
+  E6–E9 remain open alongside the prioritized work; no implementation is claimed.
+- New Claude-reported counts reconcile 77 snapshots as one warm-up plus 76 with
+  selector summaries: v2.6.17 has 40/32 snapshots/ACTIONABLE, v2.6.18 has 36/21.
+  Trades 271/272 reportedly have explicit paper fields and predate v2.6.18.
+  These are attributed production results, not independently queried this turn.
+- Reported BNF OOD split is 608 BLOCKED and 1,130 non-BLOCKED, including 1,096
+  TAKE; NF has 459 OOD, all BLOCKED. Current source supports BLOCKED as the
+  strategy-blind proxy, but this query does not establish reasons, confidence,
+  installed model identity, or other entry vetoes for each candidate.
+- Fresh bundled-model execution confirms single-DTE soft OOD confidence 0.9091
+  with nine valid checks and DTE 10/20; DTE 6/9 pass. This heuristic is not a
+  calibrated 91% probability of correctness. Do not label all 1,130 rows as
+  single-DTE/0.909 cases without their actual inputs and diagnostics.
+- Daily outcome means near 200 are consistent with capped evidence, not proof
+  of per-snapshot completeness; September 8 averages 199.986486. Evidence is
+  capped before evaluation, so omitted full-menu candidates do not establish
+  interrupted evaluation. Production defect incidence remains unknown.
+- Preserve the soft/hard entry-gate difference as an offline policy research
+  question. Reuse documented ±150-second historical pairing with explicit
+  cohort/model coverage and reassessed managed labels; compare selection and
+  simulated net outcomes under all other gates before changing entry policy.
+- All six characterization probes still reproduce. The prior 504-test result
+  is separate and was not rerun. Only review/knowledge records changed; runtime
+  and synchronized v2.6.18/b449 markers remain unchanged. No push or DB write.
+
+## 2026-09-09 — v2.6.19/b450 evaluation recovery release prepared
+
+- Synchronized release identity: Android `versionName=2.6.19`, `versionCode=450`;
+  Python `BRAIN_VERSION=2.6.19`; PWA title/label `v2.6.19 · b450`; PWA app
+  cache-buster `app.js?v=1326`.
+- **E1 fixed:** the evaluator no longer writes zero progress before it determines
+  whether the saved outcome file and snapshot count form a valid resume checkpoint.
+  A retry retains the persisted successful prefix; an incompatible/missing output
+  still intentionally starts a new empty output file.
+- **E2 fixed for native in-process launches:** MarketMLService accepts only one
+  day-evaluation session at a time. An alarm and notification-tap collision logs
+  `DAY_EVAL_DUPLICATE_IGNORED`. Foreground-service ownership is reference-counted
+  across accepted actions, so the evaluator cannot remove foreground status while
+  its C3 finalizer is still running. This is not a device-lifecycle proof.
+- **E4 fixed:** Python stops at the first snapshot-level exception, returns the
+  successful prefix checkpoint plus `fatal_snapshot_error_count`, and Kotlin
+  persists that prefix then marks the job FAILED. It cannot advance an ungraded
+  snapshot into DONE. Candidate-level drop telemetry remains non-fatal because
+  those candidates are explicitly recorded as drops rather than unhandled
+  snapshot exceptions.
+- Added `test_evaluation_batch_failure_contract.py`, which injects a failing
+  middle snapshot and verifies the result ends at the successful prefix. Full
+  Python discovery passes **505 tests**; Python compilation and git diff checks
+  pass. Gradle Android tests remain unavailable locally because Gradle 8.7 is not
+  cached and this environment cannot reach the distribution host. Device and CI
+  validation remain release gates.
+- E3 memory pressure, E5 managed-exit timestamp attribution, E6–E9 scheduling/
+  reporting concerns and N1–N5 notification findings remain open. No model,
+  ranking, training, entry-eligibility, Supabase, or external-repository change
+  was made in this release preparation.
