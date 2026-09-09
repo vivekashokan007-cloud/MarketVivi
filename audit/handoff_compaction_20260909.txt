@@ -1,0 +1,11 @@
+2026-09-09: Actual Python-to-Kotlin persistence probe against ff771e9.
+Expected harness exit: 1 because both required risk fields are lost.
+Only Kotlin logging is stubbed; no device/network I/O.
+
+REPLAY_CAPTURE_WARN poll=None issues=['nfChain.strikes empty', 'bnfChain.strikes empty', 'generated_candidates empty without skip_reason']
+REPLAY_CAPTURE_WARN poll=None issues=['nfChain.strikes empty', 'bnfChain.strikes empty', 'generated_candidates empty without skip_reason']
+{"fixture":"empty.json","after_has_risk":false,"before_risk":{"schema_version":"daily_risk_state_v1","closed_trade_count":0,"daily_trade_count":0,"session_date":"2026-09-08","open_trade_count":0,"realized_pnl":0,"source":"local_closed_and_open_trades","status":"OK"},"after_has_comparator":true}
+{"fixture":"loss.json","after_has_risk":false,"before_risk":{"schema_version":"daily_risk_state_v1","closed_trade_count":1,"daily_trade_count":1,"session_date":"2026-09-08","open_trade_count":0,"realized_pnl":-3213.9,"source":"local_closed_and_open_trades","status":"OK"},"after_has_comparator":true}
+
+
+Existing targeted tests: entry eligibility 13 passed; daily risk 3 passed.

@@ -21313,3 +21313,73 @@ Read-only queries: [REVIEW_CLAUDE_GUARDS_V3_20260908.sql](REVIEW_CLAUDE_GUARDS_V
 Reproduction harness and validation output are under `audit/guards_v3_*20260908*`.
 Canonical net-label reconstruction, chronological capacity-constrained ranking
 comparison, empirical EV validation and device/forward-paper checks remain open.
+
+
+## 2026-09-09 — Review of Claude's Entry-Gate / Deployment Handoff
+
+Full review: [REVIEW_CLAUDE_HANDOFF_20260909.md](REVIEW_CLAUDE_HANDOFF_20260909.md).
+Source handoff: `HANDOFF_to_codex_20260908-1.md`. Runtime baseline remains
+Marketapp ff771e9, v2.6.17/b448. No runtime policy, model, data or version changed.
+
+### Updated production evidence
+
+- September 8 completed sample: 76 v2.6.17 snapshots; 75 preserve comparator
+  provenance, zero have eligible menus or ACTIONABLE gates, zero retain daily
+  risk. All 75 populated primaries show the OOD reason cascade.
+- September 9 through 05:25:59 UTC: 20 v2.6.17 snapshots, 19 preserve comparator
+  provenance, 16 have positive eligible counts and 14 have ACTIONABLE gates.
+  Daily-risk state is still absent from all 20. These are partial-session counts.
+- Snapshot 5548 (04:05:48 UTC / 09:35:48 IST) selects IB_NF_23500_W300 under
+  unchanged eligibility v5: entryEligible=true, no OOD, confidence 63.8, net-edge
+  estimate ₹1,706, SELL PREMIUM / ACTIONABLE. Both final execution and PC2 IDs
+  match. This disproves a permanent backend entry deadlock. It does not prove
+  the phone rendered GO or executed a trade; verify bridge/readiness/UI state
+  if the operator still sees MONITOR during these actionable polls.
+
+### Corrections to the proposed soft-OOD restoration
+
+- Soft-OOD relaxation was deliberately excluded from the September 7 release,
+  as the existing release record states. It was not an accidentally omitted
+  fix. The contradictory “fixed in v2.6.13” section in Marketapp CLAUDE.md is
+  now explicitly marked as an unmerged historical proposal.
+- Weekly BANKNIFTY discontinuation is confirmed by NSE circular FAOP64506;
+  it does not imply a monthly contract always has DTE approximately 26. Current
+  model input is candidate tDTE. Bundled-model execution, with other features
+  in range, accepts DTE 3/6/9 and flags 10/21/26 because the [0,6] training
+  bounds have half-span tolerance. Runtime model identity was not independently
+  matched to the bundled artifact in this review.
+- OOD suppresses market-fit computation and produces the two derived missing
+  reasons. Removing the veto alone does not establish eligibility under a new
+  confidence penalty or establish profitability. Preserve hard vetoes and assess
+  soft-OOD policy separately using shadow counterfactuals and managed-net labels.
+
+### Daily-risk telemetry root cause — reproduced across languages
+
+- Empty-ledger early return is not the cause: Python produces OK/zero state and
+  includes snapshot_daily_risk_state, including in android_compact_v1.
+- The actual Kotlin EvaluationLocalCache.compactBrainSnapshotForPersistence
+  rebuilds context without that field. MarketWatchService then sends this
+  stripped object to both local cache and Supabase.
+- Executed the exact compaction/JSON helper source with logging stubbed. Both a
+  zero-ledger fixture and a −₹3,213.90 loss fixture lose the risk field while
+  comparator telemetry survives. This is independent of the pending-close
+  journal/reset defect already recorded on September 8.
+- Fix the complete serialization/reload path, including summary/research
+  compactors, and test zero/loss/unavailable states. Python-only preservation
+  tests are insufficient. The probe does not exercise Android device I/O.
+
+### Verification and priorities
+
+- Existing entry-eligibility tests: 13 passed; daily-risk tests: 3 passed.
+  Additional probes cover the OOD boundary, reason cascade and the failing
+  Python-to-Kotlin persistence round trip. No new full-suite claim is made.
+- Keep pending-close durability and risk telemetry ahead of a production OOD
+  relaxation. Continue test-discovery and guards-v3 contract corrections, then
+  a new synchronized signed release with device verification. Historical ranking
+  and soft-OOD research are already possible through candidate outcomes.
+- Guards v3 itself is unchanged. Do not publish rejected/degraded valuations as
+  accepted executable marks; preserve separate raw diagnostics. Strengthening
+  rawMarkComplete is a real telemetry behavior change requiring tests.
+
+Read-only SQL and reproduction artifacts accompany the review. Documentation is
+committed locally; no runtime patch or deployment was performed in this review.
