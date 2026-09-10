@@ -21686,3 +21686,13 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - Added regression coverage for the guarded resume decision, its single reset writer, durable marker and retained strict reader. Verify on the phone that the marker appears once if this recovery is exercised and that the session evaluates from the preserved snapshots.
 
 ---
+## 2026-09-10 — v2.6.25 / b456 · atomic multi-batch evaluator append
+
+- Android/Kotlin, Python brain and PWA are synchronized at **v2.6.25 / b456**; PWA cache key is **`app.js?v=1332`**.
+- Follow-up device evidence after b455 proved that the evaluator passed PREPARING but failed in RUNNING on `appendJsonArrayFile`. The stack trace hit `countJsonArrayFile` at the next batch and reported a JSON file beginning with an invalid literal.
+- Root cause is confirmed in the writer: it copied the existing valid JSON prefix into a temporary file, then reopened that temporary file with truncating `outputStream()` before writing `,newRows]`. The second batch therefore replaced `[oldRows` with a file beginning `,newRows]` and made every later strict read fail.
+- The suffix writer now uses `FileOutputStream(temp, true)` to append to the copied prefix, after which the complete temporary file is renamed into place. The atomic replacement design and strict malformed-file readers remain unchanged. Existing b455 recovery discards any previously corrupted derived outcomes file at the next run and restarts from saved snapshots.
+- Full audit found no other `copyFilePrefix` caller or outcomes-file writer with this copy-then-truncate pattern. No database schema/data, candidate generation, ranking, Paper/Real authority, model, sizing, exit or broker behavior changed.
+- Regression coverage now asserts the exact second-batch append contract, alongside malformed-checkpoint recovery. Verify on the phone that evaluation passes multiple batches and that `EVAL_BATCH_CHECKPOINT` advances beyond the first batch without a malformed-output error.
+
+---
