@@ -27,6 +27,12 @@ def emitted(payload):
     return [c['title'] for c in contracts if c['notify_user']]
 
 
+def acknowledge(payload):
+    contracts = payload['brain_notifications'] or [payload['brain_notification']]
+    posted = [contract for contract in contracts if contract.get('notify_user')]
+    return json.loads(brain.brain_notification_ack_deliveries(json.dumps(posted)))
+
+
 def setup(alerts=None):
     return {
         'verdict': {'action': 'SELL PREMIUM', 'strategy': 'BULL_PUT', 'confidence': 66},
@@ -48,18 +54,20 @@ def record(name, evidence, defect_reproduced=True):
 brain.reset_notification_agent()
 call(setup(), 1)
 collision = call(setup([RISK]), 2)
+collision_ack = acknowledge(collision)
 following = call(setup(), 3)
-assert emitted(collision) == ['Stop Loss Near']
-assert collision['agent_state']['best_candidate_id'] == 'audit-c1'
+assert emitted(collision) == ['Stop Loss Near', 'New Setup Ready']
+assert collision_ack['best_candidate_id'] == 'audit-c1'
 assert emitted(following) == []
-record('N1_setup_consumed_by_position_collision', {
+record('N1_setup_delivered_with_position_collision', {
     'collision_emitted': emitted(collision), 'next_poll_emitted': emitted(following),
     'next_reason': following['brain_notification']['reason_code'],
-})
+}, defect_reproduced=False)
 
 brain.reset_notification_agent()
 wait = {'verdict': {'action': 'WAIT', 'confidence': 0}, 'watchlist': [], 'alerts': [RISK]}
 first = call(wait, 1)
+acknowledge(first)
 call({**wait, 'alerts': []}, 2)
 returned = call(wait, 3)
 assert emitted(first) == ['Stop Loss Near'] and emitted(returned) == []
@@ -74,12 +82,14 @@ alerts = [
     {'key': 'MARKET_B', 'category': 'MARKET', 'priority': 'important', 'title': 'Warning B', 'body': 'B'},
 ]
 first = call({**wait, 'alerts': alerts}, 1)
+acknowledge(first)
 following = call({**wait, 'alerts': alerts}, 2)
-assert emitted(first) == ['Warning A'] and emitted(following) == []
-record('N3_undispatched_operational_warning_marked_seen', {
+acknowledge(following)
+assert emitted(first) == ['Warning A'] and emitted(following) == ['Warning B']
+record('N3_operational_warning_deferred_until_dispatch', {
     'first_emitted': emitted(first), 'next_emitted': emitted(following),
     'seen_keys': first['agent_state']['operational_alert_keys'],
-})
+}, defect_reproduced=False)
 
 # A snapshot exception must leave the failed snapshot unadvanced. Kotlin uses the
 # returned fatal count to persist the successful prefix and mark the job FAILED.
@@ -145,4 +155,55 @@ record('E5_EOD_timestamp_uses_last_executable_quote', {
     'reported_exit': with_tail['exit_ts'], 'last_valued_ts': without_tail['exit_ts'],
     'unvalued_terminal_ts': last_ts,
     'same_pnl': with_tail['managed_pnl'],
+}, defect_reproduced=False)
+
+# Batch-B source contracts: these are deliberate source-level checks, not an
+# Android lifecycle/device notification proof.
+assert 'minutes in EVAL_REMINDER_START_MIN..EVAL_REMINDER_END_MIN' in source
+assert 'Evaluation already running; retaining a retry reminder' in source
+assert 'scheduleNextEvaluationReminder(context)' in source
+record('E6_current_window_catchup_and_running_retry_source_check', {
+    'method': 'Kotlin source inspection, not AlarmManager/device execution',
+    'current_window_catches_up_today': True,
+    'running_receiver_retains_retry_schedule': True,
+}, defect_reproduced=False)
+
+assert 'EVALUATION_TIME_BUDGET_EXCEEDED' in source
+assert 'isEvaluationSessionActive(sessionDate: String)' in source
+native_source = (ROOT / 'Marketapp/app/src/main/java/com/marketradar/app/NativeBridge.kt').read_text()
+assert 'if (MarketMLService.isEvaluationSessionActive(runningDate)) return false' in native_source
+record('E7_cooperative_budget_and_active_session_stale_guard_source_check', {
+    'method': 'Kotlin source inspection; does not claim force-cancellation of synchronous Python',
+    'cooperative_budget': True,
+    'active_session_cannot_be_stale_unlocked': True,
+}, defect_reproduced=False)
+
+supabase_source = (ROOT / 'Marketapp/app/src/main/java/com/marketradar/app/SupabaseClient.kt').read_text()
+assert 'val success = evaluationSaved && recommendationSaved && rejectedSaved' in supabase_source
+assert 'val recommendationSaved: Boolean' in supabase_source
+record('E8_component_upload_status_source_check', {
+    'method': 'Kotlin source inspection, no production write',
+    'all_required_outputs_gate_completion': True,
+    'component_status_exposed': True,
+}, defect_reproduced=False)
+
+watch_source = (ROOT / 'Marketapp/app/src/main/java/com/marketradar/app/MarketWatchService.kt').read_text()
+helper_source = (ROOT / 'Marketapp/app/src/main/java/com/marketradar/app/NotificationHelper.kt').read_text()
+assert 'brain_notification_ack_deliveries' in watch_source
+assert 'posted_to_os_count' in watch_source
+assert 'data class DeliveryResult' in helper_source
+assert 'PERMISSION_DENIED' in helper_source and 'CHANNEL_DISABLED' in helper_source
+record('N4_delivery_acknowledgement_and_transport_truth_source_check', {
+    'method': 'Kotlin/Python source inspection, not a posted-notification device proof',
+    'acknowledges_only_posted_contracts': True,
+    'transport_outcomes_structured': True,
+}, defect_reproduced=False)
+
+assert 'Day Evaluation Ready' not in source
+assert 'publishEvaluationStatus' in source
+assert 'clearEvaluationStatusNotification' in source
+record('N5_phase_aware_evaluation_notification_source_check', {
+    'method': 'Kotlin source inspection, not Android UI verification',
+    'running_status_does_not_offer_duplicate_start': True,
+    'failure_retry_and_completion_warning_statuses': True,
 }, defect_reproduced=False)

@@ -21610,3 +21610,36 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
   or Paper entry-policy behavior changed. Remaining work: per-batch Supabase
   persistence and streaming final report aggregation, then E6–E8 and the
   notification findings N1/N3–N5 before below-cap ranking experiments.
+
+## 2026-09-10 — v2.6.22 / b453 evaluation recovery and notification truth
+
+- Release detail: [RELEASE_2.6.22_20260910.md](RELEASE_2.6.22_20260910.md).
+  Synchronized identity is Android/Kotlin **v2.6.22/b453**, Python brain
+  **2.6.22**, PWA **v2.6.22/b453** with `app.js?v=1329`.
+- **E6 fixed at code level:** scheduling within the current 16:30–18:30 IST
+  reminder window catches up today rather than advancing immediately to the next
+  market day. A reminder received while evaluation is running retains retry
+  scheduling and reports in-progress status.
+- **E7 partially but materially hardened:** the formerly-unused 45-minute limit
+  is a cooperative evaluation budget checked at preparation, batch checkpoint,
+  save and aggregation boundaries. Native stale cleanup cannot unlock retry while
+  an in-process evaluator owns the session. This is not force-cancellation proof
+  for synchronous Chaquopy calls; Android lifecycle testing remains required.
+- **E8 fixed at code level:** outcome completion requires verified evaluation,
+  recommendation and rejected-research outputs; component result flags prevent
+  a partial upload from becoming a false DONE. No schema/data change occurred.
+- **N1/N3/N4/N5 fixed at code/source level:** risk remains ordered first but no
+  longer consumes a confirmed setup; operational notifications are acknowledged
+  only after posted-to-OS transport; telemetry distinguishes selected, attempted,
+  posted and suppressed/failed outcomes; evaluator status is phase-aware with
+  guarded retry only after failure. **N2 remains open intentionally** pending an
+  explicit risk re-entry/cooldown policy decision.
+- Tick quote-contract wording now matches existing enforcement: finite two-sided
+  non-crossed book plus strictly positive executable close side, independent of
+  LTP. This wording change does not relax the quote contract.
+- Validation: Python compilation and full discovery (**510 tests**) passed;
+  audit checks, PWA syntax and diff checks passed. Gradle/device verification is
+  still a release gate because Gradle 8.7 cannot be downloaded here.
+- No ranking, model, OOD, generation, Real, Sandbox or Paper entry-policy change
+  is in this release. Next profit-research work remains bounded below-cap ranking
+  evidence design and its pre-registered Paper-mode evaluation protocol.
