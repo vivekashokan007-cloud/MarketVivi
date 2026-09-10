@@ -21657,3 +21657,7 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - The first failed attempt did not create a v2.6.22 APK or GitHub Release. A
   signed release is complete only after the repaired CI run passes, publishes the
   `app-release.apk`, and creates the v2.6.22 GitHub Release.
+- The repaired debug validation passed Android compilation and uploaded its debug
+  APK. The signed-release workflow trigger was also corrected from only
+  `app/build.gradle.kts` to all Android/Gradle/workflow inputs, so a Kotlin-only
+  fix cannot be validated without also producing the required signed release.
