@@ -21661,3 +21661,8 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
   APK. The signed-release workflow trigger was also corrected from only
   `app/build.gradle.kts` to all Android/Gradle/workflow inputs, so a Kotlin-only
   fix cannot be validated without also producing the required signed release.
+- **Verified complete:** the repaired signed workflow passed keystore decode,
+  Python checks, Android unit tests and signed assembly; GitHub published
+  [Market Radar v2.6.22](https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.6.22)
+  with `app-release.apk` (SHA-256
+  `fec2880a8110dc61817c9ab0aea6ce0a5ab4ef1fa0de7e8145cc0f9cee218431`).
