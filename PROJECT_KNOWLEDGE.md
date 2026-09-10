@@ -21676,3 +21676,13 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - Added regression coverage for deterministic selection, strict below-cap membership, provenance retention through Python/Android compaction, evaluator role compatibility and report separation. No Supabase schema or production data was changed.
 
 ---
+## 2026-09-10 — v2.6.24 / b455 · evaluator checkpoint self-recovery
+
+- Android/Kotlin, Python brain and PWA are synchronized at **v2.6.24 / b455**; PWA cache key is **`app.js?v=1331`**.
+- Device evidence from 2026-09-10 confirmed `EVAL_FAIL[PREPARING]`: an existing `outcomes_2026-09-10.json` was malformed, and the resume path treated existence alone as sufficient before strict JSON validation threw. Saved brain snapshots were healthy; the failure blocked only evening outcome evaluation and teacher-report rebuilding.
+- `runDayEvaluation` now validates an existing outcomes checkpoint before resuming. If `countJsonArrayFile` raises its expected `IllegalStateException`, the app writes a new empty derived outcomes array through the existing atomic writer, resets progress to snapshot 1 and re-evaluates from retained snapshots. The strict malformed JSON readers are unchanged.
+- Recovery writes the stable `EVAL_RESUME_DISCARDED_MALFORMED_OUTPUTS` marker to both Logcat and the durable LogBuffer. It is intentionally limited to the output-validation exception; cancellation and unrelated fatal errors remain visible rather than being converted into a reset.
+- The evidence proves the malformed file and retry loop, but not the original file-corruption mechanism: current outcome writers use temporary files and rename. No database schema/data, candidate generation, ranking, Paper/Real authority, model, sizing, exit or broker behavior changed.
+- Added regression coverage for the guarded resume decision, its single reset writer, durable marker and retained strict reader. Verify on the phone that the marker appears once if this recovery is exercised and that the session evaluates from the preserved snapshots.
+
+---
