@@ -21564,3 +21564,13 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - Promotion requires multi-session, friction-inclusive, correctly labelled Paper
   outcomes with drawdown and operational reliability assessed. No Real-mode OOD
   change, order change or training activation follows from this roadmap alone.
+
+## 2026-09-10 — Profit-first roadmap review: ranker evidence scope corrected
+
+- Full source-backed review: [REVIEW_CLAUDE_PROFIT_ROADMAP_20260910.md](REVIEW_CLAUDE_PROFIT_ROADMAP_20260910.md). Baseline remains Marketapp `c826b26`, MarketVivi `20acf16`, synchronized **v2.6.19 / b450**; this entry is documentation only and changes no runtime/policy/release identity.
+- **Confirmed structural limit:** `BUILD3_RANKED_EVIDENCE_CAP=200`; retained `snapshot_ranked_candidates_full` is `ranked[:200]`, and the evaluator consumes it before any fallback. Thus current outcomes can assess ordering **within the ranker-selected retained shortlist**, not whether the shortlist contains the best available candidates.
+- Rejected-candidate outcomes and the existing cap-16 supply-quality sample are **not** an unbiased below-cap arm: rejections are gate-rejected; the supply sample is deterministic targeted diagnostic telemetry built before final rank. Neither supports a coverage claim.
+- Paper TEST remains the single user-facing experimental lane. It should unlock structurally recordable candidates while retaining real/sandbox gates and explicit active-position capacity. PWA source confirms the present defect: final real-entry authorization is applied before `isPaper`; PAPER is also rendered locked. One PWA comment/alert says max two while code enforces max five per index—standardize the actual rule with the unlock.
+- Ranking evidence hierarchy: evaluator simulation is primary (shortlist ordering, then below-cap coverage); Paper TEST calibrates simulator outcomes against managed paper execution and provides operational evidence. Operator-selected Paper observations are valuable but not an unbiased ranking arm.
+- Before P2, add bounded deterministic below-cap final-rank sampling with `evidence_source`, rank/population/cap, sampling version/inclusion facts, quote/friction data and the same managed-net label contract. Design and version the session/event-level protocol and promotion rule before outcomes; choose sample/capacity after a baseline precision read. Implement sampling after E3 bounded streaming.
+- Keep E5 and E3 ahead of ranking; retain E6–E8/notification work and correct the stale Kotlin `QUOTE_CONTRACT` wording with the next runtime change. Claude's September 9 database counts are recorded only as attributed read-only evidence and were not re-queried here.
