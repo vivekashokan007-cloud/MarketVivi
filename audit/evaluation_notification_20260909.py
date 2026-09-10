@@ -139,8 +139,10 @@ without_tail = brain._managed_teacher_outcome(
     [row for row in rows if row['poll_ts'] != last_ts], snap, cand, config)
 assert with_tail['exit_reason'] == 'EOD'
 assert with_tail['managed_pnl'] == without_tail['managed_pnl']
-assert with_tail['exit_ts'] == last_ts != without_tail['exit_ts']
-record('E5_EOD_timestamp_from_unvalued_tail', {
-    'reported_exit': with_tail['exit_ts'], 'actual_last_valued_ts': without_tail['exit_ts'],
+assert with_tail['exit_ts'] == without_tail['exit_ts'] != last_ts
+assert with_tail['exit_valuation_status'] == 'EOD_LAST_EXECUTABLE'
+record('E5_EOD_timestamp_uses_last_executable_quote', {
+    'reported_exit': with_tail['exit_ts'], 'last_valued_ts': without_tail['exit_ts'],
+    'unvalued_terminal_ts': last_ts,
     'same_pnl': with_tail['managed_pnl'],
-})
+}, defect_reproduced=False)

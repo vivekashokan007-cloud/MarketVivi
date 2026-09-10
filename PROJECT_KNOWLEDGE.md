@@ -21582,3 +21582,31 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - The confirmation presents the current final-authority, entry-eligibility and execution-readiness vetoes. The saved `trades_v2.entry_snapshot.paper_test` records `operator_test` selection/evidence source, policy version, ranks, timestamp, vetoes, structural contract, entry quotes/instrument keys, estimated friction and paper capacity at entry.
 - Active Paper capacity is now consistently **five per index** in code and UI. A full capacity is an operational stop with count/limit and close guidance, not a brain-policy lock.
 - Local validation: PWA syntax check, `git diff --check`, and five isolated structural-authorization assertions passed. Android Gradle/device validation remains a release gate because Gradle is unavailable locally in this environment.
+
+## 2026-09-10 — v2.6.21 / b452 evaluation truth and checkpoint integrity
+
+- Release detail: [RELEASE_2.6.21_20260910.md](RELEASE_2.6.21_20260910.md).
+  Synchronized identity is Android/Kotlin **v2.6.21/b452**, Python brain
+  **2.6.21**, PWA **v2.6.21/b452** with `app.js?v=1328`.
+- **E5 fixed:** managed EOD labels now use the last path point with an
+  executable gross-and-friction valuation. A terminal LTP-only quote tail no
+  longer produces a later `exit_ts` for an earlier P&L. `exit_valuation_status`
+  and `terminal_path_ts` remain additive local/report provenance; the corrected
+  persisted field is the existing `exit_ts`, so no unreviewed database migration
+  was introduced.
+- **E3 materially hardened:** the Python job cache keeps file paths, counts and
+  configuration—not full snapshot/chain arrays. Each run reads only the current
+  snapshot batch and matching index/expiry chain rows. Truncated JSON input
+  fails explicitly. Kotlin checkpoint updates now write a complete temporary
+  JSON array and atomically replace the old valid output; malformed/empty output
+  cannot silently become zero outcomes, and final parsed/checkpoint counts must
+  agree before persistence.
+- Validation: Python compilation and full discovery (**508 tests**) passed;
+  E5 audit probe and PWA syntax/diff checks passed. Android Gradle compilation
+  remains unavailable locally because the Gradle 8.7 distribution cannot be
+  downloaded. CI/device compilation plus interrupted/resumed evening-evaluation
+  validation are still release gates.
+- No ranking, generation, OOD, model-training, Supabase schema, Real, Sandbox
+  or Paper entry-policy behavior changed. Remaining work: per-batch Supabase
+  persistence and streaming final report aggregation, then E6–E8 and the
+  notification findings N1/N3–N5 before below-cap ranking experiments.
