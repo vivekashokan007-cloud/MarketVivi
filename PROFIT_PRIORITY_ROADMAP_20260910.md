@@ -4,6 +4,14 @@ Baseline: Marketapp `c826b26`, MarketVivi `20acf16`, v2.6.19/b450.
 
 ## September 10 review amendment — ranking evidence scope
 
+**Implementation status, v2.6.23/b454:** the bounded deterministic below-cap
+collection instrument is now shipped. It retains the existing top-200 cohort and
+captures up to 50 final-ranked candidates from the remainder with separate
+provenance and an evaluator/report-only cohort. It makes no ranking, generation,
+entry, Paper-button, Real, model or broker change. The pre-registered promotion
+protocol below is deliberately still pending; do not interpret newly collected
+rows before it is frozen.
+
 The retained evaluator menu is currently the ranker's own top-200 evidence
 (`ranked[:200]`). It can test **ordering within that shortlist**, but it cannot
 by itself prove that the shortlist contains the best available opportunities.

@@ -21666,3 +21666,13 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
   [Market Radar v2.6.22](https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.6.22)
   with `app-release.apk` (SHA-256
   `fec2880a8110dc61817c9ab0aea6ce0a5ab4ef1fa0de7e8145cc0f9cee218431`).
+## 2026-09-10 — v2.6.23 / b454 · bounded below-cap ranking evidence collection
+
+- Android/Kotlin, Python brain and PWA are synchronized at **v2.6.23 / b454**; PWA cache key is **`app.js?v=1330`**. This is a Paper/evaluator research-instrument release, not a ranking or entry-policy release.
+- The existing final-rank top-200 evidence cohort remains byte-for-byte conceptually unchanged. A second, separate cohort now deterministically samples up to 50 valid candidates whose final rank is strictly greater than 200. Selection uses a versioned SHA-256 ordering over a digest of the final below-cap frame, so replaying the same ranked menu yields the same sample.
+- Each sampled row records its final rank, population size, retained-top cap, frame size/digest, sample size/rank, inclusion probability and hash prefix under `evidence_source=ranked_below_cap_deterministic_sample`. The sample is captured only after final ranking: it does not alter candidate generation, ranking order, PWA cards, PAPER TEST availability, Real/Sandbox authority, model inference, sizing, exits or broker orders.
+- The evening evaluator grades the sample using the same managed-net/quote/friction contract as the existing cohort. Existing database roles remain `primary`/`secondary`; below-cap rows use `secondary` only for backwards-compatible storage. Their independent provenance is retained in the immutable brain-snapshot context and the daily teacher-research report, which now has schema version 2 and a separate `ranker_coverage_sample` section. These rows are excluded from `primary_vs_best`, within-shortlist rank and strategy metrics.
+- This is **collection only**. A raw sampled candidate beating the top-cap best in one snapshot is not evidence of a better policy because same-snapshot candidates are correlated. No coverage or profitability conclusion, and no policy promotion, is permitted until the separate protocol freezes distinct-session/event unit, minimum coverage, managed-net measure, drawdown ceiling, missing-data handling and promotion rule before outcomes are reviewed.
+- Added regression coverage for deterministic selection, strict below-cap membership, provenance retention through Python/Android compaction, evaluator role compatibility and report separation. No Supabase schema or production data was changed.
+
+---
