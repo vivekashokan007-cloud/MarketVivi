@@ -2522,10 +2522,23 @@ async function rescanStrategies() {
 // TRADE MANAGEMENT
 // ═══════════════════════════════════════════════════════════════
 
-// ═══ PAPER TRADE LIMIT — max 2 per index (2 NF + 2 BNF = 4 total) ═══
+// ═══ PAPER TEST CAPACITY — operational capacity, not a brain-policy gate ═══
+const PAPER_TRADE_LIMIT_PER_INDEX = 5;
+
+function paperTradeCapacity(indexKey) {
+    const paperCount = currentOpenTrades().filter(t => (
+        (t.paper === true || String(t.execution_mode || '').toLowerCase() === 'paper')
+        && String(t.index_key || '').toUpperCase() === String(indexKey || '').toUpperCase()
+    )).length;
+    return {
+        count: paperCount,
+        limit: PAPER_TRADE_LIMIT_PER_INDEX,
+        available: paperCount < PAPER_TRADE_LIMIT_PER_INDEX,
+    };
+}
+
 function canPaperTrade(indexKey) {
-    const paperCount = (JSON.parse(NativeBridge.getOpenTrades() || '[]')).filter(t => t.paper && t.index_key === indexKey).length;
-    return paperCount < 5; // 5 per index, 10 total — calibration needs data
+    return paperTradeCapacity(indexKey).available;
 }
 
 // A candidate can be structurally entry-ready yet still be excluded by the
@@ -2560,6 +2573,80 @@ function finalEntryAuthorization(candidate) {
         return { allowed: false, reason: 'Execution readiness is not confirmed' };
     }
     return { allowed: true, reason: '' };
+}
+
+// Paper TEST deliberately does not require the final real-entry authority.
+// It must still refuse a record that cannot have a meaningful entry/exit label.
+function paperTradeAuthorization(candidate) {
+    const reasons = [];
+    const legCount = candidateLegCount(candidate);
+    if (legCount !== 2 && legCount !== 4) {
+        reasons.push('strategy must contain exactly 2 or 4 legs');
+    }
+    if (!String(candidate?.expiry || '').trim()) {
+        reasons.push('expiry is missing');
+    }
+
+    const lotSize = Number(candidate?.lotSize || (candidate?.index === 'BNF' ? C.BNF_LOT : C.NF_LOT));
+    if (!Number.isFinite(lotSize) || lotSize <= 0) {
+        reasons.push('lot size is invalid');
+    }
+
+    const legFields = [
+        ['sell', '', 'sell'],
+        ['buy', '', 'buy'],
+        ...(legCount === 4 ? [['sell', '2', 'sell 2'], ['buy', '2', 'buy 2']] : []),
+    ];
+    legFields.forEach(([side, suffix, label]) => {
+        const strike = Number(candidate?.[`${side}Strike${suffix}`]);
+        const optionType = String(candidate?.[`${side}Type${suffix}`] || '').toUpperCase();
+        const ltp = Number(candidate?.[`${side}LTP${suffix}`]);
+        if (!Number.isFinite(strike) || strike <= 0) reasons.push(`${label} strike is invalid`);
+        if (optionType !== 'CE' && optionType !== 'PE') reasons.push(`${label} option type is invalid`);
+        if (!Number.isFinite(ltp) || ltp <= 0) reasons.push(`${label} entry quote is unavailable`);
+    });
+
+    return {
+        allowed: reasons.length === 0,
+        reason: reasons.join(' · '),
+        reasons,
+        legCount,
+        lotSize: Number.isFinite(lotSize) && lotSize > 0 ? lotSize : null,
+    };
+}
+
+function paperTestVetoes(candidate, finalAuthorization) {
+    const entryEligibility = candidate?.entryEligibility || {};
+    const executionReadiness = candidate?.executionReadiness || {};
+    const reasons = [
+        ...(!finalAuthorization.allowed && finalAuthorization.reason ? [finalAuthorization.reason] : []),
+        ...(Array.isArray(entryEligibility.reasons) ? entryEligibility.reasons : []),
+        ...(Array.isArray(executionReadiness.reasons) ? executionReadiness.reasons : []),
+    ];
+    return {
+        final_entry_authorized: finalAuthorization.allowed === true,
+        final_entry_reason: finalAuthorization.reason || null,
+        entry_eligible: candidate?.entryEligible === true,
+        entry_eligibility_reasons: Array.isArray(entryEligibility.reasons) ? entryEligibility.reasons : [],
+        execution_ready: executionReadiness.ready === true || candidate?.executionReady === true,
+        execution_readiness_reasons: Array.isArray(executionReadiness.reasons) ? executionReadiness.reasons : [],
+        current_veto_reasons: [...new Set(reasons.filter(Boolean))],
+    };
+}
+
+function confirmPaperTest(candidate, finalAuthorization, capacity) {
+    const vetoes = paperTestVetoes(candidate, finalAuthorization);
+    const reasons = vetoes.current_veto_reasons;
+    const blockText = reasons.length
+        ? reasons.map(reason => `• ${reason}`).join('\n')
+        : '• No current final-entry veto.';
+    return confirm(
+        `📋 PAPER TEST — ${candidate.index} ${friendlyType(candidate.type)}\n\n`
+        + 'No broker or sandbox order will be sent. This records a managed paper observation.\n\n'
+        + `Current brain status:\n${blockText}\n\n`
+        + `Paper capacity: ${capacity.count}/${capacity.limit} active for ${candidate.index}.\n\n`
+        + 'Continue with PAPER TEST?'
+    );
 }
 
 function recordClosedTradeToNative(trade, closePatch) {
@@ -2694,7 +2781,12 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const cand = findCandidateById(candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
     const finalAuthorization = finalEntryAuthorization(cand);
-    if (!finalAuthorization.allowed) {
+    const paperAuthorization = isPaper ? paperTradeAuthorization(cand) : null;
+    if (isPaper && !paperAuthorization.allowed) {
+        alert(`Paper TEST unavailable: ${paperAuthorization.reason}. Refresh the candidate when valid structure and entry quotes are available.`);
+        return;
+    }
+    if (!isPaper && !finalAuthorization.allowed) {
         alert(`Entry blocked: ${finalAuthorization.reason}. Refresh the brain result before taking a trade.`);
         return;
     }
@@ -2725,19 +2817,27 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         }
     }
 
-    // Paper trade limit enforcement
-    if (isPaper && !canPaperTrade(cand.index)) {
-        alert(`❌ Paper trade limit reached for ${cand.index} (max 5). Close one first.`);
+    // Determine candidate rank and immutable Paper TEST provenance before entry.
+    const rankList = (isPaper ? (bd.generated_candidates || []) : (bd.watchlist || []))
+        .filter(c => c.index === cand.index);
+    const renderedRank = rankList.findIndex(c => String(c.id) === String(cand.id)) + 1;
+    const rankedValue = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
+    const candRank = rankedValue(cand.pc2PaperRank) || rankedValue(cand.rank) || renderedRank || null;
+    const researchRank = rankedValue(cand.pc2PaperResearchRank);
+    const paperCapacity = isPaper ? paperTradeCapacity(cand.index) : null;
+
+    // Paper capacity is an operational limit, never a final-brain selection gate.
+    if (isPaper && !paperCapacity.available) {
+        alert(`❌ Paper TEST capacity reached for ${cand.index} (${paperCapacity.count}/${paperCapacity.limit}). Close one active paper position first.`);
+        return;
+    }
+    if (isPaper && !confirmPaperTest(cand, finalAuthorization, paperCapacity)) {
         return;
     }
     // Real trade: confirm
     if (!isPaper && !confirm(`📌 REAL TRADE: ${cand.index} ${friendlyType(cand.type)} ${cand.sellStrike}/${cand.buyStrike}\nThis will count as a real trade. Proceed?`)) {
         return;
     }
-
-    // Determine candidate rank
-    const rankList = (bd.watchlist || []).filter(c => c.index === cand.index);
-    const candRank = rankList.findIndex(c => c.id === cand.id) + 1;
 
     const isBNF = cand.index === 'BNF';
     const chain = isBNF ? safeParseNB(NativeBridge.getBnfChain(), {}) : safeParseNB(NativeBridge.getNfChain(), {});
@@ -2748,12 +2848,45 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const executionMode = isPaper
         ? 'paper'
         : (String(cand.executionReadiness?.mode || 'paper').toLowerCase());
+    const entryTimestamp = new Date().toISOString();
+    const paperTestProvenance = isPaper ? {
+        schema_version: 'paper_test_provenance_v1',
+        paper_selection_source: 'operator_test',
+        evidence_source: 'operator_paper_test',
+        paper_policy_version: bd.brain_version || bd.brainVersion || bd.app_version || bd.appVersion || null,
+        operator_confirmed_at: entryTimestamp,
+        candidate_id: cand.id || null,
+        final_rank: candRank,
+        research_rank: researchRank,
+        rendered_rank: renderedRank || null,
+        final_authority: {
+            allowed: finalAuthorization.allowed === true,
+            reason: finalAuthorization.reason || null,
+        },
+        current_vetoes: paperTestVetoes(cand, finalAuthorization),
+        structural_contract: {
+            allowed: paperAuthorization.allowed === true,
+            reasons: paperAuthorization.reasons,
+            leg_count: paperAuthorization.legCount,
+            lot_size: paperAuthorization.lotSize,
+        },
+        entry_quotes: [
+            { side: 'sell', strike: cand.sellStrike ?? null, option_type: cand.sellType ?? null, ltp: cand.sellLTP ?? null, instrument_key: cand.sellInstrumentKey ?? null },
+            { side: 'buy', strike: cand.buyStrike ?? null, option_type: cand.buyType ?? null, ltp: cand.buyLTP ?? null, instrument_key: cand.buyInstrumentKey ?? null },
+            ...(candidateLegCount(cand) === 4 ? [
+                { side: 'sell_2', strike: cand.sellStrike2 ?? null, option_type: cand.sellType2 ?? null, ltp: cand.sellLTP2 ?? null, instrument_key: cand.sellInstrumentKey2 ?? null },
+                { side: 'buy_2', strike: cand.buyStrike2 ?? null, option_type: cand.buyType2 ?? null, ltp: cand.buyLTP2 ?? null, instrument_key: cand.buyInstrumentKey2 ?? null },
+            ] : []),
+        ],
+        estimated_friction: cand.estCost ?? null,
+        capacity_at_entry: { count_before_open: paperCapacity.count, limit: paperCapacity.limit },
+    } : null;
 
     const trade = {
         strategy_type: cand.type,
         index_key: cand.index,
         expiry: cand.expiry,
-        entry_date: new Date().toISOString(),
+        entry_date: entryTimestamp,
         entry_spot: spot,
         entry_vix: latestPoll.vix,
         entry_atm_iv: isBNF ? latestPoll.bnfAtmIv : latestPoll.nfAtmIv,
@@ -2829,7 +2962,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         // ═══ RICH SNAPSHOT — everything for calibration (JSONB) ═══
         entry_snapshot: {
             // Candidate quality
-            candidate_rank: candRank || null,
+            candidate_rank: candRank,
             varsity_tier: cand.varsityTier || null,
             // App vs trader tracking — was this the app's #1 pick?
             app_top_strategy: rankList[0]?.type || null,
@@ -2900,7 +3033,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             est_cost_pct: cand.estCostPct ?? null,
             net_max_profit: cand.netMaxProfitAfterFriction ?? cand.spreadNetMaxProfit ?? null,
             upstox_pop: cand.upstoxPop ?? null,
-            event_driven: false  // default false — trader marks manually if event-driven
+            event_driven: false,  // default false — trader marks manually if event-driven
+            ...(paperTestProvenance ? { paper_test: paperTestProvenance } : {}),
         }
     };
 
@@ -4892,6 +5026,12 @@ function renderCandidateCard(cand, atm, rank) {
     const entryEligible = cand.entryEligible === true;
     const finalAuthorization = finalEntryAuthorization(cand);
     const finalEntryAllowed = finalAuthorization.allowed;
+    const paperAuthorization = paperTradeAuthorization(cand);
+    const paperCapacity = paperTradeCapacity(cand.index);
+    const paperVetoes = paperTestVetoes(cand, finalAuthorization);
+    const paperVetoTitle = paperVetoes.current_veto_reasons.length
+        ? paperVetoes.current_veto_reasons.join(' | ')
+        : 'No current final-entry veto. Paper TEST still records its provenance.';
     const entryEligibility = cand.entryEligibility || {};
     const entryReasons = Array.isArray(entryEligibility.reasons) ? entryEligibility.reasons : [];
     const researchRank = Number.isFinite(Number(cand.pc2PaperResearchRank))
@@ -5076,9 +5216,11 @@ function renderCandidateCard(cand, atm, rank) {
                     : `<button class="btn-take" onclick="takeTrade('${cand.id}', false)"${oodTitle}>📌 REAL TRADE${cand.costWarning ? ' ⚠️' : ''}${cand.mlOodBlocked || cand.mlOodFlag || cand.mlOod ? ' ⚠️' : ''}</button>`;
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
-            ${finalEntryAllowed
-                ? `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)">📋 PAPER${!canPaperTrade(cand.index) ? ' (FULL)' : ''}</button>`
-                : `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${finalAuthorization.reason}">📋 PAPER LOCKED</button>`}
+            ${!paperAuthorization.allowed
+                ? `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${paperAuthorization.reason}">📋 PAPER UNAVAILABLE</button>`
+                : !paperCapacity.available
+                ? `<button class="btn-paper" disabled style="opacity:0.55;cursor:not-allowed" title="Paper TEST capacity is ${paperCapacity.count}/${paperCapacity.limit}. Close one active paper position first.">📋 PAPER FULL (${paperCapacity.count}/${paperCapacity.limit})</button>`
+                : `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)" title="${paperVetoTitle}">📋 PAPER TEST (${paperCapacity.count}/${paperCapacity.limit})</button>`}
         </div>
     </div>`;
 }
