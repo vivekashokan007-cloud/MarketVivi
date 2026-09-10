@@ -21643,3 +21643,17 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - No ranking, model, OOD, generation, Real, Sandbox or Paper entry-policy change
   is in this release. Next profit-research work remains bounded below-cap ranking
   evidence design and its pre-registered Paper-mode evaluation protocol.
+
+## 2026-09-10 — v2.6.22 signed-release CI repair
+
+- The initial v2.6.22 Android CI runs completed Python checks but failed Kotlin
+  compilation before either debug or signed APK assembly. The specific error was
+  `NativeBridge.kt` calling `MarketMLService.isEvaluationSessionActive` while the
+  helper had incorrectly been declared as an instance method.
+- The helper was moved to `MarketMLService`'s shared companion scope, where the
+  in-process evaluation session state is already owned. This is a visibility-only
+  Kotlin repair: it preserves the E7 stale-retry guard and changes no evaluator,
+  notification, ranking or trading policy.
+- The first failed attempt did not create a v2.6.22 APK or GitHub Release. A
+  signed release is complete only after the repaired CI run passes, publishes the
+  `app-release.apk`, and creates the v2.6.22 GitHub Release.
