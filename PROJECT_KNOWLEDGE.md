@@ -21539,3 +21539,28 @@ Review: [REVIEW_CLAUDE_EVAL_REPLY_R2_20260909.md](REVIEW_CLAUDE_EVAL_REPLY_R2_20
   reporting concerns and N1–N5 notification findings remain open. No model,
   ranking, training, entry-eligibility, Supabase, or external-repository change
   was made in this release preparation.
+
+## 2026-09-10 — Profit-first Paper-mode roadmap
+
+Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.md).
+
+- Decision rule: Paper mode is the sole experimental lane for all policy changes
+  that affect candidate generation, ranking, entry, sizing, holding or exits.
+  Real mode retains the current policy until Paper evidence supports promotion.
+  Correctness fixes apply to both modes because they protect the truth of records.
+- Paper selection is currently blocked twice by `finalEntryAuthorization`: card
+  rendering shows `PAPER LOCKED` and `takeTradeImpl` rejects the same candidate.
+  This prevents operator analysis of non-primary, monitor-only and soft-OOD
+  alternatives. Treat it as P0, ahead of new strategy/ranking policy changes.
+- Required replacement: PAPER TEST for structurally recordable candidates with a
+  confirmation showing existing block reasons and persistent policy/rank/veto/
+  quote provenance. Keep real/sandbox gates unchanged. Retain the active paper
+  position capacity limit as capacity control, not a selection-policy lock.
+- Profit order: P0 Paper-test provenance plus E5 outcome attribution and E3 atomic
+  streaming evaluation; P1 E6–E8 recovery/run status and N1/N3–N5 notification
+  correctness; P2 chronological capacity-aware paper ranking and soft-OOD studies;
+  P3 canonical executable labels, retraining eligibility and EV validation; P4
+  multi-session evaluator and explicit risk recurrence policy.
+- Promotion requires multi-session, friction-inclusive, correctly labelled Paper
+  outcomes with drawdown and operational reliability assessed. No Real-mode OOD
+  change, order change or training activation follows from this roadmap alone.
