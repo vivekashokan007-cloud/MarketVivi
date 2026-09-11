@@ -1,3 +1,27 @@
+## 2026-09-11 — v2.6.26 / b457 release verification
+
+- The user supplied new credentials for the previously blocked push. Marketapp `main` now includes `a712c785d13db2ab61e349723269d00c1d720c1c`.
+- [Signed release run 34548857246](https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/34548857246) passed the complete Python suite, Android safety unit tests (including the new identity tests), signed APK build and release publication. [Debug validation run 34548857295](https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/34548857295) also passed on the same commit.
+- [v2.6.26 release](https://github.com/vivekashokan007-cloud/Marketapp/releases/tag/v2.6.26) published `app-release.apk` (63,900,362 bytes) at 2026-09-11 01:04:28 UTC. This supersedes the local-only/authentication-blocked checkpoint below. The matching PWA version/cache and retry-diagnostic changes are included in this publication batch.
+- Versions: Android/Kotlin 2.6.26 / b457; Python BRAIN_VERSION 2.6.26; PWA 2.6.26 / b457 / cache 1333. Native CI and signed release are verified. On-device recovery of the September 10 results and successful Supabase persistence still require a phone retry and fresh evidence; they are not established by the build results.
+
+---
+
+## 2026-09-11 — v2.6.26 / b457 evaluator identity recovery
+
+- Latest user log: `marketapp-logs-2026-09-10T17-05-28-103Z.csv`. At 22:11:03 IST, the old malformed output was discarded. At 22:21:06–09 the first main-outcome chunk (1/34, 250 rows) failed with PostgreSQL 23502: null snapshot_id. At 22:21:26 the rejected upload failed with 21000: duplicate constrained IDs in one upsert, 0/158 persisted. At 22:25:48 the local reader parsed 8,454 outcomes including 158 rejected rows. The JSON append fix progressed to a new persistence blocker; the evaluation was not complete.
+- The 22:34 IST read-only database check still showed zero September 10 evaluation outcomes. Earlier daytime candidate versions cannot establish which APK was installed after market close; the prior assertion that the phone was still running 2.6.23 was withdrawn. The PWA screenshot displayed 2.6.25/b456 but is not independent proof of the native APK version.
+- Source findings: local snapshot compaction omitted database id; snapshots are locally cached before the database insert, which returns no assigned ID. Cached evaluator inputs could be reused without ID validation. Python copies snapshot id into outcome snapshot_id. Rejected outcome keys also depend on snapshot identity. The null-key/collision failures are verified; this log does not prove which earlier input preparation selected the ID-less rows.
+- Implemented exact identity reconciliation against a complete paginated database metadata lookup before Python preparation, including reused input files. Require the same session and exact poll instant; use recommendation identity when available. Missing, ambiguous, or conflicting identity preserves local data and stops with an explicit error.
+- Preserve IDs in compaction when available and add exact snapshot_poll_ts to common Python outcomes. Retain invalid old outcomes in UUID-suffixed `.retained` files before regenerating from reconciled snapshots. Older primary outcomes lack safe timestamp provenance, so do not assign IDs by candidate or row order.
+- Validate the full outcome set before any upload. Collapse identical duplicates only, including across chunk boundaries; conflicting duplicates and rejected-ID collisions remain errors. Apply the deduplicated set consistently to saving and reporting, without copying the entire result set again for validation.
+- PWA now displays retry phase, checkpoint and escaped error details. Existing historical/limited ML summary cards remain separate from completion evidence; their 1,000 rows or retraining label do not establish today's completion or a successful retrain.
+- Versions synchronized locally: Android/Kotlin 2.6.26 / b457; Python BRAIN_VERSION 2.6.26; PWA 2.6.26 / b457 with cache 1333. Python suite: 525 passed. Ten added Kotlin JUnit tests require CI; local Gradle could not download 8.7. Release/CI and device verification are not yet claimed at this checkpoint.
+- No ranking, Paper/Real, entry/exit, weights, schema or permission changes. Production inspection was read-only. Do not clear app data: the retained results are recovery evidence. See [release notes](RELEASE_2.6.26_20260911.md).
+- Final local verification: 525 Python tests, Python compilation, JavaScript syntax and both whitespace checks passed. Native Gradle tests could not start because the distribution download was unreachable. Push was attempted through the configured GitHub integration and rejected with HTTP 403 (`Resource not accessible by integration`); shell Git has no configured HTTPS credentials. Changes are committed locally only; no remote branch, CI run or signed release was created for this batch. v2.6.25/b456 remains the last verified published release.
+
+---
+
 ## 2026-09-07 — Review of Claude's dual-audit reply: corrections verified
 
 - Full review: [REVIEW_CLAUDE_DUAL_AUDITS_20260907.md](REVIEW_CLAUDE_DUAL_AUDITS_20260907.md).
