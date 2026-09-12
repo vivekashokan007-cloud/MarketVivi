@@ -1484,6 +1484,88 @@ function asFiniteNumber(value) {
     return Number.isFinite(num) ? num : null;
 }
 
+
+// ═══ G3 GROSS EXTREMA CONTRACT (trades_v2 top-level peak_pnl / trough_pnl) ═══
+// Unit: INR (₹) total for recorded lots×lot_size — same currency as current_pnl/actual_pnl
+//       (not per-unit premium).
+// Lot quantity: trade.lot_size × trade.lots (or resolved lot used by position valuation).
+// Price basis: GROSS mark-to-market from option-chain quotes (brain position_live /
+//              position_ticks.current_pnl). NOT net-of-friction. Do not overwrite
+//              top-level gross fields with net extrema.
+// Source (live): brain → native open_trades → PWA trade.peak_pnl/trough_pnl.
+// Observation interval: entry_date → exit_date (marks while OPEN).
+// Validity: null/"unknown" = unobserved (never fabricate 0);
+//           0 = observed zero (valid); finite = observed extremum.
+// Contract version: g3_gross_extrema_v1_20260912
+const GROSS_EXTREMA_BASIS = 'GROSS_MTM';
+const GROSS_EXTREMA_UNIT = 'INR_TOTAL';
+const GROSS_EXTREMA_CONTRACT_VERSION = 'g3_gross_extrema_v1_20260912';
+
+function mergeGrossPeak(a, b) {
+    const av = asFiniteNumber(a);
+    const bv = asFiniteNumber(b);
+    if (av === null) return bv;
+    if (bv === null) return av;
+    return Math.max(av, bv);
+}
+
+function mergeGrossTrough(a, b) {
+    const av = asFiniteNumber(a);
+    const bv = asFiniteNumber(b);
+    if (av === null) return bv;
+    if (bv === null) return av;
+    return Math.min(av, bv);
+}
+
+/**
+ * Normalize gross peak/trough for every close destination (server, native ledger, retry).
+ * Unknown stays null — never fabricated 0. Present finite 0 is valid.
+ */
+function buildGrossExtremaCloseFields(tradeLike = {}) {
+    const hasPeakKey = Object.prototype.hasOwnProperty.call(tradeLike, 'peak_pnl');
+    const hasTroughKey = Object.prototype.hasOwnProperty.call(tradeLike, 'trough_pnl');
+    let peak = hasPeakKey ? asFiniteNumber(tradeLike.peak_pnl) : null;
+    let trough = hasTroughKey ? asFiniteNumber(tradeLike.trough_pnl) : null;
+    if (tradeLike.peak_pnl_validity === 'unknown') peak = null;
+    if (tradeLike.trough_pnl_validity === 'unknown') trough = null;
+    const peakObserved = peak !== null;
+    const troughObserved = trough !== null;
+    return {
+        peak_pnl: peak,
+        trough_pnl: trough,
+        peak_pnl_validity: peakObserved ? 'valid' : 'unknown',
+        trough_pnl_validity: troughObserved ? 'valid' : 'unknown',
+        extrema_basis: GROSS_EXTREMA_BASIS,
+        extrema_unit: GROSS_EXTREMA_UNIT,
+        extrema_source: tradeLike.extrema_source || 'live_position',
+        extrema_contract_version: GROSS_EXTREMA_CONTRACT_VERSION,
+    };
+}
+
+/**
+ * One normalized close payload fragment for extrema + validity metadata.
+ * Callers merge into the full close patch used by DB.updateTrade, native ledger, and retries.
+ */
+function buildNormalizedCloseExtremaPayload(tradeLike = {}, extras = {}) {
+    const extrema = buildGrossExtremaCloseFields(tradeLike);
+    return {
+        ...extrema,
+        close_extrema_meta: {
+            basis: extrema.extrema_basis,
+            unit: extrema.extrema_unit,
+            source: extrema.extrema_source,
+            contract_version: extrema.extrema_contract_version,
+            peak_pnl_validity: extrema.peak_pnl_validity,
+            trough_pnl_validity: extrema.trough_pnl_validity,
+            observation_interval: {
+                from: tradeLike.entry_date || null,
+                to: extras.exit_date || null,
+            },
+        },
+    };
+}
+
+
 function moneyOrUnavailable(value) {
     const num = asFiniteNumber(value);
     return num === null ? 'unavailable' : `₹${num.toLocaleString()}`;
@@ -2503,8 +2585,9 @@ window.syncFromNative = function(dataJson) {
                     openTrades[idx] = {
                         ...openTrades[idx],
                         ...nt,
-                        // Preserve best local peak if UI already saw a higher one.
-                        peak_pnl: Math.max(openTrades[idx].peak_pnl || 0, nt.peak_pnl || 0)
+                        // Preserve best local gross peak/trough (null = unknown, not fabricated 0).
+                        peak_pnl: mergeGrossPeak(openTrades[idx].peak_pnl, nt.peak_pnl),
+                        trough_pnl: mergeGrossTrough(openTrades[idx].trough_pnl, nt.trough_pnl)
                     };
                     changed = true;
                 } else {
@@ -2694,6 +2777,13 @@ function confirmPaperTest(candidate, finalAuthorization, capacity) {
 function recordClosedTradeToNative(trade, closePatch) {
     const bridge = window.NativeBridge || window.AndroidBridge;
     if (!bridge?.recordClosedTrade || !trade?.id) return;
+    const extrema = buildGrossExtremaCloseFields({
+        peak_pnl: closePatch.peak_pnl,
+        trough_pnl: closePatch.trough_pnl,
+        peak_pnl_validity: closePatch.peak_pnl_validity,
+        trough_pnl_validity: closePatch.trough_pnl_validity,
+        extrema_source: closePatch.extrema_source || 'close_payload',
+    });
     const record = {
         id: trade.id,
         status: 'CLOSED',
@@ -2702,6 +2792,15 @@ function recordClosedTradeToNative(trade, closePatch) {
         net_pnl: closePatch.net_pnl,
         paper: !!trade.paper,
         execution_mode: trade.execution_mode || trade.trade_mode || null,
+        // G3: preserve gross extrema across reload / pending-close retry journal
+        peak_pnl: extrema.peak_pnl,
+        trough_pnl: extrema.trough_pnl,
+        peak_pnl_validity: extrema.peak_pnl_validity,
+        trough_pnl_validity: extrema.trough_pnl_validity,
+        extrema_basis: extrema.extrema_basis,
+        extrema_unit: extrema.extrema_unit,
+        extrema_source: extrema.extrema_source,
+        extrema_contract_version: extrema.extrema_contract_version,
     };
     try {
         bridge.recordClosedTrade(JSON.stringify(record));
@@ -3483,11 +3582,16 @@ async function closeTrade(tradeId, exitReason) {
 
         const grossWon = grossClosePnl > 0;
         const netWon = isPaper && netClosePnl !== null ? netClosePnl > 0 : null;
+        const exitDateIso = new Date().toISOString();
+
+        // G3: one normalized close extrema payload for server / native / retry
+        // (top-level peak_pnl was previously omitted — trough only).
+        const closeExtrema = buildNormalizedCloseExtremaPayload(trade, { exit_date: exitDateIso });
 
         // Now update Supabase in background (non-blocking)
         const closePatch = {
             status: 'CLOSED',
-            exit_date: new Date().toISOString(),
+            exit_date: exitDateIso,
             actual_pnl: grossClosePnl,
             canonical_won: grossWon,
             outcome_h2: grossWon ? 1 : 0,
@@ -3509,7 +3613,10 @@ async function closeTrade(tradeId, exitReason) {
             exit_spot: trade.current_spot ?? null,
             exit_pcr: isBNF ? (latestPoll?.nearAtmPCR ?? latestPoll?.pcr ?? null) : (latestPoll?.nfNearAtmPCR ?? nfChain?.nearAtmPCR ?? null),
             exit_bias: latestPoll?.bias?.label ?? null,
-            trough_pnl: trade.trough_pnl ?? null,
+            // G3: persist BOTH gross extrema at top-level (basis remains GROSS_MTM).
+            // Validity/meta live in close_trace_json + journey_stats (no new trades_v2 columns required).
+            peak_pnl: closeExtrema.peak_pnl,
+            trough_pnl: closeExtrema.trough_pnl,
             poll_count: trade.poll_count ?? null,
             close_trace_json: {
                 source: 'manual_close',
@@ -3517,15 +3624,20 @@ async function closeTrade(tradeId, exitReason) {
                 policy_version: 'POSITION_POLICY_V1',
                 friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
                 exit_reason: exitReason || 'Manual',
-                closed_at: new Date().toISOString(),
+                closed_at: exitDateIso,
                 close_pnl: displayClosePnl,
                 gross_mtm_close: grossClosePnl,
                 friction_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
                 net_pnl: isPaper ? netClosePnl : null,
                 net_won: isPaper ? netWon : null,
                 exit_premium: trade.current_premium ?? null,
-                peak_pnl: trade.peak_pnl ?? null,
-                trough_pnl: trade.trough_pnl ?? null,
+                peak_pnl: closeExtrema.peak_pnl,
+                trough_pnl: closeExtrema.trough_pnl,
+                peak_pnl_validity: closeExtrema.peak_pnl_validity,
+                trough_pnl_validity: closeExtrema.trough_pnl_validity,
+                extrema_basis: closeExtrema.extrema_basis,
+                extrema_unit: closeExtrema.extrema_unit,
+                close_extrema_meta: closeExtrema.close_extrema_meta,
                 poll_count: trade.poll_count ?? null,
                 trade_mode: trade.trade_mode ?? null,
                 paper: !!trade.paper,
@@ -3575,20 +3687,43 @@ async function closeTrade(tradeId, exitReason) {
                 max_ci: trade._journey?.max_ci ?? null,
                 min_ci: trade._journey?.min_ci ?? null,
                 forces_changed_count: trade._journey?.forces_changed_count ?? 0,
-                peak_pnl: trade.peak_pnl ?? 0,
-                trough_pnl: trade.trough_pnl ?? 0,
-                drawdown_from_peak: (trade.peak_pnl > 0 && trade.trough_pnl < trade.peak_pnl) ? trade.peak_pnl - trade.trough_pnl : 0,
-                recovery: (trade.trough_pnl < 0 && grossClosePnl > 0),
+                peak_pnl: closeExtrema.peak_pnl,
+                trough_pnl: closeExtrema.trough_pnl,
+                peak_pnl_validity: closeExtrema.peak_pnl_validity,
+                trough_pnl_validity: closeExtrema.trough_pnl_validity,
+                extrema_basis: closeExtrema.extrema_basis,
+                drawdown_from_peak: (closeExtrema.peak_pnl !== null && closeExtrema.trough_pnl !== null && closeExtrema.peak_pnl > 0 && closeExtrema.trough_pnl < closeExtrema.peak_pnl)
+                    ? closeExtrema.peak_pnl - closeExtrema.trough_pnl
+                    : null,
+                recovery: (closeExtrema.trough_pnl !== null && closeExtrema.trough_pnl < 0 && grossClosePnl > 0),
                 poll_count: trade.poll_count ?? 0,
                 pnl_per_poll: trade.poll_count > 0 ? Math.round(grossClosePnl / trade.poll_count) : 0,
                 timeline: trade._journey?.timeline || []
             }
         };
+        // Attach extrema validity for native/retry journal (not trades_v2 columns).
+        closePatch.peak_pnl_validity = closeExtrema.peak_pnl_validity;
+        closePatch.trough_pnl_validity = closeExtrema.trough_pnl_validity;
+        closePatch.extrema_basis = closeExtrema.extrema_basis;
+        closePatch.extrema_unit = closeExtrema.extrema_unit;
+        closePatch.extrema_source = closeExtrema.extrema_source;
+        closePatch.extrema_contract_version = closeExtrema.extrema_contract_version;
+        closePatch.close_extrema_meta = closeExtrema.close_extrema_meta;
+
         // Persist the risk-relevant close locally before the remote write. The
         // next native brain poll can enforce the daily STOP even if Supabase is
         // slow or this WebView reloads.
         recordClosedTradeToNative(trade, closePatch);
-        const closeSynced = await DB.updateTrade(trade.id, closePatch);
+        // Strip non-column meta before remote write (peak/trough remain).
+        const remoteClosePatch = { ...closePatch };
+        delete remoteClosePatch.peak_pnl_validity;
+        delete remoteClosePatch.trough_pnl_validity;
+        delete remoteClosePatch.extrema_basis;
+        delete remoteClosePatch.extrema_unit;
+        delete remoteClosePatch.extrema_source;
+        delete remoteClosePatch.extrema_contract_version;
+        delete remoteClosePatch.close_extrema_meta;
+        const closeSynced = await DB.updateTrade(trade.id, remoteClosePatch);
         if (!closeSynced) {
             addNotificationLog('Trade Close Sync Failed', `${trade.id}: closed locally but Supabase update failed. Check Logs tab.`, 'urgent');
         }
@@ -3609,8 +3744,8 @@ async function closeTrade(tradeId, exitReason) {
                     ? Math.round((grossClosePnl / trade.max_profit) * 10000) / 10000
                     : null,
                 actual_pnl:         grossClosePnl,
-                peak_pnl:           trade.peak_pnl ?? null,
-                trough_pnl:         trade.trough_pnl ?? null,
+                peak_pnl:           closeExtrema.peak_pnl,
+                trough_pnl:         closeExtrema.trough_pnl,
                 hold_minutes:       trade.entry_date ? Math.floor((Date.now() - new Date(trade.entry_date).getTime()) / 60000) : null,
                 exit_reason:        exitReason || 'Manual',
                 paper_reason_quality: null,
