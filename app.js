@@ -764,13 +764,55 @@ function formatServiceLastPoll(raw) {
     return text;
 }
 
+// G1 Phase 1b stub: optional user JWT on the existing anon client.
+// Flag default is OFF. Recording keeps using the publishable anon key until
+// Auth cutover. Never store or send a service_role key from this PWA.
+const AUTH_ACCESS = {
+    FLAG_KEY: 'g1_auth_session_enabled',
+    TOKEN_KEY: 'g1_supabase_user_access_token',
+    defaultEnabled: false,
+    containment: 'anon_write_until_auth_cutover',
+    isEnabled() {
+        try { return localStorage.getItem(this.FLAG_KEY) === '1'; } catch (_) { return false; }
+    },
+    getUserJwt() {
+        try { return (localStorage.getItem(this.TOKEN_KEY) || '').trim(); } catch (_) { return ''; }
+    },
+    isDisallowedClientSecret(token) {
+        const t = String(token || '').trim();
+        return t.startsWith('sb_secret_') || t.includes('service_role');
+    },
+    clientOptions() {
+        const jwt = this.getUserJwt();
+        if (this.isEnabled() && jwt && !this.isDisallowedClientSecret(jwt)) {
+            return { global: { headers: { Authorization: 'Bearer ' + jwt } } };
+        }
+        return {};
+    },
+    createClient(url, anonKey) {
+        if (!window.supabase?.createClient) return null;
+        return window.supabase.createClient(url, anonKey, this.clientOptions());
+    },
+    status() {
+        const jwt = this.getUserJwt();
+        const enabled = this.isEnabled();
+        return {
+            enabled,
+            has_user_jwt: Boolean(jwt) && !this.isDisallowedClientSecret(jwt),
+            bearer_mode: (enabled && jwt && !this.isDisallowedClientSecret(jwt)) ? 'user_jwt' : 'anon',
+            flag_default: this.defaultEnabled,
+            containment: this.containment
+        };
+    }
+};
+
 // Storage-only Supabase adapter. Strategy analysis remains native-only.
 const DB = {
     _client: null,
     get supabase() {
         if (this._client) return this._client;
         if (!window.supabase?.createClient) return null;
-        this._client = window.supabase.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
+        this._client = AUTH_ACCESS.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
         return this._client;
     },
     async insertTrade(trade) {
@@ -7016,7 +7058,7 @@ async function exportAllData() {
 
     btn.disabled = true;
     EXPORT_TRUNCATION_STATS.count = 0;
-    const sb = window.supabase.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
+    const sb = AUTH_ACCESS.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
     const rowsByTable = {};
     const errors = [];
 
