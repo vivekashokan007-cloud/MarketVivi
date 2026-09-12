@@ -1,3 +1,26 @@
+## 2026-09-12 — Notification pack b460→b465 + eval residue (docs)
+
+**Tip documented:** Marketapp `0457698` · v2.6.34 / b465 (F5 not on tip). Audit/ruling: [docs/AUDIT_notifications_20260912.md](docs/AUDIT_notifications_20260912.md), [docs/RULING_claude_D4_clarification_20260912.md](docs/RULING_claude_D4_clarification_20260912.md).
+
+### b460→b465 sequence (brief)
+- **b460** (`4fd12e4`): F1 flat `force_alignment` for Book Profit; F2 tick shadow notify; F4 entry window 09:15–15:15 + morning-input notice; N1 append guard; N4 rejected-id dedupe.
+- **07dca16** (post-b460 correction): **D1** — shadow-exit cooldown was structurally unreachable. Every HOLD tick wiped per-trade state, so `lastAction` was empty on the next SHADOW and the throttle guard never ran. Measured against `position_ticks` for 09-10/11: HOLD→SHADOW was the only transition that occurred (SHADOW→other-SHADOW = 0). Fix: class-keyed cooldown anchors that survive HOLD; `SHADOW_DEGRADED` → silent routine.
+- **D4** (`d3f4f68`): 60s tick authoritative for Target / Stop / Degraded / EOD; brain keeps `POS_BOOK`.
+- **D6** (`b7123f0`): morning-input-off notice audible + delivery-gated.
+- **b464** (`d44aecb`): D7 prune of shadow prefs + F3 re-entry cooldown (`POSITION_ALERT_REENTRY_COOLDOWN_MS`).
+- **b465** (`0457698`): percentile exit levels published from brain into the tick path (`POSITION_EXIT_THRESHOLD_PUBLISH_VERSION`).
+
+### Eval residue / schema
+- Soft-archived **8,296** null-`snapshot_id` `ml_recommendation_outcomes` rows (09-10 phone-upload residue); live nulls cleared; archive table present. `ml_daily_accuracy` for **09-10** recomputed/recorded after cleanup (09-11 accuracy already populated from resumed eval).
+- **N3:** `ml_recommendation_outcomes.snapshot_id` **NOT NULL** — intended/done same day (align fail-closed with `ml_evaluation_outcomes`).
+
+### Status / next
+- **D4 is interim dual ownership** by design: tick owns every P&L-vs-level exit it can compute; brain keeps `POS_BOOK` until open-trade force alignment is live-recomputed (prerequisite before moving Book Profit).
+- **F5 next** for entry stability (same candidate id across two polls + choppy mute) — binding remaining notification P0 after F4 opened the morning window. Not shipped on tip.
+- Marketapp `CLAUDE.md` docs catch-up (channels, ownership, constants) shipped alongside this note.
+
+---
+
 ## 2026-09-11 — v2.6.27 / b458 missing snapshot replay
 
 ### September 11 evening evaluation failure
