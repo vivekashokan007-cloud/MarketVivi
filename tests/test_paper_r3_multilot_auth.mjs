@@ -51,41 +51,20 @@ const stored = [];
 const alerts = [];
 const confirms = [];
 
-function makeCand(id, index, cls, nLots, authExtra = {}) {
-  const qty = cls * nLots;
-  return {
-    id, type: 'BEAR_CALL', index, expiry: '2026-09-17', tDTE: 2,
-    sellStrike: index === 'NF' ? 25000 : 52000,
-    sellType: 'CE', buyStrike: index === 'NF' ? 25100 : 52200, buyType: 'CE',
-    sellLTP: 40, buyLTP: 20, width: 100, netPremium: 20, isCredit: true,
-    maxProfit: 1300 * nLots, maxLoss: 5200 * nLots,
-    contract_lot_size: cls, number_of_lots: nLots, quantity_units: qty,
-    identity_complete: true,
-    contract_identity: {
-      identity_complete: true, lot_conflict: false, contract_lot_size: cls,
-      index_key: index, number_of_lots: nLots, quantity_units: qty,
-      schema_version: 'contract_identity_v1_20260913',
-    },
-    forces: { f1: 1, f2: 1, f3: 1, aligned: 3 },
-    entryEligible: false, directionSafe: false, entryAction: 'BLOCKED', blocked: true,
-    executionReadiness: { ready: false, mode: 'paper', reasons: ['blocked'] },
-    paperAnalysisEligibility: {
-      allowed: true, authorization_id: `pa-${id}`, reasons: [],
-      schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1',
-      candidate_id: id, ...authExtra,
-    },
-    estCost: 12 * nLots,
-  };
-}
-
-const candidates = {};
-for (const index of ['NF', 'BNF']) {
-  const cls = index === 'NF' ? 65 : 30;
-  for (const n of [1, 2, 4]) {
-    const id = `c_${index}_${n}`;
-    candidates[id] = makeCand(id, index, cls, n);
-  }
-}
+const fixture = JSON.parse(fs.readFileSync(
+  path.join(root, 'tests', 'fixtures', 'paper_analysis_authorization_v1.json'),
+  'utf8',
+));
+assert(fixture.generated_by === 'Marketapp/tools/generate_paper_analysis_authorization_fixture.py', 'real producer fixture provenance');
+assert(fixture.compaction_path === 'brain._candidate_view -> NativeBridge allowlist -> PWA', 'real compaction path provenance');
+const candidates = Object.fromEntries(fixture.candidates.map((candidate) => {
+  candidate.width = 100;
+  candidate.isCredit = true;
+  candidate.forces = { f1: 1, f2: 1, f3: 1, aligned: 3 };
+  candidate.executionReadiness = { ready: false, mode: 'paper', reasons: ['blocked'] };
+  candidate.estCost = 12 * candidate.number_of_lots;
+  return [candidate.id, candidate];
+}));
 
 const sandbox = {
   console, Date, Math, Number, String, Array, Object, JSON, Set, Map, Promise,
@@ -98,13 +77,13 @@ const sandbox = {
   bd: {
     generated_candidates: Object.values(candidates),
     watchlist: [],
-    brain_version: 'brain_test_v1',
+    brain_version: '2.6.41',
     institutionalRegime: null, gapInfo: null, morningBias: null,
     position_live: {}, positions: {},
   },
   CALIBRATION: { win_rates: {} },
   C: { NF_LOT: 999, BNF_LOT: 888 },
-  API: { todayIST: () => '2026-09-13', minutesSinceOpen: () => 60, tradingDTE: () => 2 },
+  API: { todayIST: () => '2026-09-10', minutesSinceOpen: () => 60, tradingDTE: () => 5 },
   NativeBridge: {
     getLatestPoll: () => JSON.stringify({ nfSpot: 25000, bnfSpot: 52000, vix: 14, bias: { label: 'N', net: 0, signals: [] } }),
     getPollHistory: () => '[]',
@@ -150,7 +129,7 @@ for (const index of ['NF', 'BNF']) {
   const cls = index === 'NF' ? 65 : 30;
   for (const n of [1, 2, 4]) {
     stored.length = 0;
-    const id = `c_${index}_${n}`;
+    const id = `fixture_${index.toLowerCase()}_${n}`;
     await sandbox.takeTradeImpl(id, true);
     assert(stored.length === 1, `${id} saved`);
     const row = stored[0];
@@ -168,8 +147,19 @@ const bare = sandbox.paperAnalysisAuthorization({ paperAnalysisEligibility: { al
 assert(bare.allowed === false, 'bare {allowed:true} locked');
 const legacy = sandbox.paperAnalysisAuthorization({ paperAnalysisEligible: true });
 assert(legacy.allowed === false, 'legacy boolean locked');
-const full = sandbox.paperAnalysisAuthorization(candidates.c_NF_1);
+const full = sandbox.paperAnalysisAuthorization(candidates.fixture_nf_1);
 assert(full.allowed === true, 'fully bound auth passes');
+for (const [field, reason] of [
+  ['candidate_id', 'candidate'], ['session_date', 'session'], ['scan_identity', 'scan'],
+  ['expiry', 'expiry'], ['brain_version', 'brain_version'],
+  ['contract_identity_digest', 'identity_digest'],
+]) {
+  const mutated = JSON.parse(JSON.stringify(candidates.fixture_nf_1));
+  mutated.paperAnalysisEligibility[field] = `stale-${field}`;
+  const rejected = sandbox.paperAnalysisAuthorization(mutated);
+  assert(rejected.allowed === false, `${field} mismatch locked`);
+  assert(rejected.reasons.some((item) => String(item).includes(reason)), `${field} mismatch reason`);
+}
 
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 console.log('PASS: test_paper_r3_multilot_auth.mjs');

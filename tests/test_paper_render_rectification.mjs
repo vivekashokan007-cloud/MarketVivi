@@ -13,6 +13,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
 const appPath = path.join(root, 'app.js');
 const src = fs.readFileSync(appPath, 'utf8');
+const producerFixture = JSON.parse(fs.readFileSync(
+  path.join(root, 'tests', 'fixtures', 'paper_analysis_authorization_v1.json'), 'utf8'
+));
+const producerCandidate = producerFixture.candidates.find((candidate) => candidate.id === 'fixture_nf_1');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-paper-extract-'));
 const extractOut = path.join(tmpDir, '_extracted_paper_fns.js');
@@ -35,10 +39,10 @@ const sandbox = {
   alert: () => {},
   confirm: (m) => { confirms.push(String(m)); return true; },
   STATE: { pollHistory: [], positioningCandidates: [], tradeMode: 'intraday', lastScanTime: null, biasDrift: 0, contrarianPCR: null },
-  bd: { generated_candidates: [], watchlist: [], brain_version: 'brain_test_v1', institutionalRegime: null, gapInfo: null, morningBias: null, position_live: {}, positions: {} },
+  bd: { generated_candidates: [], watchlist: [], brain_version: '2.6.41', institutionalRegime: null, gapInfo: null, morningBias: null, position_live: {}, positions: {} },
   CALIBRATION: { win_rates: {} },
   C: { NF_LOT: 65, BNF_LOT: 30 },
-  API: { todayIST: () => '2026-09-13', minutesSinceOpen: () => 60, tradingDTE: () => 2 },
+  API: { todayIST: () => '2026-09-10', minutesSinceOpen: () => 60, tradingDTE: () => 5 },
   NativeBridge: {
     getLatestPoll: () => '{}', getPollHistory: () => '[]', getBnfChain: () => '{}', getNfChain: () => '{}',
     getMorningSnapshot: () => '{}', getYesterdayHistory: () => '[]', getBnfBreadth: () => '{}',
@@ -76,27 +80,22 @@ const MR = sandbox.__MR;
 
 function baseCand(over = {}) {
   return {
-    id: 'c1', type: 'BEAR_CALL', index: 'NF', expiry: '2026-09-17', tDTE: 2,
-    sellStrike: 25000, sellType: 'CE', sellLTP: 40, buyStrike: 25100, buyType: 'CE', buyLTP: 20,
-    width: 100, netPremium: 20, isCredit: true, maxProfit: 1300, maxLoss: 5200, lotSize: 65,
+    ...JSON.parse(JSON.stringify(producerCandidate)),
+    width: 100, isCredit: true,
     forces: { f1: 1, f2: 1, f3: 1, aligned: 3 }, entryEligible: true,
     executionReadiness: { ready: true, mode: 'paper', gate: 'READY', reasons: [] },
     directionSafe: true, entryAction: 'TAKE', p_ml: 0.55, identity_complete: true,
-    contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 65, index_key: 'NF', number_of_lots: 1, quantity_units: 65 },
     ...over,
   };
 }
 
 // --- R1 retained ---
-const htmlOk = MR.renderCandidateCard(baseCand({
-  paperAnalysisEligibility: { allowed: true, authorization_id: 'auth-1', schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'c1' },
-}), 25000, 'R1');
+const htmlOk = MR.renderCandidateCard(baseCand(), 25000, 'R1');
 assert(typeof htmlOk === 'string' && htmlOk.length > 50, 'render ok');
 
 const htmlAlt = MR.renderCandidateCard(baseCand({
-  id: 'alt1', directionSafe: false, blocked: true, entryAction: 'BLOCKED', entryEligible: false,
+  directionSafe: false, blocked: true, entryAction: 'BLOCKED', entryEligible: false,
   forces: { f1: 1, f2: 1, f3: 0, aligned: 2 },
-  paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-9', reasons: [], schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'alt1' },
 }), 25000, 'A1');
 assert(/PAPER ANALYSIS/i.test(htmlAlt), 'analysis label');
 assert(/disabled/i.test(htmlAlt), 'real disabled');
@@ -110,7 +109,7 @@ assert(/PAPER ANALYSIS LOCKED/i.test(htmlLocked), 'locked');
 const noBrain = MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: undefined, paperAnalysisEligible: undefined }));
 assert(noBrain.allowed === false, 'no structural fallback');
 
-assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'x1', schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'c1' } })).allowed === true, 'brain ok');
+assert(MR.paperAnalysisAuthorization(baseCand()).allowed === true, 'real producer authorization ok');
 assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true } })).allowed === false, 'bare allowed locked');
 assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'x1' } })).allowed === false, 'missing schema/brain locked');
 assert(MR.paperAnalysisAuthorization(baseCand({ index: null, paperAnalysisEligibility: { allowed: true, authorization_id: 'z', schema_version: 'paper_analysis_v1', brain_version: 'b', candidate_id: 'c1' } })).allowed === false, 'no index invent');
@@ -128,13 +127,14 @@ assert(legacyOnly.source === 'legacy_boolean_ignored_not_authorization', 'legacy
 assert(legacyOnly.legacy_boolean_diagnostic === true, 'legacy diagnostic retained');
 
 // R2.5: fractional lot rejected
-const frac = MR.paperContractIdentityGate(baseCand({ lotSize: 65.5, contract_identity: { identity_complete: true, contract_lot_size: 65.5 } }));
+const frac = MR.paperContractIdentityGate(baseCand({ lotSize: 65.5, contract_lot_size: 65.5, contract_identity: { identity_complete: true, contract_lot_size: 65.5 } }));
 assert(frac.ok === false, 'fractional lot rejected');
 assert(frac.lotFieldStatus === 'field_present_but_invalid', 'fractional status');
 
 // nested-only BNF identity → authorized lot equals nested
 const bnfNested = MR.paperTradeAuthorization(baseCand({
   index: 'BNF', lotSize: undefined, lot_size: undefined, contract_lot_size: undefined,
+  quantity_units: undefined,
   contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 35, index_key: 'BNF', number_of_lots: 1, quantity_units: 35 },
   sellStrike: 52000, buyStrike: 52100,
 }));

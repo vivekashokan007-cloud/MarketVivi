@@ -2894,126 +2894,87 @@ function paperTradeAuthorization(candidate) {
 const PAPER_ANALYSIS_ALTERNATIVES_CAP = 5;
 
 function paperAnalysisAuthorization(candidate) {
-    // Brain ownership only — never authorize Paper Analysis via PWA structural fallback.
     const nested = candidate?.paperAnalysisEligibility;
     const identity = paperContractIdentityGate(candidate);
     const structural = paperTradeAuthorization(candidate);
-    let brainAllowed = false;
-    let brainReason = 'brain paperAnalysisEligibility.allowed !== true';
-    let brainReasons = ['brain_paper_analysis_missing'];
-    let source = 'brain_paper_analysis_missing';
-    let authId = null;
-    let realGateUnchanged = true;
-
-    // R2.4: authorize ONLY when nested paperAnalysisEligibility.allowed === true.
-    // Legacy paperAnalysisEligible boolean may be shown diagnostically but NEVER authorizes.
     const legacyBoolean = typeof candidate?.paperAnalysisEligible === 'boolean'
         ? candidate.paperAnalysisEligible
         : null;
-    // R3.7: require allowed===true AND supported policy/schema version AND non-empty
-    // auth/result ID AND brain-version/source. Reject bare {allowed:true}.
-    const SUPPORTED_PAPER_ANALYSIS_SCHEMA = new Set([
-        'paper_analysis_v1',
-        'paper_analysis_eligibility_v1',
-        'paper_analysis_v1_20260913',
-    ]);
-    if (nested && typeof nested === 'object') {
-        const schemaVer = String(nested.schema_version || nested.policy_version || '').trim();
-        const schemaOk = schemaVer !== '' && SUPPORTED_PAPER_ANALYSIS_SCHEMA.has(schemaVer);
-        const authIdRaw = nested.authorization_id || nested.result_id || nested.id || null;
-        const authIdOk = typeof authIdRaw === 'string' && authIdRaw.trim() !== '';
-        const brainSrc = nested.brain_version || nested.source || nested.brain_source || null;
-        const brainSrcOk = typeof brainSrc === 'string' && brainSrc.trim() !== '';
-        const candidateBind = nested.candidate_id || nested.candidateId || null;
-        const sessionBind = nested.session_id || nested.scan_id || nested.session_date || nested.scan_identity || null;
-        const identityBind = nested.contract_identity_digest || nested.identity_digest || nested.identity_version || null;
-        const bindOk = true; // structural bind checked against candidate below when fields present
-        if (typeof nested.allowed === 'boolean' && nested.allowed === true
-            && schemaOk && authIdOk && brainSrcOk && bindOk) {
-            // Bind to candidate when authorization carries candidate_id / identity digest.
-            let bindMismatch = false;
-            const candId = candidate?.id != null ? String(candidate.id) : null;
-            if (candidateBind != null && candId != null && String(candidateBind) !== candId) {
-                bindMismatch = true;
-                brainReasons = ['authorization_candidate_mismatch'];
-                brainReason = 'paperAnalysisEligibility candidate_id mismatch';
-            }
-            const candExpiry = candidate?.expiry != null ? String(candidate.expiry).slice(0, 10) : null;
-            const authExpiry = nested.expiry != null ? String(nested.expiry).slice(0, 10) : null;
-            if (!bindMismatch && authExpiry && candExpiry && authExpiry !== candExpiry) {
-                bindMismatch = true;
-                brainReasons = ['authorization_expiry_mismatch'];
-                brainReason = 'paperAnalysisEligibility expiry mismatch';
-            }
-            const candDigest = candidate?.contract_identity?.source_digest
-                || candidate?.contract_identity?.schema_version
-                || candidate?.identity_version
-                || null;
-            if (!bindMismatch && identityBind != null && candDigest != null
-                && String(identityBind) !== String(candDigest)) {
-                bindMismatch = true;
-                brainReasons = ['authorization_identity_mismatch'];
-                brainReason = 'paperAnalysisEligibility identity digest mismatch';
-            }
-            if (!bindMismatch) {
-                brainAllowed = true;
-                brainReason = Array.isArray(nested.reasons) ? nested.reasons.join(' · ') : (nested.reason || '');
-                brainReasons = Array.isArray(nested.reasons) ? nested.reasons : [];
-                source = 'brain_paper_analysis_eligibility';
-                authId = String(authIdRaw).trim();
-                realGateUnchanged = nested.real_gate_unchanged !== false;
-            } else {
-                brainAllowed = false;
-                source = 'brain_paper_analysis_bind_rejected';
-                authId = String(authIdRaw).trim();
-                realGateUnchanged = nested.real_gate_unchanged !== false;
-            }
-        } else if (typeof nested.allowed === 'boolean' && nested.allowed === true) {
-            brainAllowed = false;
-            const missing = [];
-            if (!schemaOk) missing.push('policy_or_schema_version');
-            if (!authIdOk) missing.push('authorization_id');
-            if (!brainSrcOk) missing.push('brain_version_or_source');
-            brainReason = 'paperAnalysisEligibility provenance incomplete: ' + missing.join(',');
-            brainReasons = ['brain_paper_analysis_provenance_incomplete', ...missing];
-            source = 'brain_paper_analysis_provenance_incomplete';
-            authId = authIdOk ? String(authIdRaw).trim() : null;
-            realGateUnchanged = nested.real_gate_unchanged !== false;
-        } else if (typeof nested.allowed === 'boolean') {
-            brainAllowed = false;
-            brainReason = Array.isArray(nested.reasons) ? nested.reasons.join(' · ') : (nested.reason || 'brain paperAnalysisEligibility.allowed !== true');
-            brainReasons = Array.isArray(nested.reasons) ? nested.reasons : ['brain_paper_analysis_blocked'];
-            source = 'brain_paper_analysis_eligibility';
-            authId = authIdOk ? String(authIdRaw).trim() : null;
-            realGateUnchanged = nested.real_gate_unchanged !== false;
-        } else {
-            brainAllowed = false;
-            brainReason = 'brain paperAnalysisEligibility.allowed missing or malformed';
-            brainReasons = ['brain_paper_analysis_malformed'];
-            source = 'brain_paper_analysis_malformed';
-        }
+    const schemaVersion = 'paper_analysis_authorization_v1_20260913';
+    const identitySchemaVersion = 'contract_identity_v1_20260913';
+    const gateReasons = [];
+    let source = 'brain_paper_analysis_missing';
+    let authId = null;
+
+    if (!nested || typeof nested !== 'object') {
+        gateReasons.push('brain_paper_analysis_missing');
+        if (legacyBoolean === true) source = 'legacy_boolean_ignored_not_authorization';
     } else {
-        brainAllowed = false;
-        // Legacy boolean retained diagnostically only — never authorizes.
-        brainReason = 'brain paperAnalysisEligibility.allowed !== true';
-        brainReasons = ['brain_paper_analysis_missing'];
-        source = legacyBoolean === true
-            ? 'legacy_boolean_ignored_not_authorization'
-            : 'brain_paper_analysis_missing';
+        authId = typeof nested.authorization_id === 'string' ? nested.authorization_id.trim() : null;
+        const required = [
+            ['schema_version', nested.schema_version],
+            ['authorization_id', authId],
+            ['brain_version', nested.brain_version],
+            ['candidate_id', nested.candidate_id],
+            ['session_date', nested.session_date],
+            ['scan_identity', nested.scan_identity],
+            ['expiry', nested.expiry],
+            ['contract_identity_schema_version', nested.contract_identity_schema_version],
+            ['contract_identity_digest', nested.contract_identity_digest],
+        ];
+        for (const [name, value] of required) {
+            if (value == null || String(value).trim() === '') gateReasons.push(`authorization_${name}_missing`);
+        }
+        if (nested.schema_version !== schemaVersion) gateReasons.push('authorization_schema_unsupported');
+        if (!/^pa1_[0-9a-f]{64}$/.test(authId || '')) gateReasons.push('authorization_id_malformed');
+        if (nested.allowed !== true) gateReasons.push(...(
+            Array.isArray(nested.reasons) && nested.reasons.length
+                ? nested.reasons
+                : ['brain_paper_analysis_blocked']
+        ));
+        if (nested.gate !== 'PAPER_ANALYSIS') gateReasons.push('authorization_gate_mismatch');
+        if (nested.real_gate_unchanged !== true) gateReasons.push('authorization_real_gate_not_unchanged');
+
+        const candidateId = candidate?.id ?? candidate?.candidate_id;
+        const candidateSession = candidate?.session_date;
+        const candidateScan = candidate?.poll_ts;
+        const candidateExpiry = candidate?.expiry;
+        const candidateBrainVersion = candidate?.brain_version;
+        const candidateIdentitySchema = candidate?.contract_identity?.schema_version;
+        const candidateIdentityDigest = candidate?.contract_identity_digest;
+        if (String(nested.candidate_id || '') !== String(candidateId || '')) gateReasons.push('authorization_candidate_mismatch');
+        if (String(nested.session_date || '').slice(0, 10) !== String(candidateSession || '').slice(0, 10)) gateReasons.push('authorization_session_mismatch');
+        if (String(nested.scan_identity || '') !== String(candidateScan || '')) gateReasons.push('authorization_scan_mismatch');
+        if (String(nested.expiry || '').slice(0, 10) !== String(candidateExpiry || '').slice(0, 10)) gateReasons.push('authorization_expiry_mismatch');
+        if (String(nested.brain_version || '') !== String(candidateBrainVersion || '')) gateReasons.push('authorization_brain_version_mismatch');
+        if (String(nested.contract_identity_schema_version || '') !== identitySchemaVersion ||
+            String(candidateIdentitySchema || '') !== identitySchemaVersion) {
+            gateReasons.push('authorization_identity_schema_mismatch');
+        }
+        if (String(nested.contract_identity_digest || '') !== String(candidateIdentityDigest || '')) {
+            gateReasons.push('authorization_identity_digest_mismatch');
+        }
+        if (typeof API?.todayIST === 'function' &&
+            String(nested.session_date || '').slice(0, 10) !== String(API.todayIST() || '').slice(0, 10)) {
+            gateReasons.push('authorization_session_stale');
+        }
+        if (typeof bd === 'object' && bd?.brain_version &&
+            String(nested.brain_version || '') !== String(bd.brain_version)) {
+            gateReasons.push('authorization_brain_version_stale');
+        }
+        source = gateReasons.length ? 'brain_paper_analysis_bind_rejected' : 'brain_paper_analysis_authorization';
     }
 
-    const gateReasons = [];
-    if (!brainAllowed) gateReasons.push(brainReason || 'brain paperAnalysisEligibility.allowed !== true');
     if (!identity.ok) gateReasons.push(...identity.reasons);
     if (!structural.allowed) gateReasons.push(...(structural.reasons || []));
     const uniq = [...new Set(gateReasons.filter(Boolean))];
     return {
-        allowed: brainAllowed && identity.ok && structural.allowed,
+        allowed: uniq.length === 0 && identity.ok && structural.allowed,
         reason: uniq.join(' · '),
-        reasons: uniq.length ? uniq : brainReasons,
+        reasons: uniq,
         source,
         authorization_id: authId,
-        real_gate_unchanged: realGateUnchanged,
+        real_gate_unchanged: nested?.real_gate_unchanged === true,
         paper_lane: 'paper_analysis',
         indexKey: identity.indexKey,
         lotSize: identity.lotSize,
