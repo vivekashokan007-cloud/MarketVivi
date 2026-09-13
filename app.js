@@ -2740,6 +2740,57 @@ function paperTradeAuthorization(candidate) {
     };
 }
 
+// Paper-analysis lane: structurally valid non-primary / ML-rejected candidates.
+// Real/Sandbox stay bound to finalEntryAuthorization. No second shadow mode.
+const PAPER_ANALYSIS_ALTERNATIVES_CAP = 5;
+
+function paperAnalysisAuthorization(candidate) {
+    const nested = candidate?.paperAnalysisEligibility;
+    if (nested && typeof nested === 'object' && typeof nested.allowed === 'boolean') {
+        return {
+            allowed: nested.allowed === true,
+            reason: Array.isArray(nested.reasons) ? nested.reasons.join(' · ') : (nested.reason || ''),
+            reasons: Array.isArray(nested.reasons) ? nested.reasons : [],
+            source: 'brain_paper_analysis_eligibility',
+            real_gate_unchanged: nested.real_gate_unchanged !== false,
+        };
+    }
+    if (typeof candidate?.paperAnalysisEligible === 'boolean') {
+        return {
+            allowed: candidate.paperAnalysisEligible === true,
+            reason: candidate.paperAnalysisEligible ? '' : 'brain paper-analysis gate blocked',
+            reasons: candidate.paperAnalysisEligible ? [] : ['brain_paper_analysis_blocked'],
+            source: 'brain_paper_analysis_flag',
+            real_gate_unchanged: true,
+        };
+    }
+    // Fallback: local structural contract (same as PAPER TEST).
+    const structural = paperTradeAuthorization(candidate);
+    return {
+        allowed: structural.allowed,
+        reason: structural.reason,
+        reasons: structural.reasons || [],
+        source: 'pwa_structural_fallback',
+        real_gate_unchanged: true,
+    };
+}
+
+function paperAnalysisAlternatives(indexKey, watchlistIds, atm) {
+    const generated = Array.isArray(bd?.generated_candidates) ? bd.generated_candidates : [];
+    const seen = new Set((watchlistIds || []).map(id => String(id)));
+    const rows = [];
+    for (const cand of generated) {
+        if (!cand || String(cand.index || '').toUpperCase() !== String(indexKey || '').toUpperCase()) continue;
+        if (seen.has(String(cand.id))) continue;
+        const auth = paperAnalysisAuthorization(cand);
+        if (!auth.allowed) continue;
+        rows.push(cand);
+        seen.add(String(cand.id));
+        if (rows.length >= PAPER_ANALYSIS_ALTERNATIVES_CAP) break;
+    }
+    return rows;
+}
+
 function paperTestVetoes(candidate, finalAuthorization) {
     const entryEligibility = candidate?.entryEligibility || {};
     const executionReadiness = candidate?.executionReadiness || {};
@@ -5186,6 +5237,19 @@ function renderWatchlist(snapshot = null) {
         html += '<div class="empty-state">No BNF candidates</div>';
     }
 
+    // Paper analysis alternatives — structurally recordable non-watchlist candidates.
+    // Does not change Real authorization. Sole experimental lane remains Paper TEST.
+    const watchlistIds = brainWatchlist.map(c => c?.id).filter(id => id != null);
+    const nfAlt = paperAnalysisAlternatives('NF', watchlistIds, nfAtm);
+    const bnfAlt = paperAnalysisAlternatives('BNF', watchlistIds, bnfAtm);
+    if (nfAlt.length || bnfAlt.length) {
+        html += `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--accent);padding:6px 0;user-select:none;">📋 PAPER ANALYSIS — non-primary alternatives (${nfAlt.length + bnfAlt.length}) ▸</summary>`;
+        html += `<div class="section-note" style="font-size:11px;color:var(--text-muted);margin:0 0 8px 0;">Structurally valid candidates rejected by ranking/ML/final authority remain Paper-testable. Real/Sandbox buttons stay locked to the final brain selection.</div>`;
+        nfAlt.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, `A${i + 1}`); });
+        bnfAlt.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, `B${i + 1}`); });
+        html += '</details>';
+    }
+
     el.innerHTML = html;
 }
 
@@ -5397,7 +5461,7 @@ function renderCandidateCard(cand, atm, rank) {
                 ? `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${paperAuthorization.reason}">📋 PAPER UNAVAILABLE</button>`
                 : !paperCapacity.available
                 ? `<button class="btn-paper" disabled style="opacity:0.55;cursor:not-allowed" title="Paper TEST capacity is ${paperCapacity.count}/${paperCapacity.limit}. Close one active paper position first.">📋 PAPER FULL (${paperCapacity.count}/${paperCapacity.limit})</button>`
-                : `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)" title="${paperVetoTitle}">📋 PAPER TEST (${paperCapacity.count}/${paperCapacity.limit})</button>`}
+                : `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)" title="${paperVetoTitle}${paperAnalysisNote ? ' | ' + paperAnalysisNote : ''}">📋 ${(!finalEntryAllowed && paperAnalysisAuth.allowed) ? 'PAPER ANALYSIS' : 'PAPER TEST'} (${paperCapacity.count}/${paperCapacity.limit})</button>`}
         </div>
     </div>`;
 }
