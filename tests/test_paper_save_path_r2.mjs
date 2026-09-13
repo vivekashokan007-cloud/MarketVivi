@@ -90,7 +90,7 @@ const candidates = {
     forces: { f1: 1, f2: 1, f3: 1, aligned: 3 },
     entryEligible: false, directionSafe: false, entryAction: 'BLOCKED', blocked: true,
     executionReadiness: { ready: false, mode: 'paper', reasons: ['blocked'] },
-    paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-r2', reasons: [], schema_version: 'paper_analysis_v1' },
+    paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-r2', reasons: [], schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'c_analysis' },
     estCost: 12,
   },
 };
@@ -224,4 +224,34 @@ assert(stored.length === 1, 'primary insert');
 assert(stored[0].entry_snapshot?.paper_test?.paper_lane === 'paper_primary', 'paper_primary lane');
 
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+// R3.1 multi-lot persistence
+stored.length = 0;
+alerts.length = 0;
+confirms.length = 0;
+candidates.c_lots2 = {
+  ...candidates.c_analysis,
+  id: 'c_lots2',
+  number_of_lots: 2,
+  quantity_units: 130,
+  contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 65, index_key: 'NF', number_of_lots: 2, quantity_units: 130 },
+  paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-lots2', reasons: [], schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'c_lots2' },
+};
+sandbox.bd.generated_candidates.push(candidates.c_lots2);
+await sandbox.takeTradeImpl('c_lots2', true);
+assert(stored.length === 1, '2-lot insert');
+assert(stored[0].lots === 2, 'top-level lots=2');
+assert(stored[0].entry_snapshot?.contract_lot_size === 65, 'snapshot contract_lot_size');
+assert(stored[0].entry_snapshot?.number_of_lots === 2, 'snapshot number_of_lots');
+assert(stored[0].entry_snapshot?.quantity_units === 130, 'snapshot quantity_units');
+assert(stored[0].entry_snapshot?.lot_size === 130, 'legacy lot_size = total units');
+
+// R3.7 bare {allowed:true} locked at analysis authorization (not structural primary)
+const bareAuth = sandbox.paperAnalysisAuthorization({
+  ...candidates.c_analysis,
+  id: 'c_bare',
+  paperAnalysisEligibility: { allowed: true },
+});
+assert(bareAuth.allowed === false, 'bare allowed:true must not authorize analysis');
+assert(/provenance/i.test(bareAuth.source + bareAuth.reason), 'provenance incomplete source');
+
 console.log('PASS: test_paper_save_path_r2.mjs');

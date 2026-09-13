@@ -904,11 +904,35 @@ function sanitizeTradeForInsert(trade = {}) {
     // so every Paper insert does not force the reduced fallback.
     const paperTest = clone.paper_test || entrySnapshot.paper_test || null;
     const paperLane = clone.paper_lane || entrySnapshot.paper_lane || paperTest?.paper_lane || null;
+    const snapContractLot = entrySnapshot.contract_lot_size
+        ?? entrySnapshot.contractLotSize
+        ?? clone.contract_lot_size
+        ?? clone.lot_size
+        ?? clone.lotSize
+        ?? null;
+    const snapNumberOfLots = entrySnapshot.number_of_lots ?? clone.number_of_lots ?? clone.lots ?? null;
+    const snapQuantityUnits = entrySnapshot.quantity_units
+        ?? clone.quantity_units
+        ?? (snapContractLot != null && snapNumberOfLots != null
+            ? Number(snapContractLot) * Number(snapNumberOfLots)
+            : null);
+    // R3.1: legacy lot_size in snapshot = total quantity_units when triplet present.
+    const snapLegacyLotSize = snapQuantityUnits
+        ?? entrySnapshot.lot_size
+        ?? entrySnapshot.lotSize
+        ?? clone.lot_size
+        ?? clone.lotSize
+        ?? null;
+    // Keep top-level lots agreeing with authorized number_of_lots when present.
+    if (snapNumberOfLots != null && Number.isFinite(Number(snapNumberOfLots)) && Number(snapNumberOfLots) > 0) {
+        clone.lots = Number(snapNumberOfLots);
+    }
     clone.entry_snapshot = {
         ...entrySnapshot,
-        lot_size: entrySnapshot.lot_size ?? entrySnapshot.lotSize ?? clone.lot_size ?? clone.lotSize ?? null,
-        number_of_lots: entrySnapshot.number_of_lots ?? clone.number_of_lots ?? null,
-        quantity_units: entrySnapshot.quantity_units ?? clone.quantity_units ?? null,
+        contract_lot_size: snapContractLot,
+        number_of_lots: snapNumberOfLots,
+        quantity_units: snapQuantityUnits,
+        lot_size: snapLegacyLotSize,
         sell_oi2: entrySnapshot.sell_oi2 ?? clone.entry_sell_oi2 ?? null,
         margin_quote: marginSnapshot,
         ...(paperTest ? {
@@ -922,6 +946,7 @@ function sanitizeTradeForInsert(trade = {}) {
     // Current trades_v2 schema lacks top-level lot_size / entry_sell_oi2 / paper provenance.
     delete clone.lot_size;
     delete clone.lotSize;
+    delete clone.contract_lot_size;
     delete clone.number_of_lots;
     delete clone.quantity_units;
     delete clone.entry_sell_oi2;
@@ -2885,22 +2910,81 @@ function paperAnalysisAuthorization(candidate) {
     const legacyBoolean = typeof candidate?.paperAnalysisEligible === 'boolean'
         ? candidate.paperAnalysisEligible
         : null;
+    // R3.7: require allowed===true AND supported policy/schema version AND non-empty
+    // auth/result ID AND brain-version/source. Reject bare {allowed:true}.
+    const SUPPORTED_PAPER_ANALYSIS_SCHEMA = new Set([
+        'paper_analysis_v1',
+        'paper_analysis_eligibility_v1',
+        'paper_analysis_v1_20260913',
+    ]);
     if (nested && typeof nested === 'object') {
-        const policyOk = nested.policy_version || nested.schema_version || nested.authorization_id || nested.result_id || nested.id;
-        const provenanceOk = nested.brain_version || nested.authorization_id || nested.result_id || nested.id || nested.allowed === true;
-        if (typeof nested.allowed === 'boolean' && nested.allowed === true && (policyOk || provenanceOk)) {
-            brainAllowed = true;
-            brainReason = Array.isArray(nested.reasons) ? nested.reasons.join(' · ') : (nested.reason || '');
-            brainReasons = Array.isArray(nested.reasons) ? nested.reasons : [];
-            source = 'brain_paper_analysis_eligibility';
-            authId = nested.authorization_id || nested.result_id || nested.id || null;
+        const schemaVer = String(nested.schema_version || nested.policy_version || '').trim();
+        const schemaOk = schemaVer !== '' && SUPPORTED_PAPER_ANALYSIS_SCHEMA.has(schemaVer);
+        const authIdRaw = nested.authorization_id || nested.result_id || nested.id || null;
+        const authIdOk = typeof authIdRaw === 'string' && authIdRaw.trim() !== '';
+        const brainSrc = nested.brain_version || nested.source || nested.brain_source || null;
+        const brainSrcOk = typeof brainSrc === 'string' && brainSrc.trim() !== '';
+        const candidateBind = nested.candidate_id || nested.candidateId || null;
+        const sessionBind = nested.session_id || nested.scan_id || nested.session_date || nested.scan_identity || null;
+        const identityBind = nested.contract_identity_digest || nested.identity_digest || nested.identity_version || null;
+        const bindOk = true; // structural bind checked against candidate below when fields present
+        if (typeof nested.allowed === 'boolean' && nested.allowed === true
+            && schemaOk && authIdOk && brainSrcOk && bindOk) {
+            // Bind to candidate when authorization carries candidate_id / identity digest.
+            let bindMismatch = false;
+            const candId = candidate?.id != null ? String(candidate.id) : null;
+            if (candidateBind != null && candId != null && String(candidateBind) !== candId) {
+                bindMismatch = true;
+                brainReasons = ['authorization_candidate_mismatch'];
+                brainReason = 'paperAnalysisEligibility candidate_id mismatch';
+            }
+            const candExpiry = candidate?.expiry != null ? String(candidate.expiry).slice(0, 10) : null;
+            const authExpiry = nested.expiry != null ? String(nested.expiry).slice(0, 10) : null;
+            if (!bindMismatch && authExpiry && candExpiry && authExpiry !== candExpiry) {
+                bindMismatch = true;
+                brainReasons = ['authorization_expiry_mismatch'];
+                brainReason = 'paperAnalysisEligibility expiry mismatch';
+            }
+            const candDigest = candidate?.contract_identity?.source_digest
+                || candidate?.contract_identity?.schema_version
+                || candidate?.identity_version
+                || null;
+            if (!bindMismatch && identityBind != null && candDigest != null
+                && String(identityBind) !== String(candDigest)) {
+                bindMismatch = true;
+                brainReasons = ['authorization_identity_mismatch'];
+                brainReason = 'paperAnalysisEligibility identity digest mismatch';
+            }
+            if (!bindMismatch) {
+                brainAllowed = true;
+                brainReason = Array.isArray(nested.reasons) ? nested.reasons.join(' · ') : (nested.reason || '');
+                brainReasons = Array.isArray(nested.reasons) ? nested.reasons : [];
+                source = 'brain_paper_analysis_eligibility';
+                authId = String(authIdRaw).trim();
+                realGateUnchanged = nested.real_gate_unchanged !== false;
+            } else {
+                brainAllowed = false;
+                source = 'brain_paper_analysis_bind_rejected';
+                authId = String(authIdRaw).trim();
+                realGateUnchanged = nested.real_gate_unchanged !== false;
+            }
+        } else if (typeof nested.allowed === 'boolean' && nested.allowed === true) {
+            brainAllowed = false;
+            const missing = [];
+            if (!schemaOk) missing.push('policy_or_schema_version');
+            if (!authIdOk) missing.push('authorization_id');
+            if (!brainSrcOk) missing.push('brain_version_or_source');
+            brainReason = 'paperAnalysisEligibility provenance incomplete: ' + missing.join(',');
+            brainReasons = ['brain_paper_analysis_provenance_incomplete', ...missing];
+            source = 'brain_paper_analysis_provenance_incomplete';
+            authId = authIdOk ? String(authIdRaw).trim() : null;
             realGateUnchanged = nested.real_gate_unchanged !== false;
         } else if (typeof nested.allowed === 'boolean') {
             brainAllowed = false;
             brainReason = Array.isArray(nested.reasons) ? nested.reasons.join(' · ') : (nested.reason || 'brain paperAnalysisEligibility.allowed !== true');
             brainReasons = Array.isArray(nested.reasons) ? nested.reasons : ['brain_paper_analysis_blocked'];
             source = 'brain_paper_analysis_eligibility';
-            authId = nested.authorization_id || nested.result_id || nested.id || null;
+            authId = authIdOk ? String(authIdRaw).trim() : null;
             realGateUnchanged = nested.real_gate_unchanged !== false;
         } else {
             brainAllowed = false;
@@ -3369,9 +3453,11 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         entry_max_pain: isBNF ? (latestPoll.maxPainBnf ?? (JSON.parse(NativeBridge.getBnfChain() || '{}'))?.maxPain) : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.maxPain ?? (JSON.parse(NativeBridge.getBaseline() || '{}'))?.maxPainNf),
         entry_sell_oi: strikeLeg(cand.sellStrike, cand.sellType).oi ?? null,
         entry_sell_oi2: cand.sellStrike2 ? (strikeLeg(cand.sellStrike2, cand.sellType2).oi ?? null) : null,
-        lot_size: entryLotSize,
+        // R3.1: top-level lot_size is legacy total units (= quantity_units); stripped on insert.
+        lot_size: isPaper ? entryQuantityUnits : entryLotSize,
         number_of_lots: isPaper ? entryNumberOfLots : 1,
         quantity_units: isPaper ? entryQuantityUnits : entryLotSize,
+        contract_lot_size: entryLotSize,
         entry_bias: latestPoll.bias?.label,
         entry_bias_net: latestPoll.bias?.net,
         entry_regime: bd.institutionalRegime?.regime || null,
@@ -3399,7 +3485,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         status: 'OPEN',
         current_pnl: 0,
         peak_pnl: 0,
-        lots: 1,
+        // R3.1: top-level lots must agree with authorized number_of_lots (never hardcode 1).
+        lots: isPaper ? entryNumberOfLots : 1,
         paper: isPaper,
         // b91: IC/IB always intraday — 0% overnight survival (backtest confirmed)
         trade_mode: (cand.type === 'IRON_CONDOR' || cand.type === 'IRON_BUTTERFLY') ? 'intraday' : (STATE.tradeMode || DEFAULT_TRADE_MODE),
@@ -3413,7 +3500,11 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             app_top_strategy: rankList[0]?.type || null,
             app_top_strike: rankList[0]?.sellStrike || null,
             followed_app: candRank === 1,
-            lot_size: entryLotSize,
+            // R3.1: contract_lot_size = units/lot; legacy lot_size = total quantity_units.
+            contract_lot_size: entryLotSize,
+            number_of_lots: isPaper ? entryNumberOfLots : 1,
+            quantity_units: isPaper ? entryQuantityUnits : entryLotSize,
+            lot_size: isPaper ? entryQuantityUnits : entryLotSize,
             context_score: cand.contextScore ?? 0,
             ev: cand.ev ?? null,
             net_theta: cand.netTheta ?? null,
@@ -3485,9 +3576,11 @@ async function takeTradeImpl(candidateId, isPaper = false) {
                 selection_source: paperTestProvenance.selection_source,
                 paper_policy_version: paperTestProvenance.paper_policy_version,
                 brain_authorization_id: paperTestProvenance.brain_authorization_id,
+                // R3.1: keep triplet + legacy total-units lot_size (do not overwrite with per-contract).
+                contract_lot_size: entryLotSize,
                 number_of_lots: entryNumberOfLots,
                 quantity_units: entryQuantityUnits,
-                lot_size: entryLotSize,
+                lot_size: entryQuantityUnits,
             } : {}),
         },
         // Top-level paper provenance stripped by sanitizeTradeForInsert until schema proven.

@@ -89,14 +89,14 @@ function baseCand(over = {}) {
 
 // --- R1 retained ---
 const htmlOk = MR.renderCandidateCard(baseCand({
-  paperAnalysisEligibility: { allowed: true, authorization_id: 'auth-1' },
+  paperAnalysisEligibility: { allowed: true, authorization_id: 'auth-1', schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'c1' },
 }), 25000, 'R1');
 assert(typeof htmlOk === 'string' && htmlOk.length > 50, 'render ok');
 
 const htmlAlt = MR.renderCandidateCard(baseCand({
   id: 'alt1', directionSafe: false, blocked: true, entryAction: 'BLOCKED', entryEligible: false,
   forces: { f1: 1, f2: 1, f3: 0, aligned: 2 },
-  paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-9', reasons: [] },
+  paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-9', reasons: [], schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'alt1' },
 }), 25000, 'A1');
 assert(/PAPER ANALYSIS/i.test(htmlAlt), 'analysis label');
 assert(/disabled/i.test(htmlAlt), 'real disabled');
@@ -110,10 +110,12 @@ assert(/PAPER ANALYSIS LOCKED/i.test(htmlLocked), 'locked');
 const noBrain = MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: undefined, paperAnalysisEligible: undefined }));
 assert(noBrain.allowed === false, 'no structural fallback');
 
-assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'x1' } })).allowed === true, 'brain ok');
-assert(MR.paperAnalysisAuthorization(baseCand({ index: null, paperAnalysisEligibility: { allowed: true } })).allowed === false, 'no index invent');
+assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'x1', schema_version: 'paper_analysis_v1', brain_version: 'brain_test_v1', candidate_id: 'c1' } })).allowed === true, 'brain ok');
+assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true } })).allowed === false, 'bare allowed locked');
+assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'x1' } })).allowed === false, 'missing schema/brain locked');
+assert(MR.paperAnalysisAuthorization(baseCand({ index: null, paperAnalysisEligibility: { allowed: true, authorization_id: 'z', schema_version: 'paper_analysis_v1', brain_version: 'b', candidate_id: 'c1' } })).allowed === false, 'no index invent');
 assert(MR.normalizePaperIndexKey('') === null && MR.normalizePaperIndexKey('BNF') === 'BNF', 'index normalize');
-assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true }, lot_conflict: true })).allowed === false, 'conflict');
+assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'z', schema_version: 'paper_analysis_v1', brain_version: 'b', candidate_id: 'c1' }, lot_conflict: true })).allowed === false, 'conflict');
 assert(MR.paperTradeAuthorization(baseCand({ index: 'UNKNOWN', lotSize: 65 })).allowed === false, 'unknown index');
 
 // R2.4: legacy boolean alone NEVER authorizes
