@@ -157,15 +157,21 @@ def extract(name):
 
 names = [
     'normalizePaperIndexKey',
+    'parsePositiveIntegralLotJs',
     'paperContractIdentityGate',
     'paperTradeAuthorization',
     'paperAnalysisAuthorization',
     'paperTestVetoes',
     'confirmPaperTest',
     'experimentalKellyAdvisoryReadout',
+    'sanitizeTradeForInsert',
     'renderCandidateCard',
 ]
 out = [extract(n) for n in names]
-(ROOT / 'tests' / '_extracted_paper_fns.js').write_text('\n\n'.join(out) + '\n')
+import os
+out_path = Path(os.environ.get('PAPER_EXTRACT_OUT', str(ROOT / 'tests' / '_extracted_paper_fns.js')))
+out_path.parent.mkdir(parents=True, exist_ok=True)
+out_path.write_text('\n\n'.join(out) + '\n')
 for n, b in zip(names, out):
     print(n, len(b))
+print('wrote', out_path)

@@ -13,3 +13,6 @@ build/
 *.apk
 *.aab
 *.apks
+
+# Test-generated extraction (created in tmp by harness; ignore if present)
+tests/_extracted_paper_fns.js

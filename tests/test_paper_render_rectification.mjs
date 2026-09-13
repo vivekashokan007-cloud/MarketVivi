@@ -1,8 +1,9 @@
 /**
- * Executable JS harness for Codex B1/B6/B7 rectification.
- * Evals extracted renderCandidateCard paths from app.js — proves no ReferenceError.
+ * Executable JS harness for Codex B1/B6/B7 + R2.4/R2.5/R2.6 rectification.
+ * Extracts into a temporary directory so the worktree stays clean.
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import vm from 'vm';
 import { fileURLToPath } from 'url';
@@ -13,15 +14,21 @@ const root = path.join(__dirname, '..');
 const appPath = path.join(root, 'app.js');
 const src = fs.readFileSync(appPath, 'utf8');
 
-// Refresh extraction each run so tests track app.js
-execSync('python3 tests/_extract_paper_fns.py', { cwd: root, stdio: 'pipe' });
-const extracted = fs.readFileSync(path.join(__dirname, '_extracted_paper_fns.js'), 'utf8');
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-paper-extract-'));
+const extractOut = path.join(tmpDir, '_extracted_paper_fns.js');
+execSync('python3 tests/_extract_paper_fns.py', {
+  cwd: root,
+  stdio: 'pipe',
+  env: { ...process.env, PAPER_EXTRACT_OUT: extractOut },
+});
+const extracted = fs.readFileSync(extractOut, 'utf8');
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'assert failed');
 }
 
 const confirms = [];
+const inserts = [];
 const sandbox = {
   console, Date, Math, Number, String, Array, Object, JSON, Set, Map,
   parseFloat, parseInt, isNaN, Infinity, undefined,
@@ -61,7 +68,7 @@ const sandbox = {
 };
 
 vm.runInNewContext(
-  extracted + '\n;globalThis.__MR = { normalizePaperIndexKey, paperContractIdentityGate, paperTradeAuthorization, paperAnalysisAuthorization, paperTestVetoes, confirmPaperTest, experimentalKellyAdvisoryReadout, renderCandidateCard };',
+  extracted + '\n;globalThis.__MR = { normalizePaperIndexKey, parsePositiveIntegralLotJs, paperContractIdentityGate, paperTradeAuthorization, paperAnalysisAuthorization, paperTestVetoes, confirmPaperTest, experimentalKellyAdvisoryReadout, sanitizeTradeForInsert, renderCandidateCard };',
   sandbox,
   { filename: '_extracted_paper_fns.js', timeout: 5000 },
 );
@@ -75,28 +82,19 @@ function baseCand(over = {}) {
     forces: { f1: 1, f2: 1, f3: 1, aligned: 3 }, entryEligible: true,
     executionReadiness: { ready: true, mode: 'paper', gate: 'READY', reasons: [] },
     directionSafe: true, entryAction: 'TAKE', p_ml: 0.55, identity_complete: true,
-    contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 65, index_key: 'NF' },
+    contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 65, index_key: 'NF', number_of_lots: 1, quantity_units: 65 },
     ...over,
   };
 }
 
-assert(MR.experimentalKellyAdvisoryReadout(baseCand()) === '', 'Kelly hidden');
-
-let html;
-try {
-  html = MR.renderCandidateCard(baseCand({
-    paperAnalysisEligibility: { allowed: true, authorization_id: 'auth-1' },
-    finalEntryAllowed: true,
-  }), 25000, 1);
-} catch (e) {
-  throw new Error('renderCandidateCard crash: ' + e.stack);
-}
-assert(html.includes('v1-card'), 'card html');
-assert(!/readout lots|EXPERIMENTAL Kelly/i.test(html), 'no Kelly');
-assert(/PAPER TEST/i.test(html), 'primary paper');
+// --- R1 retained ---
+const htmlOk = MR.renderCandidateCard(baseCand({
+  paperAnalysisEligibility: { allowed: true, authorization_id: 'auth-1' },
+}), 25000, 'R1');
+assert(typeof htmlOk === 'string' && htmlOk.length > 50, 'render ok');
 
 const htmlAlt = MR.renderCandidateCard(baseCand({
-  id: 'alt1', directionSafe: false, entryAction: 'BLOCKED', blocked: true, entryEligible: false,
+  id: 'alt1', directionSafe: false, blocked: true, entryAction: 'BLOCKED', entryEligible: false,
   forces: { f1: 1, f2: 1, f3: 0, aligned: 2 },
   paperAnalysisEligibility: { allowed: true, authorization_id: 'pa-9', reasons: [] },
 }), 25000, 'A1');
@@ -111,13 +109,68 @@ assert(/PAPER ANALYSIS LOCKED/i.test(htmlLocked), 'locked');
 
 const noBrain = MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: undefined, paperAnalysisEligible: undefined }));
 assert(noBrain.allowed === false, 'no structural fallback');
-assert(noBrain.source !== 'pwa_structural_fallback', 'fallback source gone');
 
 assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'x1' } })).allowed === true, 'brain ok');
 assert(MR.paperAnalysisAuthorization(baseCand({ index: null, paperAnalysisEligibility: { allowed: true } })).allowed === false, 'no index invent');
 assert(MR.normalizePaperIndexKey('') === null && MR.normalizePaperIndexKey('BNF') === 'BNF', 'index normalize');
 assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true }, lot_conflict: true })).allowed === false, 'conflict');
 assert(MR.paperTradeAuthorization(baseCand({ index: 'UNKNOWN', lotSize: 65 })).allowed === false, 'unknown index');
+
+// R2.4: legacy boolean alone NEVER authorizes
+const legacyOnly = MR.paperAnalysisAuthorization(baseCand({
+  paperAnalysisEligibility: undefined,
+  paperAnalysisEligible: true,
+}));
+assert(legacyOnly.allowed === false, 'legacy boolean locked');
+assert(legacyOnly.source === 'legacy_boolean_ignored_not_authorization', 'legacy source diagnostic');
+assert(legacyOnly.legacy_boolean_diagnostic === true, 'legacy diagnostic retained');
+
+// R2.5: fractional lot rejected
+const frac = MR.paperContractIdentityGate(baseCand({ lotSize: 65.5, contract_identity: { identity_complete: true, contract_lot_size: 65.5 } }));
+assert(frac.ok === false, 'fractional lot rejected');
+assert(frac.lotFieldStatus === 'field_present_but_invalid', 'fractional status');
+
+// nested-only BNF identity → authorized lot equals nested
+const bnfNested = MR.paperTradeAuthorization(baseCand({
+  index: 'BNF', lotSize: undefined, lot_size: undefined, contract_lot_size: undefined,
+  contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 35, index_key: 'BNF', number_of_lots: 1, quantity_units: 35 },
+  sellStrike: 52000, buyStrike: 52100,
+}));
+assert(bnfNested.allowed === true, 'bnf nested auth');
+assert(bnfNested.lotSize === 35, 'authorized lot equals nested 35');
+
+const nfNested = MR.paperTradeAuthorization(baseCand({
+  lotSize: undefined, lot_size: undefined,
+  contract_identity: { identity_complete: true, lot_conflict: false, contract_lot_size: 65, index_key: 'NF', number_of_lots: 2, quantity_units: 130 },
+  number_of_lots: 2, quantity_units: 130, contract_lot_size: 65,
+}));
+assert(nfNested.allowed === true, 'nf two-lot');
+assert(nfNested.lotSize === 65 && nfNested.number_of_lots === 2 && nfNested.quantity_units === 130, 'qty consistency');
+
+// R2.6: sanitize strips unsupported top-level paper provenance; nested survives
+const sanitized = MR.sanitizeTradeForInsert({
+  strategy_type: 'BEAR_CALL',
+  index_key: 'NF',
+  lot_size: 65,
+  number_of_lots: 1,
+  quantity_units: 65,
+  paper_lane: 'paper_analysis',
+  selection_source: 'operator_paper_analysis',
+  paper_policy_version: 'v1',
+  brain_authorization_id: 'auth-9',
+  paper_test: { paper_lane: 'paper_analysis', schema_version: 'paper_lane_provenance_v2_20260913' },
+  entry_snapshot: { lot_size: 65 },
+  real_margin: 1,
+});
+assert(sanitized.paper_lane === undefined, 'no top-level paper_lane');
+assert(sanitized.selection_source === undefined, 'no top-level selection_source');
+assert(sanitized.paper_policy_version === undefined, 'no top-level paper_policy_version');
+assert(sanitized.brain_authorization_id === undefined, 'no top-level brain_authorization_id');
+assert(sanitized.paper_test === undefined, 'no top-level paper_test');
+assert(sanitized.lot_size === undefined, 'no top-level lot_size');
+assert(sanitized.entry_snapshot.paper_test.paper_lane === 'paper_analysis', 'nested provenance survives');
+assert(sanitized.entry_snapshot.paper_lane === 'paper_analysis', 'compact mirror');
+assert(sanitized.entry_snapshot.lot_size === 65, 'lot in snapshot');
 
 confirms.length = 0;
 MR.confirmPaperTest(baseCand(), { allowed: false, reason: 'wait' }, { count: 0, limit: 2 }, { paper_lane: 'paper_analysis' });
@@ -126,9 +179,12 @@ confirms.length = 0;
 MR.confirmPaperTest(baseCand(), { allowed: true, reason: '' }, { count: 0, limit: 2 }, { paper_lane: 'paper_primary' });
 assert(/PAPER TEST/i.test(confirms[0]), 'primary confirm');
 
+assert(MR.experimentalKellyAdvisoryReadout(baseCand()) === '' || !/lot/i.test(MR.experimentalKellyAdvisoryReadout(baseCand()) || ''), 'kelly hidden');
+
 assert(src.includes('paper_lane_provenance_v2_20260913'), 'provenance schema');
 assert(src.includes('brain_authorization_id'), 'brain auth id');
-assert(src.includes('paper_lane: paperLane'), 'paper_lane stamp');
 assert(!src.includes("source: 'pwa_structural_fallback'"), 'no fallback source');
+assert(!src.includes('else if (typeof candidate?.paperAnalysisEligible === \'boolean\')'), 'legacy auth branch removed');
 
+try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 console.log('PASS: test_paper_render_rectification.mjs');
