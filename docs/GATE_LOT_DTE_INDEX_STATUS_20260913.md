@@ -2,7 +2,7 @@
 
 **Branch:** `work/g8-g10-integrity-20260913`
 **Reviewed tip (pre-rectification):** `cb2cad26d220fed009934c949f6337aea0da1233`
-**Rectification tip:** `d8ca46797458ac037c54c9d052fcb7871fc5207d`
+**Rectification tip:** `78217aae89d005b3e1d1c5094b46e3259f3e5319`
 **Lot/DTE + Paper lane:** **review-blocked / OPEN** until Codex rectification tips are approved.
 **Merge to main:** FORBIDDEN.
 
