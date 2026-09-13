@@ -5253,6 +5253,34 @@ function renderWatchlist(snapshot = null) {
     el.innerHTML = html;
 }
 
+
+/** G9 experimental Kelly readout — advisory only; never used as order quantity. */
+function experimentalKellyAdvisoryReadout(cand) {
+    const pRaw = Number(cand && cand.p_ml);
+    const maxProfit = Number(cand && cand.maxProfit);
+    const maxLoss = Number(cand && cand.maxLoss);
+    if (!Number.isFinite(pRaw) || pRaw <= 0 || pRaw >= 1) return '';
+    if (!Number.isFinite(maxProfit) || !Number.isFinite(maxLoss) || maxLoss <= 0) return '';
+    const b = maxProfit / maxLoss;
+    if (!Number.isFinite(b) || b <= 0) return '';
+    const fRaw = pRaw - ((1 - pRaw) / b);
+    const fractional = 0.25;
+    const fFrac = Math.max(0, fRaw) * fractional;
+    const maxRiskPct = 0.10;
+    const fCapped = Math.min(fFrac, maxRiskPct);
+    let advisoryLots = 0;
+    if (fCapped > 0) {
+        // Display-only heuristic: map capped Kelly fraction into 0..4 lots.
+        advisoryLots = Math.min(4, Math.max(0, Math.floor(fCapped / 0.025)));
+    }
+    const fPct = (Math.max(0, fRaw) * 100).toFixed(1);
+    const fracPct = (fCapped * 100).toFixed(1);
+    return `<div style="font-size:9px;color:var(--warn);margin:4px 0 2px;padding:3px 6px;border:1px dashed var(--warn);border-radius:4px;line-height:1.35" title="G9 experimental Kelly — advisory only. Does not change order quantity, risk limits, or p_ml gate.">
+        <b>EXPERIMENTAL Kelly</b> (advisory only · not order qty): f* ${fPct}% · ¼-Kelly capped ${fracPct}% · readout lots ${advisoryLots}
+        <span style="opacity:0.85"> · live path stays 1-lot · p_ml gate unchanged</span>
+    </div>`;
+}
+
 function renderCandidateCard(cand, atm, rank) {
     const forces = cand.forces || { f1: 0, f2: 0, f3: 0, aligned: 0 };
     const dots = alignmentDots(forces.aligned);
@@ -5380,6 +5408,7 @@ function renderCandidateCard(cand, atm, rank) {
         })()}
         ${cand.sigmaOTM ? `<div style="font-size:10px;padding:2px 8px;color:${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? (economicallyStrong ? 'var(--green)' : 'var(--warn)') : cand.sigmaOTM < 0.5 ? 'var(--danger)' : 'var(--warn)'}">Strike: ${cand.sigmaOTM}σ OTM ${cand.sigmaOTM >= 0.5 && cand.sigmaOTM <= 0.8 ? (economicallyStrong ? '● SWEET SPOT' : '● structure ok, edge weak') : cand.sigmaOTM > 0.8 ? '● thin credit zone' : '● too close'}</div>` : ''}
         ${renderBrainForCandidate(cand.id)}
+        ${experimentalKellyAdvisoryReadout(cand)}
 
         <div class="v1-metrics">
             <div class="v1-metric"><span class="v1-label">Max Profit</span><span class="v1-val green">₹${localeNumberOrFallback(cand.maxProfit)}${cand.realisticMaxProfit ? ` <span style="font-size:9px;color:var(--text-muted)">(actual ~₹${localeNumberOrFallback(cand.realisticMaxProfit)})</span>` : cand.intradayTheta && cand.tDTE > 2 ? ` <span style="font-size:9px;color:var(--text-muted)">(Θ ₹${localeNumberOrFallback(cand.intradayTheta)}/day)</span>` : ''}</span></div>
