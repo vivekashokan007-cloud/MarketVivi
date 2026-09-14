@@ -1,0 +1,50 @@
+name: MarketVivi Review Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app.js'
+      - 'tests/**'
+      - '.github/workflows/review-validation.yml'
+  push:
+    branches:
+      - work/g8-g10-integrity-20260913
+    paths:
+      - 'app.js'
+      - 'tests/**'
+      - '.github/workflows/review-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-only:
+    name: PWA syntax and Paper runtime tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout MarketVivi
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate app syntax
+        run: node --check app.js
+
+      - name: Run Paper integration tests
+        run: |
+          node --test \
+            tests/test_paper_render_rectification.mjs \
+            tests/test_paper_save_path_r2.mjs \
+            tests/test_paper_r3_multilot_auth.mjs
