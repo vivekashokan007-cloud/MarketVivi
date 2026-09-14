@@ -7336,22 +7336,10 @@ function restoreEveningClose(cloudConfig) {
 
 const EXPORT_SUPABASE_URL = 'https://fdynxkfxohbnlvayouje.supabase.co';
 const EXPORT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE';
-const EXPORT_TABLES = [
-    'daily_data',
-    'app_config',
-    'trades_v2',
-    'premium_history',
-    'chain_snapshots',
-    'ml_decisions',
-    'ml_models',
-    'ml_performance',
-    'ml_poll_sequences',
-    'trade_log',
-    'trades',
-    'radar_inputs',
-    'bhav_options',
-    'straddle_ratios',
-];
+// Deliberately empty until the authenticated ownership cutover is complete.
+// A client-side allowlist cannot protect shared tables while the active RLS
+// policy permits broad reads; do not restore this with another table list.
+const EXPORT_TABLES = Object.freeze([]);
 
 const EXCEL_MAX_CELL_CHARS = 32767;
 const EXPORT_TRUNCATION_STATS = { count: 0 };
@@ -7590,167 +7578,11 @@ async function saveExportBlobNative(filename, blob) {
 
 async function exportAllData() {
     const statusEl = document.getElementById('export-status');
-    const btn = document.getElementById('btn-export');
-    if (!statusEl || !btn) return;
-    if (!window.supabase?.createClient) {
-        statusEl.textContent = '❌ Supabase export library not loaded. Refresh and retry.';
-        return;
-    }
-    if (!window.XLSX) {
-        statusEl.textContent = '❌ SheetJS Excel library not loaded. Refresh and retry.';
-        return;
-    }
-
-    btn.disabled = true;
-    EXPORT_TRUNCATION_STATS.count = 0;
-    const sb = AUTH_ACCESS.createClient(EXPORT_SUPABASE_URL, EXPORT_SUPABASE_ANON_KEY);
-    const rowsByTable = {};
-    const errors = [];
-
-    try {
-        for (const table of EXPORT_TABLES) {
-            statusEl.textContent = `⏳ Fetching ${table}...`;
-            try {
-                rowsByTable[table] = await fetchAllExportRows(sb, table);
-            } catch (e) {
-                rowsByTable[table] = [];
-                errors.push(e.message);
-            }
-        }
-
-        statusEl.textContent = '⏳ Building Excel workbook...';
-        const appConfigRows = rowsByTable.app_config || [];
-        const pollRows = buildPollAuditRows(appConfigRows);
-        const strikeRows = buildStrikeAuditRows(appConfigRows);
-        const configAuditRows = buildAppConfigAuditRows(appConfigRows);
-        const usedNames = new Set();
-        const wb = XLSX.utils.book_new();
-
-        const summaryRows = [
-            { metric: 'Export timestamp', value: new Date().toISOString() },
-            { metric: 'PWA version', value: document.querySelector('.version')?.textContent?.trim() || 'unknown' },
-            { metric: 'Tables requested', value: EXPORT_TABLES.length },
-            { metric: 'Tables with fetch errors', value: errors.length },
-            { metric: 'Poll history rows', value: pollRows.length },
-            { metric: 'Strike rows', value: strikeRows.length },
-            { metric: 'Oversized cells truncated', value: EXPORT_TRUNCATION_STATS.count },
-            ...EXPORT_TABLES.map(table => ({ metric: `${table} rows`, value: rowsByTable[table]?.length || 0 })),
-            ...errors.map((error, idx) => ({ metric: `Error ${idx + 1}`, value: error })),
-        ];
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), safeSheetName('Summary', usedNames));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pollRows.length ? pollRows : [{ note: 'No poll_history_* rows found in app_config' }]), safeSheetName('Poll History Flat', usedNames));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(strikeRows.length ? strikeRows : [{ note: 'No per-strike rows found in poll history' }]), safeSheetName('Strike Data Flat', usedNames));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(configAuditRows.length ? configAuditRows : [{ note: 'No app_config rows found' }]), safeSheetName('App Config Audit', usedNames));
-
-        for (const table of EXPORT_TABLES) {
-            const rows = rowsByTable[table] || [];
-            const sheetRows = rows.length ? rows.map(flattenRow) : [{ note: `No rows exported from ${table}` }];
-            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), safeSheetName(table, usedNames));
-        }
-
-        const today = API.todayIST();
-        const filename = `MarketRadar_Export_${today}.xlsx`;
-        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-        const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const storagePath = `export_${today}_${Date.now()}.xlsx`;
-        const totalRows = Object.values(rowsByTable).reduce((sum, rows) => sum + (rows?.length || 0), 0);
-        let nativeSaveWarning = '';
-
-        try {
-            statusEl.textContent = '⏳ Saving Excel to Downloads...';
-            const nativeResult = await saveExportBlobNative(filename, blob);
-            if (nativeResult?.ok) {
-                statusEl.textContent = '';
-                statusEl.appendChild(document.createTextNode(`✅ Export saved to Downloads: ${nativeResult.fileName || filename} · ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes`));
-                if (errors.length) {
-                    statusEl.appendChild(document.createElement('br'));
-                    const errSpan = document.createElement('span');
-                    errSpan.style.color = '#b45309';
-                    errSpan.textContent = `⚠ ${errors.length} table fetch issue(s); see Summary sheet.`;
-                    statusEl.appendChild(errSpan);
-                }
-                if (EXPORT_TRUNCATION_STATS.count > 0) {
-                    statusEl.appendChild(document.createElement('br'));
-                    const truncSpan = document.createElement('span');
-                    truncSpan.style.color = '#b45309';
-                    truncSpan.textContent = `⚠ ${EXPORT_TRUNCATION_STATS.count} oversized cell(s) truncated for Excel compatibility.`;
-                    statusEl.appendChild(truncSpan);
-                }
-                return;
-            }
-        } catch (nativeErr) {
-            nativeSaveWarning = nativeErr.message || String(nativeErr);
-            console.warn('Native export save failed; falling back to Supabase Storage:', nativeErr);
-        }
-
-        statusEl.textContent = '⏳ Uploading Excel to Supabase Storage...';
-        const { error: uploadErr } = await sb.storage.from(EXPORT_STORAGE_BUCKET).upload(storagePath, blob, {
-            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            upsert: true,
-        });
-        if (uploadErr) {
-            const detail = nativeSaveWarning
-                ? `Native save failed: ${nativeSaveWarning}; Storage upload failed: ${uploadErr.message}`
-                : `Storage upload failed: ${uploadErr.message}`;
-            throw new Error(detail);
-        }
-
-        let cleanupNote = '';
-        try {
-            const cleanup = await cleanupOldExportFiles(sb, {
-                keepDays: EXPORT_RETENTION_DAYS,
-                keepCount: EXPORT_MAX_FILES_TO_KEEP,
-                keepPaths: [storagePath],
-            });
-            if (cleanup?.deleted) {
-                cleanupNote = ` · cleanup: deleted ${cleanup.deleted} old file(s)`;
-            }
-        } catch (cleanupErr) {
-            console.warn('EXPORTS cleanup warning:', cleanupErr);
-        }
-
-        const { data: urlData } = sb.storage.from(EXPORT_STORAGE_BUCKET).getPublicUrl(storagePath, { download: filename });
-        const publicUrl = urlData?.publicUrl;
-        if (!publicUrl) throw new Error('Storage upload succeeded but public URL was empty');
-
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        iframe.src = publicUrl;
-        document.body.appendChild(iframe);
-        setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) { /* ignore cleanup */ } }, 30000);
-
-        statusEl.textContent = '';
-        statusEl.appendChild(document.createTextNode(`✅ Export ready: ${totalRows} table rows · ${pollRows.length} polls · ${strikeRows.length} strikes${cleanupNote}`));
-        if (errors.length) {
-            statusEl.appendChild(document.createElement('br'));
-            const errSpan = document.createElement('span');
-            errSpan.style.color = '#b45309';
-            errSpan.textContent = `⚠ ${errors.length} table fetch issue(s); see Summary sheet.`;
-            statusEl.appendChild(errSpan);
-        }
-        if (EXPORT_TRUNCATION_STATS.count > 0) {
-            statusEl.appendChild(document.createElement('br'));
-            const truncSpan = document.createElement('span');
-            truncSpan.style.color = '#b45309';
-            truncSpan.textContent = `⚠ ${EXPORT_TRUNCATION_STATS.count} oversized cell(s) truncated for Excel compatibility.`;
-            statusEl.appendChild(truncSpan);
-        }
-        statusEl.appendChild(document.createElement('br'));
-        const link = document.createElement('a');
-        link.href = publicUrl;
-        link.download = filename;
-        link.target = '_blank';
-        link.rel = 'noopener';
-        link.textContent = '📥 Download Excel';
-        link.style.cssText = 'display:inline-block;margin-top:6px;padding:10px 16px;background:var(--accent);color:white;border-radius:8px;font-weight:700;font-size:13px;text-decoration:none';
-        statusEl.appendChild(link);
-    } catch (err) {
-        console.error('Export error:', err);
-        statusEl.textContent = `❌ Export failed: ${err.message}`;
-    } finally {
-        btn.disabled = false;
+    if (statusEl) {
+        statusEl.textContent = 'Cloud export is paused until authenticated row ownership is deployed.';
     }
 }
+
 
 window.exportAllData = exportAllData;
 

@@ -1,0 +1,45 @@
+name: MarketVivi Pages Publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publication:
+        description: 'Explicitly confirm publication of the reviewed PWA runtime only'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: marketvivi-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ inputs.confirm_publication == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build allowlisted Pages artifact
+        run: python3 tools/build_pages_site.py --output .pages-artifact
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .pages-artifact
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4

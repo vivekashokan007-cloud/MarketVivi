@@ -7,15 +7,30 @@ on:
       - main
     paths:
       - 'app.js'
+      - 'api.js'
+      - 'index.html'
+      - 'log-viewer.js'
+      - 'manifest.json'
+      - 'style.css'
       - 'tests/**'
+      - 'tools/**'
       - '.github/workflows/review-validation.yml'
+      - '.github/workflows/pages-publish.yml'
   push:
     branches:
+      - main
       - work/g8-g10-integrity-20260913
     paths:
       - 'app.js'
+      - 'api.js'
+      - 'index.html'
+      - 'log-viewer.js'
+      - 'manifest.json'
+      - 'style.css'
       - 'tests/**'
+      - 'tools/**'
       - '.github/workflows/review-validation.yml'
+      - '.github/workflows/pages-publish.yml'
 
 permissions:
   contents: read
@@ -48,3 +63,11 @@ jobs:
             tests/test_paper_render_rectification.mjs \
             tests/test_paper_save_path_r2.mjs \
             tests/test_paper_r3_multilot_auth.mjs
+
+      - name: Verify Pages artifact excludes repository documents
+        run: |
+          python3 tools/build_pages_site.py --output .pages-artifact
+          test -f .pages-artifact/index.html
+          test ! -e .pages-artifact/docs
+          test ! -e .pages-artifact/PROJECT_KNOWLEDGE.md
+          test ! -e .pages-artifact/CLAUDE.md
