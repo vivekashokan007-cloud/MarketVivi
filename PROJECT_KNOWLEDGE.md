@@ -21769,3 +21769,28 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - Regression coverage now asserts the exact second-batch append contract, alongside malformed-checkpoint recovery. Verify on the phone that evaluation passes multiple batches and that `EVAL_BATCH_CHECKPOINT` advances beyond the first batch without a malformed-output error.
 
 ---
+## 2026-09-16 — Evaluation recovery, notification and PWA sync
+
+### Current synchronized source target
+
+- Marketapp review branch: `10a37a1` (evaluation recovery plus notification/log fixes).
+- MarketVivi review branch: `21b16f6` (PWA version/cache alignment).
+- Android/Python release source target: `2.6.43` / versionCode `474`.
+- PWA marker: `v2.6.43 · b474`, cache target `1339` (to be applied in the next PWA version bump).
+- Production `main`, Supabase schema/data, live sizing, broker execution, and retraining remain unchanged.
+
+### Fixes in the review batch
+
+- A 45-minute evaluation timeout now schedules automatic checkpoint continuation after one minute; the evaluator remains resumable and does not require a manual retry.
+- A late C3 service exception no longer overwrites a terminal evidence-based `DONE` or `INELIGIBLE` state as `FAILED`.
+- Structural brain-owned `BOOK`/`EXIT` verdicts with urgency `NOW` now create urgent position-exit notifications. The tick service does not own or suppress these alerts.
+- LogBuffer now retains up to 12 hours / 12,000 entries and an 8 MB persistent file, preserving a full NSE session across export and restart.
+- PWA cache/version marker is being advanced so the phone cannot continue serving the stale b472 asset.
+
+### Evidence and operational status
+
+- 2026-09-15 evaluation: 75 evaluation outcomes and 75 recommendation outcomes persisted; 77 snapshots captured.
+- C3 had 77 frames but all were provenance-incomplete because generated/rejected candidate populations were capped; correct status is `INELIGIBLE`, not verified learning.
+- Python suite after the notification/log changes: 840 tests passed locally.
+- Signed-release workflow for 2.6.43 was attempted; one run failed on the obsolete Android `tools` SDK package, then the workflow was corrected. A later run passed Python and Android tests and reached signed APK build; release publication still requires confirmation.
+- Do not claim profitability, learning completion, or autonomous-trading readiness from this evidence. Paper remains the only experimental lane; Real/live authorization is unchanged.
