@@ -72,7 +72,7 @@ const sandbox = {
 };
 
 vm.runInNewContext(
-  extracted + '\n;globalThis.__MR = { normalizePaperIndexKey, parsePositiveIntegralLotJs, paperContractIdentityGate, paperTradeAuthorization, paperAnalysisAuthorization, paperTestVetoes, confirmPaperTest, experimentalKellyAdvisoryReadout, sanitizeTradeForInsert, renderCandidateCard };',
+  extracted + '\n;globalThis.__MR = { normalizePaperIndexKey, parsePositiveIntegralLotJs, paperContractIdentityGate, paperTradeAuthorization, paperObservationAuthorization, paperAnalysisAuthorization, paperTestVetoes, confirmPaperTest, experimentalKellyAdvisoryReadout, sanitizeTradeForInsert, renderCandidateCard };',
   sandbox,
   { filename: '_extracted_paper_fns.js', timeout: 5000 },
 );
@@ -104,7 +104,7 @@ const htmlLocked = MR.renderCandidateCard(baseCand({
   id: 'alt2', directionSafe: false, blocked: true, entryAction: 'BLOCKED', entryEligible: false,
   forces: { f1: 1, f2: 1, f3: 0, aligned: 2 },
 }), 25000, 'A2');
-assert(/PAPER ANALYSIS LOCKED/i.test(htmlLocked), 'locked');
+assert(/PAPER ANALYSIS \(/i.test(htmlLocked), 'Paper analysis remains available without a separate Brain authorization payload');
 
 const noBrain = MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: undefined, paperAnalysisEligible: undefined }));
 assert(noBrain.allowed === false, 'no structural fallback');

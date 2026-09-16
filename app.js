@@ -2893,6 +2893,26 @@ function paperTradeAuthorization(candidate) {
     };
 }
 
+// Paper must remain an available research tool.  This authorization permits a
+// structurally valid candidate to be captured as an analysis-only paper record
+// when lot provenance is absent.  It never authorizes a real order and never
+// invents quantity or rupee P&L.
+function paperObservationAuthorization(candidate) {
+    const strict = paperTradeAuthorization(candidate);
+    const nonBlocking = new Set([
+        'positive integral contract lot is required',
+        'contract identity incomplete',
+    ]);
+    const blocking = strict.reasons.filter(reason => !nonBlocking.has(reason));
+    return {
+        ...strict,
+        allowed: blocking.length === 0,
+        reasons: blocking,
+        reason: blocking.join(' · '),
+        analysis_only: !strict.allowed,
+    };
+}
+
 // Paper-analysis lane: structurally valid non-primary / ML-rejected candidates.
 // Real/Sandbox stay bound to finalEntryAuthorization. No second shadow mode.
 const PAPER_ANALYSIS_ALTERNATIVES_CAP = 5;
@@ -3200,17 +3220,13 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const finalAuthorization = finalEntryAuthorization(cand);
     const paperAnalysisAuth = isPaper ? paperAnalysisAuthorization(cand) : null;
     const paperLane = isPaper
-        ? ((!finalAuthorization.allowed && paperAnalysisAuth && paperAnalysisAuth.allowed) ? 'paper_analysis' : 'paper_primary')
+        ? (!finalAuthorization.allowed ? 'paper_analysis' : 'paper_primary')
         : null;
     const paperAuthorization = isPaper
-        ? (paperLane === 'paper_analysis' ? paperAnalysisAuth : paperTradeAuthorization(cand))
+        ? paperObservationAuthorization(cand)
         : null;
-    if (isPaper && paperLane === 'paper_analysis' && !paperAnalysisAuth.allowed) {
-        alert(`Paper ANALYSIS unavailable: ${paperAnalysisAuth.reason || 'brain paperAnalysisEligibility.allowed !== true'}. Brain authorization and complete NF/BNF identity are required.`);
-        return;
-    }
-    if (isPaper && paperLane === 'paper_primary' && !paperAuthorization.allowed) {
-        alert(`Paper TEST unavailable: ${paperAuthorization.reason}. Refresh the candidate when valid structure and entry quotes are available.`);
+    if (isPaper && !paperAuthorization.allowed) {
+        alert(`Paper analysis unavailable: ${paperAuthorization.reason}. A valid option structure and entry quotes are required.`);
         return;
     }
     if (!isPaper && !finalAuthorization.allowed) {
@@ -3277,7 +3293,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     let entryLotSize = null;
     let entryNumberOfLots = 1;
     let entryQuantityUnits = null;
-    if (isPaper && paperAuthorization) {
+    const paperObservationOnly = isPaper && paperAuthorization?.analysis_only === true;
+    if (isPaper && paperAuthorization && !paperObservationOnly) {
         entryLotSize = Number(paperAuthorization.lotSize);
         entryNumberOfLots = Number(paperAuthorization.number_of_lots ?? 1);
         entryQuantityUnits = Number(paperAuthorization.quantity_units);
@@ -3302,7 +3319,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             alert('Paper trade blocked: authorized lot disagrees with nested contract identity.');
             return;
         }
-    } else {
+    } else if (!isPaper) {
         entryLotSize = Number(cand.lotSize || cand.lot_size || cand.contract_lot_size) || null;
         // Real path unchanged — may still use constants only when not paper.
         if (!(Number.isFinite(entryLotSize) && entryLotSize > 0)) {
@@ -3423,6 +3440,8 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         number_of_lots: isPaper ? entryNumberOfLots : 1,
         quantity_units: isPaper ? entryQuantityUnits : entryLotSize,
         contract_lot_size: entryLotSize,
+        analysis_only: paperObservationOnly,
+        valuation_status: paperObservationOnly ? 'UNAVAILABLE_IDENTITY_INCOMPLETE' : 'VALUABLE',
         entry_bias: latestPoll.bias?.label,
         entry_bias_net: latestPoll.bias?.net,
         entry_regime: bd.institutionalRegime?.regime || null,
@@ -3555,7 +3574,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        addOpenTradeToState(trade);
+        if (!paperObservationOnly) addOpenTradeToState(trade);
         playSound('entry');
         switchTab('positions');
         renderAll();
@@ -5595,9 +5614,9 @@ function renderCandidateCard(cand, atm, rank) {
     const entryEligible = cand.entryEligible === true;
     const finalAuthorization = finalEntryAuthorization(cand);
     const finalEntryAllowed = finalAuthorization.allowed;
-    const paperAuthorization = paperTradeAuthorization(cand);
+    const paperAuthorization = paperObservationAuthorization(cand);
     const paperAnalysisAuth = paperAnalysisAuthorization(cand);
-    const paperAnalysisNote = (!finalEntryAllowed && paperAnalysisAuth.allowed)
+    const paperAnalysisNote = (!finalEntryAllowed)
         ? (paperAnalysisAuth.reason
             ? `PAPER ANALYSIS (brain): ${paperAnalysisAuth.reason}`
             : 'PAPER ANALYSIS — experimental lane; Real remains blocked')
@@ -5795,8 +5814,8 @@ function renderCandidateCard(cand, atm, rank) {
                 return mlBadge + realBtn;
             })() : `<button disabled style="opacity:0.4;cursor:not-allowed;flex:1;padding:8px;border:none;border-radius:6px;background:var(--surface);color:var(--text-muted);font-size:12px">⚫ WATCHING</button>`}
             ${(!finalEntryAllowed
-                ? (!paperAnalysisAuth.allowed
-                    ? `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${paperAnalysisAuth.reason || 'brain paperAnalysisEligibility.allowed !== true'}">📋 PAPER ANALYSIS LOCKED</button>`
+                ? (!paperAuthorization.allowed
+                    ? `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${paperAuthorization.reason}">📋 PAPER UNAVAILABLE</button>`
                     : !paperCapacity.available
                     ? `<button class="btn-paper" disabled style="opacity:0.55;cursor:not-allowed" title="Paper capacity is ${paperCapacity.count}/${paperCapacity.limit}. Close one active paper position first.">📋 PAPER FULL (${paperCapacity.count}/${paperCapacity.limit})</button>`
                     : `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)" title="${paperVetoTitle}${paperAnalysisNote ? ' | ' + paperAnalysisNote : ''}">📋 PAPER ANALYSIS (${paperCapacity.count}/${paperCapacity.limit})</button>`)
@@ -5804,7 +5823,7 @@ function renderCandidateCard(cand, atm, rank) {
                 ? `<button class="btn-paper" disabled style="opacity:0.45;cursor:not-allowed" title="${paperAuthorization.reason}">📋 PAPER UNAVAILABLE</button>`
                 : !paperCapacity.available
                 ? `<button class="btn-paper" disabled style="opacity:0.55;cursor:not-allowed" title="Paper TEST capacity is ${paperCapacity.count}/${paperCapacity.limit}. Close one active paper position first.">📋 PAPER FULL (${paperCapacity.count}/${paperCapacity.limit})</button>`
-                : `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)" title="${paperVetoTitle}">📋 PAPER TEST (${paperCapacity.count}/${paperCapacity.limit})</button>`))}
+                : `<button class="btn-paper" onclick="takeTrade('${cand.id}', true)" title="${paperVetoTitle}">📋 ${paperAuthorization.analysis_only ? 'PAPER ANALYSIS' : 'PAPER TEST'} (${paperCapacity.count}/${paperCapacity.limit})</button>`))}
         </div>
     </div>`;
 }

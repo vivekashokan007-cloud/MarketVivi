@@ -160,6 +160,7 @@ names = [
     'parsePositiveIntegralLotJs',
     'paperContractIdentityGate',
     'paperTradeAuthorization',
+    'paperObservationAuthorization',
     'paperAnalysisAuthorization',
     'paperTestVetoes',
     'confirmPaperTest',
