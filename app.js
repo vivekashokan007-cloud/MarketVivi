@@ -2833,7 +2833,11 @@ function paperContractIdentityGate(candidate) {
             reasons.push('quantity_units must equal contract_lot_size × number_of_lots');
         }
     }
-    if (identityComplete === false) reasons.push('contract identity incomplete');
+    // Paper is the diagnostic lane.  An incomplete identity is preserved on the
+    // record and makes contract-specific metrics ineligible, but it must not
+    // lock a structurally valid paper observation that has a declared integral
+    // lot.  Conflicts, unknown index, missing/invalid lot and quantity mismatch
+    // remain fail-closed above.
 
     return {
         indexKey,
@@ -5775,7 +5779,9 @@ function renderCandidateCard(cand, atm, rank) {
                 const weakEconomicsText = weakEconomicsReasons.length ? weakEconomicsReasons.join(' | ') : 'Economics weak';
                 const entryBlockedText = entryReasons.length ? entryReasons.join(' | ') : 'Candidate did not pass backend entry eligibility';
                 const finalBlockedText = finalAuthorization.reason || 'Final brain verdict does not authorize this candidate';
-                const realBtn = !finalEntryAllowed
+                const realBtn = execModeLower === 'paper'
+                    ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="Paper mode is active. Real and broker trading are disabled.">🔒 REAL TRADE DISABLED</button>`
+                    : !finalEntryAllowed
                     ? `<button class="btn-take" disabled style="opacity:0.55;cursor:not-allowed;background:#6B7280" title="${finalBlockedText}">⛔ VERDICT WAIT</button>`
                     : execBlocked
                     ? `<button class="btn-take" disabled style="opacity:0.45;cursor:not-allowed;background:#B45309" title="${execReasonText}">⏳ EXEC WAIT</button>`
