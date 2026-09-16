@@ -935,6 +935,11 @@ function sanitizeTradeForInsert(trade = {}) {
         lot_size: snapLegacyLotSize,
         sell_oi2: entrySnapshot.sell_oi2 ?? clone.entry_sell_oi2 ?? null,
         margin_quote: marginSnapshot,
+        // Observation-only provenance has no trades_v2 column either. Mirror it
+        // into the snapshot so the record still declares why it is unvaluable,
+        // instead of failing the whole insert into the reduced fallback.
+        analysis_only: entrySnapshot.analysis_only ?? clone.analysis_only ?? false,
+        valuation_status: entrySnapshot.valuation_status ?? clone.valuation_status ?? null,
         ...(paperTest ? {
             paper_test: paperTest,
             paper_lane: paperLane,
@@ -960,6 +965,12 @@ function sanitizeTradeForInsert(trade = {}) {
     delete clone.paper_policy_version;
     delete clone.brain_authorization_id;
     delete clone.paper_test;
+    // 2.6.46 regression: these two have no trades_v2 column, so PostgREST
+    // rejected the entire insert (PGRST204) and every trade — paper and real —
+    // was written through the reduced "essential fields" fallback, losing all
+    // instrument keys and the second leg. Mirrored into entry_snapshot above.
+    delete clone.analysis_only;
+    delete clone.valuation_status;
     return clone;
 }
 
