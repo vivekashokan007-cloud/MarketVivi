@@ -2899,11 +2899,22 @@ function paperTradeAuthorization(candidate) {
 // invents quantity or rupee P&L.
 function paperObservationAuthorization(candidate) {
     const strict = paperTradeAuthorization(candidate);
-    const nonBlocking = new Set([
-        'positive integral contract lot is required',
-        'contract identity incomplete',
-    ]);
-    const blocking = strict.reasons.filter(reason => !nonBlocking.has(reason));
+    const reasons = [];
+    const indexKey = normalizePaperIndexKey(candidate?.index || candidate?.index_key);
+    const legCount = candidateLegCount(candidate);
+    if (!indexKey) reasons.push('index must be NF or BNF');
+    if (legCount !== 2 && legCount !== 4) reasons.push('strategy must contain exactly 2 or 4 legs');
+    if (!String(candidate?.expiry || '').trim()) reasons.push('expiry is missing');
+    const legFields = [
+        ['sell', '', 'sell'], ['buy', '', 'buy'],
+        ...(legCount === 4 ? [['sell', '2', 'sell 2'], ['buy', '2', 'buy 2']] : []),
+    ];
+    legFields.forEach(([side, suffix, label]) => {
+        if (!(Number(candidate?.[`${side}Strike${suffix}`]) > 0)) reasons.push(`${label} strike is invalid`);
+        if (!['CE', 'PE'].includes(String(candidate?.[`${side}Type${suffix}`] || '').toUpperCase())) reasons.push(`${label} option type is invalid`);
+        if (!(Number(candidate?.[`${side}LTP${suffix}`]) > 0)) reasons.push(`${label} entry quote is unavailable`);
+    });
+    const blocking = [...new Set(reasons)];
     return {
         ...strict,
         allowed: blocking.length === 0,

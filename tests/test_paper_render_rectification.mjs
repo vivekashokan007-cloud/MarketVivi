@@ -116,6 +116,7 @@ assert(MR.paperAnalysisAuthorization(baseCand({ index: null, paperAnalysisEligib
 assert(MR.normalizePaperIndexKey('') === null && MR.normalizePaperIndexKey('BNF') === 'BNF', 'index normalize');
 assert(MR.paperAnalysisAuthorization(baseCand({ paperAnalysisEligibility: { allowed: true, authorization_id: 'z', schema_version: 'paper_analysis_v1', brain_version: 'b', candidate_id: 'c1' }, lot_conflict: true })).allowed === false, 'conflict');
 assert(MR.paperTradeAuthorization(baseCand({ index: 'UNKNOWN', lotSize: 65 })).allowed === false, 'unknown index');
+assert(MR.paperObservationAuthorization(baseCand({ lot_conflict: true })).allowed === true, 'Paper capture is available despite valuation-identity conflict');
 
 // R2.4: legacy boolean alone NEVER authorizes
 const legacyOnly = MR.paperAnalysisAuthorization(baseCand({
