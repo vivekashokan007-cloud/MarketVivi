@@ -21775,8 +21775,8 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 
 - Marketapp review branch: `10a37a1` (evaluation recovery plus notification/log fixes).
 - MarketVivi review branch: `21b16f6` (PWA version/cache alignment).
-- Android/Python release source target: `2.6.43` / versionCode `474`.
-- PWA marker: `v2.6.43 · b474`, cache target `1339` (to be applied in the next PWA version bump).
+- Android/Python/PWA release target: `2.6.44` / versionCode `475`.
+- PWA marker: `v2.6.44 · b475`, cache `1340`.
 - Production `main`, Supabase schema/data, live sizing, broker execution, and retraining remain unchanged.
 
 ### Fixes in the review batch
