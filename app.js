@@ -3341,6 +3341,27 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             alert('Paper trade blocked: authorized lot disagrees with nested contract identity.');
             return;
         }
+    } else if (isPaper) {
+        // Observation-only / unauthorized paper. The brain routes a trade here
+        // precisely BECAUSE it could not verify a contract lot, so there is no
+        // authorized lotSize to read. Previously this case had no branch at all:
+        // it fell through with entryLotSize=null, persisting a row the brain then
+        // fails closed on (no lot -> DATA_UNAVAILABLE, mark unavailable, Book/Exit
+        // inert). Resolve the standard contract lot so a structurally valid
+        // observation stays VALUABLE for tracking (its lane contract: "must not
+        // lock a structurally valid paper observation"). This PROPOSES a lot; the
+        // brain re-validates it against its authoritative dated lot table and
+        // fails closed on conflict, so a wrong constant can never yield a wrong
+        // P&L. The record stays analysis_only and excluded from contract-specific
+        // metrics.
+        entryNumberOfLots = Number(paperAuthorization?.number_of_lots ?? cand?.number_of_lots ?? cand?.lots ?? 1) || 1;
+        entryLotSize = Number(paperAuthorization?.lotSize ?? cand?.lotSize ?? cand?.lot_size ?? cand?.contract_lot_size) || null;
+        if (!(Number.isFinite(entryLotSize) && entryLotSize > 0)) {
+            entryLotSize = paperIdx === 'BNF' ? C.BNF_LOT : paperIdx === 'NF' ? C.NF_LOT : null;
+        }
+        entryQuantityUnits = (Number.isFinite(entryLotSize) && entryLotSize > 0)
+            ? entryLotSize * entryNumberOfLots
+            : null;
     } else if (!isPaper) {
         entryLotSize = Number(cand.lotSize || cand.lot_size || cand.contract_lot_size) || null;
         // Real path unchanged — may still use constants only when not paper.
