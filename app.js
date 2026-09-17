@@ -3617,7 +3617,14 @@ async function takeTradeImpl(candidateId, isPaper = false) {
     const saved = await DB.insertTrade(trade);
     if (saved) {
         trade.id = saved.id;
-        if (!paperObservationOnly) addOpenTradeToState(trade);
+        // Analysis-only paper trades are now valuable (contract lot is resolved on
+        // entry), and native getOpenTrades loads them unconditionally from
+        // trades_v2 (status=eq.OPEN, no analysis_only filter) — so they are already
+        // tracked and managed. Skipping the optimistic state add only made a
+        // just-taken analysis trade invisible on the position tab until the next
+        // native sync. addOpenTradeToState dedupes by id, so this cannot
+        // double-count paper capacity.
+        addOpenTradeToState(trade);
         playSound('entry');
         switchTab('positions');
         renderAll();
