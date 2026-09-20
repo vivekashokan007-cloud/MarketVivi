@@ -12,6 +12,8 @@ on:
       - 'log-viewer.js'
       - 'manifest.json'
       - 'style.css'
+      - 'test_eng_ae_r1_render_ml.mjs'
+      - 'test_eng_batches_bde_pwa.mjs'
       - 'tests/**'
       - 'tools/**'
       - '.github/workflows/review-validation.yml'
@@ -28,6 +30,8 @@ on:
       - 'log-viewer.js'
       - 'manifest.json'
       - 'style.css'
+      - 'test_eng_ae_r1_render_ml.mjs'
+      - 'test_eng_batches_bde_pwa.mjs'
       - 'tests/**'
       - 'tools/**'
       - '.github/workflows/review-validation.yml'
@@ -61,6 +65,8 @@ jobs:
       - name: Run Paper integration tests
         run: |
           node --test \
+            test_eng_ae_r1_render_ml.mjs \
+            test_eng_batches_bde_pwa.mjs \
             tests/test_paper_render_rectification.mjs \
             tests/test_paper_save_path_r2.mjs \
             tests/test_paper_r3_multilot_auth.mjs

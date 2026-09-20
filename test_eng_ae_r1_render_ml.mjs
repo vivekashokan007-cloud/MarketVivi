@@ -222,4 +222,54 @@ sandbox.renderML({
 });
 assert.match(mlEl.innerHTML, /STALE\/UNAVAILABLE/);
 
+mlEl.innerHTML = '';
+sandbox.getMLEvaluationLaneSummaryCached = () => ({
+  rowsToday: 30,
+  attributedRows: 30,
+  lanes: { NF_intraday: { rows: 30, labeled: 30, wins: 30 } },
+  teacher_summary: {
+    rows: 30,
+    successes: 30,
+    successRatePct: 100,
+    expectancyR: 1,
+    avgCapturedPct: 100,
+    breakEvenWinRatePct: 50,
+    worthTrading: true,
+    distinctSessionCount: 1,
+    sampleUncertain: true,
+    tradeableBucketCount: 1,
+    bucketCount: 1,
+    netProfitableRatePct: 100,
+  },
+  teacher_lanes: {
+    NF_intraday: {
+      rows: 30,
+      successes: 30,
+      successRatePct: 100,
+      expectancyR: 1,
+      avgCapturedPct: 100,
+      breakEvenWinRatePct: 50,
+      worthTrading: true,
+      distinctSessionCount: 1,
+      sampleUncertain: true,
+    },
+  },
+});
+sandbox.renderML({
+  serviceStatus: {
+    evaluationTargetDate: '2026-09-18',
+    evaluationDoneForTarget: true,
+    labelsSaved: true,
+    labelsSavedKnown: true,
+    learningComplete: true,
+    lastEvaluationOutcomeCount: 30,
+    lastEvaluationProducedCount: 30,
+  },
+  brainResult: {}, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '',
+});
+assert.match(mlEl.innerHTML, /Sample:\s*<b>UNCERTAIN<\/b>/);
+assert.match(mlEl.innerHTML, /Verdict withheld:\s*<b>INSUFFICIENT SESSIONS<\/b>/);
+assert.doesNotMatch(mlEl.innerHTML, /POSITIVE EXPECTANCY|NOT WORTH RISK YET/);
+assert.match(mlEl.innerHTML, />UNCERTAIN<\/td>/);
+
 console.log('PWA R1 renderML counterexamples OK');
