@@ -1754,6 +1754,100 @@ function buildPaperPnlBreakdown(tradeLike = {}) {
     return { grossMtm, estimatedRoundTripCost, netIfClosedNow, frictionBreakdown };
 }
 
+
+/** Batch E: analytical holding horizon in Asia/Kolkata. Does not rewrite trade_mode. */
+function deriveHoldingHorizon(tradeLike = {}) {
+    const IST = 'Asia/Kolkata';
+    const mode = String(tradeLike.trade_mode || tradeLike.tradeMode || '').toLowerCase();
+    const status = String(tradeLike.status || '').toUpperCase();
+    const entryRaw = tradeLike.entry_date || tradeLike.entry_ts || tradeLike.entryDate || null;
+    const exitRaw = tradeLike.exit_date || tradeLike.exit_ts || tradeLike.exitDate || null;
+    const sessionDateIst = (raw) => {
+        if (!raw) return null;
+        try {
+            const d = new Date(raw);
+            if (Number.isNaN(d.getTime())) {
+                const s = String(raw).slice(0, 10);
+                return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+            }
+            return new Intl.DateTimeFormat('en-CA', { timeZone: IST, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+        } catch (_) { return null; }
+    };
+    const entryDay = sessionDateIst(entryRaw);
+    const exitDay = sessionDateIst(exitRaw);
+    let holdingHorizon = 'UNKNOWN';
+    if (!exitRaw && (status === 'OPEN' || status === 'ACTIVE' || !status) && entryDay) holdingHorizon = 'OPEN';
+    else if (!entryDay || !exitDay) holdingHorizon = 'UNKNOWN';
+    else {
+        const a = new Date(`${entryDay}T00:00:00+05:30`);
+        const b = new Date(`${exitDay}T00:00:00+05:30`);
+        const delta = Math.round((b - a) / 86400000);
+        if (delta <= 0) holdingHorizon = 'SAME_SESSION';
+        else if (delta === 1) holdingHorizon = 'OVERNIGHT';
+        else holdingHorizon = 'MULTIDAY';
+    }
+    const intradayCarried = (mode === 'intraday') && (holdingHorizon === 'OVERNIGHT' || holdingHorizon === 'MULTIDAY');
+    return {
+        holding_horizon: holdingHorizon,
+        trade_mode: tradeLike.trade_mode || tradeLike.tradeMode || null,
+        entry_session_date_ist: entryDay,
+        exit_session_date_ist: exitDay,
+        intraday_carried_beyond_session: intradayCarried,
+        data_quality_note: intradayCarried
+            ? 'trade_mode=intraday but held beyond entry IST session; do not pool with same-session teacher outcomes'
+            : null,
+        comparable_for_teacher_pool: holdingHorizon === 'SAME_SESSION'
+    };
+}
+
+/** Batch D: derive teacher target-hit vs net-profitable reporting without relabeling is_success. */
+function summarizeTeacherReportingMetrics(rows = []) {
+    const items = Array.isArray(rows) ? rows.filter(r => r && typeof r === 'object') : [];
+    const sessions = new Set();
+    let targetHits = 0, netProfitable = 0, positiveEod = 0, tp = 0, sl = 0, eod = 0;
+    let pnlSum = 0, pnlN = 0, rSum = 0, rN = 0;
+    for (const row of items) {
+        const session = String(row.session_date || row.sessionDate || '').slice(0, 10);
+        if (session) sessions.add(session);
+        const exitReason = String(row.exit_reason || row.exitReason || '').toUpperCase();
+        const success = row.is_success === true || row.is_success === 1 || row.is_success === 'true';
+        if (success || exitReason === 'TP') targetHits += 1;
+        const pnl = Number(row.managed_pnl ?? row.net_pnl);
+        if (Number.isFinite(pnl)) {
+            pnlSum += pnl; pnlN += 1;
+            if (pnl > 0) netProfitable += 1;
+        }
+        if (exitReason === 'TP' || exitReason === 'TARGET') tp += 1;
+        else if (exitReason === 'SL' || exitReason === 'STOP') sl += 1;
+        else if (exitReason === 'EOD' || exitReason === 'TIME' || exitReason === 'SESSION_END') {
+            eod += 1;
+            if (Number.isFinite(pnl) && pnl > 0) positiveEod += 1;
+        }
+        const r = Number(row.r_multiple ?? row.rMultiple);
+        if (Number.isFinite(r)) { rSum += r; rN += 1; }
+    }
+    const rowCount = items.length;
+    const distinctSessions = sessions.size;
+    const rate = (n, d) => d > 0 ? (100 * n / d) : null;
+    return {
+        row_count: rowCount,
+        distinct_session_count: distinctSessions,
+        teacher_target_hit_count: targetHits,
+        teacher_target_hit_rate: rate(targetHits, rowCount),
+        net_profitable_count: netProfitable,
+        net_profitable_rate: rate(netProfitable, rowCount),
+        mean_net_pnl: pnlN ? pnlSum / pnlN : null,
+        mean_r_multiple: rN ? rSum / rN : null,
+        tp_count: tp,
+        sl_count: sl,
+        eod_count: eod,
+        positive_eod_count: positiveEod,
+        positive_eod_rate: rate(positiveEod, eod),
+        sample_uncertain: rowCount === 0 || distinctSessions <= 1,
+        label_semantics: 'is_success remains TP target hit for the current label version'
+    };
+}
+
 function buildTeacherLaneStatsFromOutcomes(outcomes = []) {
     const lanes = {
         NF_intraday: { rows: 0, successes: 0, sumR: 0, winRs: [], lossRs: [], capturedSum: 0, capturedCount: 0 },
@@ -5913,7 +6007,10 @@ function renderTradeCard(t, isPaper) {
     const paperClass = isPaper ? ' paper-card' : '';
     const tradeIdArg = jsArg(t.id);
     const closeHandler = (reason) => `closeTrade(${tradeIdArg}, ${jsArg(reason)})`;
+    const holdingMeta = deriveHoldingHorizon(t);
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
+    const horizonTag = holdingMeta.holding_horizon ? `<span class="mode-tag mode-horizon" title="${holdingMeta.data_quality_note || 'Analytical holding horizon (IST)'}">${holdingMeta.holding_horizon}</span>` : '';
+    const horizonNote = holdingMeta.intraday_carried_beyond_session ? `<div style="color:var(--warn);font-size:12px;margin-top:4px;">Intraday mode but held beyond entry session (${holdingMeta.holding_horizon}). Excluded from same-session teacher comparisons.</div>` : '';
     const savedMargin = realMarginValue(t);
     const savedMarginLine = savedMargin
         ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-2px;margin-bottom:4px">Upstox margin: ₹${localeNumberOrFallback(savedMargin, 'unavailable', { round: true })} <span style="color:var(--green)">(final)</span></div>`
@@ -5932,7 +6029,7 @@ function renderTradeCard(t, isPaper) {
     return `
     <div class="position-card${paperClass}" style="border-left:4px solid ${cardBorderColor}">
         <div class="pos-header">
-            <span class="pos-title">${icon} ${t.index_key} ${friendlyType(t.strategy_type)} ${modeTag}</span>
+            <span class="pos-title">${icon} ${t.index_key} ${friendlyType(t.strategy_type)} ${modeTag}${horizonTag}${horizonNote}</span>
             <span class="pos-strikes">${t.sell_strike}/${t.buy_strike} W:${t.width}</span>
         </div>
         <div class="pos-timing">${t.entry_date ? `⏱ ${entryDateShort} ${entryTime} · ${elapsed} ago` : ''}</div>
@@ -6225,11 +6322,19 @@ function renderML(snapshot = null) {
     const evaluationDone = service.evaluationDoneForTarget === true || service.evaluationDoneToday === true;
     const labelsSaved = service.labelsSaved === true || (evaluationDone && Number(service.lastEvaluationOutcomeCount || 0) >= 0 && !['FAILED_SAVE','FAILED','LEASE_HELD'].includes(String(service.evaluationPhase || '')));
     const c3Phase = String(service.c3FinalizationPhase || '');
-    const c3Failed = c3Phase === 'FAILED' || Boolean(service.c3FinalizationError);
+    const c3SessionDate = String(service.c3FinalizationSessionDate || service.c3FinalizationDate || '');
+    const c3ReasonCode = String(service.c3FinalizationReasonCode || '');
+    const c3Reason = String(service.c3FinalizationReason || service.c3FinalizationMessage || '');
+    // Batch B: failure is determined ONLY by explicit phase FAILED — not by a nonempty reason/error string.
+    const c3Failed = c3Phase === 'FAILED';
     const c3Ineligible = c3Phase === 'INELIGIBLE' || c3Phase === 'SKIPPED_NO_FRAMES';
-    const c3Verified = c3Phase === 'DONE';
+    const c3Pending = c3Phase === 'PENDING' || c3Phase === 'RUNNING' || c3Phase === 'QUEUED' || c3Phase === 'PREPARING' || c3Phase === 'BUILDING' || c3Phase === 'UPLOADING' || c3Phase === '';
+    // Stale C3 from another session must not be reused for the selected evaluation target.
+    const c3SessionMatchesTarget = !evaluationTargetDate || !c3SessionDate || c3SessionDate === evaluationTargetDate;
+    const c3StaleForTarget = Boolean(c3Phase) && !c3SessionMatchesTarget;
+    const c3Verified = c3Phase === 'DONE' && c3SessionMatchesTarget;
     const learningComplete = service.learningComplete === true;
-    // G5: never treat labels-saved / evaluationDone as learning complete when C3 failed.
+    // Batch B: INELIGIBLE must not force learningComplete to NO. Only FAILED (or other unfinished stages) does.
     const learningCompleteTruthful = learningComplete === true && !c3Failed;
 
     const evaluationRunning = service.evaluationRunning === true;
@@ -6389,6 +6494,20 @@ function renderML(snapshot = null) {
     const teacherSuccessRatePct = hasNativeTeacherSummary
         ? Number(summaryTeacher?.successRatePct || 0)
         : (teacherLaneTotal > 0 ? (teacherSuccessCount / teacherLaneTotal) * 100 : 0);
+    const teacherReporting = summarizeTeacherReportingMetrics(
+        Array.isArray(evaluationOutcomes) ? evaluationOutcomes : (Array.isArray(STATE.mlEvaluationOutcomes) ? STATE.mlEvaluationOutcomes : [])
+    );
+    const teacherDistinctSessions = Number(
+        summaryTeacher?.distinctSessionCount
+        ?? summaryTeacher?.distinct_session_count
+        ?? teacherReporting.distinct_session_count
+        ?? 0
+    );
+    const teacherNetProfitableRate = (
+        summaryTeacher?.netProfitableRatePct
+        ?? summaryTeacher?.net_profitable_rate
+        ?? teacherReporting.net_profitable_rate
+    );
     const teacherExpectancyR = hasNativeTeacherSummary
         ? Number(summaryTeacher?.expectancyR || 0)
         : (teacherLaneTotal > 0 ? Object.values(teacherLaneStats).reduce((sum, lane) => sum + ((lane.expectancyR || 0) * (lane.rows || 0)), 0) / teacherLaneTotal : 0);
@@ -6573,7 +6692,7 @@ function renderML(snapshot = null) {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${incompleteSession ? 'var(--warn)' : (evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)')))}">${incompleteSession ? 'INCOMPLETE_SESSION' : (evaluationDone ? 'LABELS_SAVED' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING')))}</b> · Labels saved: <b style="color:${labelsSaved ? 'var(--green)' : 'var(--text)'}">${labelsSaved ? 'YES' : 'NO'}</b> · Learning complete: <b style="color:${learningCompleteTruthful ? 'var(--green)' : 'var(--warn)'}">${learningCompleteTruthful ? 'YES' : 'NO'}</b> · C3: <b style="color:${c3Verified ? 'var(--green)' : (c3Failed ? 'var(--danger)' : (c3Ineligible ? 'var(--warn)' : 'var(--text)'))}">${c3Verified ? 'VERIFIED' : (c3Failed ? 'FAILED' : (c3Ineligible ? 'INELIGIBLE' : (c3Phase || 'PENDING')))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${evaluationAlarmFiredForTarget ? `<br><span style="color:var(--accent)">Evaluation alarm fired for this session${evaluationAutoStartForTarget ? ` · Auto-start: ${escapeHtml(evaluationAutoStartStatus || 'UNKNOWN')}` : ''}</span>` : ''}${evaluationAutoStartPending ? `<br><span style="color:var(--warn)">Evaluation alarm fired, but no auto-start state was recorded. Treat this as scheduler evidence, not a completed evaluation.</span>` : ''}${evaluationAutoStartFailed ? `<br><span style="color:var(--warn)">Evaluation auto-start failed: ${escapeHtml(evaluationAutoStartError || 'unknown error')}</span>` : ''}${incompleteSession ? `<br><span style="color:var(--warn)">${escapeHtml(evaluationIncompleteMessage)}</span>${evaluationForceAllowed ? `<br><span style="color:var(--accent)">Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.</span>` : ''}` : ''}${teacherReportPendingNotFailed ? `<br><span style="color:var(--accent)">Teacher research artifact pending until post-close evaluation completes.</span>` : (teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : '')}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 && !incompleteSession ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}${labelsSaved && c3Failed ? `<br><span style="color:var(--warn)">Labels saved, but C3 percentile finalization FAILED — this is NOT learning complete.</span>` : ''}${labelsSaved && c3Ineligible ? `<br><span style="color:var(--accent)">Labels saved; C3 marked ineligible from original evidence (no fabricated rows). Learning complete only if every applicable stage is verified or explicitly ineligible.</span>` : ''}${researchNoGradeableTeacherOutcomes ? `<br><span style="color:var(--warn)">Persisted rows exist, but 0 gradeable teacher outcomes passed integrity checks. Expectancy-style summaries are blocked for this session.</span>` : ''}
+                    Day evaluation: <b style="color:${incompleteSession ? 'var(--warn)' : (evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)')))}">${incompleteSession ? 'INCOMPLETE_SESSION' : (evaluationDone ? 'LABELS_SAVED' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING')))}</b> · Labels saved: <b style="color:${labelsSaved ? 'var(--green)' : 'var(--text)'}">${labelsSaved ? 'YES' : 'NO'}</b> · Learning complete: <b style="color:${learningCompleteTruthful ? 'var(--green)' : 'var(--warn)'}">${learningCompleteTruthful ? 'YES' : 'NO'}</b> · C3: <b style="color:${c3StaleForTarget ? 'var(--warn)' : (c3Verified ? 'var(--green)' : (c3Failed ? 'var(--danger)' : (c3Ineligible ? 'var(--warn)' : 'var(--text)')))}">${c3StaleForTarget ? 'STALE/UNAVAILABLE' : (c3Verified ? 'VERIFIED' : (c3Failed ? 'FAILED' : (c3Ineligible ? (c3Phase === 'SKIPPED_NO_FRAMES' ? 'SKIPPED_NO_FRAMES' : 'INELIGIBLE') : (c3Pending ? (c3Phase || 'PENDING') : (c3Phase || 'PENDING')))))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${evaluationAlarmFiredForTarget ? `<br><span style="color:var(--accent)">Evaluation alarm fired for this session${evaluationAutoStartForTarget ? ` · Auto-start: ${escapeHtml(evaluationAutoStartStatus || 'UNKNOWN')}` : ''}</span>` : ''}${evaluationAutoStartPending ? `<br><span style="color:var(--warn)">Evaluation alarm fired, but no auto-start state was recorded. Treat this as scheduler evidence, not a completed evaluation.</span>` : ''}${evaluationAutoStartFailed ? `<br><span style="color:var(--warn)">Evaluation auto-start failed: ${escapeHtml(evaluationAutoStartError || 'unknown error')}</span>` : ''}${incompleteSession ? `<br><span style="color:var(--warn)">${escapeHtml(evaluationIncompleteMessage)}</span>${evaluationForceAllowed ? `<br><span style="color:var(--accent)">Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.</span>` : ''}` : ''}${teacherReportPendingNotFailed ? `<br><span style="color:var(--accent)">Teacher research artifact pending until post-close evaluation completes.</span>` : (teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : '')}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 && !incompleteSession ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}${labelsSaved && c3Failed ? `<br><span style="color:var(--warn)">Labels saved, but C3 percentile finalization FAILED — this is NOT learning complete.</span>` : ''}${labelsSaved && c3Ineligible ? `<br><span style="color:var(--accent)">Labels saved; C3 marked ineligible from original evidence (no fabricated rows). Learning complete only if every applicable stage is verified or explicitly ineligible.</span>` : ''}${c3Ineligible && c3Reason ? `<br><span style="color:var(--warn)">C3 ineligible reason: ${escapeHtml(c3ReasonCode ? `${c3ReasonCode}: ${c3Reason}` : c3Reason)}</span>` : ''}${c3Failed && (service.c3FinalizationError || c3Reason) ? `<br><span style="color:var(--danger)">C3 failed: ${escapeHtml(String(service.c3FinalizationError || c3Reason))}</span>` : ''}${c3StaleForTarget ? `<br><span style="color:var(--warn)">C3 status belongs to session ${escapeHtml(c3SessionDate)}, not the selected evaluation target ${escapeHtml(evaluationTargetDate)}. Treating C3 as unavailable for this target.</span>` : ''}${researchNoGradeableTeacherOutcomes ? `<br><span style="color:var(--warn)">Persisted rows exist, but 0 gradeable teacher outcomes passed integrity checks. Expectancy-style summaries are blocked for this session.</span>` : ''}
                     ${evaluationFailureDetails}
                 </div>
             </div>
@@ -6661,7 +6780,7 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Teacher v1 Shadow Review</span>
                 </div>
                 <div class="brain-detail">
-                    Chosen rows: <b>${teacherLaneTotal}</b> · Success rate: <b>${teacherLaneTotal > 0 ? `${teacherSuccessRatePct.toFixed(1)}%` : '--'}</b><br>
+                    Chosen rows: <b>${teacherLaneTotal}</b> · Distinct sessions: <b>${teacherDistinctSessions != null ? teacherDistinctSessions : '--'}</b> · Teacher target hit: <b>${teacherLaneTotal > 0 ? `${teacherSuccessRatePct.toFixed(1)}%` : '--'}</b> · Net profitable: <b>${teacherNetProfitableRate != null && teacherLaneTotal > 0 ? `${Number(teacherNetProfitableRate).toFixed(1)}%` : '--'}</b><br>
                     Expectancy: <b>${teacherLaneTotal > 0 ? `${teacherExpectancyR.toFixed(2)}R` : '--'}</b> · Break-even win rate: <b>${teacherLaneTotal > 0 ? `${teacherBreakEvenPct.toFixed(1)}%` : '--'}</b><br>
                     Avg captured: <b>${teacherLaneTotal > 0 ? `${teacherAvgCapturedPct.toFixed(1)}%` : '--'}</b> · Bucket gate: <b>${teacherBucketCount > 0 ? `${teacherTradeableBucketCount}/${teacherBucketCount}` : '--'}</b>${teacherBucketCount > 0 ? ` · Verdict: <b style="color:${teacherWorthTrading ? 'var(--green)' : 'var(--warn)'}">${teacherWorthTrading ? 'POSITIVE EXPECTANCY' : 'NOT WORTH RISK YET'}</b>` : ''}<br>
                     Label version: <b>${summaryTeacher?.labelVersion || 'teacher_v1'}</b> · Scope: <b>managed exit, chosen-candidate view</b>
@@ -6741,7 +6860,7 @@ function renderML(snapshot = null) {
                             <tr>
                                 <th style="text-align:left;padding:6px 4px;color:var(--text-muted)">Lane</th>
                                 <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Rows</th>
-                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Success</th>
+                                <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Teacher target hit</th>
                                 <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Exp R</th>
                                 <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">BE win</th>
                                 <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Worth</th>
