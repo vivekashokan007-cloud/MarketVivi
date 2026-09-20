@@ -1,3 +1,6 @@
+
+---
+
 ## 2026-09-12 — Notification pack b460→b465 + eval residue (docs)
 
 **Tip documented:** Marketapp `0457698` · v2.6.34 / b465 (F5 not on tip). Audit/ruling: [docs/AUDIT_notifications_20260912.md](docs/AUDIT_notifications_20260912.md), [docs/RULING_claude_D4_clarification_20260912.md](docs/RULING_claude_D4_clarification_20260912.md).
@@ -21794,3 +21797,51 @@ Roadmap: [PROFIT_PRIORITY_ROADMAP_20260910.md](PROFIT_PRIORITY_ROADMAP_20260910.
 - Python suite after the notification/log changes: 840 tests passed locally.
 - Signed-release workflow for 2.6.43 was attempted; one run failed on the obsolete Android `tools` SDK package, then the workflow was corrected. A later run passed Python and Android tests and reached signed APK build; release publication still requires confirmation.
 - Do not claim profitability, learning completion, or autonomous-trading readiness from this evidence. Paper remains the only experimental lane; Real/live authorization is unchanged.
+## 2026-09-20 — v2.6.51 / b482: exact evaluation identity, fail-closed lots, CI repair, and research direction
+
+### Published engineering state
+
+- Android/Kotlin, Python Brain, and PWA are synchronized at **v2.6.51 / b482**.
+- Marketapp `main` and review branch `work/codex-eng-ae-r2-20260920` point to `e02a9be6077e107cca3149530e2f1dc4f005757d`.
+- MarketVivi `main` and review branch `work/codex-eng-ae-r2-20260920` point to `1dc3a8ae5bd87ffc7274eabb786e277f3380951d`.
+- No Supabase migration, production write, historical backfill, retraining, sizing promotion, broker activation, or live order was performed.
+- The signed Android release workflow was not dispatched. MarketVivi Pages auto-deployed from `main` successfully; an APK release still requires the separate signed-release workflow.
+
+### Corrective changes
+
+- Evaluation completion now requires the exact frozen chosen-primary identity for every labelable snapshot. A persisted secondary outcome, a different primary candidate, a stale aggregate count, or an unexpected server row cannot make the session complete. Recommendation identity readback is also required before final completion.
+- The Python live-position resolver fails closed when it has neither dated/expiry contract identity nor captured quantity. It cannot silently substitute the current NF/BNF lot for an undated historical Paper record.
+- Teacher profitability verdicts are withheld for uncertain one-session samples. The PWA displays `UNCERTAIN` / `INSUFFICIENT SESSIONS` instead of `YES`, `NO`, or `POSITIVE EXPECTANCY` when the evidence does not support a multi-session conclusion.
+- The Marketapp review workflow was repaired to pass `packages: platform-tools` to `android-actions/setup-android@v3`; its obsolete default `tools` package had stopped the job before Python or Android tests ran.
+
+### Verification
+
+- Local Marketapp Python suite: **879 tests passed, 2 skipped**; Python compilation, generated lot-table parity, and whitespace checks passed.
+- Local MarketVivi checks: JavaScript syntax passed and **5/5** PWA tests passed.
+- GitHub Marketapp validation run [35506841321](https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/35506841321) passed SDK setup, lot-table verification, the complete Python suite, the complete Android unit suite, and the no-publication-artifact guard.
+- GitHub MarketVivi validation run [35506415243](https://github.com/vivekashokan007-cloud/MarketVivi/actions/runs/35506415243) passed. Pages deployment run [35506414465](https://github.com/vivekashokan007-cloud/MarketVivi/actions/runs/35506414465) completed successfully.
+- The initial b482 Marketapp validation run failed only at Android SDK setup because of the removed `tools` package; it did not execute application tests. The follow-up CI repair passed.
+
+### Research decision: holding horizon before model promotion
+
+Recent Paper observations showed **12 of 13 closed Paper Iron Butterflies profitable**, with **12 held overnight**. Earlier teacher evidence also showed Iron Butterfly outcomes dominated by EOD exits rather than target hits. This is a useful hypothesis, not a proven strategy result: the sample is small and selected, and the apparent benefit may come from time decay, implied-volatility changes, underlying movement, selection effects, or a combination.
+
+The short Iron Butterfly is structurally compatible with a holding-horizon question: the Options Industry Council describes a neutral/range thesis, positive time-decay effect, and negative impact from an implied-volatility increase. Those mechanics do not establish that a particular overnight or multi-day policy is profitable in this system.
+
+The research must compare the same entry setups under predeclared exit policies: same session, next trading session, and two/three trading sessions where expiry permits. For each policy, retain net P&L after costs, maximum interim loss, stop breaches, overnight gaps, margin/time usage, open positions, and missing-data counts. Keep target-hit, net-profitable, and acceptable-downside labels separate. Use chronological unseen sessions, group overlapping snapshots from the same setup, and never infer missing quotes or backfill a favourable outcome.
+
+### LightGBM / tabular-model decision
+
+LightGBM is a gradient-boosted decision-tree framework, not a tabular foundation model. It is a reasonable **offline challenger** because the current data are structured, mixed-type, and still modest in size. It should first predict outcome distributions or net-risk categories using only information available at entry and an explicit holding horizon. It must remain shadow-only until it beats simple baselines on later unseen sessions after costs and remains calibrated by strategy family and horizon.
+
+No LightGBM code, Brain rule, ranking change, overnight execution policy, or model promotion was made in this update. We should not manually copy tree-model heuristics into Brain; any benefit must come from a reproducible out-of-sample comparison. A tabular foundation model such as TabPFN is a separate research option with different compute, deployment, and prior-data assumptions, and is not justified for phone deployment yet.
+
+### Research gate before implementation
+
+1. Freeze the outcome definition and holding-horizon buckets (`SAME_SESSION`, `OVERNIGHT`, `MULTIDAY`, `OPEN`, `UNKNOWN`).
+2. Produce a matched chronological dataset with exact entry identity, leg/lot provenance, quote quality, costs, and exit timestamps.
+3. Compare simple historical baselines, the current model, and LightGBM offline using the same folds and labels.
+4. Report uncertainty by session and strategy family; do not use pooled repeated snapshots as independent trades.
+5. Shadow-test any surviving challenger without changing ranking, Paper availability, sizing, or live execution.
+
+Until those gates pass, the multi-day observation remains a research hypothesis and the current production behavior remains unchanged.
