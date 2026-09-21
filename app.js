@@ -346,13 +346,17 @@ function pullRenderSnapshot() {
     const pollHistory = Array.isArray(pollHistoryRaw) ? pollHistoryRaw : [];
     const latestPoll = latestPollData({ latestPoll: readNativeJson('getLatestPoll', {}) });
     const baseline = readNativeJson('getBaseline', {});
+    const positionMarkStates = readNativeJson('getPositionMarkStates', {});
     const snapshot = {
         serviceStatus,
         pollHistory,
         latestPoll,
         baseline,
         brainResult: readNativeJson('getBrainResult', {}),
-        openTrades: readNativeJson('getOpenTrades', []),
+        openTrades: reconcilePaperPositionMarks(
+            readNativeJson('getOpenTrades', []),
+            positionMarkStates
+        ),
         bnfChain: readNativeJson('getBnfChain', {}),
         nfChain: readNativeJson('getNfChain', {}),
         signalStats: readNativeJson('getSignalAccuracyStats', {}),
@@ -371,6 +375,49 @@ function pullRenderSnapshot() {
     if (!Array.isArray(snapshot.yesterdayHistory7)) snapshot.yesterdayHistory7 = [];
     if (!Array.isArray(snapshot.premiumHistory7)) snapshot.premiumHistory7 = [];
     return snapshot;
+}
+
+/**
+ * The Kotlin position tick service owns strict executable bid/ask marks. The
+ * Brain remains the source of contextual insight, but a temporary chain gap
+ * must not erase a previously verified Paper MTM from the rendered UI.
+ *
+ * LIVE_FULL is current display data. STALE_LAST_VALID is deliberately
+ * display-only: callers retain the value for analysis, while close/execution
+ * remains blocked until a fresh exit quote is available.
+ */
+function reconcilePaperPositionMarks(trades, markStates) {
+    if (!Array.isArray(trades) || !markStates || typeof markStates !== 'object') return Array.isArray(trades) ? trades : [];
+    return trades.map(trade => {
+        if (!trade?.paper) return trade; // Real behaviour is intentionally unchanged.
+        const mark = markStates[String(trade.id)] || null;
+        if (!mark || typeof mark !== 'object') return trade;
+        const state = String(mark.display_state || '').toUpperCase();
+        const pnl = asFiniteNumber(mark.last_valid_current_pnl);
+        if (pnl === null || (state !== 'LIVE_FULL' && state !== 'STALE_LAST_VALID')) return trade;
+        const stale = state === 'STALE_LAST_VALID';
+        return {
+            ...trade,
+            current_pnl: pnl,
+            // P1 requires a complete executable book. Preserve a distinct stale
+            // value instead of mislabelling it as a fresh Brain valuation.
+            valuation_quality: stale ? 'stale' : 'full',
+            position_mark_state: state,
+            position_mark_timestamp: mark.last_valid_tick_ts || null,
+            position_mark_source: mark.source || 'P1_REST_60S',
+            position_mark_actionable: false,
+            positionDataDegraded: stale || trade.positionDataDegraded === true,
+        };
+    });
+}
+
+function formatPositionMarkTime(timestamp) {
+    if (!timestamp) return '--';
+    const time = new Date(timestamp);
+    if (Number.isNaN(time.getTime())) return '--';
+    return time.toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false
+    });
 }
 
 function validDateOrBlank(value) {
@@ -4062,7 +4109,7 @@ async function closeTrade(tradeId, exitReason) {
         alert('Position cannot be closed right now — the live exit premium is unavailable. Close is blocked so the app does not write a fake zero-premium label. Wait for the next quote/poll or refresh before closing.');
         return;
     }
-    if (isPaper && (valuationQuality === 'unavailable' || valuationQuality === 'degraded')) {
+    if (isPaper && (valuationQuality === 'unavailable' || valuationQuality === 'degraded' || valuationQuality === 'stale')) {
         alert(`Position cannot be closed right now — valuation quality is ${valuationQuality}. Close is blocked so the app does not persist a degraded paper label.`);
         return;
     }
@@ -5968,6 +6015,9 @@ function renderTradeCard(t, isPaper) {
     const ci = t.controlIndex;
     const livePosition = bd.position_live?.[String(t.id)] || {};
     const valuationQuality = t.valuation_quality || t.valuationQuality || livePosition.valuation_quality || 'unknown';
+    const positionMarkState = String(t.position_mark_state || '').toUpperCase();
+    const positionMarkTime = formatPositionMarkTime(t.position_mark_timestamp);
+    const positionMarkSource = t.position_mark_source || '';
     const legsRequired = t.legs_required ?? livePosition.legs_required ?? null;
     const legsQuoted = t.legs_quoted ?? livePosition.legs_quoted ?? null;
     const fallbackLegs = t.legs_intrinsic_fallback ?? livePosition.legs_intrinsic_fallback ?? null;
@@ -5975,6 +6025,14 @@ function renderTradeCard(t, isPaper) {
     const controlMeta = t.controlIndexMeta || t.control_index_meta || bd.positions?.[String(t.id)]?.controlIndexMeta || {};
     const signalPct = controlMeta.signal_completeness_pct ?? null;
     const dataDegraded = valuationQuality !== 'unknown' && valuationQuality !== 'full';
+    const markLabel = positionMarkState === 'LIVE_FULL'
+        ? 'P1 VALIDATED'
+        : positionMarkState === 'STALE_LAST_VALID'
+        ? 'STALE LAST VALID'
+        : String(valuationQuality).toUpperCase();
+    const markSourceLine = positionMarkState
+        ? ` · ${positionMarkState === 'STALE_LAST_VALID' ? 'last validated' : 'validated'} ${positionMarkTime}${positionMarkSource ? ` · ${positionMarkSource}` : ''}${positionMarkState === 'STALE_LAST_VALID' ? ' · display only; fresh quote required to close' : ''}`
+        : '';
     let ciColor = 'var(--text-muted)', ciLabel = 'Calculating...';
     if (ci !== null && ci !== undefined) {
         ciColor = ci > 20 ? 'var(--green)' : ci < -20 ? 'var(--danger)' : 'var(--warn)';
@@ -6040,8 +6098,8 @@ function renderTradeCard(t, isPaper) {
             ${t.wallDrift ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.wallDrift.severity >= 2 ? 'var(--danger)' : 'var(--warn)'}">
                 ${t.wallDrift.warning}
             </div>` : ''}
-            ${(dataDegraded || lotAssumed || signalPct !== null) ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${dataDegraded || lotAssumed ? 'var(--warn)' : 'var(--text-muted)'};border-top:1px solid var(--border)">
-                🧪 Mark quality: <b>${valuationQuality.toUpperCase()}</b>${legsRequired !== null ? ` · quotes ${legsQuoted ?? 0}/${legsRequired}` : ''}${fallbackLegs ? ` · intrinsic fallback ${fallbackLegs}` : ''}${lotAssumed ? ' · lot assumed' : ''}${signalPct !== null ? ` · CI signals ${signalPct}%` : ''}
+            ${(dataDegraded || lotAssumed || signalPct !== null || positionMarkState) ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${dataDegraded || lotAssumed ? 'var(--warn)' : 'var(--text-muted)'};border-top:1px solid var(--border)">
+                🧪 Mark quality: <b>${markLabel}</b>${markSourceLine}${legsRequired !== null ? ` · quotes ${legsQuoted ?? 0}/${legsRequired}` : ''}${fallbackLegs ? ` · intrinsic fallback ${fallbackLegs}` : ''}${lotAssumed ? ' · lot assumed' : ''}${signalPct !== null ? ` · CI signals ${signalPct}%` : ''}
             </div>` : ''}
             ${t.vixSpike && t.vixSpike.change >= 0.5 ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.vixSpike.change >= 2.0 ? 'var(--danger)' : t.vixSpike.change >= 1.0 ? 'var(--warn)' : 'var(--text-muted)'}">
                 🌡️ VIX ${t.vixSpike.entryVix.toFixed(1)}→${t.vixSpike.currentVix.toFixed(1)} (${t.vixSpike.change > 0 ? '+' : ''}${t.vixSpike.change}${t.vixSpike.change >= 2.0 ? ' ⚠️ SPIKE — EXIT' : t.vixSpike.change >= 1.0 ? ' — rising' : ''})
