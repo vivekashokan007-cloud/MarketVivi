@@ -99,6 +99,7 @@ const C = {
 const DEFAULT_TRADE_MODE = 'intraday';
 const LS_TRADE_MODE = 'mr2_trade_mode';
 const LS_TRADE_MODE_EXPLICIT = 'mr2_trade_mode_explicit';
+const PAPER_CLOSE_QUOTE_IN_FLIGHT = new Map();
 
 // ═══ CALIBRATION DATA — paper trades (25) + backtest (8372 trades, 552 days, Apr 2026) ═══
 const CALIBRATION = {
@@ -1671,13 +1672,13 @@ function buildNormalizedCloseExtremaPayload(tradeLike = {}, extras = {}) {
 
 function moneyOrUnavailable(value) {
     const num = asFiniteNumber(value);
-    return num === null ? 'unavailable' : `₹${num.toLocaleString()}`;
+    return num === null ? 'unavailable' : `₹${num.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
 function localeNumberOrFallback(value, fallback = '--', { round = false } = {}) {
     const num = asFiniteNumber(value);
     if (num === null) return fallback;
-    return (round ? Math.round(num) : num).toLocaleString();
+    return (round ? Math.round(num) : num).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
 function currentPnlValue(tradeLike = {}) {
@@ -4087,6 +4088,87 @@ async function logManualTrade() {
     }
 }
 
+function paperCloseErrorMessage(error) {
+    const code = String(error?.reason_code || error?.code || 'INTERNAL_ERROR');
+    const labels = {
+        TRADE_NOT_FOUND: 'the Paper trade was not found',
+        PAPER_ONLY: 'this request is not a Paper trade',
+        MARKET_SESSION_INACTIVE: 'the market session is inactive',
+        LOT_AUTHORITY_UNRESOLVED: 'the dated contract lot could not be verified',
+        STRUCTURE_INVALID: 'the complete strategy structure is unavailable',
+        INSTRUMENT_KEY_MISSING: 'an option instrument key is missing',
+        QUOTE_INCOMPLETE: 'one or more exit bid/ask quotes are incomplete',
+        CROSSED_QUOTE: 'a crossed exit quote was returned',
+        NON_POSITIVE_EXECUTABLE_QUOTE: 'an executable exit quote is non-positive',
+        VALUATION_NOT_ACCEPTED: 'the fresh P1 valuation was not accepted',
+        REQUEST_MISMATCH: 'the fresh quote belonged to another request',
+        QUOTE_EXPIRED: 'the fresh quote expired before confirmation',
+        TIMEOUT: 'the fresh quote did not arrive within 10 seconds',
+        NATIVE_UNAVAILABLE: 'the native quote service is unavailable',
+        INTERNAL_ERROR: 'the fresh quote service failed'
+    };
+    return `Paper position cannot be closed safely — ${labels[code] || 'the fresh exit quote is unavailable'} (${code}).`;
+}
+
+async function requestFreshPaperCloseQuote(tradeId) {
+    const key = String(tradeId || '').trim();
+    if (!key) throw Object.assign(new Error('TRADE_NOT_FOUND'), { reason_code: 'TRADE_NOT_FOUND' });
+    const existing = PAPER_CLOSE_QUOTE_IN_FLIGHT.get(key);
+    if (existing) return existing;
+
+    const promise = (async () => {
+        const bridge = nativeBridge();
+        if (!bridge || typeof bridge.requestPaperCloseQuote !== 'function' || typeof bridge.getPaperCloseQuote !== 'function') {
+            throw Object.assign(new Error('NATIVE_UNAVAILABLE'), { reason_code: 'NATIVE_UNAVAILABLE' });
+        }
+        const request = safeParseNB(bridge.requestPaperCloseQuote(key), null);
+        if (!request?.ok || !request.request_id || String(request.trade_id) !== key) {
+            const reason = request?.reason_code || 'REQUEST_MISMATCH';
+            throw Object.assign(new Error(reason), { reason_code: reason });
+        }
+        const requestId = String(request.request_id);
+        const started = Date.now();
+        while (Date.now() - started <= 10000) {
+            const row = safeParseNB(bridge.getPaperCloseQuote(requestId), null);
+            if (!row || String(row.request_id || '') !== requestId || String(row.trade_id || '') !== key) {
+                throw Object.assign(new Error('REQUEST_MISMATCH'), { reason_code: 'REQUEST_MISMATCH' });
+            }
+            const status = String(row.status || '').toUpperCase();
+            if (status === 'FAILED' || status === 'EXPIRED') {
+                throw Object.assign(new Error(row.reason_code || status), { reason_code: row.reason_code || status });
+            }
+            if (status === 'READY') {
+                const numeric = ['executable_close_premium', 'gross_close_pnl', 'quoted_at_ms', 'expires_at_ms'];
+                const validNumbers = numeric.every(name => Number.isFinite(Number(row[name])));
+                const valid = row.contract_version === 'paper_close_quote_v1'
+                    && row.valuation_quality === 'OK'
+                    && row.mark_basis === 'EXECUTABLE'
+                    && validNumbers
+                    && Number(row.leg_count) === Number(row.expected_leg_count)
+                    && Date.now() < Number(row.expires_at_ms);
+                if (!valid) {
+                    const reason = Date.now() >= Number(row.expires_at_ms) ? 'QUOTE_EXPIRED' : 'VALUATION_NOT_ACCEPTED';
+                    throw Object.assign(new Error(reason), { reason_code: reason });
+                }
+                return row;
+            }
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        throw Object.assign(new Error('TIMEOUT'), { reason_code: 'TIMEOUT' });
+    })();
+    PAPER_CLOSE_QUOTE_IN_FLIGHT.set(key, promise);
+    try {
+        return await promise;
+    } finally {
+        PAPER_CLOSE_QUOTE_IN_FLIGHT.delete(key);
+    }
+}
+
+function setPaperCloseBusy(tradeId, busy) {
+    STATE._paperCloseQuoteBusyTradeId = busy ? String(tradeId) : null;
+    renderAll();
+}
+
 async function closeTrade(tradeId, exitReason) {
     const trade = findOpenTradeById(tradeId);
     if (!trade) {
@@ -4098,20 +4180,35 @@ async function closeTrade(tradeId, exitReason) {
     // Confirmation
     const isPaper = trade.paper;
     const prefix = isPaper ? '📋 Paper' : '📌 Real';
-    const grossClosePnl = currentPnlValue(trade);
-    const currentPremium = asFiniteNumber(trade.current_premium);
+    let grossClosePnl = currentPnlValue(trade);
+    let currentPremium = asFiniteNumber(trade.current_premium);
     const valuationQuality = String(trade.valuation_quality || '').trim().toLowerCase();
-    if (grossClosePnl === null) {
-        alert('Position cannot be valued right now — no current P&L is available. Close is blocked so the app does not write a fake zero-P&L label. Wait for the next quote/poll or refresh before closing.');
-        return;
-    }
-    if (isPaper && currentPremium === null) {
-        alert('Position cannot be closed right now — the live exit premium is unavailable. Close is blocked so the app does not write a fake zero-premium label. Wait for the next quote/poll or refresh before closing.');
-        return;
-    }
-    if (isPaper && (valuationQuality === 'unavailable' || valuationQuality === 'degraded' || valuationQuality === 'stale')) {
-        alert(`Position cannot be closed right now — valuation quality is ${valuationQuality}. Close is blocked so the app does not persist a degraded paper label.`);
-        return;
+    let paperCloseQuote = null;
+    if (isPaper) {
+        setPaperCloseBusy(tradeId, true);
+        try {
+            paperCloseQuote = await requestFreshPaperCloseQuote(tradeId);
+            grossClosePnl = asFiniteNumber(paperCloseQuote.gross_close_pnl);
+            currentPremium = asFiniteNumber(paperCloseQuote.executable_close_premium);
+            if (grossClosePnl === null || currentPremium === null) {
+                throw Object.assign(new Error('VALUATION_NOT_ACCEPTED'), { reason_code: 'VALUATION_NOT_ACCEPTED' });
+            }
+            // The fresh quote is authoritative for this close only. It does not
+            // promote the periodic display cache into an execution source.
+            trade.current_pnl = grossClosePnl;
+            trade.current_premium = currentPremium;
+            trade.valuation_quality = 'full';
+        } catch (error) {
+            alert(paperCloseErrorMessage(error));
+            return;
+        } finally {
+            setPaperCloseBusy(tradeId, false);
+        }
+    } else {
+        if (grossClosePnl === null) {
+            alert('Position cannot be valued right now — no current P&L is available. Close is blocked so the app does not write a fake zero-P&L label. Wait for the next quote/poll or refresh before closing.');
+            return;
+        }
     }
     const paperPnl = isPaper ? buildPaperPnlBreakdown(trade) : null;
     const netClosePnl = isPaper ? paperPnl.netIfClosedNow : null;
@@ -4120,6 +4217,13 @@ async function closeTrade(tradeId, exitReason) {
         ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)}\nEst. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}\nNet if closed now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}`
         : `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nP&L: ₹${trade.current_pnl ?? 'unknown'}`;
     if (!confirm(confirmMsg)) return;
+
+    if (isPaper && Date.now() >= Number(paperCloseQuote?.expires_at_ms || 0)) {
+        // Re-enter the Paper path so the confirmation displays the new quote;
+        // the recursive call requests exactly one new quote; never silently
+        // close using an expired value.
+        return closeTrade(tradeId, exitReason);
+    }
 
     try {
         const latestPoll = latestPollData();
@@ -4193,7 +4297,19 @@ async function closeTrade(tradeId, exitReason) {
                 friction_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
                 net_pnl: isPaper ? netClosePnl : null,
                 net_won: isPaper ? netWon : null,
-                exit_premium: trade.current_premium ?? null,
+                exit_premium: isPaper ? currentPremium : (trade.current_premium ?? null),
+                paper_close_quote: isPaper && paperCloseQuote ? {
+                    contract_version: paperCloseQuote.contract_version,
+                    request_id: paperCloseQuote.request_id,
+                    source: paperCloseQuote.source,
+                    quoted_at_ms: paperCloseQuote.quoted_at_ms,
+                    expires_at_ms: paperCloseQuote.expires_at_ms,
+                    valuation_quality: paperCloseQuote.valuation_quality,
+                    mark_basis: paperCloseQuote.mark_basis,
+                    leg_count: paperCloseQuote.leg_count,
+                    expected_leg_count: paperCloseQuote.expected_leg_count,
+                    position_tick_guards_version: paperCloseQuote.position_tick_guards_version
+                } : null,
                 peak_pnl: closeExtrema.peak_pnl,
                 trough_pnl: closeExtrema.trough_pnl,
                 peak_pnl_validity: closeExtrema.peak_pnl_validity,
@@ -4232,7 +4348,7 @@ async function closeTrade(tradeId, exitReason) {
                 regime: bd.institutionalRegime?.regime ?? null,
                 spot_sigma: latestPoll?.spotSigma ?? null,
                 minutes_since_open: minsOpen,
-                premium: trade.current_premium ?? null,
+                premium: isPaper ? currentPremium : (trade.current_premium ?? null),
                 drift_from_morning: STATE.biasDrift ?? 0,
                 gross_mtm_close: grossClosePnl,
                 estimated_round_trip_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
@@ -6045,6 +6161,7 @@ function renderTradeCard(t, isPaper) {
     const paperClass = isPaper ? ' paper-card' : '';
     const tradeIdArg = jsArg(t.id);
     const closeHandler = (reason) => `closeTrade(${tradeIdArg}, ${jsArg(reason)})`;
+    const closeBusy = isPaper && String(STATE._paperCloseQuoteBusyTradeId || '') === String(t.id);
     const holdingMeta = deriveHoldingHorizon(t);
     const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
     const horizonTag = holdingMeta.holding_horizon ? `<span class="mode-tag mode-horizon" title="${holdingMeta.data_quality_note || 'Analytical holding horizon (IST)'}">${holdingMeta.holding_horizon}</span>` : '';
@@ -6101,6 +6218,9 @@ function renderTradeCard(t, isPaper) {
             ${(dataDegraded || lotAssumed || signalPct !== null || positionMarkState) ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${dataDegraded || lotAssumed ? 'var(--warn)' : 'var(--text-muted)'};border-top:1px solid var(--border)">
                 🧪 Mark quality: <b>${markLabel}</b>${markSourceLine}${legsRequired !== null ? ` · quotes ${legsQuoted ?? 0}/${legsRequired}` : ''}${fallbackLegs ? ` · intrinsic fallback ${fallbackLegs}` : ''}${lotAssumed ? ' · lot assumed' : ''}${signalPct !== null ? ` · CI signals ${signalPct}%` : ''}
             </div>` : ''}
+            ${isPaper && positionMarkState === 'LIVE_FULL' ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:var(--text-muted);border-top:1px solid var(--border)">
+                ✅ Valuation: <b>P1 VALIDATED</b> · Brain advice: ${asFiniteNumber(t.current_premium) === null ? 'unavailable — Brain poll mark incomplete' : 'available'} · Manual Paper close: fresh quote required
+            </div>` : ''}
             ${t.vixSpike && t.vixSpike.change >= 0.5 ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.vixSpike.change >= 2.0 ? 'var(--danger)' : t.vixSpike.change >= 1.0 ? 'var(--warn)' : 'var(--text-muted)'}">
                 🌡️ VIX ${t.vixSpike.entryVix.toFixed(1)}→${t.vixSpike.currentVix.toFixed(1)} (${t.vixSpike.change > 0 ? '+' : ''}${t.vixSpike.change}${t.vixSpike.change >= 2.0 ? ' ⚠️ SPIKE — EXIT' : t.vixSpike.change >= 1.0 ? ' — rising' : ''})
             </div>` : ''}
@@ -6132,8 +6252,8 @@ function renderTradeCard(t, isPaper) {
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
-            <button class="btn-close-profit" onclick='${closeHandler('Brain said BOOK')}'>💰 Book Profit</button>
-            <button class="btn-close-loss" onclick='${closeHandler(defaultExitReasonForTrade(t))}'>🛑 Exit</button>
+            <button class="btn-close-profit" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler('Brain said BOOK')}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '💰 Book Profit'}</button>
+            <button class="btn-close-loss" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler(defaultExitReasonForTrade(t))}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '🛑 Exit'}</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
             <summary style="cursor:pointer;font-size:10px;color:var(--text-muted);user-select:none">More exit reasons ▸</summary>
