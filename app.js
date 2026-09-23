@@ -885,23 +885,36 @@ const DB = {
             if (error) throw error;
             return true;
         } catch (e) {
-            const additiveCloseFields = [
-                'close_trace_json',
+            // Optional additive fields may be stripped on schema fallback.
+            // close_trace_json is NEVER stripped — a successful close must not
+            // silently discard provenance (R3 reject-fix).
+            const optionalAdditiveCloseFields = [
                 'friction_cost',
                 'friction_breakdown_json',
                 'net_pnl',
                 'net_won',
                 'friction_version'
             ];
-            if (patch && additiveCloseFields.some(k => Object.prototype.hasOwnProperty.call(patch, k))) {
+            const hadCloseTrace = !!(patch && Object.prototype.hasOwnProperty.call(patch, 'close_trace_json'));
+            const hasOptionalAdditive = !!(patch && optionalAdditiveCloseFields.some(
+                k => Object.prototype.hasOwnProperty.call(patch, k)
+            ));
+            if (hadCloseTrace || hasOptionalAdditive) {
                 try {
                     const sb = this.supabase;
-                    const fallbackPatch = { ...patch };
-                    additiveCloseFields.forEach(k => delete fallbackPatch[k]);
+                    const fallbackPatch = buildTradeUpdateFallbackPatch(patch);
+                    if (!shouldAcceptTradeUpdateFallback(patch, fallbackPatch)) {
+                        console.warn('[DB] updateTrade refusing fallback that would drop close_trace_json provenance');
+                        return false;
+                    }
                     const { error } = await sb.from('trades_v2').update(fallbackPatch).eq('id', id);
                     if (!error) {
-                        console.warn('[DB] updateTrade retried without additive close fields:', e.message);
+                        console.warn('[DB] updateTrade retried without optional additive close fields (close_trace_json retained):', e.message);
                         return true;
+                    }
+                    if (hadCloseTrace) {
+                        console.warn('[DB] updateTrade failed including close_trace_json; refusing silent provenance drop:', e.message);
+                        return false;
                     }
                 } catch (_) {}
             }
@@ -4171,7 +4184,35 @@ function setPaperCloseBusy(tradeId, busy) {
 
 
     // Batch A REJECT accuracy: persist button provenance distinctly from Brain BOOK.
-    function assertPersistedCloseReasonProvenance(reason) {
+
+/**
+ * R3: build fallback patch for updateTrade. Never strips close_trace_json.
+ * Optional friction/net fields may be dropped when schema lacks those columns.
+ */
+function buildTradeUpdateFallbackPatch(patch) {
+    const optionalAdditiveCloseFields = [
+        'friction_cost',
+        'friction_breakdown_json',
+        'net_pnl',
+        'net_won',
+        'friction_version'
+    ];
+    const fallbackPatch = { ...(patch || {}) };
+    optionalAdditiveCloseFields.forEach(k => { delete fallbackPatch[k]; });
+    return fallbackPatch;
+}
+
+/**
+ * R3: a fallback that drops close_trace_json must not be treated as success.
+ */
+function shouldAcceptTradeUpdateFallback(originalPatch, fallbackPatch) {
+    const had = !!(originalPatch && Object.prototype.hasOwnProperty.call(originalPatch, 'close_trace_json'));
+    const kept = !!(fallbackPatch && Object.prototype.hasOwnProperty.call(fallbackPatch, 'close_trace_json'));
+    if (had && !kept) return false;
+    return true;
+}
+
+function assertPersistedCloseReasonProvenance(reason) {
         const r = String(reason || '');
         if (r === 'manual_book_profit_button') {
             // Button provenance — NOT proof Brain emitted BOOK.
