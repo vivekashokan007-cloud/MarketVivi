@@ -855,6 +855,54 @@ const AUTH_ACCESS = {
 };
 
 // Storage-only Supabase adapter. Strategy analysis remains native-only.
+/**
+ * R4: real updateTrade implementation, injectable supabase client for tests.
+ * DB.updateTrade delegates here — do not mirror this logic in tests.
+ */
+async function updateTradeWithSupabase(sb, id, patch) {
+    if (!sb) throw new Error('Supabase client unavailable');
+    try {
+        const { error } = await sb.from('trades_v2').update(patch).eq('id', id);
+        if (error) throw error;
+        return true;
+    } catch (e) {
+        // Optional additive fields may be stripped on schema fallback.
+        // close_trace_json is NEVER stripped — a successful close must not
+        // silently discard provenance (R3/R4 reject-fix).
+        const optionalAdditiveCloseFields = [
+            'friction_cost',
+            'friction_breakdown_json',
+            'net_pnl',
+            'net_won',
+            'friction_version'
+        ];
+        const hadCloseTrace = !!(patch && Object.prototype.hasOwnProperty.call(patch, 'close_trace_json'));
+        const hasOptionalAdditive = !!(patch && optionalAdditiveCloseFields.some(
+            k => Object.prototype.hasOwnProperty.call(patch, k)
+        ));
+        if (hadCloseTrace || hasOptionalAdditive) {
+            try {
+                const fallbackPatch = buildTradeUpdateFallbackPatch(patch);
+                if (!shouldAcceptTradeUpdateFallback(patch, fallbackPatch)) {
+                    console.warn('[DB] updateTrade refusing fallback that would drop close_trace_json provenance');
+                    return false;
+                }
+                const { error } = await sb.from('trades_v2').update(fallbackPatch).eq('id', id);
+                if (!error) {
+                    console.warn('[DB] updateTrade retried without optional additive close fields (close_trace_json retained):', e.message);
+                    return true;
+                }
+                if (hadCloseTrace) {
+                    console.warn('[DB] updateTrade failed including close_trace_json; refusing silent provenance drop:', e.message);
+                    return false;
+                }
+            } catch (_) {}
+        }
+        console.warn('[DB] updateTrade failed:', e.message);
+        return false;
+    }
+}
+
 const DB = {
     _client: null,
     get supabase() {
@@ -878,49 +926,9 @@ const DB = {
         }
     },
     async updateTrade(id, patch) {
-        try {
-            const sb = this.supabase;
-            if (!sb) throw new Error('Supabase client unavailable');
-            const { error } = await sb.from('trades_v2').update(patch).eq('id', id);
-            if (error) throw error;
-            return true;
-        } catch (e) {
-            // Optional additive fields may be stripped on schema fallback.
-            // close_trace_json is NEVER stripped — a successful close must not
-            // silently discard provenance (R3 reject-fix).
-            const optionalAdditiveCloseFields = [
-                'friction_cost',
-                'friction_breakdown_json',
-                'net_pnl',
-                'net_won',
-                'friction_version'
-            ];
-            const hadCloseTrace = !!(patch && Object.prototype.hasOwnProperty.call(patch, 'close_trace_json'));
-            const hasOptionalAdditive = !!(patch && optionalAdditiveCloseFields.some(
-                k => Object.prototype.hasOwnProperty.call(patch, k)
-            ));
-            if (hadCloseTrace || hasOptionalAdditive) {
-                try {
-                    const sb = this.supabase;
-                    const fallbackPatch = buildTradeUpdateFallbackPatch(patch);
-                    if (!shouldAcceptTradeUpdateFallback(patch, fallbackPatch)) {
-                        console.warn('[DB] updateTrade refusing fallback that would drop close_trace_json provenance');
-                        return false;
-                    }
-                    const { error } = await sb.from('trades_v2').update(fallbackPatch).eq('id', id);
-                    if (!error) {
-                        console.warn('[DB] updateTrade retried without optional additive close fields (close_trace_json retained):', e.message);
-                        return true;
-                    }
-                    if (hadCloseTrace) {
-                        console.warn('[DB] updateTrade failed including close_trace_json; refusing silent provenance drop:', e.message);
-                        return false;
-                    }
-                } catch (_) {}
-            }
-            console.warn('[DB] updateTrade failed:', e.message);
-            return false;
-        }
+        // R4: real path is updateTradeWithSupabase (mocked-client tests call that /
+        // DB.updateTrade with an injected _client).
+        return updateTradeWithSupabase(this.supabase, id, patch);
     },
     async setConfig(key, value) {
         try {
