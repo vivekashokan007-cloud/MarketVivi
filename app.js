@@ -860,7 +860,9 @@ const AUTH_ACCESS = {
  * DB.updateTrade delegates here — do not mirror this logic in tests.
  */
 async function updateTradeWithSupabase(sb, id, patch) {
-    if (!sb) throw new Error('Supabase client unavailable');
+    // R5: missing/null client returns false (do not throw) so closeTrade can
+    // record Trade Close Sync Failed. close_trace_json retained on success paths.
+    if (!sb) return false;
     try {
         const { error } = await sb.from('trades_v2').update(patch).eq('id', id);
         if (error) throw error;
