@@ -4283,7 +4283,8 @@ async function closeTrade(tradeId, exitReason) {
             friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
             exit_premium: currentPremium,
             exit_reason: assertPersistedCloseReasonProvenance(exitReason).close_reason,
-            close_reason_provenance: assertPersistedCloseReasonProvenance(exitReason) || 'Manual',
+            // Provenance lives inside close_trace_json (established JSONB) — not a
+            // top-level trades_v2 column (no schema change / update-fallback drop).
             paper_close_reason_quality: null,
             paper_thesis_break_type: null,
             paper_rule_followed: null,
@@ -4306,6 +4307,7 @@ async function closeTrade(tradeId, exitReason) {
                 policy_version: 'POSITION_POLICY_V1',
                 friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
                 exit_reason: exitReason || 'Manual',
+                close_reason_provenance: assertPersistedCloseReasonProvenance(exitReason),
                 closed_at: exitDateIso,
                 close_pnl: displayClosePnl,
                 gross_mtm_close: grossClosePnl,
