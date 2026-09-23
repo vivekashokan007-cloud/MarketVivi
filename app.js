@@ -5845,7 +5845,7 @@ function renderWatchlist(snapshot = null) {
     const bnfTop = bnfCands.slice(0, 5);
     const nfTotal = (bd.generated_candidates || []).filter(c => c.index === 'NF').length;
     if (nfTop.length) {
-        html += `<div class="section-note" style="font-size:11px;color:var(--text-muted);margin:4px 0 8px 0;">NF: showing best ${nfTop.length}${nfCands.length > nfTop.length ? ` of ${nfCands.length} watchlist` : ''}</div>`;
+        html += `<div class="section-note" style="font-size:11px;color:var(--text-muted);margin:4px 0 8px 0;">NF: top ${nfTop.length} by current menu rank${nfCands.length > nfTop.length ? ` of ${nfCands.length} watchlist` : ''}</div>`;
         nfTop.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
     } else if (nfTotal > 0) {
         html += `<div class="empty-state">NF: ${nfTotal} generated — brain returned no NF watchlist candidate.</div>`;
@@ -5856,7 +5856,7 @@ function renderWatchlist(snapshot = null) {
     // ═══ BANK NIFTY — collapsed by default ═══
     const bnfTotal = (bd.generated_candidates || []).filter(c => c.index === 'BNF').length;
     if (bnfTop.length) {
-        html += `<details><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);padding:8px 0;user-select:none;">BANK NIFTY — showing best ${bnfTop.length}${bnfCands.length > bnfTop.length ? ` of ${bnfCands.length}` : ''} ▸</summary>`;
+        html += `<details><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);padding:8px 0;user-select:none;">BANK NIFTY — top ${bnfTop.length} by current menu rank${bnfCands.length > bnfTop.length ? ` of ${bnfCands.length}` : ''} ▸</summary>`;
         bnfTop.forEach((c, i) => { html += renderCandidateCard(c, bnfAtm, i + 1); });
         html += '</details>';
     } else if (bnfTotal > 0) {
@@ -5993,7 +5993,7 @@ function renderCandidateCard(cand, atm, rank) {
             </div>
             <span class="v1-rank">${cand._posMatch ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">📌+⚡</span>' : cand._posOnly ? '<span style="background:#7B2FC4;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">⚡ TMR</span>' : ''}${rank === 1 && cand.brainScore > 0 ? '🧠 ' : ''}#${rank || ''}</span>
         </div>
-        <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE || '--'}T${researchRank != null ? ` · Research #${researchRank}` : ''}${entryEligible && entryRank != null ? ` · Entry #${entryRank}` : ''}${cand.brainScore ? ` · <span style="color:${cand.brainScore > 0 ? 'var(--green)' : cand.brainScore < 0 ? 'var(--danger)' : 'var(--text-muted)'};font-weight:600">🧠${cand.brainScore > 0 ? '+' : ''}${cand.brainScore.toFixed(2)}</span>` : ''}</div>
+        <div class="v1-sub">${cand.index} · ${cand.expiry || '--'} · DTE ${cand.tDTE == null || cand.tDTE === '' ? '--' : cand.tDTE}T${researchRank != null ? ` · Research #${researchRank}` : ''}${entryEligible && entryRank != null ? ` · Entry #${entryRank}` : ''}${cand.brainScore ? ` · <span style="color:${cand.brainScore > 0 ? 'var(--green)' : cand.brainScore < 0 ? 'var(--danger)' : 'var(--text-muted)'};font-weight:600">🧠${cand.brainScore > 0 ? '+' : ''}${cand.brainScore.toFixed(2)}</span>` : ''}</div>
         <div class="v1-legs">${legsText}</div>
         <div class="v1-prem">${premLabel} ₹${cand.netPremium}/share · W:${cand.width}</div>
         ${(() => {
@@ -6252,7 +6252,7 @@ function renderTradeCard(t, isPaper) {
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
-            <button class="btn-close-profit" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler('Brain said BOOK')}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '💰 Book Profit'}</button>
+            <button class="btn-close-profit" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler('manual_book_profit_button')}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '💰 Book Profit'}</button>
             <button class="btn-close-loss" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler(defaultExitReasonForTrade(t))}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '🛑 Exit'}</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
