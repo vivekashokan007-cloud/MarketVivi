@@ -14,3 +14,8 @@ assert.ok(!appJs.includes("Brain said BOOK"), 'must not store Brain said BOOK as
 assert.ok(appJs.includes('PAPER ANALYSIS'), 'monitor-only Paper alternatives access preserved');
 
 console.log('batch_a_display_wording_ok');
+
+// Save-path assertion: persisted close reason keeps button provenance distinct from Brain BOOK.
+assert.ok(appJs.includes('assertPersistedCloseReasonProvenance'), 'save-path provenance helper required');
+assert.ok(appJs.includes("manual_book_profit_button"), 'button provenance token required on save path');
+assert.ok(!appJs.includes('Brain said BOOK'), 'must not persist Brain said BOOK as close reason');

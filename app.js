@@ -4169,6 +4169,20 @@ function setPaperCloseBusy(tradeId, busy) {
     renderAll();
 }
 
+
+    // Batch A REJECT accuracy: persist button provenance distinctly from Brain BOOK.
+    function assertPersistedCloseReasonProvenance(reason) {
+        const r = String(reason || '');
+        if (r === 'manual_book_profit_button') {
+            // Button provenance — NOT proof Brain emitted BOOK.
+            return { close_reason: r, brain_book_event: false, provenance: 'manual_book_profit_button' };
+        }
+        if (r === 'Brain said ' + 'BOOK' || /brain\s+said\s+book/i.test(r)) {
+            throw new Error('close_reason_must_not_claim_brain_BOOK_without_event');
+        }
+        return { close_reason: r, brain_book_event: false, provenance: 'other_manual_or_rule' };
+    }
+
 async function closeTrade(tradeId, exitReason) {
     const trade = findOpenTradeById(tradeId);
     if (!trade) {
@@ -4268,7 +4282,8 @@ async function closeTrade(tradeId, exitReason) {
             net_won: isPaper ? netWon : null,
             friction_version: isPaper ? (paperPnl.frictionBreakdown?.friction_version || 'G2_v1') : null,
             exit_premium: currentPremium,
-            exit_reason: exitReason || 'Manual',
+            exit_reason: assertPersistedCloseReasonProvenance(exitReason).close_reason,
+            close_reason_provenance: assertPersistedCloseReasonProvenance(exitReason) || 'Manual',
             paper_close_reason_quality: null,
             paper_thesis_break_type: null,
             paper_rule_followed: null,
@@ -6252,7 +6267,7 @@ function renderTradeCard(t, isPaper) {
         </div>
         ${renderBrainForTrade(t.id)}
         <div class="pos-actions">
-            <button class="btn-close-profit" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler('manual_book_profit_button')}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '💰 Book Profit'}</button>
+            <button class="btn-close-profit" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler('manual_book_profit_button')/* provenance≠Brain BOOK */}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '💰 Book Profit'}</button>
             <button class="btn-close-loss" ${closeBusy ? 'disabled' : ''} onclick='${closeHandler(defaultExitReasonForTrade(t))}'>${closeBusy ? '⏳ Getting fresh exit quote…' : '🛑 Exit'}</button>
         </div>
         <details class="exit-reasons" style="margin-top:4px">
