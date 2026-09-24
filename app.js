@@ -421,6 +421,57 @@ function formatPositionMarkTime(timestamp) {
     });
 }
 
+/**
+ * P1 mark validated ≠ Brain verdict available.
+ * Never use missing current_premium alone as Brain-readiness proxy.
+ * "Brain verdict available" only when a real Brain verdict exists and is not
+ * DATA_UNAVAILABLE.
+ */
+function paperBrainVerdictStatus(trade) {
+    const tradeId = trade?.id;
+    const data = (typeof bd !== 'undefined' && bd?.positions)
+        ? (bd.positions[tradeId] || bd.positions[String(tradeId)] || null)
+        : null;
+    const verdict = data?.verdict || null;
+    if (!verdict || typeof verdict !== 'object' || !verdict.action) {
+        return {
+            available: false,
+            label: 'unavailable',
+            reason: 'Brain verdict not yet attached',
+        };
+    }
+    const urgency = String(verdict.urgency || '');
+    const reasonText = String(verdict.reason || '');
+    if (
+        urgency === 'DATA_UNAVAILABLE' ||
+        reasonText.includes('DATA_UNAVAILABLE') ||
+        reasonText.toLowerCase().includes('live position mark is unavailable')
+    ) {
+        return {
+            available: false,
+            label: 'unavailable',
+            reason: reasonText || 'DATA_UNAVAILABLE',
+            action: verdict.action || null,
+            urgency,
+        };
+    }
+    return {
+        available: true,
+        label: 'available',
+        reason: reasonText,
+        action: verdict.action,
+        urgency,
+    };
+}
+
+function formatPaperValuationBrainStatusLine(trade) {
+    const brain = paperBrainVerdictStatus(trade);
+    const brainPart = brain.available
+        ? `Brain verdict: available (${brain.action}${brain.urgency ? ' · ' + brain.urgency : ''})`
+        : `Brain verdict: unavailable${brain.reason ? ' — ' + String(brain.reason).slice(0, 120) : ''}`;
+    return `✅ Valuation: <b>P1 VALIDATED</b> · ${brainPart} · Manual Paper close: fresh quote required`;
+}
+
 function validDateOrBlank(value) {
     if (!value || typeof value !== 'string') return '';
     return value >= API.todayIST() ? value : '';
@@ -6287,7 +6338,7 @@ function renderTradeCard(t, isPaper) {
                 🧪 Mark quality: <b>${markLabel}</b>${markSourceLine}${legsRequired !== null ? ` · quotes ${legsQuoted ?? 0}/${legsRequired}` : ''}${fallbackLegs ? ` · intrinsic fallback ${fallbackLegs}` : ''}${lotAssumed ? ' · lot assumed' : ''}${signalPct !== null ? ` · CI signals ${signalPct}%` : ''}
             </div>` : ''}
             ${isPaper && positionMarkState === 'LIVE_FULL' ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:var(--text-muted);border-top:1px solid var(--border)">
-                ✅ Valuation: <b>P1 VALIDATED</b> · Brain advice: ${asFiniteNumber(t.current_premium) === null ? 'unavailable — Brain poll mark incomplete' : 'available'} · Manual Paper close: fresh quote required
+                ${formatPaperValuationBrainStatusLine(t)}
             </div>` : ''}
             ${t.vixSpike && t.vixSpike.change >= 0.5 ? `<div style="font-size:10px;padding:2px 8px;margin-top:2px;color:${t.vixSpike.change >= 2.0 ? 'var(--danger)' : t.vixSpike.change >= 1.0 ? 'var(--warn)' : 'var(--text-muted)'}">
                 🌡️ VIX ${t.vixSpike.entryVix.toFixed(1)}→${t.vixSpike.currentVix.toFixed(1)} (${t.vixSpike.change > 0 ? '+' : ''}${t.vixSpike.change}${t.vixSpike.change >= 2.0 ? ' ⚠️ SPIKE — EXIT' : t.vixSpike.change >= 1.0 ? ' — rising' : ''})
