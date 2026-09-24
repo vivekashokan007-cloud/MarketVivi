@@ -348,6 +348,16 @@ function pullRenderSnapshot() {
     const latestPoll = latestPollData({ latestPoll: readNativeJson('getLatestPoll', {}) });
     const baseline = readNativeJson('getBaseline', {});
     const positionMarkStates = readNativeJson('getPositionMarkStates', {});
+    adoptPositionTickTracking(serviceStatus);
+    if (positionMarkStates && typeof positionMarkStates === 'object') {
+        for (const id of Object.keys(positionMarkStates)) {
+            const m = positionMarkStates[id];
+            if (m && typeof m === 'object' && typeof m.tracking_complete === 'boolean') {
+                adoptPositionTickTracking(m);
+                break;
+            }
+        }
+    }
     const snapshot = {
         serviceStatus,
         pollHistory,
@@ -397,6 +407,10 @@ function reconcilePaperPositionMarks(trades, markStates) {
         const pnl = asFiniteNumber(mark.last_valid_current_pnl);
         if (pnl === null || (state !== 'LIVE_FULL' && state !== 'STALE_LAST_VALID')) return trade;
         const stale = state === 'STALE_LAST_VALID';
+        const trackingComplete = typeof mark.tracking_complete === 'boolean'
+            ? mark.tracking_complete
+            : true;
+        const overflowActive = mark.overflow_active === true;
         return {
             ...trade,
             current_pnl: pnl,
@@ -408,8 +422,59 @@ function reconcilePaperPositionMarks(trades, markStates) {
             position_mark_source: mark.source || 'P1_REST_60S',
             position_mark_actionable: false,
             positionDataDegraded: stale || trade.positionDataDegraded === true,
+            // R8: history-capture completeness from position-mark broadcast / store.
+            tracking_complete: trackingComplete,
+            overflow_active: overflowActive,
+            overflow_rejected_count: Number.isFinite(Number(mark.overflow_rejected_count))
+                ? Number(mark.overflow_rejected_count)
+                : (trade.overflow_rejected_count ?? 0),
         };
     });
+}
+
+/** True when Paper position tick history capture is incomplete (overflow rejects). */
+function isPaperHistoryCaptureIncomplete(tradeOrStatus = null) {
+    if (tradeOrStatus && typeof tradeOrStatus === 'object') {
+        if (tradeOrStatus.tracking_complete === false) return true;
+        if (tradeOrStatus.overflow_active === true) return true;
+        if (tradeOrStatus.positionTickTrackingComplete === false) return true;
+        if (tradeOrStatus.positionTickOverflowActive === true) return true;
+    }
+    if (STATE.positionTickTrackingComplete === false) return true;
+    if (STATE.positionTickOverflowActive === true) return true;
+    return false;
+}
+
+function adoptPositionTickTracking(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (typeof payload.tracking_complete === 'boolean') {
+        STATE.positionTickTrackingComplete = payload.tracking_complete;
+    } else if (typeof payload.positionTickTrackingComplete === 'boolean') {
+        STATE.positionTickTrackingComplete = payload.positionTickTrackingComplete;
+    }
+    if (typeof payload.overflow_active === 'boolean') {
+        STATE.positionTickOverflowActive = payload.overflow_active;
+    } else if (typeof payload.positionTickOverflowActive === 'boolean') {
+        STATE.positionTickOverflowActive = payload.positionTickOverflowActive;
+    }
+    const rejected = payload.overflow_rejected_count ?? payload.positionTickOverflowRejectedCount;
+    if (rejected != null && Number.isFinite(Number(rejected))) {
+        STATE.positionTickOverflowRejectedCount = Number(rejected);
+    }
+}
+
+function paperHistoryCaptureBannerHtml(serviceStatus = null) {
+    if (!isPaperHistoryCaptureIncomplete(serviceStatus) && !isPaperHistoryCaptureIncomplete()) return '';
+    const rejected = Number(
+        STATE.positionTickOverflowRejectedCount
+        ?? serviceStatus?.overflow_rejected_count
+        ?? serviceStatus?.positionTickOverflowRejectedCount
+        ?? 0
+    );
+    const rejectedNote = rejected > 0 ? ` · rejected ticks: <b>${rejected}</b>` : '';
+    return `<div style="font-size:10px;padding:4px 8px;margin:6px 0 0;color:var(--warn);border:1px solid var(--warn);border-radius:4px;background:rgba(180,120,0,0.08)">
+        ⚠️ History capture incomplete — Paper position tick queue overflow refused new ticks (tracking_complete=false). Prior queued ticks preserved; some recent ticks were not stored.${rejectedNote}
+    </div>`;
 }
 
 function formatPositionMarkTime(timestamp) {
@@ -2759,8 +2824,24 @@ window.syncFromNative = function(dataJson) {
             const snapshot = pullNativeState();
             try {
                 updateWatchStatusHint(snapshot.status || {});
+                adoptPositionTickTracking(snapshot.status || {});
             } catch (e) {
                 console.warn('[syncFromNative] watch-status refresh failed:', e.message);
+            }
+            reconcileNativeSessionUi(snapshot);
+            renderAll();
+            return;
+        }
+
+        // R8: POSITION_MARK_TICK Intent extra "data" carries tracking_complete.
+        if (data.position_mark_tick === true) {
+            adoptPositionTickTracking(data);
+            const snapshot = pullNativeState();
+            try {
+                updateWatchStatusHint(snapshot.status || {});
+                adoptPositionTickTracking(snapshot.status || {});
+            } catch (e) {
+                console.warn('[syncFromNative] mark-tick refresh failed:', e.message);
             }
             reconcileNativeSessionUi(snapshot);
             renderAll();
@@ -6337,6 +6418,9 @@ function renderTradeCard(t, isPaper) {
             ${(dataDegraded || lotAssumed || signalPct !== null || positionMarkState) ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:${dataDegraded || lotAssumed ? 'var(--warn)' : 'var(--text-muted)'};border-top:1px solid var(--border)">
                 🧪 Mark quality: <b>${markLabel}</b>${markSourceLine}${legsRequired !== null ? ` · quotes ${legsQuoted ?? 0}/${legsRequired}` : ''}${fallbackLegs ? ` · intrinsic fallback ${fallbackLegs}` : ''}${lotAssumed ? ' · lot assumed' : ''}${signalPct !== null ? ` · CI signals ${signalPct}%` : ''}
             </div>` : ''}
+            ${isPaper && isPaperHistoryCaptureIncomplete(t) ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:var(--warn);border-top:1px solid var(--border)">
+                ⚠️ History capture incomplete (tracking_complete=false) — some Paper position ticks were refused under queue overflow; mark may still show but history is not complete.
+            </div>` : ''}
             ${isPaper && positionMarkState === 'LIVE_FULL' ? `<div style="font-size:10px;padding:3px 8px;margin-top:2px;color:var(--text-muted);border-top:1px solid var(--border)">
                 ${formatPaperValuationBrainStatusLine(t)}
             </div>` : ''}
@@ -6455,6 +6539,7 @@ function renderPosition(snapshot = null) {
                 <div class="brain-detail">
                     Real positions: <b>${realTrades.length}</b> · Paper positions: <b>${paperTrades.length}</b> · Brain tracked: <b>${trackedHitCount}</b><br>
                     Setup WAIT does not notify. Open positions show exit / book / risk alerts after the brain processes them and state changes.${trackingDetail}
+                    ${paperTrades.length > 0 ? paperHistoryCaptureBannerHtml(serviceStatus) : ''}
                 </div>
             </div>
         `;
