@@ -8,6 +8,7 @@
 - The Paper P1 bridge omitted gross `peak_pnl` and `trough_pnl`; Kotlin also cleared stored optional metrics when absent. The review patch restores gross extrema, makes optional copy-back conditional and keeps the approved VIX/erosion observation fields out of live advice. The existing `trades_v2` insert schema contract test passed (77 literal keys, 0 unknown); it is a MarketVivi test, since its PWA writes the trade rows.
 - Marketapp Python suite: 1,054 tests OK (2 skipped). Android JVM tests could not launch because Gradle 8.7 was uncached and its distribution endpoint was unreachable. No production migration, main push, APK/PWA release, Pages publication or Real-trade advice change is claimed.
 - On 26 September, automatic approval review rejected applying the prepared production migration because the earlier explicit ban on Supabase migrations remained in force; Vivek's “Continue” did not explicitly override it. The SQL remains prepared for a separate approval. Python tests now use temporary files for their generated policy report and parity observations, leaving the repository clean after the suite.
+- An isolated Marketapp review-branch push was automatically rejected because the exact code/migration payload and GitHub destination were not explicitly authorized. The branch exists only as a local commit; the MarketVivi knowledge update is local too. No remote b490 branch or release was created.
 
 ---
 
