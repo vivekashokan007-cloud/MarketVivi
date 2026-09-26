@@ -4277,6 +4277,20 @@ function paperCloseErrorMessage(error) {
     return `Paper position cannot be closed safely — ${labels[code] || 'the fresh exit quote is unavailable'} (${code}).`;
 }
 
+// B3 + owner decision 9 (2026-09-26). Newer APKs publish per-leg quote validity.
+// VALID (or absent: older APKs, mixed-version compatibility) is accepted as before.
+// INVALID is accepted only when the APK performed its one bounded refresh and
+// explicitly labelled the close DEGRADED with a recorded reason; the close is then
+// persisted with that label. Any other state is rejected (fail closed).
+function paperCloseQuoteValidityAccepted(row) {
+    const state = row?.quote_validity_state;
+    if (state === undefined || state === null || state === 'VALID') return true;
+    return state === 'INVALID'
+        && row.close_quote_quality === 'DEGRADED'
+        && typeof row.close_quote_degraded_reason === 'string'
+        && row.close_quote_degraded_reason.trim().length > 0;
+}
+
 async function requestFreshPaperCloseQuote(tradeId) {
     const key = String(tradeId || '').trim();
     if (!key) throw Object.assign(new Error('TRADE_NOT_FOUND'), { reason_code: 'TRADE_NOT_FOUND' });
@@ -4312,10 +4326,8 @@ async function requestFreshPaperCloseQuote(tradeId) {
                     && row.mark_basis === 'EXECUTABLE'
                     && validNumbers
                     && Number(row.leg_count) === Number(row.expected_leg_count)
-                    // B3: newer APKs publish per-leg quote validity; when present it must be VALID.
-                    // Older APKs omit the field (mixed-version compatibility).
-                    && (row.quote_validity_state === undefined || row.quote_validity_state === null
-                        || row.quote_validity_state === 'VALID')
+                    // B3 + decision 9: see paperCloseQuoteValidityAccepted.
+                    && paperCloseQuoteValidityAccepted(row)
                     && Date.now() < Number(row.expires_at_ms);
                 if (!valid) {
                     const reason = Date.now() >= Number(row.expires_at_ms) ? 'QUOTE_EXPIRED' : 'VALUATION_NOT_ACCEPTED';
@@ -4427,7 +4439,7 @@ async function closeTrade(tradeId, exitReason) {
     const netClosePnl = isPaper ? paperPnl.netIfClosedNow : null;
     const displayClosePnl = isPaper && netClosePnl !== null ? netClosePnl : grossClosePnl;
     const confirmMsg = isPaper
-        ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)}\nEst. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}\nNet if closed now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}`
+        ? `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nGross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)}\nEst. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}\nNet if closed now: ${moneyOrUnavailable(paperPnl.netIfClosedNow)}${paperCloseQuote?.close_quote_quality === 'DEGRADED' ? `\n⚠️ DEGRADED close quote (still invalid after one refresh): ${paperCloseQuote.close_quote_degraded_reason}` : ''}`
         : `${prefix}: Close ${trade.index_key} ${friendlyType(trade.strategy_type)} ${trade.sell_strike}?\nP&L: ₹${trade.current_pnl ?? 'unknown'}`;
     if (!confirm(confirmMsg)) return;
 
@@ -4529,7 +4541,10 @@ async function closeTrade(tradeId, exitReason) {
                     source_quote_ts: paperCloseQuote.source_quote_ts ?? null,
                     max_source_age_ms: paperCloseQuote.max_source_age_ms ?? null,
                     mark_trust_state: paperCloseQuote.mark_trust_state ?? null,
-                    mark_trust_cause: paperCloseQuote.mark_trust_cause ?? null
+                    mark_trust_cause: paperCloseQuote.mark_trust_cause ?? null,
+                    close_quote_quality: paperCloseQuote.close_quote_quality ?? null,
+                    close_quote_degraded_reason: paperCloseQuote.close_quote_degraded_reason ?? null,
+                    close_quote_refresh_attempted: paperCloseQuote.close_quote_refresh_attempted ?? null
                 } : null,
                 peak_pnl: closeExtrema.peak_pnl,
                 trough_pnl: closeExtrema.trough_pnl,
