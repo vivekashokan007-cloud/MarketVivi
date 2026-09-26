@@ -4774,6 +4774,15 @@ function renderBrainInsights() {
     </div>`;
 }
 
+// B3 item 2: Brain monitors Paper positions from the first poll while the
+// entry warmup (3 polls) runs. History-based factors are unavailable then;
+// say so rather than implying a full analysis. Real positions: unchanged.
+function firstPollWarmupNote(data, trade) {
+    if (!data || data.monitoring_mode !== 'FIRST_POLL_WARMUP') return '';
+    if (trade && trade.paper === false) return '';
+    return '<div style="font-size:10px;color:var(--warn);margin-top:2px">Warm-up monitoring · history-based factors (regime, momentum, VIX trend) unavailable until 3 polls</div>';
+}
+
 function renderBrainForTrade(tradeId) {
     const trade = findOpenTradeById(tradeId);
     const data = bd?.positions?.[tradeId];
@@ -4802,7 +4811,7 @@ function renderBrainForTrade(tradeId) {
     const vColor = v?.action === 'EXIT' ? 'var(--danger)' : v?.action === 'BOOK' ? 'var(--green)' : 'var(--text-muted)';
     const verdictLine = v ? `<div style="font-size:12px;font-weight:700;color:${vColor};padding:4px 0">🧠 ${v.action} ${v.urgency ? '· ' + v.urgency : ''}</div><div style="font-size:11px;color:var(--text-secondary)">${v.reason || ''}</div>` : '';
     const detailsHtml = insights.length ? `<details style="margin-top:2px"><summary style="font-size:10px;color:var(--text-muted);cursor:pointer">▸ ${insights.length} factors</summary>${insights.map(renderBrainCard).join('')}</details>` : '';
-    return `<div class="brain-section" style="margin:6px 0 2px">${verdictLine}${detailsHtml}</div>`;
+    return `<div class="brain-section" style="margin:6px 0 2px">${verdictLine}${firstPollWarmupNote(data, trade)}${detailsHtml}</div>`;
 }
 
 function renderBrainForCandidate(candId) {
