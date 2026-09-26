@@ -405,7 +405,17 @@ function reconcilePaperPositionMarks(trades, markStates) {
         if (!mark || typeof mark !== 'object') return trade;
         const state = String(mark.display_state || '').toUpperCase();
         const pnl = asFiniteNumber(mark.last_valid_current_pnl);
-        if (pnl === null || (state !== 'LIVE_FULL' && state !== 'STALE_LAST_VALID')) return trade;
+        // B3/A1: newer APKs publish mark trust for Paper rows. Absent => legacy.
+        const trustState = mark.mark_trust_state ? String(mark.mark_trust_state).toUpperCase() : null;
+        const trustFields = trustState ? {
+            position_mark_trust_state: trustState,
+            position_mark_trust_cause: mark.mark_trust_cause || null,
+            position_mark_quote_validity: mark.quote_validity_state || null,
+        } : {};
+        if (pnl === null || (state !== 'LIVE_FULL' && state !== 'STALE_LAST_VALID')) {
+            // Never-validated or untrusted-only: keep P&L untouched, surface the label.
+            return trustState === 'UNTRUSTED' ? { ...trade, ...trustFields, positionDataDegraded: true } : trade;
+        }
         const stale = state === 'STALE_LAST_VALID';
         const trackingComplete = typeof mark.tracking_complete === 'boolean'
             ? mark.tracking_complete
@@ -421,7 +431,8 @@ function reconcilePaperPositionMarks(trades, markStates) {
             position_mark_timestamp: mark.last_valid_tick_ts || null,
             position_mark_source: mark.source || 'P1_REST_60S',
             position_mark_actionable: false,
-            positionDataDegraded: stale || trade.positionDataDegraded === true,
+            ...trustFields,
+            positionDataDegraded: stale || trustState === 'UNTRUSTED' || trade.positionDataDegraded === true,
             // R8: history-capture completeness from position-mark broadcast / store.
             tracking_complete: trackingComplete,
             overflow_active: overflowActive,
@@ -4256,6 +4267,7 @@ function paperCloseErrorMessage(error) {
         CROSSED_QUOTE: 'a crossed exit quote was returned',
         NON_POSITIVE_EXECUTABLE_QUOTE: 'an executable exit quote is non-positive',
         VALUATION_NOT_ACCEPTED: 'the fresh P1 valuation was not accepted',
+        QUOTE_SOURCE_INVALID: 'one or more exit quotes failed source-time, exact-key, session or expiry validation',
         REQUEST_MISMATCH: 'the fresh quote belonged to another request',
         QUOTE_EXPIRED: 'the fresh quote expired before confirmation',
         TIMEOUT: 'the fresh quote did not arrive within 10 seconds',
@@ -4300,6 +4312,10 @@ async function requestFreshPaperCloseQuote(tradeId) {
                     && row.mark_basis === 'EXECUTABLE'
                     && validNumbers
                     && Number(row.leg_count) === Number(row.expected_leg_count)
+                    // B3: newer APKs publish per-leg quote validity; when present it must be VALID.
+                    // Older APKs omit the field (mixed-version compatibility).
+                    && (row.quote_validity_state === undefined || row.quote_validity_state === null
+                        || row.quote_validity_state === 'VALID')
                     && Date.now() < Number(row.expires_at_ms);
                 if (!valid) {
                     const reason = Date.now() >= Number(row.expires_at_ms) ? 'QUOTE_EXPIRED' : 'VALUATION_NOT_ACCEPTED';
@@ -4508,7 +4524,12 @@ async function closeTrade(tradeId, exitReason) {
                     mark_basis: paperCloseQuote.mark_basis,
                     leg_count: paperCloseQuote.leg_count,
                     expected_leg_count: paperCloseQuote.expected_leg_count,
-                    position_tick_guards_version: paperCloseQuote.position_tick_guards_version
+                    position_tick_guards_version: paperCloseQuote.position_tick_guards_version,
+                    quote_validity_state: paperCloseQuote.quote_validity_state ?? null,
+                    source_quote_ts: paperCloseQuote.source_quote_ts ?? null,
+                    max_source_age_ms: paperCloseQuote.max_source_age_ms ?? null,
+                    mark_trust_state: paperCloseQuote.mark_trust_state ?? null,
+                    mark_trust_cause: paperCloseQuote.mark_trust_cause ?? null
                 } : null,
                 peak_pnl: closeExtrema.peak_pnl,
                 trough_pnl: closeExtrema.trough_pnl,
@@ -6346,9 +6367,13 @@ function renderTradeCard(t, isPaper) {
         : positionMarkState === 'STALE_LAST_VALID'
         ? 'STALE LAST VALID'
         : String(valuationQuality).toUpperCase();
-    const markSourceLine = positionMarkState
-        ? ` · ${positionMarkState === 'STALE_LAST_VALID' ? 'last validated' : 'validated'} ${positionMarkTime}${positionMarkSource ? ` · ${positionMarkSource}` : ''}${positionMarkState === 'STALE_LAST_VALID' ? ' · display only; fresh quote required to close' : ''}`
+    const markTrustUntrusted = String(t.position_mark_trust_state || '').toUpperCase() === 'UNTRUSTED';
+    const markTrustNote = markTrustUntrusted
+        ? ` · MARK UNTRUSTED${t.position_mark_trust_cause ? ` (${t.position_mark_trust_cause})` : ''} · stop/target unavailable — review position`
         : '';
+    const markSourceLine = (positionMarkState
+        ? ` · ${positionMarkState === 'STALE_LAST_VALID' ? 'last validated' : 'validated'} ${positionMarkTime}${positionMarkSource ? ` · ${positionMarkSource}` : ''}${positionMarkState === 'STALE_LAST_VALID' ? ' · display only; fresh quote required to close' : ''}`
+        : '') + markTrustNote;
     let ciColor = 'var(--text-muted)', ciLabel = 'Calculating...';
     if (ci !== null && ci !== undefined) {
         ciColor = ci > 20 ? 'var(--green)' : ci < -20 ? 'var(--danger)' : 'var(--warn)';
