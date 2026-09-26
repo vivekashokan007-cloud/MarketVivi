@@ -1,6 +1,16 @@
 
 ---
 
+## 2026-09-25 — b489 capture regressions: review fix prepared, deployment pending
+
+- Production read-only checks: `position_ticks` lacks the four lot fields emitted since b487; latest stored tick was 2026-09-24 06:31:55 UTC. The additive migration is prepared on isolated Marketapp review branch `work/b490-capture-regressions-codex-20260925`, pending Vivek's separate production migration decision and post-migration readback.
+- `ml_brain_snapshots` read-only check for 24–25 September: 0/92 snapshots carried either `snapshot_position_verdicts` or `snapshot_capture_completeness`. Kotlin compaction discarded these fields after Python generated them. The review patch retains all 18 Python Batch A survivor keys when present.
+- The Paper P1 bridge omitted gross `peak_pnl` and `trough_pnl`; Kotlin also cleared stored optional metrics when absent. The review patch restores gross extrema, makes optional copy-back conditional and keeps the approved VIX/erosion observation fields out of live advice. The existing `trades_v2` insert schema contract test passed (77 literal keys, 0 unknown); it is a MarketVivi test, since its PWA writes the trade rows.
+- Marketapp Python suite: 1,054 tests OK (2 skipped). Android JVM tests could not launch because Gradle 8.7 was uncached and its distribution endpoint was unreachable. No production migration, main push, APK/PWA release, Pages publication or Real-trade advice change is claimed.
+- On 26 September, automatic approval review rejected applying the prepared production migration because the earlier explicit ban on Supabase migrations remained in force; Vivek's “Continue” did not explicitly override it. The SQL remains prepared for a separate approval. Python tests now use temporary files for their generated policy report and parity observations, leaving the repository clean after the suite.
+
+---
+
 ## 2026-09-12 — Notification pack b460→b465 + eval residue (docs)
 
 **Tip documented:** Marketapp `0457698` · v2.6.34 / b465 (F5 not on tip). Audit/ruling: [docs/AUDIT_notifications_20260912.md](docs/AUDIT_notifications_20260912.md), [docs/RULING_claude_D4_clarification_20260912.md](docs/RULING_claude_D4_clarification_20260912.md).
