@@ -160,6 +160,7 @@ const sandbox = {
   realMarginValue: () => 10000,
   numericField: () => null,
   candidateLegCount: (c) => (c && (c.sellStrike2 != null || c.buyStrike2 != null) ? 4 : 2),
+  brainFreshnessStatus: () => ({ fresh: true, reason: '' }),
   paperTradeCapacity: () => ({ available: true, count: 0, limit: 2 }),
   finalEntryAuthorization: (cand) => {
     if (cand?.blocked || cand?.entryAction === 'BLOCKED' || cand?.directionSafe === false) {

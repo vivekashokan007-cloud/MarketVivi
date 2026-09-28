@@ -52,6 +52,7 @@ const sandbox = {
   friendlyType: (t) => String(t || ''),
   alignmentDots: () => '•••',
   forceIcon: () => '●',
+  brainFreshnessStatus: () => ({ fresh: true, reason: '' }),
   candidateLegCount: (c) => (c && (c.sellStrike2 != null || c.buyStrike2 != null) ? 4 : 2),
   paperTradeCapacity: () => ({ available: true, count: 0, limit: 2 }),
   finalEntryAuthorization: (cand) => {

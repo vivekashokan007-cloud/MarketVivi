@@ -114,6 +114,7 @@ const sandbox = {
   friendlyType: (t) => String(t || ''),
   realMarginValue: () => 10000, numericField: () => null,
   candidateLegCount: (c) => 2,
+  brainFreshnessStatus: () => ({ fresh: true, reason: '' }),
   paperTradeCapacity: () => ({ available: true, count: 0, limit: 99 }),
   finalEntryAuthorization: () => ({ allowed: false, reason: 'brain blocked' }),
   safeParseNB: (raw, fb) => { try { return JSON.parse(raw || 'null') ?? fb; } catch { return fb; } },

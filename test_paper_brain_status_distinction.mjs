@@ -26,7 +26,8 @@ const helpers = src.slice(
 
 const sandbox = {
   Number, String, Array, Object, Date,
-  bd: { positions: {} },
+  BRAIN_RESULT_STALE_MS: 12 * 60 * 1000,
+  bd: { brain_result_completed_at_ms: Date.now(), positions: {} },
   asFiniteNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
@@ -38,7 +39,7 @@ vm.runInContext(helpers, sandbox);
 const trade = { id: 284, paper: true, current_premium: null, position_mark_state: 'LIVE_FULL' };
 
 // P1 validated + no Brain verdict
-sandbox.bd.positions = {};
+sandbox.bd = { brain_result_completed_at_ms: Date.now(), positions: {} };
 let st = sandbox.paperBrainVerdictStatus(trade);
 assert.equal(st.available, false);
 assert.match(st.reason, /not yet attached/i);
@@ -48,7 +49,7 @@ assert.match(line, /Brain verdict: unavailable/);
 assert.doesNotMatch(line, /Brain poll mark incomplete/);
 
 // P1 validated + DATA_UNAVAILABLE verdict (must stay unavailable, show reason)
-sandbox.bd.positions = {
+sandbox.bd = { brain_result_completed_at_ms: Date.now(), positions: {
   284: {
     verdict: {
       action: 'HOLD',
@@ -56,7 +57,7 @@ sandbox.bd.positions = {
       reason: 'DATA_UNAVAILABLE: live position mark is unavailable; no BOOK/EXIT decision emitted.'
     }
   }
-};
+}};
 st = sandbox.paperBrainVerdictStatus(trade);
 assert.equal(st.available, false);
 assert.match(st.reason, /DATA_UNAVAILABLE/);
@@ -66,18 +67,28 @@ assert.match(line, /live position mark is unavailable/);
 
 // current_premium present must NOT alone mean Brain available when verdict missing
 trade.current_premium = 273.2;
-sandbox.bd.positions = {};
+sandbox.bd = { brain_result_completed_at_ms: Date.now(), positions: {} };
 st = sandbox.paperBrainVerdictStatus(trade);
 assert.equal(st.available, false, 'current_premium must not proxy Brain readiness');
 
 // Real Brain HOLD (not DATA_UNAVAILABLE) → available
-sandbox.bd.positions = {
+sandbox.bd = { brain_result_completed_at_ms: Date.now(), positions: {
   284: { verdict: { action: 'HOLD', urgency: 'WATCH', reason: 'stable credit' } }
-};
+}};
 st = sandbox.paperBrainVerdictStatus(trade);
 assert.equal(st.available, true);
 line = sandbox.formatPaperValuationBrainStatusLine(trade);
 assert.match(line, /Brain verdict: available \(HOLD/);
+
+// A previously attached verdict becomes unavailable once the native completion
+// timestamp crosses the fail-closed freshness window.
+sandbox.bd.brain_result_completed_at_ms = Date.now() - (13 * 60 * 1000);
+st = sandbox.paperBrainVerdictStatus(trade);
+assert.equal(st.available, false);
+assert.match(st.reason, /stale/i);
+line = sandbox.formatPaperValuationBrainStatusLine(trade);
+assert.match(line, /Brain verdict: unavailable/);
+assert.match(line, /stale/i);
 
 // reconcile still distinguishes P1 mark from Brain
 const initial = [{ id: 284, paper: true, current_pnl: null, valuation_quality: 'unavailable', current_premium: null }];

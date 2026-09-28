@@ -96,6 +96,11 @@ const C = {
     GIFT_THRESHOLD: 0.3     // % change to count as GIFT signal (direct NF correlation, ~75pts)
 };
 
+// A normal poll is five minutes. After two missed refresh opportunities plus
+// a two-minute completion allowance, an old Brain payload becomes display-only
+// and cannot authorize either Real or Paper candidate entry.
+const BRAIN_RESULT_STALE_MS = (2 * C.POLL_INTERVAL_MS) + (2 * 60 * 1000);
+
 const DEFAULT_TRADE_MODE = 'intraday';
 const LS_TRADE_MODE = 'mr2_trade_mode';
 const LS_TRADE_MODE_EXPLICIT = 'mr2_trade_mode_explicit';
@@ -497,6 +502,41 @@ function formatPositionMarkTime(timestamp) {
     });
 }
 
+function brainResultTimestampMs(brain = bd) {
+    const timestamp = Number(brain?.brain_result_completed_at_ms);
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
+}
+
+function brainFreshnessStatus(brain = bd, nowMs = Date.now()) {
+    const completedAtMs = brainResultTimestampMs(brain);
+    if (!completedAtMs) {
+        return {
+            fresh: false,
+            completedAtMs: 0,
+            ageMs: null,
+            reason: 'Brain result timestamp unavailable',
+        };
+    }
+    if (completedAtMs > nowMs + 60_000) {
+        return {
+            fresh: false,
+            completedAtMs,
+            ageMs: null,
+            reason: 'Brain result timestamp is in the future',
+        };
+    }
+    const ageMs = Math.max(0, nowMs - completedAtMs);
+    const ageMinutes = Math.max(1, Math.round(ageMs / 60_000));
+    return {
+        fresh: ageMs <= BRAIN_RESULT_STALE_MS,
+        completedAtMs,
+        ageMs,
+        reason: ageMs <= BRAIN_RESULT_STALE_MS
+            ? ''
+            : `Brain result is stale (${ageMinutes}m old)`,
+    };
+}
+
 /**
  * P1 mark validated ≠ Brain verdict available.
  * Never use missing current_premium alone as Brain-readiness proxy.
@@ -504,6 +544,14 @@ function formatPositionMarkTime(timestamp) {
  * DATA_UNAVAILABLE.
  */
 function paperBrainVerdictStatus(trade) {
+    const freshness = brainFreshnessStatus();
+    if (!freshness.fresh) {
+        return {
+            available: false,
+            label: 'stale',
+            reason: freshness.reason,
+        };
+    }
     const tradeId = trade?.id;
     const data = (typeof bd !== 'undefined' && bd?.positions)
         ? (bd.positions[tradeId] || bd.positions[String(tradeId)] || null)
@@ -1574,9 +1622,10 @@ function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
     applyBrainRangeSigma(bd);
 
     if (incomingHasPayload) {
-        STATE.brainReady = true;
+        const completedAtMs = brainResultTimestampMs(incoming);
+        STATE.brainReady = brainFreshnessStatus(incoming).fresh;
         STATE.brainInsights = incoming;
-        STATE.brainLastRun = Date.now();
+        STATE.brainLastRun = completedAtMs;
         STATE.brainError = incoming.candidate_error || null;
         STATE.candidates = Array.isArray(incoming.generated_candidates) ? incoming.generated_candidates.slice() : [];
         STATE.watchlist = Array.isArray(incoming.watchlist) ? incoming.watchlist.slice() : [];
@@ -1584,7 +1633,7 @@ function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
         STATE.positioningBias = incoming.positioning_bias || null;
         STATE.brainRefreshPending = false;
         STATE.brainRefreshReason = '';
-        STATE.lastScanTime = Date.now();
+        STATE.lastScanTime = completedAtMs;
         return true;
     }
     return false;
@@ -3014,6 +3063,10 @@ function canPaperTrade(indexKey) {
 // final brain verdict (daily STOP, PC2 abstention, or a different final
 // primary). Keep the UI and every entry path bound to that final authority.
 function finalEntryAuthorization(candidate) {
+    const freshness = brainFreshnessStatus();
+    if (!freshness.fresh) {
+        return { allowed: false, reason: freshness.reason };
+    }
     const verdict = bd?.verdict || {};
     const gate = verdict.decision_gate || {};
     const action = String(verdict.action || '').toUpperCase();
@@ -3199,6 +3252,8 @@ function paperTradeAuthorization(candidate) {
 function paperObservationAuthorization(candidate) {
     const strict = paperTradeAuthorization(candidate);
     const reasons = [];
+    const freshness = brainFreshnessStatus();
+    if (!freshness.fresh) reasons.push(freshness.reason);
     const indexKey = normalizePaperIndexKey(candidate?.index || candidate?.index_key);
     const legCount = candidateLegCount(candidate);
     if (!indexKey) reasons.push('index must be NF or BNF');
@@ -3237,6 +3292,8 @@ function paperAnalysisAuthorization(candidate) {
     const schemaVersion = 'paper_analysis_authorization_v1_20260913';
     const identitySchemaVersion = 'contract_identity_v1_20260913';
     const gateReasons = [];
+    const freshness = brainFreshnessStatus();
+    if (!freshness.fresh) gateReasons.push(freshness.reason);
     let source = 'brain_paper_analysis_missing';
     let authId = null;
 
@@ -3527,6 +3584,11 @@ async function previewSandboxOrder(candidateId) {
 async function takeTradeImpl(candidateId, isPaper = false) {
     const cand = findCandidateById(candidateId);
     if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+    const freshness = brainFreshnessStatus();
+    if (!freshness.fresh) {
+        alert(`Trade blocked: ${freshness.reason}. Wait for a successful market poll before using a Brain candidate.`);
+        return;
+    }
     const finalAuthorization = finalEntryAuthorization(cand);
     const paperAnalysisAuth = isPaper ? paperAnalysisAuthorization(cand) : null;
     const paperLane = isPaper
@@ -4746,6 +4808,7 @@ function renderBrainCard(ins) {
 function renderBrainInsights() {
     const bi = bd;
     const liveWindow = isLiveRecommendationWindow();
+    const freshness = brainFreshnessStatus(bi);
     const verdict = bi?.verdict;
     const market = bi?.market || [];
     const timing = bi?.timing || [];
@@ -4763,6 +4826,11 @@ function renderBrainInsights() {
         verdictHtml = `<div class="brain-card" style="border-left-color:var(--text-muted);border-left-width:4px;padding:10px 12px">
             <div style="font-size:14px;font-weight:700;color:var(--text-muted)">Market closed</div>
             <div class="brain-detail" style="margin-top:4px">Live recommendation archived after the trading window. Review saved signals and ML outcomes instead of acting on the last intraday verdict.</div>
+        </div>`;
+    } else if (!freshness.fresh) {
+        verdictHtml = `<div class="brain-card" style="border-left-color:var(--danger);border-left-width:4px;padding:10px 12px">
+            <div style="font-size:14px;font-weight:700;color:var(--danger)">Brain result unavailable</div>
+            <div class="brain-detail" style="margin-top:4px">${freshness.reason}. Old recommendations are display-only and cannot authorize a trade.</div>
         </div>`;
     } else if (verdict && verdict.action) {
         const vColor = verdict.action === 'WAIT' || verdict.action === 'STOP' ? 'var(--warn)' :
@@ -4818,6 +4886,13 @@ function renderBrainForTrade(tradeId) {
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 The latest brain result has not processed this position yet. It should attach on the next market poll; alerts appear only after brain tracking starts and state changes.
             </div>
+        </div>`;
+    }
+    const freshness = brainFreshnessStatus();
+    if (!freshness.fresh) {
+        return `<div class="brain-section" style="margin:6px 0 2px;border-left:3px solid var(--danger)">
+            <div style="font-size:12px;font-weight:700;color:var(--danger);padding:4px 0">🧠 STALE · NO CURRENT BRAIN VERDICT</div>
+            <div style="font-size:11px;color:var(--text-secondary)">${freshness.reason}. The saved verdict is not used for current BOOK/EXIT guidance.</div>
         </div>`;
     }
     const v = data.verdict;
@@ -6564,7 +6639,8 @@ function renderPosition(snapshot = null) {
     // ═══ OPEN TRADES — split real vs paper ═══
     const realTrades = openTrades.filter(t => !t.paper);
     const paperTrades = openTrades.filter(t => t.paper);
-    const trackedPositions = bd && typeof bd === 'object' && bd.positions && typeof bd.positions === 'object' ? bd.positions : {};
+    const brainFreshness = brainFreshnessStatus();
+    const trackedPositions = brainFreshness.fresh && bd && typeof bd === 'object' && bd.positions && typeof bd.positions === 'object' ? bd.positions : {};
     const trackedPositionIds = Object.keys(trackedPositions);
 
     if (realTrades.length === 0 && paperTrades.length === 0) {
@@ -6575,8 +6651,11 @@ function renderPosition(snapshot = null) {
         const allOpenTrades = [...realTrades, ...paperTrades];
         const trackedHitCount = trackedPositionIds.filter(id => allOpenTrades.some(t => String(t.id || '') === String(id))).length;
         const waitingForBrainCount = Math.max(0, allOpenTrades.length - trackedHitCount);
-        const trackingDetail = waitingForBrainCount > 0
+        const trackingDetail = brainFreshness.fresh && waitingForBrainCount > 0
             ? `<br>Awaiting first post-entry brain poll: <b>${waitingForBrainCount}</b>. New trades can show here locally before the background service has processed them.`
+            : '';
+        const freshnessDetail = !brainFreshness.fresh
+            ? `<br><b style="color:var(--danger)">${brainFreshness.reason}.</b> Saved position verdicts are display-only until a successful poll completes.`
             : '';
         html += `
             <div class="brain-card" style="margin-bottom:10px;border-left-color:var(--accent)">
@@ -6587,7 +6666,7 @@ function renderPosition(snapshot = null) {
                 </div>
                 <div class="brain-detail">
                     Real positions: <b>${realTrades.length}</b> · Paper positions: <b>${paperTrades.length}</b> · Brain tracked: <b>${trackedHitCount}</b><br>
-                    Setup WAIT does not notify. Open positions show exit / book / risk alerts after the brain processes them and state changes.${trackingDetail}
+                    Setup WAIT does not notify. Open positions show exit / book / risk alerts after the brain processes them and state changes.${trackingDetail}${freshnessDetail}
                     ${paperTrades.length > 0 ? paperHistoryCaptureBannerHtml(serviceStatus) : ''}
                 </div>
             </div>
@@ -7539,12 +7618,13 @@ function renderFooter(snapshot = null) {
     const bi = bd || {};
     const verdict = bi.verdict;
     const liveWindow = isLiveRecommendationWindow(serviceStatus);
+    const freshness = brainFreshnessStatus(bi);
     const brain = !liveWindow ? '🧠 closed' : (
-        STATE.brainReady ?
+        !freshness.fresh ? `🧠 stale` : STATE.brainReady ?
             (verdict?.action ? `🧠 ${verdict.action}${verdict.confidence ? ' ' + verdict.confidence + '%' : ''}` : '🧠 ready') :
             (STATE.brainError ? '🧠✗' : '🧠…')
     );
-    const riskAlert = (bi.risk || []).some(r => r.strength >= 4) ? ' ⚠️' : '';
+    const riskAlert = freshness.fresh && (bi.risk || []).some(r => r.strength >= 4) ? ' ⚠️' : '';
     el.textContent = `${watching} ${time} · ${brain}${riskAlert} · Polls: ${polls}`;
 }
 
