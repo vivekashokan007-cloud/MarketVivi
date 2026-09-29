@@ -183,6 +183,24 @@ mlEl.innerHTML = '';
 sandbox.renderML({
   serviceStatus: {
     evaluationDoneForTarget: true,
+    labelsSaved: false,
+    labelsSavedKnown: true,
+    learningComplete: false,
+    evaluationPhase: 'RESEARCH_ONLY',
+    evaluationTargetDate: '2026-09-29',
+    lastEvaluationOutcomeCount: 73,
+    lastEvaluationProducedCount: 73,
+  },
+  brainResult: {}, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '',
+});
+assert.match(mlEl.innerHTML, /Research Done/);
+assert.match(mlEl.innerHTML, /Research outcomes were verified/);
+assert.match(mlEl.innerHTML, /Labels saved:\s*<b[^>]*>NO<\/b>/);
+
+mlEl.innerHTML = '';
+sandbox.renderML({
+  serviceStatus: {
+    evaluationDoneForTarget: true,
     labelsSaved: null,
     labelsSavedKnown: false,
     learningComplete: null,
