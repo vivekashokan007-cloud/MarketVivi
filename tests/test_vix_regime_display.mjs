@@ -111,9 +111,33 @@ test('absent or failed brain payload falls back to the labelled band', () => {
   }
 });
 
+test('IV-percentile basis is shown as the regime the brain used', () => {
+  const view = describeVixRegime(fresh({
+    regime: 'HIGH', basis: 'iv_percentile', vix_percentile: null, evidence_percentile: 72,
+    support_count: 0, history_status: 'STALE',
+  }), 14);
+  assert.equal(view.label, 'HIGH · 72th pct');
+  assert.match(view.verdict, /by IV percentile/);
+});
+
+test('min support comes from the brain payload', () => {
+  const thin = describeVixRegime(fresh({ support_status: 'LOW_SUPPORT', vix_percentile: null, evidence_percentile: null, support_count: 12, min_support: 40 }), 14);
+  assert.match(thin.verdict, /12 closes, need 40/);
+  const zero = describeVixRegime(fresh({ support_status: 'LOW_SUPPORT', vix_percentile: null, evidence_percentile: null, support_count: 0 }), 14);
+  assert.match(zero.verdict, /0 closes, need 30/);
+});
+
+test('a stale brain result says so', () => {
+  const view = describeVixRegime(null, 15.02, { brainStale: true });
+  assert.equal(view.source, 'band');
+  assert.match(view.verdict, /Brain result is stale/);
+});
+
 test('renderMarket uses the brain regime, gated on brain freshness', () => {
   const render = slice('function renderMarket(', '\nfunction renderOI(');
-  assert.match(render, /describeVixRegime\(\s*brainFreshnessStatus\(bd\)\.fresh \? bd\?\.vixRegime : null/);
+  assert.match(render, /const brainFresh = brainFreshnessStatus\(bd\)\.fresh;/);
+  assert.match(render, /describeVixRegime\(\s*brainFresh \? bd\?\.vixRegime : null,/);
+  assert.match(render, /\{ brainStale: !brainFresh && hasBrainPayload\(bd\) \}/);
   assert.match(render, /formatSigma\(Number\.isFinite\(l\.spotSigma\)/);
   assert.match(render, /formatSigma\(Number\.isFinite\(l\.vixSigma\)/);
   assert.doesNotMatch(render, /3 forces aligned for credit sellers/);

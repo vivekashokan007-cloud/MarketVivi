@@ -5552,7 +5552,7 @@ function formatSigma(value) {
 // Describes the brain's relative VIX regime (result.vixRegime) for display.
 // Never invents a regime: stale, undated or thin history is shown as held
 // neutral, which is what the brain itself does with it.
-function describeVixRegime(brainVix, vix) {
+function describeVixRegime(brainVix, vix, opts = {}) {
     const band = vixFixedBand(vix);
     const bandText = band ? `Fixed band (15/20/24): ${band}` : '';
     const names = { VERY_HIGH: 'VERY HIGH', HIGH: 'HIGH', NORMAL: 'NORMAL', LOW: 'LOW' };
@@ -5560,15 +5560,21 @@ function describeVixRegime(brainVix, vix) {
     if (!r || !r.regime) {
         return {
             source: 'band', label: band || '--', stale: false, verdictClass: 'neutral', bandText,
-            verdict: 'Brain IV regime not available yet — fixed band shown for reference only',
+            verdict: opts.brainStale
+                ? 'Brain result is stale — IV regime not shown; fixed band for reference only'
+                : 'Brain IV regime not available yet — fixed band shown for reference only',
         };
     }
     const status = String(r.history_status || '');
     const newest = r.history_newest_date ? String(r.history_newest_date) : '';
-    const pct = Number(r.vix_percentile);
+    const num = (v) => (v === null || v === undefined || v === '') ? NaN : Number(v);
+    // The brain may rank on the IV percentile when the VIX history cannot;
+    // evidence_percentile is whichever one it actually used.
+    const pct = Number.isFinite(num(r.evidence_percentile)) ? num(r.evidence_percentile) : num(r.vix_percentile);
     const support = Number(r.support_count) || 0;
-    const usable = (status === 'FRESH' || status === 'UNVERIFIED_NO_SESSION_DATE')
-        && r.support_status === 'SUPPORTED' && Number.isFinite(pct);
+    const minSupport = Number(r.min_support) > 0 ? Number(r.min_support) : 30;
+    const usable = r.support_status === 'SUPPORTED' && Number.isFinite(pct)
+        && (status === 'FRESH' || status === 'UNVERIFIED_NO_SESSION_DATE' || r.basis === 'iv_percentile');
     if (!usable) {
         let reason;
         if (status === 'STALE') {
@@ -5576,8 +5582,8 @@ function describeVixRegime(brainVix, vix) {
             reason = `VIX history is stale (newest close ${newest || 'unknown'}, ${behind} sessions behind)`;
         } else if (status === 'MISSING' || status === 'UNDATED') {
             reason = 'No dated VIX history';
-        } else if (support > 0 && support < 30) {
-            reason = `VIX history too thin (${support} closes, need 30)`;
+        } else if (support < minSupport) {
+            reason = `VIX history too thin (${support} closes, need ${minSupport})`;
         } else {
             reason = 'VIX history not stable enough to rank';
         }
@@ -5588,7 +5594,9 @@ function describeVixRegime(brainVix, vix) {
     }
     const name = names[r.regime] || String(r.regime);
     const pctText = `${Math.round(pct)}th pct`;
-    const scope = `vs last ${support} sessions${newest ? ` to ${newest}` : ''}`;
+    const scope = r.basis === 'iv_percentile'
+        ? 'by IV percentile'
+        : `vs last ${support} sessions${newest ? ` to ${newest}` : ''}`;
     const cls = (r.regime === 'VERY_HIGH' || r.regime === 'HIGH') ? 'sell' : (r.regime === 'LOW' ? 'buy' : 'neutral');
     return {
         source: 'brain', label: `${name} · ${pctText}`, stale: false, verdictClass: cls, bandText,
@@ -5652,9 +5660,11 @@ function renderMarket(snapshot = null) {
     // VIX regime: the brain's relative regime (percentile of daily closes) is
     // the authority; the fixed 15/20/24 band is shown only as a reference.
     // A stale brain result must not keep presenting yesterday's regime.
+    const brainFresh = brainFreshnessStatus(bd).fresh;
     const vixRegimeView = describeVixRegime(
-        brainFreshnessStatus(bd).fresh ? bd?.vixRegime : null,
-        Number(l.vix)
+        brainFresh ? bd?.vixRegime : null,
+        Number(l.vix),
+        { brainStale: !brainFresh && hasBrainPayload(bd) }
     );
     const ivRegime = vixRegimeView.label;
     const verdictClass = vixRegimeView.verdictClass;
