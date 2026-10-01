@@ -69,7 +69,8 @@ jobs:
             test_eng_batches_bde_pwa.mjs \
             tests/test_paper_render_rectification.mjs \
             tests/test_paper_save_path_r2.mjs \
-            tests/test_paper_r3_multilot_auth.mjs
+            tests/test_paper_r3_multilot_auth.mjs \
+            tests/test_vix_regime_display.mjs
 
       - name: Verify Pages artifact excludes repository documents
         run: |
