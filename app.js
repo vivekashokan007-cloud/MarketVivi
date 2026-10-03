@@ -5531,6 +5531,88 @@ function renderIntradayChart(index = 'NF', snapshot = null) {
     </div>`;
 }
 
+// Fixed absolute VIX band (15/20/24). The brain no longer uses it for
+// decisions; it is shown only as a labelled secondary reference.
+function vixFixedBand(vix) {
+    if (!Number.isFinite(vix)) return null;
+    if (vix >= C.IV_VERY_HIGH) return 'VERY HIGH';
+    if (vix >= C.IV_HIGH) return 'ELEVATED';
+    if (vix <= C.IV_LOW) return 'LOW';
+    return 'NORMAL';
+}
+
+// Sigma badges: native values arrive unrounded (e.g. -0.736975468032293).
+function formatSigma(value) {
+    const num = Number(value);
+    if (value === null || value === undefined || value === '' || !Number.isFinite(num)) return null;
+    const rounded = Math.round(num * 100) / 100;
+    return (Object.is(rounded, -0) ? 0 : rounded).toFixed(2);
+}
+
+// Describes the brain's relative VIX regime (result.vixRegime) for display.
+// Never invents a regime: stale, undated or thin history is shown as held
+// neutral, which is what the brain itself does with it.
+function describeVixRegime(brainVix, vix, opts = {}) {
+    const band = vixFixedBand(vix);
+    const bandText = band ? `Fixed band (15/20/24): ${band}` : '';
+    const names = { VERY_HIGH: 'VERY HIGH', HIGH: 'HIGH', NORMAL: 'NORMAL', LOW: 'LOW' };
+    const r = (brainVix && typeof brainVix === 'object' && !brainVix.error) ? brainVix : null;
+    if (!r || !r.regime) {
+        return {
+            source: 'band', label: band || '--', stale: false, verdictClass: 'neutral', bandText,
+            verdict: opts.brainStale
+                ? 'Brain result is stale — IV regime not shown; fixed band for reference only'
+                : 'Brain IV regime not available yet — fixed band shown for reference only',
+        };
+    }
+    if (r.decision_scope === 'real_legacy_unchanged') {
+        return {
+            source: 'band', label: band || '--', stale: false, verdictClass: 'neutral', bandText,
+            verdict: 'Corrected VIX regime is active for Paper only; fixed band shown for reference',
+        };
+    }
+    const status = String(r.history_status || '');
+    const newest = r.history_newest_date ? String(r.history_newest_date) : '';
+    const num = (v) => (v === null || v === undefined || v === '') ? NaN : Number(v);
+    // The brain may rank on the IV percentile when the VIX history cannot;
+    // evidence_percentile is whichever one it actually used.
+    const pct = Number.isFinite(num(r.evidence_percentile)) ? num(r.evidence_percentile) : num(r.vix_percentile);
+    const support = Number(r.support_count) || 0;
+    const minSupport = Number(r.min_support) > 0 ? Number(r.min_support) : 30;
+    const usable = r.support_status === 'SUPPORTED' && Number.isFinite(pct)
+        && (status === 'FRESH' || status === 'UNVERIFIED_NO_SESSION_DATE' || r.basis === 'iv_percentile');
+    if (!usable) {
+        let reason;
+        if (status === 'STALE') {
+            const behind = Number.isFinite(Number(r.history_sessions_behind)) ? Number(r.history_sessions_behind) : '?';
+            reason = `VIX history is stale (newest close ${newest || 'unknown'}, ${behind} sessions behind)`;
+        } else if (status === 'MISSING' || status === 'UNDATED') {
+            reason = 'No dated VIX history';
+        } else if (support < minSupport) {
+            reason = `VIX history too thin (${support} closes, need ${minSupport})`;
+        } else {
+            reason = 'VIX history not stable enough to rank';
+        }
+        return {
+            source: 'brain', label: 'NEUTRAL', stale: true, verdictClass: 'neutral', bandText,
+            verdict: `⚠️ ${reason} — Paper Force 3 neutral; fixed VIX band used for strategy selection`,
+        };
+    }
+    const name = names[r.regime] || String(r.regime);
+    const pctText = `${Math.round(pct)}th pct`;
+    const scope = r.basis === 'iv_percentile'
+        ? 'by IV percentile'
+        : `vs last ${support} sessions${newest ? ` to ${newest}` : ''}`;
+    const guard = r.absolute_guard_applied && r.percentile_regime
+        ? ` · relative ${String(r.percentile_regime).replace('_', ' ')} capped by absolute VIX guard`
+        : '';
+    const cls = (r.regime === 'VERY_HIGH' || r.regime === 'HIGH') ? 'sell' : (r.regime === 'LOW' ? 'buy' : 'neutral');
+    return {
+        source: 'brain', label: `${name} · ${pctText}`, stale: false, verdictClass: cls, bandText,
+        verdict: `IV ${name} ${scope} (${pctText})${guard}`,
+    };
+}
+
 function renderMarket(snapshot = null) {
     const el = document.getElementById('market-content');
     if (!el) return;
@@ -5578,19 +5660,25 @@ function renderMarket(snapshot = null) {
     const derivedSpotSigma = (Number.isFinite(chosenSpot) && Number.isFinite(chosenBaseSpot) && Number.isFinite(chosenDailySigma) && chosenDailySigma > 0)
         ? +(((chosenSpot - chosenBaseSpot) / chosenDailySigma).toFixed(1))
         : null;
-    const spotSigma = Number.isFinite(l.spotSigma) ? l.spotSigma : derivedSpotSigma;
+    const spotSigma = formatSigma(Number.isFinite(l.spotSigma) ? l.spotSigma : derivedSpotSigma);
     const derivedVixSigma = (Number.isFinite(l.vix) && Number.isFinite(b.vix))
         ? +(((l.vix - b.vix) / 0.5).toFixed(1))
         : null;
-    const vixSigma = Number.isFinite(l.vixSigma) ? l.vixSigma : derivedVixSigma;
+    const vixSigma = formatSigma(Number.isFinite(l.vixSigma) ? l.vixSigma : derivedVixSigma);
 
-    // VIX regime
-    let ivRegime = 'NORMAL';
-    let verdictClass = 'neutral';
-    let verdict = 'Normal IV — no strong edge for buyers or sellers';
-    if (l.vix >= C.IV_VERY_HIGH) { ivRegime = 'VERY HIGH'; verdictClass = 'sell'; verdict = '🔥 SELL PREMIUM — IV very high, 3 forces aligned for credit sellers'; }
-    else if (l.vix >= C.IV_HIGH) { ivRegime = 'ELEVATED'; verdictClass = 'sell'; verdict = '📈 Sellers favored — elevated IV, credit spreads preferred'; }
-    else if (l.vix <= C.IV_LOW) { ivRegime = 'LOW'; verdictClass = 'buy'; verdict = '💎 Cheap premium — debit spreads get bargain entry'; }
+    // VIX regime: the brain's relative regime (percentile of daily closes) is
+    // the authority; the fixed 15/20/24 band is shown only as a reference.
+    // A stale brain result must not keep presenting yesterday's regime.
+    const brainFresh = brainFreshnessStatus(bd).fresh;
+    const vixRegimeView = describeVixRegime(
+        brainFresh ? bd?.vixRegime : null,
+        Number(l.vix),
+        { brainStale: !brainFresh && hasBrainPayload(bd) }
+    );
+    const ivRegime = vixRegimeView.label;
+    const verdictClass = vixRegimeView.verdictClass;
+    const verdict = escapeHtml(vixRegimeView.verdict) + (vixRegimeView.bandText
+        ? `<div class="env-sub" style="margin-top:2px">${escapeHtml(vixRegimeView.bandText)}</div>` : '');
 
     // VIX vs yesterday
     let vixVsYday = '';
@@ -5703,7 +5791,7 @@ function renderMarket(snapshot = null) {
             <div class="env-item">
                 <div class="env-label">VIX</div>
                 <div class="env-value">${l.vix?.toFixed(1) || '--'}</div>
-                <div class="env-sub">${ivRegime}</div>
+                <div class="env-sub">${escapeHtml(ivRegime)}</div>
             </div>
             <div class="env-item">
                 <div class="env-label">BNF</div>
