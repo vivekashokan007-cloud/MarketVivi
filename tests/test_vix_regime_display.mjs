@@ -38,6 +38,7 @@ const fresh = (over = {}) => ({
   history_sessions_behind: 0,
   history_max_sessions_behind: 2,
   constant_band_regime: 'NORMAL',
+  decision_scope: 'paper_corrected',
   ...over,
 });
 
@@ -88,7 +89,7 @@ test('stale history is shown as held neutral with its age', () => {
   assert.equal(view.stale, true);
   assert.equal(view.verdictClass, 'neutral');
   assert.match(view.verdict, /stale \(newest close 2026-06-29, 65 sessions behind\)/);
-  assert.match(view.verdict, /held neutral/);
+  assert.match(view.verdict, /Paper Force 3 neutral/);
 });
 
 test('missing, undated and thin history never produce a regime', () => {
@@ -100,6 +101,17 @@ test('missing, undated and thin history never produce a regime', () => {
   const thin = describeVixRegime(fresh({ support_status: 'LOW_SUPPORT', vix_percentile: null, support_count: 12 }), 14);
   assert.equal(thin.label, 'NEUTRAL');
   assert.match(thin.verdict, /too thin \(12 closes, need 30\)/);
+});
+
+test('absolute guard is explained and Real does not claim the Paper correction', () => {
+  const guarded = describeVixRegime(fresh({
+    regime: 'HIGH', percentile_regime: 'VERY_HIGH', absolute_guard_applied: true,
+  }), 15.37);
+  assert.equal(guarded.label, 'HIGH · 100th pct');
+  assert.match(guarded.verdict, /relative VERY HIGH capped by absolute VIX guard/);
+  const real = describeVixRegime(fresh({ decision_scope: 'real_legacy_unchanged' }), 15.37);
+  assert.equal(real.source, 'band');
+  assert.match(real.verdict, /active for Paper only/);
 });
 
 test('absent or failed brain payload falls back to the labelled band', () => {

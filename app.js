@@ -5565,6 +5565,12 @@ function describeVixRegime(brainVix, vix, opts = {}) {
                 : 'Brain IV regime not available yet — fixed band shown for reference only',
         };
     }
+    if (r.decision_scope === 'real_legacy_unchanged') {
+        return {
+            source: 'band', label: band || '--', stale: false, verdictClass: 'neutral', bandText,
+            verdict: 'Corrected VIX regime is active for Paper only; fixed band shown for reference',
+        };
+    }
     const status = String(r.history_status || '');
     const newest = r.history_newest_date ? String(r.history_newest_date) : '';
     const num = (v) => (v === null || v === undefined || v === '') ? NaN : Number(v);
@@ -5589,7 +5595,7 @@ function describeVixRegime(brainVix, vix, opts = {}) {
         }
         return {
             source: 'brain', label: 'NEUTRAL', stale: true, verdictClass: 'neutral', bandText,
-            verdict: `⚠️ ${reason} — brain IV regime held neutral`,
+            verdict: `⚠️ ${reason} — Paper Force 3 neutral; fixed VIX band used for strategy selection`,
         };
     }
     const name = names[r.regime] || String(r.regime);
@@ -5597,10 +5603,13 @@ function describeVixRegime(brainVix, vix, opts = {}) {
     const scope = r.basis === 'iv_percentile'
         ? 'by IV percentile'
         : `vs last ${support} sessions${newest ? ` to ${newest}` : ''}`;
+    const guard = r.absolute_guard_applied && r.percentile_regime
+        ? ` · relative ${String(r.percentile_regime).replace('_', ' ')} capped by absolute VIX guard`
+        : '';
     const cls = (r.regime === 'VERY_HIGH' || r.regime === 'HIGH') ? 'sell' : (r.regime === 'LOW' ? 'buy' : 'neutral');
     return {
         source: 'brain', label: `${name} · ${pctText}`, stale: false, verdictClass: cls, bandText,
-        verdict: `IV ${name} ${scope} (${pctText})`,
+        verdict: `IV ${name} ${scope} (${pctText})${guard}`,
     };
 }
 
