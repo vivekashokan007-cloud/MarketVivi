@@ -13,6 +13,11 @@
 
 **Compatibility.** NativeBridge stubs remain for this release: `getYesterdayHistory`/`getRecentSignals` → `"[]"`; `getMorningSnapshot`/`getChainSnapshot`/`getSignalAccuracyStats` → `"{}"`. Stubs alone do not correct old cached PWA logic until the PWA cache updates. Mixed old-PWA/new-APK and new-PWA/old-APK remain usable with unknown attribution when sources are missing.
 
+
+### R1 (2026-10-05) — factual previous_close verification field
+
+`vixRegime` now publishes `previous_close_verified` and `previous_close_sessions_behind` from `_vix_immediate_previous_close()` after validating the immediately preceding NSE session (independent of Real regime `history_status=LEGACY_UNVERIFIED` / null `history_sessions_behind`). PWA `readVixPreviousCloseAttribution` gates on `previous_close_verified === true` (and factual behind==0), **not** on regime `history_sessions_behind`. Regime decision fields and Real policy remain unchanged.
+
 **Out of scope (not in this package).** Morning FII short-% fallback, `premium_history` restoration, holding-horizon research, Candidate M, varsityTier/`7f721eb`.
 
 

@@ -3455,21 +3455,23 @@ function computeFiiDerivNet(morning) {
     return a + b;
 }
 
-/** Previous-session VIX close from brain summary; null when uncertain. */
+/** Previous-session VIX close from brain factual fields; null when uncertain.
+ *  Gates on previous_close_verified (NOT regime history_sessions_behind), so
+ *  Real-mode summaries with LEGACY_UNVERIFIED regime history still attribute. */
 function readVixPreviousCloseAttribution(latestVix) {
     const vr = (typeof bd === 'object' && bd) ? (bd.vixRegime || {}) : {};
-    const behind = vr.history_sessions_behind;
-    const behindOk = behind === 0 || behind === '0';
+    const verified = vr.previous_close_verified === true;
+    const factualBehind = vr.previous_close_sessions_behind;
+    const factualBehindOk = factualBehind === 0 || factualBehind === '0';
     const prev = finiteNumberOrNull(vr.previous_close);
     const prevDate = vr.previous_close_date || null;
-    if (!behindOk || prev === null || !(prev > 0) || !prevDate) {
+    if (!verified || !factualBehindOk || prev === null || !(prev > 0) || !prevDate) {
         return { previous_close: null, previous_close_date: null };
     }
     const today = (typeof API !== 'undefined' && API.todayIST) ? API.todayIST() : null;
     if (today && String(prevDate) >= String(today)) {
         return { previous_close: null, previous_close_date: null };
     }
-    // latestVix is unused for the stored fields; kept for callers that may want direction display.
     void latestVix;
     return { previous_close: prev, previous_close_date: String(prevDate) };
 }
@@ -5681,7 +5683,7 @@ function renderMarket(snapshot = null) {
     const verdict = escapeHtml(vixRegimeView.verdict) + (vixRegimeView.bandText
         ? `<div class="env-sub" style="margin-top:2px">${escapeHtml(vixRegimeView.bandText)}</div>` : '');
 
-    // VIX vs previous session — only from validated brain previous_close (sessions_behind==0).
+    // VIX vs previous session — only from brain previous_close_verified factual fields.
     let vixVsYday = '';
     const vixPrevAttr = readVixPreviousCloseAttribution(l.vix);
     if (vixPrevAttr.previous_close != null && Number.isFinite(Number(l.vix))) {
