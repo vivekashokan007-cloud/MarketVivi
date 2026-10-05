@@ -67,7 +67,7 @@ execSync('python3 tests/_extract_paper_fns.py', {
 });
 let extracted = fs.readFileSync(extractOut, 'utf8');
 // Append takeTradeImpl and minimal deps that extractor may not include.
-for (const n of ['takeTradeImpl']) {
+for (const n of ['finiteNumberOrNull','readValidatedMorningFiiDii','computeFiiDerivNet','readVixPreviousCloseAttribution','takeTradeImpl']) {
   try {
     const body = extractFunction(appSrc, n);
     if (!extracted.includes(`function ${n}`) && !extracted.includes(`async function ${n}`)) {

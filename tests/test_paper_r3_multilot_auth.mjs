@@ -40,7 +40,7 @@ execSync('python3 tests/_extract_paper_fns.py', {
   cwd: root, stdio: 'pipe', env: { ...process.env, PAPER_EXTRACT_OUT: extractOut },
 });
 let extracted = fs.readFileSync(extractOut, 'utf8');
-for (const n of ['takeTradeImpl']) {
+for (const n of ['finiteNumberOrNull','readValidatedMorningFiiDii','computeFiiDerivNet','readVixPreviousCloseAttribution','takeTradeImpl']) {
   const body = extractFunction(appSrc, n);
   if (!extracted.includes(`function ${n}`) && !extracted.includes(`async function ${n}`)) {
     extracted += '\n\n' + body;

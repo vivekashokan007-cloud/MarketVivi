@@ -184,17 +184,7 @@ const STATE = {
     morningBias: null,      // Morning plan bias (persisted to localStorage)
     biasDrift: 0,           // live.biasNet - morningBias.net
     driftOverridden: false, // true when ±2 drift auto-switched to live bias
-    _notified2pm: false,
-    _notified315pm: false,
-    _captured2pm: false,
-    _captured315pm: false,
-    afternoonBaseline: null,   // 2PM snapshot
-    positioningResult: null,   // 3:15PM comparison result
-    tomorrowSignal: null,      // BEARISH/BULLISH/NEUTRAL + strength
-    signalAccuracy: null,      // { correct, total, history }
-    signalAccuracyStats: null,  // { correct, total, pct }
-    positioningCandidates: [],  // strategies aligned with tomorrow signal
-    positioningBias: null,      // bias derived from tomorrow signal
+    // Afternoon positioning STATE retired in 2.6.66
 
     // Loop control
     pollTimer: null,
@@ -375,20 +365,16 @@ function pullRenderSnapshot() {
         ),
         bnfChain: readNativeJson('getBnfChain', {}),
         nfChain: readNativeJson('getNfChain', {}),
-        signalStats: readNativeJson('getSignalAccuracyStats', {}),
         executionInfraStatus: readNativeJson('getExecutionInfraStatus', {}),
         orderProxyUrl: readNativeValue('getOrderProxyUrl', ''),
         notificationTransportMode: readNativeValue('getNotificationTransportMode', ''),
         stage2aGuardMode: readNativeValue('getStage2AGuardMode', ''),
-        yesterdayHistory7: readNativeJson('getYesterdayHistory', [], 7),
-        morningSnapshotToday: readNativeJson('getMorningSnapshot', {}, API.todayIST()),
         bnfBreadth: readNativeJson('getBnfBreadth', {}),
         nf50Breadth: readNativeJson('getNf50Breadth', {}),
         premiumHistory7: readNativeJson('getPremiumHistory', [], 7),
         crashReport: readNativeJson('getLastCrashReport', {})
     };
     if (!Array.isArray(snapshot.openTrades)) snapshot.openTrades = [];
-    if (!Array.isArray(snapshot.yesterdayHistory7)) snapshot.yesterdayHistory7 = [];
     if (!Array.isArray(snapshot.premiumHistory7)) snapshot.premiumHistory7 = [];
     return snapshot;
 }
@@ -858,8 +844,7 @@ function clearSessionDerivedState() {
     STATE._nativeBrainAlerts = [];
     STATE.candidates = [];
     STATE.watchlist = [];
-    STATE.positioningCandidates = [];
-    STATE.positioningBias = null;
+    // positioningCandidates/Bias retired
     STATE.effectiveBias = null;
     STATE.pollHistory = [];
     STATE.pollCount = 0;
@@ -1629,8 +1614,7 @@ function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
         STATE.brainError = incoming.candidate_error || null;
         STATE.candidates = Array.isArray(incoming.generated_candidates) ? incoming.generated_candidates.slice() : [];
         STATE.watchlist = Array.isArray(incoming.watchlist) ? incoming.watchlist.slice() : [];
-        STATE.positioningCandidates = Array.isArray(incoming.positioning_candidates) ? incoming.positioning_candidates.slice() : [];
-        STATE.positioningBias = incoming.positioning_bias || null;
+        // Ignore retired positioning_candidates / positioning_bias if present in stale payloads
         STATE.brainRefreshPending = false;
         STATE.brainRefreshReason = '';
         STATE.lastScanTime = completedAtMs;
@@ -2598,51 +2582,8 @@ function playSound(type) {
 
 // Validate yesterday's signal against today's gap
 
-// Render positioning section on DATA tab
-function renderPositioning() {
-    if (!bd.positioning && !STATE._captured2pm) return '';
+// renderPositioning retired with afternoon positioning (2.6.66)
 
-    let html = '<div class="env-section-title">🔍 Afternoon Positioning</div>';
-
-    // 2PM baseline status
-    if (STATE._captured2pm && !STATE._captured315pm) {
-        html += `<div class="env-row"><span class="env-row-label">2:00 PM Baseline</span><span class="env-row-value" style="color:var(--green)">✅ Captured</span></div>`;
-        html += `<div class="env-row"><span class="env-row-label">3:15 PM Scan</span><span class="env-row-value" style="color:var(--text-muted)">⏳ Pending...</span></div>`;
-    }
-
-    // Full comparison after 3:15PM
-    if (bd.positioning) {
-        const r = bd.positioning;
-        const d = r.delta;
-        const fmtOI = (v) => { const l = Math.abs(v) / 100000; return `${v > 0 ? '+' : ''}${l.toFixed(1)}L`; };
-
-        html += `
-        <div class="env-row"><span class="env-row-label">BNF Call OI change</span>
-            <span class="env-row-value" style="color:${d.callOiDelta > 0 ? 'var(--danger)' : 'var(--green)'}">${fmtOI(d.callOiDelta)} ${d.callOiDelta > d.putOiDelta * 1.3 ? '(heavy call writing)' : ''}</span></div>
-        <div class="env-row"><span class="env-row-label">BNF Put OI change</span>
-            <span class="env-row-value" style="color:${d.putOiDelta > 0 ? 'var(--green)' : 'var(--danger)'}">${fmtOI(d.putOiDelta)} ${d.putOiDelta > d.callOiDelta * 1.3 ? '(heavy put defense)' : ''}</span></div>
-        <div class="env-row"><span class="env-row-label">PCR shift</span>
-            <span class="env-row-value">${d.snap2pm.bnf_near_atm_pcr?.toFixed(2) || '--'} → ${d.snap315pm.bnf_near_atm_pcr?.toFixed(2) || '--'} (${d.nearPcrChange > 0 ? '+' : ''}${d.nearPcrChange.toFixed(2)})</span></div>
-        <div class="env-row"><span class="env-row-label">VIX shift</span>
-            <span class="env-row-value" style="color:${d.vixChange > 0.2 ? 'var(--danger)' : d.vixChange < -0.2 ? 'var(--green)' : 'var(--text-muted)'}">${d.snap2pm.vix?.toFixed(1)} → ${d.snap315pm.vix?.toFixed(1)} (${d.vixChange > 0 ? '+' : ''}${d.vixChange.toFixed(1)})</span></div>
-        <div class="env-row"><span class="env-row-label">MaxPain shift</span>
-            <span class="env-row-value">${d.snap2pm.bnf_max_pain || '--'} → ${d.snap315pm.bnf_max_pain || '--'} (${d.maxPainShift > 0 ? '+' : ''}${d.maxPainShift})</span></div>
-        <div class="env-row"><span class="env-row-label">BNF Breadth</span>
-            <span class="env-row-value">${d.snap2pm.bnf_breadth_pct?.toFixed(2) || '--'}% → ${d.snap315pm.bnf_breadth_pct?.toFixed(2) || '--'}%</span></div>
-        `;
-
-        // Tomorrow Signal
-        const sigColor = r.signal === 'BEARISH' ? 'var(--danger)' : r.signal === 'BULLISH' ? 'var(--green)' : 'var(--warn)';
-        html += `<div class="tomorrow-signal" style="border-color:${sigColor}">
-            <div class="signal-label">⚡ TOMORROW SIGNAL</div>
-            <div class="signal-value" style="color:${sigColor}">${r.signal} (${r.strength}/5)</div>
-            <div class="signal-detail">${r.signal === 'BEARISH' ? 'Institutions positioned for gap-down. Sell call premium above resistance.' : r.signal === 'BULLISH' ? 'Institutions positioned for gap-up. Sell put premium below support.' : 'No clear positioning. Range likely. Iron Condor favorable.'}</div>
-            ${bd.tomorrow_signal?.globalBoost ? `<div class="signal-detail" style="color:var(--accent)">🌍 Global direction: ${bd.tomorrow_signal.globalBoost > 0 ? '+' : ''}${bd.tomorrow_signal.globalBoost} strength</div>` : ''}
-        </div>`;
-    }
-
-    return html;
-}
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -3472,10 +3413,70 @@ function recordClosedTradeToNative(trade, closePatch) {
     }
 }
 
+
+// ═══ RETIRED afternoon positioning — truthful entry attribution helpers (2.6.66) ═══
+function finiteNumberOrNull(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const n = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+/** Morning FII/DII from native baseline/morning lock with validated session date. */
+function readValidatedMorningFiiDii() {
+    const today = (typeof API !== 'undefined' && API.todayIST) ? API.todayIST() : null;
+    let src = null;
+    try {
+        // Prefer live baseline (morning lock writes morning_baseline = morning_input).
+        src = readNativeJson('getBaseline', {});
+    } catch (e) {
+        src = null;
+    }
+    if (!src || typeof src !== 'object' || Array.isArray(src) || !Object.keys(src).length) {
+        // Older APK / missing source → unknown
+        return { dateOk: false, diiCash: null, fiiIdxFut: null, fiiStkFut: null };
+    }
+    const date = src.date || src._date || src.session_date || null;
+    if (!today || !date || String(date) !== String(today)) {
+        return { dateOk: false, diiCash: null, fiiIdxFut: null, fiiStkFut: null };
+    }
+    return {
+        dateOk: true,
+        diiCash: finiteNumberOrNull(src.diiCash ?? src.dii_cash),
+        fiiIdxFut: finiteNumberOrNull(src.fiiIdxFut ?? src.fii_idx_fut),
+        fiiStkFut: finiteNumberOrNull(src.fiiStkFut ?? src.fii_stk_fut),
+    };
+}
+
+function computeFiiDerivNet(morning) {
+    if (!morning || !morning.dateOk) return null;
+    const a = morning.fiiIdxFut;
+    const b = morning.fiiStkFut;
+    if (a === null || b === null) return null;
+    return a + b;
+}
+
+/** Previous-session VIX close from brain summary; null when uncertain. */
+function readVixPreviousCloseAttribution(latestVix) {
+    const vr = (typeof bd === 'object' && bd) ? (bd.vixRegime || {}) : {};
+    const behind = vr.history_sessions_behind;
+    const behindOk = behind === 0 || behind === '0';
+    const prev = finiteNumberOrNull(vr.previous_close);
+    const prevDate = vr.previous_close_date || null;
+    if (!behindOk || prev === null || !(prev > 0) || !prevDate) {
+        return { previous_close: null, previous_close_date: null };
+    }
+    const today = (typeof API !== 'undefined' && API.todayIST) ? API.todayIST() : null;
+    if (today && String(prevDate) >= String(today)) {
+        return { previous_close: null, previous_close_date: null };
+    }
+    // latestVix is unused for the stored fields; kept for callers that may want direction display.
+    void latestVix;
+    return { previous_close: prev, previous_close_date: String(prevDate) };
+}
+
 function findCandidateById(candidateId) {
     return (bd.watchlist || []).find(c => String(c.id) === String(candidateId))
-        || (bd.generated_candidates || []).find(c => String(c.id) === String(candidateId))
-        || STATE.positioningCandidates.find(c => String(c.id) === String(candidateId));
+        || (bd.generated_candidates || []).find(c => String(c.id) === String(candidateId));
 }
 
 function sandboxPreviewLeg(cand, correlationId, action, instrumentKey, strike, optionType, ltp, lotSize, lots) {
@@ -3841,7 +3842,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         entry_credit_confidence: bd.institutionalRegime?.creditConfidence || null,
         entry_wall_score: cand.wallScore ?? null,
         entry_gamma_risk: cand.gammaRisk ?? null,
-        entry_dii_cash: parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.diiCash) || null,
+        entry_dii_cash: (function(){ const m = readValidatedMorningFiiDii(); return m.diiCash; })(),
         entry_absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
         // b115: Real breakeven lines — used by brain for position monitoring
         be_upper: cand.beUpper ?? null,
@@ -3906,7 +3907,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             iv_percentile: latestPoll.ivPercentile ?? null,
             spot_sigma: latestPoll.spotSigma ?? null,
             vix_sigma: latestPoll.vixSigma ?? null,
-            vix_direction: (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.[0]?.vix ? +(latestPoll.vix - (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0].vix).toFixed(2) : null,
+            ...(function(){ const a = readVixPreviousCloseAttribution(latestPoll.vix); return { previous_close: a.previous_close, previous_close_date: a.previous_close_date }; })(),
             // OI structure
             call_wall: isBNF ? latestPoll.bnfCallWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
             call_wall_oi: isBNF ? latestPoll.bnfCallWallOI : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallOI ?? null),
@@ -3921,7 +3922,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             // Institutional
             regime: bd.institutionalRegime?.regime || null,
             regime_detail: bd.institutionalRegime?.regimeDetail || null,
-            fii_deriv_net: bd.institutionalRegime ? (parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiIdxFut || 0) + parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.fiiStkFut || 0)) : null,
+            fii_deriv_net: computeFiiDerivNet(readValidatedMorningFiiDii()),
             absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
             contrarian_pcr: STATE.contrarianPCR?.signal || null,
             // Bias detail — all 7 signal votes
@@ -4214,7 +4215,7 @@ async function logManualTrade() {
         entry_credit_confidence: bd.institutionalRegime?.creditConfidence || null,
         entry_wall_score: null, // manual trade — no candidate wall score
         entry_gamma_risk: null, // manual trade — no candidate gamma
-        entry_dii_cash: parseFloat((JSON.parse(NativeBridge.getMorningSnapshot(API.todayIST()) || '{}'))?.diiCash) || null,
+        entry_dii_cash: (function(){ const m = readValidatedMorningFiiDii(); return m.diiCash; })(),
         entry_absorption_ratio: bd.institutionalRegime?.absorptionRatio ?? null,
         entry_gap_sigma: bd.gapInfo?.sigma ?? null,
         entry_gap_type: bd.gapInfo?.type || null,
@@ -4236,7 +4237,7 @@ async function logManualTrade() {
             near_atm_pcr: indexKey === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.nearAtmPCR : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.nearAtmPCR ?? null),
             iv_percentile: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.ivPercentile ?? null,
             spot_sigma: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.spotSigma ?? null,
-            vix_direction: (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))?.[0]?.vix ? +((safeParseNB(NativeBridge.getLatestPoll(), {}))?.vix - (JSON.parse(NativeBridge.getYesterdayHistory(7) || '[]'))[0].vix).toFixed(2) : null,
+            ...(function(){ const poll = safeParseNB(NativeBridge.getLatestPoll(), {}); const a = readVixPreviousCloseAttribution(poll?.vix); return { previous_close: a.previous_close, previous_close_date: a.previous_close_date }; })(),
             call_wall: indexKey === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfCallWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.callWallStrike ?? null),
             put_wall: indexKey === 'BNF' ? (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bnfPutWall : ((JSON.parse(NativeBridge.getNfChain() || '{}'))?.putWallStrike ?? null),
             bias_signals: (safeParseNB(NativeBridge.getLatestPoll(), {}))?.bias?.signals?.map(s => ({ n: s.name, d: s.dir, v: s.value })) || [],
@@ -5680,47 +5681,14 @@ function renderMarket(snapshot = null) {
     const verdict = escapeHtml(vixRegimeView.verdict) + (vixRegimeView.bandText
         ? `<div class="env-sub" style="margin-top:2px">${escapeHtml(vixRegimeView.bandText)}</div>` : '');
 
-    // VIX vs yesterday
+    // VIX vs previous session — only from validated brain previous_close (sessions_behind==0).
     let vixVsYday = '';
-    if (b.yesterdayVix) {
-        const diff = l.vix - b.yesterdayVix;
+    const vixPrevAttr = readVixPreviousCloseAttribution(l.vix);
+    if (vixPrevAttr.previous_close != null && Number.isFinite(Number(l.vix))) {
+        const diff = Number(l.vix) - vixPrevAttr.previous_close;
         const arrow = diff > 0.3 ? '↑' : diff < -0.3 ? '↓' : '→';
-        const pct = ((diff / b.yesterdayVix) * 100).toFixed(1);
-        vixVsYday = `Yesterday: ${b.yesterdayVix.toFixed(1)} · Change: ${diff > 0 ? '+' : ''}${diff.toFixed(1)} (${pct}%) ${arrow}`;
-    }
-
-    // Yesterday's data for comparisons
-    const ydayHistory = Array.isArray(snap?.yesterdayHistory7) ? snap.yesterdayHistory7 : readNativeJson('getYesterdayHistory', [], 7);
-    const morningSnapshot = snap?.morningSnapshotToday || readNativeJson('getMorningSnapshot', {}, API.todayIST());
-    const yday = ydayHistory.length > 0 ? ydayHistory[0] : null;
-    let ydayComparisons = '';
-    if (yday) {
-        const items = [];
-        if (yday.fii_cash != null && morningSnapshot?.fiiCash) {
-            const diff = parseFloat(morningSnapshot.fiiCash) - yday.fii_cash;
-            items.push(`FII: ₹${yday.fii_cash}→₹${morningSnapshot.fiiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
-        }
-        if (yday.fii_short_pct != null && morningSnapshot?.fiiShortPct) {
-            const diff = parseFloat(morningSnapshot.fiiShortPct) - yday.fii_short_pct;
-            items.push(`Short%: ${yday.fii_short_pct}→${morningSnapshot.fiiShortPct} (${diff > 0 ? '+' : ''}${diff.toFixed(1)})`);
-        }
-        if (yday.pcr != null && l.pcr) {
-            const diff = l.pcr - yday.pcr;
-            items.push(`PCR: ${yday.pcr.toFixed(2)}→${l.pcr.toFixed(2)} (${diff > 0 ? '+' : ''}${diff.toFixed(2)})`);
-        }
-        if (yday.bnf_spot != null && l.bnfSpot) {
-            const diff = l.bnfSpot - yday.bnf_spot;
-            items.push(`BNF: ${yday.bnf_spot.toFixed(0)}→${l.bnfSpot.toFixed(0)} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
-        }
-        if (yday.dii_cash != null && morningSnapshot?.diiCash) {
-            const diff = parseFloat(morningSnapshot.diiCash) - yday.dii_cash;
-            items.push(`DII: ₹${yday.dii_cash}→₹${morningSnapshot.diiCash} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
-        }
-        if (yday.fii_stk_fut != null && morningSnapshot?.fiiStkFut) {
-            const diff = parseFloat(morningSnapshot.fiiStkFut) - yday.fii_stk_fut;
-            items.push(`FII Stk Fut: ₹${yday.fii_stk_fut}→₹${morningSnapshot.fiiStkFut} (${diff > 0 ? '+' : ''}${diff.toFixed(0)})`);
-        }
-        ydayComparisons = items.map(i => `<span class="signal-chip signal-neutral">${i}</span>`).join('');
+        const pct = ((diff / vixPrevAttr.previous_close) * 100).toFixed(1);
+        vixVsYday = `Prev close (${vixPrevAttr.previous_close_date}): ${vixPrevAttr.previous_close.toFixed(1)} · Change: ${diff > 0 ? '+' : ''}${diff.toFixed(1)} (${pct}%) ${arrow}`;
     }
 
     const fmtIv = (iv) => iv ? (iv > 1 ? iv.toFixed(1) + '%' : (iv * 100).toFixed(1) + '%') : '--';
@@ -5880,13 +5848,7 @@ function renderMarket(snapshot = null) {
         </table>
         </details>
 
-        ${yday ? `
-        <!-- OVERNIGHT: Yesterday Close → Today Morning -->
-        <details>
-            <summary class="env-section-title" style="cursor:pointer; user-select:none;">🌙 Overnight ▸</summary>
-            <div class="env-signals">${ydayComparisons || '<span class="signal-chip signal-neutral">No comparison data</span>'}</div>
-        </details>
-        ` : ''}
+        <!-- Overnight comparison panel retired with afternoon positioning -->
 
         ${STATE.pollCount > 0 ? `
         <!-- INTRADAY: Morning → Now — collapsible -->
@@ -5913,8 +5875,6 @@ function renderOI(snapshot = null) {
     const b = snap?.baseline || readNativeJson('getBaseline', {});
     const bnfChain = snap?.bnfChain || readNativeJson('getBnfChain', {});
     const nfc = snap?.nfChain || readNativeJson('getNfChain', {});
-    const signalStats = snap?.signalStats || readNativeJson('getSignalAccuracyStats', {});
-
     if (!b) {
         el.innerHTML = '<div class="empty-state">Scan to see OI structure & institutional positioning</div>';
         return;
@@ -6113,17 +6073,9 @@ function renderOI(snapshot = null) {
         </details>
         ` : ''}
 
-        ${bd.signalValidation ? (() => {
-            const sv = bd.signalValidation;
-            return `<div class="env-section-title">📡 Yesterday's Signal</div>
-            <div class="traj-alert ${sv.correct ? '' : 'warn'}">
-                ${sv.predicted} (${sv.strength}/5) → Gap: ${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts ${sv.correct ? '✅ CORRECT' : '❌ MISSED'}
-                ${signalStats && Object.keys(signalStats).length ? ` · Accuracy: ${signalStats.correct}/${signalStats.total} (${signalStats.pct}%)` : ''}
-            </div>`;
-        })() : ''}
+        <!-- Yesterday's Signal validation UI retired with afternoon positioning -->
 
-        ${renderPositioning()}
-    `;
+            `;
 }
 
 function renderWatchlist(snapshot = null) {
@@ -6709,22 +6661,10 @@ function renderPosition(snapshot = null) {
     let html = '';
     const snap = renderSnapshot(snapshot);
     const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
-    const signalStats = snap?.signalStats || readNativeJson('getSignalAccuracyStats', {});
     const openTrades = Array.isArray(snap?.openTrades) ? snap.openTrades : readNativeJson('getOpenTrades', []);
     const lastUpdate = formatServiceLastPoll(serviceStatus.lastPoll);
 
-    // ═══ SIGNAL ACCURACY — compact, collapsible ═══
-    if (bd.signalValidation) {
-        const sv = bd.signalValidation;
-        html += `<details>
-            <summary style="cursor:pointer;font-size:12px;padding:4px 0;user-select:none">📡 Yesterday: ${sv.predicted} → ${sv.correct ? '✅' : '❌'} ${sv.actualDir} (${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts)${signalStats && Object.keys(signalStats).length ? ` · ${signalStats.pct}% accuracy` : ''} ▸</summary>
-            <div class="signal-accuracy-card">
-                <div class="env-row"><span class="env-row-label">Predicted</span><span class="env-row-value">${sv.predicted} (${sv.strength}/5)</span></div>
-                <div class="env-row"><span class="env-row-label">Actual Gap</span><span class="env-row-value" style="color:${sv.correct ? 'var(--green)' : 'var(--danger)'}">${sv.actualGap > 0 ? '+' : ''}${sv.actualGap?.toFixed(0)} pts → ${sv.actualDir} ${sv.correct ? '✅' : '❌'}</span></div>
-                ${signalStats && Object.keys(signalStats).length ? `<div class="env-row"><span class="env-row-label">Accuracy</span><span class="env-row-value" style="color:var(--accent)">${signalStats.correct}/${signalStats.total} (${signalStats.pct}%)</span></div>` : ''}
-            </div>
-        </details>`;
-    }
+    // Signal accuracy / yesterday-signal validation UI retired (2.6.66)
 
     // ═══ OPEN TRADES — split real vs paper ═══
     const realTrades = openTrades.filter(t => !t.paper);
@@ -6895,7 +6835,6 @@ function renderML(snapshot = null) {
     const brain = snap?.brainResult || readNativeJson('getBrainResult', {});
     const infra = snap?.executionInfraStatus || readNativeJson('getExecutionInfraStatus', {});
     const pollHistory = Array.isArray(snap?.pollHistory) ? snap.pollHistory : readNativeJson('getPollHistory', []);
-    const signalStats = snap?.signalStats || readNativeJson('getSignalAccuracyStats', {});
     const decisions = getMLDecisionsCached();
     const proxyUrl = snap?.orderProxyUrl || readNativeValue('getOrderProxyUrl', '');
     const evaluationTargetDate = String(service.evaluationTargetDate || '');
@@ -7029,7 +6968,7 @@ function renderML(snapshot = null) {
     const watchlistCount = Array.isArray(brain.watchlist) ? brain.watchlist.length : 0;
     const candidateCount = Array.isArray(brain.generated_candidates) ? brain.generated_candidates.length : 0;
     const pollsToday = Array.isArray(pollHistory) ? pollHistory.length : 0;
-    const accuracyPct = Number.isFinite(signalStats.pct) ? signalStats.pct.toFixed(1) : '--';
+    const accuracyPct = 'retired';
     const recent = decisions.slice(0, 5);
     const labeledRows = decisions.filter(d => {
         const won = resolveDecisionWon(d);
@@ -7285,7 +7224,7 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Evaluation Signals</span>
                 </div>
                 <div class="brain-detail">
-                    Decision rows: <b>${decisions.length}</b> · Signal accuracy: <b>${accuracyPct}%</b><br>
+                    Decision rows: <b>${decisions.length}</b> · Afternoon signal accuracy: <b>${accuracyPct}</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
                     Day evaluation: <b style="color:${(incompleteSession || incompleteH2MarketData) ? 'var(--warn)' : (evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)')))}">${incompleteSession ? 'INCOMPLETE_SESSION' : ((incompleteIdentity || incompleteH2MarketData) ? evaluationPhaseRaw : (evaluationDone ? 'EVALUATION_DATE_RECORDED' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationRetryable ? 'RETRYABLE' : 'PENDING'))))}</b> · Labels saved: <b style="color:${labelsSaved ? 'var(--green)' : (labelsSavedKnown ? 'var(--warn)' : 'var(--text)')}">${labelsSavedText}</b> · Learning complete: <b style="color:${learningCompleteTruthful ? 'var(--green)' : 'var(--warn)'}">${learningCompleteTruthful ? 'YES' : 'NO'}</b> · C3: <b style="color:${c3StaleForTarget ? 'var(--warn)' : (c3Verified ? 'var(--green)' : (c3Failed ? 'var(--danger)' : (c3Ineligible ? 'var(--warn)' : 'var(--text)')))}">${c3StaleForTarget ? 'STALE/UNAVAILABLE' : (c3Verified ? 'VERIFIED' : (c3Failed ? 'FAILED' : (c3Ineligible ? (c3Phase === 'SKIPPED_NO_FRAMES' ? 'SKIPPED_NO_FRAMES' : 'INELIGIBLE') : (c3Pending ? (c3Phase || 'PENDING') : (c3Phase || 'PENDING')))))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · Outcomes persisted: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${evaluationAlarmFiredForTarget ? `<br><span style="color:var(--accent)">Evaluation alarm fired for this session${evaluationAutoStartForTarget ? ` · Auto-start: ${escapeHtml(evaluationAutoStartStatus || 'UNKNOWN')}` : ''}</span>` : ''}${evaluationAutoStartPending ? `<br><span style="color:var(--warn)">Evaluation alarm fired, but no auto-start state was recorded. Treat this as scheduler evidence, not a completed evaluation.</span>` : ''}${evaluationAutoStartFailed ? `<br><span style="color:var(--warn)">Evaluation auto-start failed: ${escapeHtml(evaluationAutoStartError || 'unknown error')}</span>` : ''}${incompleteSession ? `<br><span style="color:var(--warn)">${escapeHtml(evaluationIncompleteMessage)}</span>${evaluationForceAllowed ? `<br><span style="color:var(--accent)">Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.</span>` : ''}` : ''}${teacherReportPendingNotFailed ? `<br><span style="color:var(--accent)">Teacher research artifact pending until post-close evaluation completes.</span>` : (teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : '')}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${incompleteIdentity ? `<br><span style="color:var(--danger)">Identity coverage incomplete${missingIdentityCount > 0 ? `: ${missingIdentityCount} missing` : ''}${missingIdentityPreview ? ` (preview: ${escapeHtml(missingIdentityPreview)})` : ''}. Labels are not saved. Retry is available and will preserve the selected session.</span>` : ''}${incompleteH2MarketData ? `<br><span style="color:var(--danger)">Closing-window option marks are incomplete. Labels are not saved, C3 is not started, and no price is fabricated.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 && !incompleteSession ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}${labelsSaved && c3Failed ? `<br><span style="color:var(--warn)">Labels saved, but C3 percentile finalization FAILED — this is NOT learning complete.</span>` : ''}${labelsSaved && c3Ineligible ? `<br><span style="color:var(--accent)">Labels saved; C3 marked ineligible from original evidence (no fabricated rows). Learning complete only if every applicable stage is verified or explicitly ineligible.</span>` : ''}${c3Ineligible && c3Reason ? `<br><span style="color:var(--warn)">C3 ineligible reason: ${escapeHtml(c3ReasonCode ? `${c3ReasonCode}: ${c3Reason}` : c3Reason)}</span>` : ''}${c3Failed && (service.c3FinalizationError || c3Reason) ? `<br><span style="color:var(--danger)">C3 failed: ${escapeHtml(String(service.c3FinalizationError || c3Reason))}</span>` : ''}${c3StaleForTarget ? `<br><span style="color:var(--warn)">C3 status belongs to session ${escapeHtml(c3SessionDate)}, not the selected evaluation target ${escapeHtml(evaluationTargetDate)}. Treating C3 as unavailable for this target.</span>` : ''}${researchNoGradeableTeacherOutcomes ? `<br><span style="color:var(--warn)">Persisted rows exist, but 0 gradeable teacher outcomes passed integrity checks. Expectancy-style summaries are blocked for this session.</span>` : ''}
                     ${researchOnlyEvaluation ? '<br><span style="color:var(--warn)">Research outcomes were verified, but no trade decisions were labelable. No training labels were saved.</span>' : ''}
@@ -8487,16 +8426,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initTheme(cloudConfig);
     try { await loadOpenTrade(); } catch (e) { console.warn('[boot] loadOpenTrade failed:', e); }
     try { await loadApprovedBranchProposals(true); } catch (e) { console.warn('[boot] loadApprovedBranchProposals failed:', e.message); }
-    try {
-        if (typeof DB !== 'undefined' && DB.getSignalAccuracyStats) {
-            STATE.signalAccuracyStats = await DB.getSignalAccuracyStats();
-        } else {
-            STATE.signalAccuracyStats = readNativeJson('getSignalAccuracyStats', {});
-        }
-    } catch (e) {
-        console.warn('[boot] getSignalAccuracyStats skipped:', e.message);
-        STATE.signalAccuracyStats = {};
-    }
+    // Boot-time signal-accuracy fetch retired with afternoon positioning.
 
     // If open trades exist, show positions tab
     if (readNativeJson('getOpenTrades', []).length > 0) {
@@ -8545,8 +8475,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
 
-        // Recompute globalBoost with new direction data
-        computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
+        // Global Direction persisted; afternoon computeGlobalBoost retired.
         renderAll();
     });
 
@@ -8566,7 +8495,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const saveData = { ...gd, _date: API.todayIST() };
         localStorage.setItem('mr2_global_context', JSON.stringify(saveData));
         DB.setConfig('global_direction', saveData);
-        computeGlobalBoost(bd.tomorrow_signal, bd.positioning);
+        // Afternoon computeGlobalBoost retired; keep save feedback + render.
         // Show saved feedback
         const badge = document.getElementById('global-dir-saved');
         if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 2000); }

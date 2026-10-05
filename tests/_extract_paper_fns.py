@@ -156,6 +156,10 @@ def extract(name):
 
 
 names = [
+    'finiteNumberOrNull',
+    'readValidatedMorningFiiDii',
+    'computeFiiDerivNet',
+    'readVixPreviousCloseAttribution',
     'normalizePaperIndexKey',
     'parsePositiveIntegralLotJs',
     'paperContractIdentityGate',
