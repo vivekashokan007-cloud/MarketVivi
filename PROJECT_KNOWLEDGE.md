@@ -1,4 +1,21 @@
 
+## 2026-10-05 — Afternoon positioning retired (v2.6.66 / b497) — Grok package
+
+**Scope.** Exact table `chain_snapshots` writer/readers for afternoon 2pm/315pm positioning are retired. Active `ml_option_chain_snapshots` capture through 15:40, chain-slice eval fallback (without `chain_snapshots`), evening evaluation, position tracking, and DB1 dual-write/outbox are preserved.
+
+**Schema mismatch.** Legacy `saveChainSnapshot` wrapped fields in a `data` JSON column while the historical `chain_snapshots` table used flat columns — the path is removed rather than given another writer.
+
+**Prior-score effect.** `yesterday_signal_prior()` previously entered `result['market']` and `synthesize_verdict()` added `strength/5` (0.4 or 0.6) to bullish/bearish totals. That function and its context-insight list entry are removed. Injected legacy cached `yesterdaySignal` no longer contributes. Ranking/entry gates/sizing/exit/Paper availability are otherwise preserved; do not claim all Real outputs are automatically identical when a prior was present.
+
+**Entry attribution.** Trade snapshots replace `vix_direction` with `previous_close` + `previous_close_date` from dated VIX history requiring `sessions_behind == 0`, positive finite close, and matching current-session context (null when uncertain). Independent of Paper-only VIX regime policy. `fii_deriv_net` sums only when both FII idx/stk fut components are present and finite; `entry_dii_cash` is dated numeric or null; explicit zero preserved (no `|| 0` / `Number(null)` coercions). Morning FII/DII come from dated native baseline/morning lock — not retired `getMorningSnapshot`.
+
+**Historical fields.** Preserve historical trade rows. Exclude affected fields (`vix_direction`, coerced-zero FII) from later analysis/training by default rather than dropping entire trades. Claude reported ~136 trades since 2 July 2026 with invalid VIX direction and missing FII recorded as zero — **attribute that count to Claude unless independently verified**. The affected interval ends per verified client adoption/provenance, not merely the server release date.
+
+**Compatibility.** NativeBridge stubs remain for this release: `getYesterdayHistory`/`getRecentSignals` → `"[]"`; `getMorningSnapshot`/`getChainSnapshot`/`getSignalAccuracyStats` → `"{}"`. Stubs alone do not correct old cached PWA logic until the PWA cache updates. Mixed old-PWA/new-APK and new-PWA/old-APK remain usable with unknown attribution when sources are missing.
+
+**Out of scope (not in this package).** Morning FII short-% fallback, `premium_history` restoration, holding-horizon research, Candidate M, varsityTier/`7f721eb`.
+
+
 ---
 
 ## 2026-10-05 — Current release, storage observation, and profitability evidence
