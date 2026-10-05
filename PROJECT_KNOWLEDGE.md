@@ -1,6 +1,31 @@
 
 ---
 
+## 2026-10-05 — Current release, storage observation, and profitability evidence
+
+**Status as of 5 October 2026, about 11:00 IST.** This is a knowledge update from read-only Supabase checks and the verified 3 October release. It does not change production code, database rows, policy, or trade execution. Paper remains the experimental lane; Real/live remains unchanged.
+
+### Synchronized release and VIX correction
+
+- Marketapp Android/Kotlin and Python Brain, and MarketVivi PWA, reached **v2.6.65 / b496** on 3 October. The signed Android APK release and PWA Pages update were published. The previous v2.6.64/b495 added the compact PC2 dual-write path and its production additive migration.
+- Root VIX defect: `premium_history` stopped receiving current closes, so a live VIX could be compared with an old window and called LOW. The Paper brain now reads dated prior-session closes from the existing `app_config.poll_history_<date>` records, rejects stale or insufficient history, and applies absolute VIX guards to decisions. Paper Force 3 is neutral when the series is unusable. The PWA explains the decision regime and the underlying history status. The correction does not promote the research result into Real/live behavior.
+- Historical `ml_brain_snapshots.context_json.snapshot_pc2_vix_regime_context` rows tagged `pc2_vix_regime_context_live_v1` preserve the erroneous *decision actually made*. New rows use v2. Do not rewrite the v1 context, fabricate retrospective decisions, relabel P&L, or add a parallel correction table. Current ML labels use outcomes and a separate absolute VIX entry bucket; the saved v1 relative label is not an active training input. A future historical reader must distinguish schema versions or calculate a clearly labelled retrospective comparison from original polls.
+
+### Supabase storage: measure three complete sessions before changing the writer
+
+- On 3 October the dashboard showed **6.29 GB used of 12 GB (53%)**, including about 5.5 GB database, 640 MB WAL, and 169.7 MB system. The database size query measured about 5.5 GiB, with `ml_brain_snapshots` and its TOAST the largest component. These measurements use different dashboard/database definitions; do not substitute one for the other.
+- The compact dual-write migration and v2.6.64 app release are present, but registration of the device hash and a complete compact session had **not yet been verified** at the last rollout check. Count three complete **registered** sessions with parity, ordered decision identity, no stranded outbox rows, and measured disk/latency before considering a release that stops new bulky legacy PC2 writes. A partial first day does not count. Do not assume that waiting three calendar days by itself validates parity.
+- No historical Supabase deletion, rewrite, archive/restore drill, or disk reclamation was performed. Deleting snapshots can cascade to `ml_evaluation_outcomes` and is blocked by `ml_recommendation_outcomes`; routine deletion also does not immediately shrink allocated PostgreSQL disk. The near-term storage objective is to prove the compact path and then stop *future* bulky writes after review, while preserving evaluation evidence.
+
+### Decision-quality audit: useful research cohort, no profit claim
+
+- Read-only query on 5 October: first `teacher_v1` chosen outcomes with `price_integrity='OK'` and labelable, active brain snapshots occur **16 July** (NF) and **21 July** (BNF). There are **1,403** such chosen snapshot outcomes across **39 distinct sessions** through 1 October; the cumulative count passed 500 on 26 August. Repeated polls on the same session and setup are correlated, so 1,403 is not an independent-trade count or the app's 500-paper-trade training gate.
+- Closed Paper `trades_v2` with recorded net P&L and friction form the practical profitability review cohort from **3 August**. August has **58** closed trades on **16** trade days, recorded net **−₹2,764.29** (26 positive); September has **35** on **17** days, recorded net **+₹24,955.79** (22 positive). These are provisional observed paper results: `pnl_reconciles` is NULL for these 93 rows, not true, and the app/exit policy changed over the period. July has 42 closed Paper rows but only 25 with net labels, including legacy divergent/missing price bases.
+- Full chosen-versus-alternative `ml_evaluation_outcomes` menus appear on 24–25 September and 30 September–1 October; 29 September has 69 price-valid primary rows but **zero** labelable brain snapshots and no alternative rows in that table. Filter by brain `is_labelable`, action, price integrity, exact snapshot/candidate identity, and completed session before training or comparison. Some outcome rows describe hypothetical candidates despite WAIT snapshots.
+- v2.6.65 first appears in 5 October brain snapshots. At this read-only check, **20 snapshots, zero labelable**: no post-fix VIX profitability result exists yet. Keep the corrected-version cohort separate from older v1 VIX decisions. No new projection/LightGBM model or ranking promotion was implemented. Next research step is a session-grouped loss and selection audit from August, followed by a predeclared comparison on later unseen Paper sessions with costs and downside; a historical winner is not a deployment gate.
+
+---
+
 ## 2026-09-25 — b489 capture regressions: review fix prepared, deployment pending
 
 - Production read-only checks: `position_ticks` lacks the four lot fields emitted since b487; latest stored tick was 2026-09-24 06:31:55 UTC. The additive migration is prepared on isolated Marketapp review branch `work/b490-capture-regressions-codex-20260925`, pending Vivek's separate production migration decision and post-migration readback.
