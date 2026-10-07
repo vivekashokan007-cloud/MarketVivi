@@ -291,3 +291,16 @@ assert.doesNotMatch(mlEl.innerHTML, /POSITIVE EXPECTANCY|NOT WORTH RISK YET/);
 assert.match(mlEl.innerHTML, />UNCERTAIN<\/td>/);
 
 console.log('PWA R1 renderML counterexamples OK');
+
+// Evidence completion must never imply that a frozen model trained.
+sandbox.renderML({
+  serviceStatus: {
+    evaluationTargetDate: '2026-09-18', labelsSaved: true, labelsSavedKnown: true,
+    evidenceReady: true, modelTrained: false, modelValidated: false, paperModelActive: false,
+    learningComplete: true, // stale legacy field must not drive the new labels
+  }, brainResult: {}, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '',
+});
+assert.match(mlEl.innerHTML, /Evidence ready:\s*<b[^>]*>YES<\/b>/);
+assert.match(mlEl.innerHTML, /Model trained this run:\s*<b>NO<\/b>/);
+assert.match(mlEl.innerHTML, /New Paper model active:\s*<b>NO<\/b>/);
+assert.doesNotMatch(mlEl.innerHTML, /Learning complete:/);
