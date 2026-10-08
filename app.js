@@ -6866,7 +6866,7 @@ function renderML(snapshot = null) {
     const c3SessionMatchesTarget = !evaluationTargetDate || !c3SessionDate || c3SessionDate === evaluationTargetDate;
     const c3StaleForTarget = Boolean(c3Phase) && !c3SessionMatchesTarget;
     const c3Verified = c3Phase === 'DONE' && c3SessionMatchesTarget;
-    const evidenceReady = service.evidenceReady === true && !c3Failed;
+    const evidenceReady = service.evidenceReady === true && !c3Failed && !c3StaleForTarget;
     const modelTrained = service.modelTrained === true;
     const modelValidated = service.modelValidated === true;
     const paperModelActive = service.paperModelActive === true;

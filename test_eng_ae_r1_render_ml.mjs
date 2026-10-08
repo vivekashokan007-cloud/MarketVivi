@@ -304,3 +304,13 @@ assert.match(mlEl.innerHTML, /Evidence ready:\s*<b[^>]*>YES<\/b>/);
 assert.match(mlEl.innerHTML, /Model trained this run:\s*<b>NO<\/b>/);
 assert.match(mlEl.innerHTML, /New Paper model active:\s*<b>NO<\/b>/);
 assert.doesNotMatch(mlEl.innerHTML, /Learning complete:/);
+
+// A completed prior session cannot certify the selected session's evidence.
+sandbox.renderML({
+  serviceStatus: {
+    evaluationTargetDate: '2026-10-08', labelsSaved: true, labelsSavedKnown: true,
+    evidenceReady: true, c3FinalizationPhase: 'DONE', c3FinalizationSessionDate: '2026-10-07',
+  }, brainResult: {}, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '',
+});
+assert.match(mlEl.innerHTML, /Evidence ready:\s*<b[^>]*>NO<\/b>/);
+assert.match(mlEl.innerHTML, /STALE\/UNAVAILABLE/);
