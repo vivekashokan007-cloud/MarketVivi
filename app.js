@@ -4760,6 +4760,236 @@ async function closeTrade(tradeId, exitReason) {
 
 
 // ═══════════════════════════════════════════════════════════════
+// IMPLIED-EV v1.2 PAPER EXPERIMENT (Grok handoff 2026-10-13)
+// Paper only. Off by default (NativeBridge.evSetMode). The recommendation is labelled
+// EXPERIMENTAL and never touches the v7 watchlist, ranking, gates, sizing or Real trading.
+// Accept = user tap -> native fresh-quote revalidation -> Paper trade with frozen Rule B policy.
+// Exit = native Rule B ledger (planned exit 15:15–15:28 IST) -> idempotent Paper close here.
+// ═══════════════════════════════════════════════════════════════
+const EV12_POLICY_ID = 'paper_rule_b_v1';
+const EV12_SOURCE_LABEL = 'IMPLIED_EV_V12_EXPERIMENT';
+const EV12_TYPE_BY_FAMILY = { IB: 'IRON_BUTTERFLY', IC: 'IRON_CONDOR', BP: 'BULL_PUT', BC: 'BEAR_CALL', BCD: 'BULL_CALL', BPD: 'BEAR_PUT' };
+const EV12_CREDIT_FAMILIES = new Set(['IB', 'IC', 'BP', 'BC']);
+
+function ev12Escape(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function isEvRuleBTrade(t) {
+    let es = t?.entry_snapshot;
+    if (typeof es === 'string') { try { es = JSON.parse(es); } catch (_) { es = null; } }
+    return !!(t && t.paper && es && es.position_policy_id === EV12_POLICY_ID);
+}
+
+function ev12EntrySnapshot(t) {
+    let es = t?.entry_snapshot;
+    if (typeof es === 'string') { try { es = JSON.parse(es); } catch (_) { es = null; } }
+    return es && typeof es === 'object' ? es : {};
+}
+
+function ev12PlannedExitLabel(t) {
+    const es = ev12EntrySnapshot(t);
+    return `Planned exit ${es.planned_exit_session || '?'} 15:15 IST (Rule B)`;
+}
+
+function ev12View() {
+    const ev = bd && bd.implied_ev_v12;
+    return ev && typeof ev === 'object' && ev.source_label === EV12_SOURCE_LABEL ? ev : null;
+}
+
+function ev12OpenEnginePositions() {
+    return currentOpenTrades().filter(isEvRuleBTrade).map(t => {
+        const es = ev12EntrySnapshot(t);
+        return { structure: es.ev_structure || null, expiry: t.expiry || es.expiry || null, trade_id: t.id };
+    });
+}
+
+function ev12CapitalAvailable() {
+    const used = currentOpenTrades().filter(isEvRuleBTrade)
+        .reduce((a, t) => a + (Number(ev12EntrySnapshot(t).risk_allowance_at_acceptance) || Number(t.max_loss) || 0), 0);
+    return Math.max(0, Number(C.CAPITAL) - used);
+}
+
+function renderEvExperiment() {
+    const el = document.getElementById('ev12-card');
+    if (!el) return;
+    const ev = ev12View();
+    if (!ev) { el.innerHTML = ''; return; }
+    const rec = ev.recommendation || {};
+    const pick = rec.pick;
+    const head = `<div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#f59e0b">EXPERIMENTAL · Implied-EV v1.2 · Paper only · ${ev12Escape(ev.mode)}</div>`;
+    let body;
+    if (pick) {
+        const legs = (pick.legs || []).map(l => `${l[0] > 0 ? 'Buy' : 'Sell'} ${l[1]} ${l[2] === 1 ? 'CE' : 'PE'}`).join(' · ');
+        const status = rec.acceptance_status ? `Accepted: ${ev12Escape(rec.acceptance_status)}` : (rec.expired ? 'Decision expired (10-minute validity)' : '');
+        const btn = rec.actionable
+            ? `<button onclick="acceptEvDecision(${jsArg(rec.session_date)})" style="margin-top:8px;padding:6px 14px;font-size:12px;border:1px solid #f59e0b;background:transparent;color:#f59e0b;border-radius:6px">Paper accept (revalidates with fresh quotes)</button>`
+            : '';
+        body = `<div style="margin-top:4px;font-weight:600">${ev12Escape(friendlyType(pick.type))} ${ev12Escape(pick.structure)} · exp ${ev12Escape(pick.expiry)}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${ev12Escape(legs)}</div>
+            <div style="font-size:12px">Robust EV/lot ₹${ev12Escape(pick.ev_robust_per_lot)} · Risk allowance ₹${ev12Escape(pick.risk_allowance)}</div>
+            <div style="font-size:12px">${ev12Escape(pick.planned_exit)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">Calibration ${ev12Escape(pick.calibration_version)} · not a v7 recommendation</div>
+            ${status ? `<div style="font-size:12px;margin-top:4px">${status}</div>` : ''}${btn}`;
+    } else {
+        const reason = ev.wait_reason || rec.failure || '';
+        body = `<div style="margin-top:4px;font-size:12px">Status: ${ev12Escape(rec.status || ev.status)}${reason ? ` — ${ev12Escape(reason)}` : ''}</div>`;
+    }
+    el.innerHTML = `<div class="card" style="border:1px dashed #f59e0b;padding:10px;margin-bottom:10px">${head}${body}</div>`;
+}
+
+async function ev12PollAcceptance(requestId, timeoutMs = 15000) {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+        const r = safeParseNB(NativeBridge.evGetAcceptance(requestId), { status: 'UNKNOWN' });
+        if (r.status && r.status !== 'PENDING' && r.status !== 'UNKNOWN') return r;
+        await new Promise(res => setTimeout(res, 400));
+    }
+    return { status: 'FAILED', reason: 'TIMEOUT' };
+}
+
+function ev12TradeFromAcceptance(view, acc) {
+    const pick = view.recommendation.pick;
+    const fill = acc.entry_fill;
+    const fp = acc.frozen_policy;
+    const legs = fill.legs.map(l => ({ ...l, ot: Number(l.cp) === 1 ? 'CE' : 'PE' }));
+    const shorts = legs.filter(l => Number(l.qty) < 0);
+    const longs = legs.filter(l => Number(l.qty) > 0);
+    const pairLong = (s) => longs.find(l => l.ot === s.ot) || null;
+    const s1 = shorts[0] || null, s2 = shorts[1] || null;
+    const b1 = s1 ? pairLong(s1) : (longs[0] || null);
+    const b2 = longs.find(l => l !== b1) || null;
+    const family = String(pick.family || '');
+    const isCredit = EV12_CREDIT_FAMILIES.has(family);
+    const units = Number(fp.contract_lot) * Number(fp.n_lots || 1);
+    const entryCash = Number(fill.entry_cash_pts);
+    const maxLossRupees = Math.round(Number(acc.risk_allowance_at_acceptance));
+    return {
+        strategy_type: EV12_TYPE_BY_FAMILY[family] || family,
+        index_key: 'NF',
+        expiry: fp.expiry,
+        entry_date: new Date(Number(acc.accepted_at_ms)).toISOString(),
+        entry_premium: Math.abs(entryCash),
+        width: (s1 && b1) ? Math.abs(Number(s1.strike) - Number(b1.strike)) : null,
+        sell_strike: s1 ? Number(s1.strike) : null, sell_type: s1 ? s1.ot : null, sell_ltp: s1 ? Number(s1.price) : null,
+        sell_instrument_key: s1 ? s1.instrument_key : null,
+        buy_strike: b1 ? Number(b1.strike) : null, buy_type: b1 ? b1.ot : null, buy_ltp: b1 ? Number(b1.price) : null,
+        buy_instrument_key: b1 ? b1.instrument_key : null,
+        sell_strike2: s2 ? Number(s2.strike) : null, sell_type2: s2 ? s2.ot : null, sell_ltp2: s2 ? Number(s2.price) : null,
+        sell_instrument_key2: s2 ? s2.instrument_key : null,
+        buy_strike2: b2 ? Number(b2.strike) : null, buy_type2: b2 ? b2.ot : null, buy_ltp2: b2 ? Number(b2.price) : null,
+        buy_instrument_key2: b2 ? b2.instrument_key : null,
+        max_profit: null, max_loss: maxLossRupees, is_credit: isCredit,
+        lot_size: units, number_of_lots: Number(fp.n_lots || 1), contract_lot_size: Number(fp.contract_lot), lots: Number(fp.n_lots || 1),
+        status: 'OPEN', current_pnl: 0, peak_pnl: 0, paper: true,
+        // Rule B is a multi-session hold: the IC/IB 'intraday' stamping does NOT apply to experiment trades.
+        trade_mode: 'swing',
+        entry_snapshot: {
+            position_policy_id: EV12_POLICY_ID,
+            ev_decision_id: fp.decision_id,
+            ev_structure: fp.structure,
+            ev_source_label: EV12_SOURCE_LABEL,
+            planned_exit_session: fp.planned_exit_session,
+            expiry: fp.expiry,
+            frozen_policy: fp,
+            entry_fill: fill,
+            ev_robust_at_acceptance: acc.ev_robust_at_acceptance,
+            risk_allowance_at_acceptance: acc.risk_allowance_at_acceptance,
+            selection_source: 'implied_ev_v12_experiment',
+            evidence_source: 'experiment_rule_b',
+            contract_lot_size: Number(fp.contract_lot), number_of_lots: Number(fp.n_lots || 1), lot_size: units,
+            margin: 'NOT_MEASURED_PAPER'
+        }
+    };
+}
+
+async function acceptEvDecision(sessionDate) {
+    const view = ev12View();
+    if (!view || !view.recommendation?.actionable) { alert('Experimental decision is not actionable.'); return; }
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evRequestAcceptance !== 'function') {
+        alert('Experimental acceptance needs the matching APK (2.6.73 / b504).'); return;
+    }
+    // Paper margin is not measured: capital available = C.CAPITAL minus the frozen risk allowances
+    // of open experiment trades (v7 Paper trades keep their own budget logic).
+    const capital = ev12CapitalAvailable();
+    const start = safeParseNB(NativeBridge.evRequestAcceptance(String(sessionDate), JSON.stringify(ev12OpenEnginePositions()), capital), {});
+    if (!start.ok) { alert(`Acceptance could not start: ${start.reason || 'native error'}`); return; }
+    const acc = await ev12PollAcceptance(start.request_id);
+    if (acc.status !== 'ACCEPTED') {
+        alert(`Experimental Paper accept refused: ${acc.reason || acc.status}`); return;
+    }
+    const trade = ev12TradeFromAcceptance(view, acc);
+    if (!confirm(`EXPERIMENTAL Paper trade\n${friendlyType(trade.strategy_type)} ${trade.entry_snapshot.ev_structure}\n${ev12PlannedExitLabel(trade)}\nRevalidated EV/lot ₹${Math.round(acc.ev_robust_at_acceptance)}`)) return;
+    const saved = await DB.insertTrade(trade);
+    if (!saved) { alert('❌ Experimental Paper trade could not be saved.'); return; }
+    trade.id = saved.id;
+    addOpenTradeToState(trade);
+    addNotificationLog('Experimental Paper trade', `${trade.entry_snapshot.ev_structure} · ${ev12PlannedExitLabel(trade)}`, 'entry');
+    renderAll();
+}
+
+/** Close one Rule B trade at the native ledger's frozen fill. Idempotent (closed ids are remembered). */
+async function applyRuleBFill(entry) {
+    STATE.ev12Applied = STATE.ev12Applied || {};
+    const id = String(entry.trade_id || '');
+    if (!id || STATE.ev12Applied[id]) { if (id) NativeBridge.evRuleBAck(id); return; }
+    const trade = findOpenTradeById(id);
+    if (!trade || !isEvRuleBTrade(trade)) {
+        // already closed (e.g. a previous WebView instance) - acknowledge so the ledger stops offering it
+        NativeBridge.evRuleBAck(id); return;
+    }
+    if (entry.state === 'UNRESOLVED') {
+        trade.rule_b_state = 'UNRESOLVED';
+        addNotificationLog('Rule B unresolved', `${id}: no valid executable quote by the expiry deadline — manual review required.`, 'urgent');
+        DB.updateTrade(trade.id, { close_trace_json: { policy_version: EV12_POLICY_ID, rule_b_state: 'UNRESOLVED', reason: entry.reason } }).catch(() => {});
+        STATE.ev12Applied[id] = true;
+        NativeBridge.evRuleBAck(id);
+        return;
+    }
+    const f = entry.fill || {};
+    const units = Number(trade.lot_size);
+    const es = ev12EntrySnapshot(trade);
+    const entryCash = Number(es.entry_fill?.entry_cash_pts);
+    const closeValue = Number(f.close_value_pts);
+    if (!Number.isFinite(units) || !Number.isFinite(entryCash) || !Number.isFinite(closeValue)) return;
+    const gross = Math.round(units * (entryCash + closeValue) * 100) / 100;
+    const reason = f.kind === 'LATE_EXIT' ? 'RULE_B_LATE_EXIT' : 'RULE_B_PLANNED_EXIT';
+    const exitIso = f.ts_iso ? new Date(f.ts_iso).toISOString() : new Date().toISOString();
+    STATE.ev12Applied[id] = true;
+    removeOpenTradeFromState(id);
+    const patch = {
+        status: 'CLOSED', exit_date: exitIso, actual_pnl: gross, canonical_won: gross > 0, outcome_h2: gross > 0 ? 1 : 0,
+        exit_premium: Math.abs(closeValue), exit_reason: reason,
+        close_trace_json: {
+            source: 'rule_b_native_ledger', policy_version: EV12_POLICY_ID, exit_reason: reason,
+            ev_decision_id: entry.decision_id || es.ev_decision_id || null, closed_at: exitIso,
+            gross_close_pnl: gross, fill: f, trade_mode: 'swing', paper: true,
+            fee_note: 'gross; net fees per ev_v12_fees are reported in the experiment outcome amendment'
+        }
+    };
+    recordClosedTradeToNative(trade, patch);
+    const ok = await DB.updateTrade(trade.id, patch);
+    if (!ok) addNotificationLog('Rule B close sync failed', `${id}: closed locally; Supabase update failed.`, 'urgent');
+    addNotificationLog('Rule B Paper exit', `${es.ev_structure || trade.strategy_type}: ${reason} gross ₹${gross}`, gross >= 0 ? 'entry' : 'urgent');
+    NativeBridge.evRuleBAck(id);
+    renderAll();
+}
+
+function applyRuleBFills() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evRuleBPending !== 'function') return;
+    if (STATE.ev12Applying) return;
+    const pending = safeParseNB(NativeBridge.evRuleBPending(), []);
+    if (!Array.isArray(pending) || !pending.length) return;
+    STATE.ev12Applying = true;
+    (async () => {
+        try { for (const e of pending) await applyRuleBFill(e); }
+        catch (err) { console.warn('[EV12] Rule B apply failed:', err?.message || err); }
+        finally { STATE.ev12Applying = false; }
+    })();
+}
+
+
+// ═══════════════════════════════════════════════════════════════
 // UI RENDERING
 // ═══════════════════════════════════════════════════════════════
 
@@ -4995,6 +5225,7 @@ function renderAll(snapshot = null) {
         }
         if (snap.latestPoll && Object.keys(snap.latestPoll).length) STATE.live = snap.latestPoll;
         refreshBrainData(snap);  // F.2: keep bd fresh for all render functions
+        try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
@@ -6531,7 +6762,9 @@ function renderTradeCard(t, isPaper) {
     const closeHandler = (reason) => `closeTrade(${tradeIdArg}, ${jsArg(reason)})`;
     const closeBusy = isPaper && String(STATE._paperCloseQuoteBusyTradeId || '') === String(t.id);
     const holdingMeta = deriveHoldingHorizon(t);
-    const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
+    const modeTag = isEvRuleBTrade(t)
+        ? `<span class="mode-tag mode-swing">EXPERIMENT · ${ev12Escape(ev12PlannedExitLabel(t))}</span>`
+        : (t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '');
     const horizonTag = holdingMeta.holding_horizon ? `<span class="mode-tag mode-horizon" title="${holdingMeta.data_quality_note || 'Analytical holding horizon (IST)'}">${holdingMeta.holding_horizon}</span>` : '';
     // No Paper-vs-teacher pooling path is active here. Show horizon and warning,
     // but do not claim a comparison filter was applied.
