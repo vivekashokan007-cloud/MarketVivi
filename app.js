@@ -5182,26 +5182,55 @@ function ev12Fnv64(str) {
  * normalized. Built identically from a patch and from a read-back row, so the STORED fields are what is proven.
  */
 function ev12CloseEvidence(writer, did, uid, src) {
-    const num = (x, d) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x))) ? null : Number(x).toFixed(d);
-    const iso = (x) => { if (!x) return null; const t = Date.parse(x); return Number.isFinite(t) ? new Date(t).toISOString() : String(x); };
-    const ev = { v: 2, writer, did: did || null, uid: uid || null };
-    if (src.rule_b_state === 'UNRESOLVED') {
-        ev.rule_b_state = 'UNRESOLVED'; ev.reason = src.reason || null;
+    // Codex R4-D2: strict, value-PRESERVING numeric canonicalization (no rounding). A number or numeric string maps to
+    // its exact shortest round-trip form (1, 1.0, '1.000' -> '1'); booleans, objects, non-numeric strings, non-finite
+    // values, fractional quantities and fractional source milliseconds are rejected -> the evidence is INVALID (null)
+    // and no proof / winner can be built from it.
+    const BAD = {};
+    const NUMRE = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+    const num = (x, { nullable = true, integer = false } = {}) => {
+        if (x === null || x === undefined) { if (nullable) return null; throw BAD; }
+        let v;
+        if (typeof x === 'number') v = x;
+        else if (typeof x === 'string' && NUMRE.test(x.trim())) v = Number(x.trim());
+        else throw BAD;
+        if (!Number.isFinite(v) || (integer && !Number.isInteger(v))) throw BAD;
+        return String(v === 0 ? 0 : v);
+    };
+    const iso = (x) => {
+        if (x === null || x === undefined || x === '') return null;
+        if (typeof x !== 'string') throw BAD;
+        const t = Date.parse(x); if (!Number.isFinite(t)) throw BAD;
+        return new Date(t).toISOString();
+    };
+    const str = (x) => { if (x === null || x === undefined || x === '') return null; if (typeof x !== 'string') throw BAD; return x; };
+    try {
+        const ev = { v: 2, writer, did: did || null, uid: uid || null };
+        if (src.rule_b_state === 'UNRESOLVED') {
+            ev.rule_b_state = 'UNRESOLVED'; ev.reason = str(src.reason);
+            return ev12Canon(ev);
+        }
+        Object.assign(ev, { status: str(src.status), exit_reason: str(src.exit_reason), exit_date: iso(src.exit_date),
+            gross: num(src.actual_pnl), net: num(src.net_pnl) });
+        if (writer === 'RULE_B') {
+            const f = src.fill;
+            if (!f || typeof f !== 'object' || Array.isArray(f) || !Array.isArray(f.legs)) throw BAD;
+            ev.fill = { kind: str(f.kind), ts: iso(f.ts_iso), close: num(f.close_value_pts),
+                legs: f.legs.map(l => {
+                    if (!l || typeof l !== 'object' || Array.isArray(l)) throw BAD;
+                    return { k: str(l.instrument_key), q: num(l.qty, { nullable: false, integer: true }),
+                        p: num(l.price, { nullable: false }), b: num(l.bid), a: num(l.ask),
+                        t: num(l.quote_ts_ms, { integer: true }) };
+                }) };
+        }
         return ev12Canon(ev);
+    } catch (e) {
+        if (e === BAD) return null;
+        throw e;
     }
-    Object.assign(ev, { status: src.status || null, exit_reason: src.exit_reason || null, exit_date: iso(src.exit_date),
-        gross: num(src.actual_pnl, 2), net: num(src.net_pnl, 2) });
-    if (writer === 'RULE_B') {
-        const f = src.fill || {};
-        ev.fill = { kind: f.kind || null, ts: iso(f.ts_iso), close: num(f.close_value_pts, 4),
-            legs: (Array.isArray(f.legs) ? f.legs : []).map(l => ({ k: l.instrument_key || null, q: num(l.qty, 0),
-                p: num(l.price, 4), b: num(l.bid, 4), a: num(l.ask, 4),
-                t: (l.quote_ts_ms === null || l.quote_ts_ms === undefined) ? null : num(Math.round(Number(l.quote_ts_ms)), 0) })) };
-    }
-    return ev12Canon(ev);
 }
 
-function ev12DigestOf(evidence) { return 'ev12close2:' + ev12Fnv64(evidence); }
+function ev12DigestOf(evidence) { return evidence === null ? null : 'ev12close2:' + ev12Fnv64(evidence); }
 
 function ev12RowIdentity(row) {
     const es = ev12EntrySnapshot(row || {});
@@ -5232,14 +5261,15 @@ function ev12RemoteApplied(row, patch) {
     if (did !== want.ev_decision_id || uid !== want.ev_trade_uid) return false;
     if (patch.status === 'CLOSED' && row.status !== 'CLOSED') return false;
     const ev = ev12PatchEvidence(patch);
-    return ev12DigestOf(ev) === want.close_digest && ev12RowEvidence(row, want.close_writer) === ev;
+    return ev !== null && ev12DigestOf(ev) === want.close_digest && ev12RowEvidence(row, want.close_writer) === ev;
 }
 
 /** A competing winner is proven only by a self-consistent stored close (stored fields hash to its digest). */
 function ev12WinnerOf(row, writer, did, uid) {
     const r = ev12RowIdentity(row);
     return !!row && row.status === 'CLOSED' && r.ct.close_writer === writer && !!r.ct.close_digest
-        && r.did === did && r.uid === uid && ev12DigestOf(ev12RowEvidence(row, writer)) === r.ct.close_digest;
+        && r.did === did && r.uid === uid && ev12RowEvidence(row, writer) !== null
+        && ev12DigestOf(ev12RowEvidence(row, writer)) === r.ct.close_digest;
 }
 function ev12ManualWinner(row, did, uid) { return ev12WinnerOf(row, 'MANUAL', did, uid); }
 function ev12RuleBWinner(row, did, uid) { return ev12WinnerOf(row, 'RULE_B', did, uid); }
