@@ -481,3 +481,13 @@ git push origin main
 
 - Always bump version in `<span class="version">` (index.html) and `?v=` cache busters
 - GitHub Pages auto-deploys from main branch
+
+### Implied-EV v1.2 review R2 (14 Oct 2026, b504 / app.js?v=1367 unchanged)
+Accept flow: `NativeBridge.evPrepareAcceptance(sessionDate, decisionId)` → confirm dialog → `evConfirmAcceptance` | `evCancelAcceptance` → idempotent insert keyed by `entry_snapshot.ev_trade_uid` (readback before/after) → `evMarkTradePersisted(decisionId, rowId, uid)`. Rule B fills: journal → conditional update (`status='OPEN'`) → readback → `evRuleBAckState`. Never ACK without remote proof. Tests: `tests/test_ev_v12_pwa.mjs`, `tests/test_ev_v12_review_r2.mjs` (harness `tests/ev12_harness.mjs`). CI runs every root and tests/ `test_*.mjs`.
+
+### Implied-EV v1.2 re-review C2/C3 (14 Oct 2026, b504 / v=1367 unchanged)
+Experiment closes (Rule B and manual) stamp `close_trace_json.close_writer` + `close_digest`; ACK/winner only on a readback with the same digest, identity and gross/net (`ev12RemoteApplied`, `ev12ManualWinner`, `ev12RuleBWinner`). Manual close of an experiment trade: `ev12ManualClose` → `evManualCloseJournal` → conditional update → `evManualCloseResult`; never overwrites a confirmed Rule B close; non-experiment closes unchanged. `ev12RecoverAcceptances` reconciles PERSISTED acceptances into native `open_trades` (verified via `getOpenTrades`). Tests: `tests/test_ev_v12_review_r3.mjs`.
+
+### Implied-EV v1.2 re-review D1/D2 (14 Oct 2026, b504 / v=1367 unchanged)
+Manual close: `ev12ManualPatch` → ONE `evManualCloseRequest` (intent + patch atomic; refusal/failure = `NOT_RECORDED`, the trade is reinstalled and Rule B keeps it) → conditional update → `evManualCloseResult`. A patchless legacy intent is reconciled (`ev12ReconcileUnjournaledManual`: remote OPEN → `evManualIntentAbandon`). Close digest `ev12close2:` is FNV-1a 64 over canonical evidence (`ev12CloseEvidence`: status, exit reason, exit_date, gross, net, fill kind/time/value and every leg's key/qty/price/bid/ask/quote time); proof and winner checks recompute it from the STORED row. Tests: `tests/test_ev_v12_review_r4.mjs`.
+R4-D2 follow-up: `ev12CloseEvidence` numeric canonicalization is strict and value-preserving (exact shortest round-trip form, no rounding); qty and quote_ts_ms must be integers; booleans/objects/non-numeric/non-finite values make the evidence INVALID (null) so neither own-write proof nor a competing winner can be certified. Tests: `tests/test_ev_v12_review_r5.mjs`.

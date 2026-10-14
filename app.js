@@ -1087,6 +1087,48 @@ const DB = {
             return null;
         }
     },
+    /** EV12 (Codex R1): the row stamped with this acceptance uid, or null. */
+    async findTradeByEvUid(uid) {
+        try {
+            const sb = this.supabase;
+            if (!sb) return null;
+            const { data, error } = await sb.from('trades_v2').select('id,status,exit_reason')
+                .eq('entry_snapshot->>ev_trade_uid', String(uid)).limit(1);
+            if (error) throw error;
+            return Array.isArray(data) && data.length ? data[0] : null;
+        } catch (e) {
+            console.warn('[DB] findTradeByEvUid failed:', e.message);
+            return null;
+        }
+    },
+    /** EV12 (Codex R3): authoritative readback of one row (null on failure; never "closed"). */
+    async readTrade(id) {
+        try {
+            const sb = this.supabase;
+            if (!sb) return null;
+            const { data, error } = await sb.from('trades_v2')
+                .select('id,status,exit_reason,close_trace_json,entry_snapshot,strategy_type,paper,actual_pnl,net_pnl,exit_date')
+                .eq('id', id).maybeSingle();
+            if (error) throw error;
+            return data || null;
+        } catch (e) {
+            console.warn('[DB] readTrade failed:', e.message);
+            return null;
+        }
+    },
+    /** EV12 (Codex R3): conditional update - applies only while the row is still OPEN (manual close wins). */
+    async updateOpenTrade(id, patch) {
+        try {
+            const sb = this.supabase;
+            if (!sb) return false;
+            const { error } = await sb.from('trades_v2').update(patch).eq('id', id).eq('status', 'OPEN');
+            if (error) throw error;
+            return true;
+        } catch (e) {
+            console.warn('[DB] updateOpenTrade failed:', e.message);
+            return false;
+        }
+    },
     async updateTrade(id, patch) {
         // R4: real path is updateTradeWithSupabase (mocked-client tests call that /
         // DB.updateTrade with an injected _client).
@@ -3378,6 +3420,15 @@ function confirmPaperTest(candidate, finalAuthorization, capacity, opts = {}) {
     );
 }
 
+/** Compact identity projection for the native closed-trade ledger (null for non-experiment trades). */
+function ev12NativeSnapshot(trade) {
+    let es = trade?.entry_snapshot;
+    if (typeof es === 'string') { try { es = JSON.parse(es); } catch (_) { es = null; } }
+    if (!es || typeof es !== 'object' || !es.position_policy_id) return null;
+    return { position_policy_id: es.position_policy_id, ev_decision_id: es.ev_decision_id ?? null,
+        ev_trade_uid: es.ev_trade_uid ?? null, planned_exit_session: es.planned_exit_session ?? null };
+}
+
 function recordClosedTradeToNative(trade, closePatch) {
     const bridge = window.NativeBridge || window.AndroidBridge;
     if (!bridge?.recordClosedTrade || !trade?.id) return;
@@ -3405,6 +3456,15 @@ function recordClosedTradeToNative(trade, closePatch) {
         extrema_unit: extrema.extrema_unit,
         extrema_source: extrema.extrema_source,
         extrema_contract_version: extrema.extrema_contract_version,
+        // Codex R4: keep the joins the experiment outcome needs (decision / trade uid / policy / exit reason / net)
+        exit_reason: closePatch.exit_reason ?? null,
+        strategy_type: trade.strategy_type ?? null,
+        entry_snapshot: ev12NativeSnapshot(trade),
+        close_trace: closePatch.close_trace_json ? {
+            source: closePatch.close_trace_json.source ?? null,
+            policy_version: closePatch.close_trace_json.policy_version ?? null,
+            net_status: closePatch.close_trace_json.net_status ?? null,
+        } : null,
     };
     try {
         bridge.recordClosedTrade(JSON.stringify(record));
@@ -4690,10 +4750,14 @@ async function closeTrade(tradeId, exitReason) {
         closePatch.extrema_contract_version = closeExtrema.extrema_contract_version;
         closePatch.close_extrema_meta = closeExtrema.close_extrema_meta;
 
+        // EV12 (Codex C2): a manual close of a Rule B experiment trade goes through the SAME conditional arbitration as
+        // the Rule B writer (journal -> status='OPEN' update -> digest readback). It is recorded natively as closed
+        // only once the manual writer is proven to have won; it never overwrites a confirmed Rule B close.
+        const ev12Experiment = isEvRuleBTrade(trade);
         // Persist the risk-relevant close locally before the remote write. The
         // next native brain poll can enforce the daily STOP even if Supabase is
-        // slow or this WebView reloads.
-        recordClosedTradeToNative(trade, closePatch);
+        // slow or this WebView reloads. (Experiment trades: after arbitration.)
+        if (!ev12Experiment) recordClosedTradeToNative(trade, closePatch);
         // Strip non-column meta before remote write (peak/trough remain).
         const remoteClosePatch = { ...closePatch };
         delete remoteClosePatch.peak_pnl_validity;
@@ -4703,6 +4767,30 @@ async function closeTrade(tradeId, exitReason) {
         delete remoteClosePatch.extrema_source;
         delete remoteClosePatch.extrema_contract_version;
         delete remoteClosePatch.close_extrema_meta;
+        if (ev12Experiment) {
+            const arb = await ev12ManualClose(trade, closePatch, remoteClosePatch);
+            if (arb.state === 'RULE_B_WON') {
+                addNotificationLog('Rule B close already recorded', `${trade.id}: the Rule B exit closed this experiment trade first; your manual close was not applied.`, 'entry');
+                applyRuleBFills();
+                renderAll();
+                return;
+            }
+            if (arb.state === 'NOT_RECORDED') {
+                // nothing durable was written: the position stays open under Rule B (restored immediately)
+                ev12InstallOpen(trade);
+                addNotificationLog('Experiment close not recorded', `${trade.id}: manual close could not be saved (${arb.reason}); Rule B keeps the position. Try again.`, 'urgent');
+                applyRuleBFills();
+                renderAll();
+                return;
+            }
+            if (arb.state !== 'MANUAL_WON') {
+                addNotificationLog('Experiment close pending', `${trade.id}: manual close journaled (${arb.reason || arb.state}); retried automatically.`, 'urgent');
+                renderAll();
+                return;
+            }
+            // won: the shared update below rewrites the IDENTICAL journaled manual patch (idempotent, same digest)
+            if (arb.patch) Object.assign(remoteClosePatch, arb.patch);
+        }
         const closeSynced = await DB.updateTrade(trade.id, remoteClosePatch);
         if (!closeSynced) {
             addNotificationLog('Trade Close Sync Failed', `${trade.id}: closed locally but Supabase update failed. Check Logs tab.`, 'urgent');
@@ -4758,6 +4846,616 @@ async function closeTrade(tradeId, exitReason) {
     }
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+// IMPLIED-EV v1.2 PAPER EXPERIMENT (Grok handoff 2026-10-13)
+// Paper only. Off by default (NativeBridge.evSetMode). The recommendation is labelled
+// EXPERIMENTAL and never touches the v7 watchlist, ranking, gates, sizing or Real trading.
+// Accept = user tap -> native fresh-quote revalidation -> Paper trade with frozen Rule B policy.
+// Exit = native Rule B ledger (planned exit 15:15–15:28 IST) -> idempotent Paper close here.
+// ═══════════════════════════════════════════════════════════════
+const EV12_POLICY_ID = 'paper_rule_b_v1';
+const EV12_SOURCE_LABEL = 'IMPLIED_EV_V12_EXPERIMENT';
+const EV12_TYPE_BY_FAMILY = { IB: 'IRON_BUTTERFLY', IC: 'IRON_CONDOR', BP: 'BULL_PUT', BC: 'BEAR_CALL', BCD: 'BULL_CALL', BPD: 'BEAR_PUT' };
+const EV12_CREDIT_FAMILIES = new Set(['IB', 'IC', 'BP', 'BC']);
+
+function ev12Escape(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function isEvRuleBTrade(t) {
+    let es = t?.entry_snapshot;
+    if (typeof es === 'string') { try { es = JSON.parse(es); } catch (_) { es = null; } }
+    return !!(t && t.paper && es && es.position_policy_id === EV12_POLICY_ID);
+}
+
+function ev12EntrySnapshot(t) {
+    let es = t?.entry_snapshot;
+    if (typeof es === 'string') { try { es = JSON.parse(es); } catch (_) { es = null; } }
+    return es && typeof es === 'object' ? es : {};
+}
+
+function ev12PlannedExitLabel(t) {
+    const es = ev12EntrySnapshot(t);
+    return `Planned exit ${es.planned_exit_session || '?'} 15:15 IST (Rule B)`;
+}
+
+function ev12View() {
+    const ev = bd && bd.implied_ev_v12;
+    return ev && typeof ev === 'object' && ev.source_label === EV12_SOURCE_LABEL ? ev : null;
+}
+
+function ev12CapitalAvailable() {
+    const used = currentOpenTrades().filter(isEvRuleBTrade)
+        .reduce((a, t) => a + (Number(ev12EntrySnapshot(t).risk_allowance_at_acceptance) || Number(t.max_loss) || 0), 0);
+    return Math.max(0, Number(C.CAPITAL) - used);
+}
+
+function renderEvExperiment() {
+    const el = document.getElementById('ev12-card');
+    if (!el) return;
+    const ev = ev12View();
+    if (!ev) { el.innerHTML = ''; return; }
+    const rec = ev.recommendation || {};
+    const pick = rec.pick;
+    const head = `<div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#f59e0b">EXPERIMENTAL · Implied-EV v1.2 · Paper only · ${ev12Escape(ev.mode)}</div>`;
+    let body;
+    if (pick) {
+        const legs = (pick.legs || []).map(l => `${l[0] > 0 ? 'Buy' : 'Sell'} ${l[1]} ${l[2] === 1 ? 'CE' : 'PE'}`).join(' · ');
+        const status = rec.acceptance_status ? `Accepted: ${ev12Escape(rec.acceptance_status)}` : (rec.expired ? 'Decision expired (10-minute validity)' : '');
+        const btn = rec.actionable
+            ? `<button onclick="acceptEvDecision(${jsArg(rec.session_date)})" style="margin-top:8px;padding:6px 14px;font-size:12px;border:1px solid #f59e0b;background:transparent;color:#f59e0b;border-radius:6px">Paper accept (revalidates with fresh quotes)</button>`
+            : '';
+        body = `<div style="margin-top:4px;font-weight:600">${ev12Escape(friendlyType(pick.type))} ${ev12Escape(pick.structure)} · exp ${ev12Escape(pick.expiry)}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${ev12Escape(legs)}</div>
+            <div style="font-size:12px">Robust EV/lot ₹${ev12Escape(pick.ev_robust_per_lot)} · Risk allowance ₹${ev12Escape(pick.risk_allowance)}</div>
+            <div style="font-size:12px">${ev12Escape(pick.planned_exit)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">Calibration ${ev12Escape(pick.calibration_version)} · not a v7 recommendation</div>
+            ${status ? `<div style="font-size:12px;margin-top:4px">${status}</div>` : ''}${btn}`;
+    } else {
+        const reason = ev.wait_reason || rec.failure || '';
+        body = `<div style="margin-top:4px;font-size:12px">Status: ${ev12Escape(rec.status || ev.status)}${reason ? ` — ${ev12Escape(reason)}` : ''}</div>`;
+    }
+    el.innerHTML = `<div class="card" style="border:1px dashed #f59e0b;padding:10px;margin-bottom:10px">${head}${body}</div>`;
+}
+
+async function ev12PollAcceptance(requestId, timeoutMs = 15000) {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+        const r = safeParseNB(NativeBridge.evGetAcceptance(requestId), { status: 'UNKNOWN' });
+        if (r.status && r.status !== 'PENDING' && r.status !== 'UNKNOWN') return r;
+        await new Promise(res => setTimeout(res, 400));
+    }
+    return { status: 'FAILED', reason: 'TIMEOUT' };
+}
+
+function ev12TradeFromAcceptance(view, acc) {
+    const fill = acc.entry_fill;
+    const fp = acc.frozen_policy;
+    const legs = fill.legs.map(l => ({ ...l, ot: Number(l.cp) === 1 ? 'CE' : 'PE' }));
+    const shorts = legs.filter(l => Number(l.qty) < 0);
+    const longs = legs.filter(l => Number(l.qty) > 0);
+    const pairLong = (s) => longs.find(l => l.ot === s.ot) || null;
+    const s1 = shorts[0] || null, s2 = shorts[1] || null;
+    const b1 = s1 ? pairLong(s1) : (longs[0] || null);
+    const b2 = longs.find(l => l !== b1) || null;
+    const family = String(fp.family || view?.recommendation?.pick?.family || '');
+    const isCredit = EV12_CREDIT_FAMILIES.has(family);
+    const units = Number(fill.units) || (Number(fp.contract_lot) * Number(fp.n_lots || 1));
+    const entryCash = Number(fill.entry_cash_pts);
+    // Codex R2: structural GROSS bounds from the frozen legs (points x units). The fee-inclusive risk allowance is
+    // a different quantity and stays in entry_snapshot.risk_allowance_at_acceptance only.
+    const structural = (pts) => Number.isFinite(Number(pts)) ? Math.round(Number(pts) * units * 100) / 100 : null;
+    return {
+        strategy_type: EV12_TYPE_BY_FAMILY[family] || family,
+        index_key: 'NF',
+        expiry: fp.expiry,
+        entry_date: new Date(Number(acc.accepted_at_ms)).toISOString(),
+        entry_premium: Math.abs(entryCash),
+        width: (s1 && b1) ? Math.abs(Number(s1.strike) - Number(b1.strike)) : null,
+        sell_strike: s1 ? Number(s1.strike) : null, sell_type: s1 ? s1.ot : null, sell_ltp: s1 ? Number(s1.price) : null,
+        sell_instrument_key: s1 ? s1.instrument_key : null,
+        buy_strike: b1 ? Number(b1.strike) : null, buy_type: b1 ? b1.ot : null, buy_ltp: b1 ? Number(b1.price) : null,
+        buy_instrument_key: b1 ? b1.instrument_key : null,
+        sell_strike2: s2 ? Number(s2.strike) : null, sell_type2: s2 ? s2.ot : null, sell_ltp2: s2 ? Number(s2.price) : null,
+        sell_instrument_key2: s2 ? s2.instrument_key : null,
+        buy_strike2: b2 ? Number(b2.strike) : null, buy_type2: b2 ? b2.ot : null, buy_ltp2: b2 ? Number(b2.price) : null,
+        buy_instrument_key2: b2 ? b2.instrument_key : null,
+        max_profit: structural(fill.structural_max_profit_pts), max_loss: structural(fill.structural_loss_pts),
+        is_credit: isCredit,
+        lot_size: units, number_of_lots: Number(fp.n_lots || 1), contract_lot_size: Number(fp.contract_lot), lots: Number(fp.n_lots || 1),
+        status: 'OPEN', current_pnl: 0, peak_pnl: 0, paper: true,
+        // Rule B is a multi-session hold: the IC/IB 'intraday' stamping does NOT apply to experiment trades.
+        trade_mode: 'swing',
+        entry_snapshot: {
+            position_policy_id: EV12_POLICY_ID,
+            ev_decision_id: fp.decision_id,
+            ev_trade_uid: acc.trade_uid,
+            ev_structure: fp.structure,
+            ev_source_label: EV12_SOURCE_LABEL,
+            planned_exit_session: fp.planned_exit_session,
+            expiry: fp.expiry,
+            frozen_policy: fp,
+            entry_fill: fill,
+            ev_robust_at_acceptance: acc.ev_robust_at_acceptance,
+            risk_allowance_at_acceptance: acc.risk_allowance_at_acceptance,
+            max_bounds_basis: 'structural_gross_points_x_units',
+            selection_source: 'implied_ev_v12_experiment',
+            evidence_source: 'experiment_rule_b',
+            contract_lot_size: Number(fp.contract_lot), number_of_lots: Number(fp.n_lots || 1), lot_size: units,
+            margin: 'NOT_MEASURED_PAPER'
+        }
+    };
+}
+
+/**
+ * Codex R1 step 3 (shared by accept and startup recovery): idempotent insert of the COMMITTED acceptance.
+ * Read back by entry_snapshot.ev_trade_uid first, insert only when absent, read back again after a lost or failed
+ * insert response, then report the persisted row id to native. Never creates a second row for one decision.
+ */
+async function ev12PersistAcceptance(acc, view) {
+    STATE.ev12Persisting = STATE.ev12Persisting || {};
+    const uid = String(acc.trade_uid || '');
+    const did = String(acc.decision_id || acc.frozen_policy?.decision_id || '');
+    if (!uid || !did) return { ok: false, reason: 'ACCEPTANCE_RECORD_INCOMPLETE' };
+    if (STATE.ev12Persisting[uid]) return { ok: false, reason: 'IN_FLIGHT' };
+    STATE.ev12Persisting[uid] = true;
+    try {
+        const trade = ev12TradeFromAcceptance(view, acc);
+        let row = await DB.findTradeByEvUid(uid);
+        let inserted = false;
+        if (!row) {
+            const saved = await DB.insertTrade(trade);
+            if (saved && saved.id != null) { row = { id: saved.id }; inserted = true; }
+            else row = await DB.findTradeByEvUid(uid);   // lost response: the insert may have landed
+        }
+        if (!row || row.id == null) return { ok: false, reason: 'INSERT_UNCONFIRMED' };
+        trade.id = row.id;
+        // Codex C3: the native open-position install is part of the durable handoff (before markPersisted, and
+        // re-checked by recovery for every PERSISTED acceptance).
+        if (!row.status || row.status === 'OPEN') {
+            if (!ev12InstallOpen(trade)) {
+                safeParseNB(NativeBridge.evMarkTradePersisted(did, String(row.id), uid), {});
+                return { ok: false, reason: 'NATIVE_OPEN_INSTALL_UNCONFIRMED', trade };
+            }
+        }
+        const m = safeParseNB(NativeBridge.evMarkTradePersisted(did, String(row.id), uid), {});
+        if (m.state !== 'PERSISTED') return { ok: false, reason: m.reason || 'MARK_PERSISTED_FAILED', trade };
+        return { ok: true, trade, inserted };
+    } finally {
+        delete STATE.ev12Persisting[uid];
+    }
+}
+
+function ev12NativeOpenIds() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.getOpenTrades !== 'function') return null;
+    const list = safeParseNB(NativeBridge.getOpenTrades(), null);
+    return Array.isArray(list) ? new Set(list.map(t => String(t?.id))) : null;
+}
+
+/** Codex C3: install into STATE + native open_trades and verify the native list (PositionTickService source). */
+function ev12InstallOpen(trade) {
+    const id = String(trade.id);
+    const have = ev12NativeOpenIds();
+    if (findOpenTradeById(id) && (!have || have.has(id))) return true;
+    try { addOpenTradeToState(trade); } catch (e) { console.warn('[EV12] open install failed:', e?.message || e); return false; }
+    const after = ev12NativeOpenIds();
+    return after ? after.has(id) : !!findOpenTradeById(id);
+}
+
+/**
+ * Startup / poll (Codex R1 + C3): COMMITTED -> idempotent insert; PERSISTED -> reconcile with the remote row:
+ * OPEN and missing from the native open list -> reinstall the ORIGINAL frozen entry (no new fill / row / decision);
+ * CLOSED -> reconcile the acceptance (never reinstalled); unreadable -> retried next poll.
+ * skipIds: trades with a pending manual close (never reinstalled while that close is being delivered).
+ */
+async function ev12RecoverAcceptances(skipIds) {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evAcceptanceRecovery !== 'function') return [];
+    const pending = safeParseNB(NativeBridge.evAcceptanceRecovery(), []);
+    const skip = skipIds instanceof Set ? skipIds : new Set();
+    const out = [];
+    for (const acc of Array.isArray(pending) ? pending : []) {
+        try {
+            if (acc.state !== 'PERSISTED') { out.push(await ev12PersistAcceptance(acc, null)); continue; }
+            const id = String(acc.trade_id || '');
+            if (!id || skip.has(id)) { out.push({ ok: false, reason: 'MANUAL_CLOSE_PENDING' }); continue; }
+            const native = ev12NativeOpenIds();
+            if (findOpenTradeById(id) && (!native || native.has(id))) { out.push({ ok: true, reason: 'ALREADY_OPEN' }); continue; }
+            const row = await DB.readTrade(id);
+            if (!row) { out.push({ ok: false, reason: 'READBACK_FAILED' }); continue; }
+            const es = ev12EntrySnapshot(row);
+            if (es.ev_trade_uid !== acc.trade_uid) { out.push({ ok: false, reason: 'TRADE_UID_MISMATCH' }); continue; }
+            if (row.status && row.status !== 'OPEN') {
+                if (typeof NativeBridge.evAcceptanceReconciledClosed === 'function') NativeBridge.evAcceptanceReconciledClosed(acc.decision_id);
+                out.push({ ok: true, reason: 'RECONCILED_CLOSED' }); continue;
+            }
+            const trade = ev12TradeFromAcceptance(null, acc);
+            trade.id = row.id;
+            out.push(ev12InstallOpen(trade) ? { ok: true, reason: 'REINSTALLED', trade } : { ok: false, reason: 'NATIVE_OPEN_INSTALL_UNCONFIRMED' });
+        } catch (e) { out.push({ ok: false, reason: e?.message || 'error' }); }
+    }
+    return out;
+}
+
+async function acceptEvDecision(sessionDate) {
+    const view = ev12View();
+    if (!view || !view.recommendation?.actionable) { alert('Experimental decision is not actionable.'); return; }
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evPrepareAcceptance !== 'function') {
+        alert('Experimental acceptance needs the matching APK (2.6.73 / b504).'); return;
+    }
+    if (STATE.ev12Accepting) return;          // R1: in-flight guard (double tap)
+    STATE.ev12Accepting = true;
+    try {
+        // R1 step 1: PREPARE - native revalidates with fresh source-timed quotes; mode/capital are native-owned.
+        const start = safeParseNB(NativeBridge.evPrepareAcceptance(String(sessionDate),
+            String(view.recommendation.decision_id || '')), {});
+        if (!start.ok) { alert(`Acceptance could not start: ${start.reason || 'native error'}`); return; }
+        const prep = await ev12PollAcceptance(start.request_id);
+        if (prep.status !== 'RESERVED' && !prep.replay) {
+            alert(`Experimental Paper accept refused: ${prep.reason || prep.status}`); return;
+        }
+        let acc = prep;
+        if (prep.status === 'RESERVED') {
+            const label = `${prep.frozen_policy?.structure || ''}`;
+            const ok = confirm(`EXPERIMENTAL Paper trade\n${label}\nPlanned exit ${prep.frozen_policy?.planned_exit_session || '?'} 15:15 IST (Rule B)\nRevalidated EV/lot ₹${Math.round(prep.ev_robust_at_acceptance)}\nConfirm within 45 s.`);
+            if (!ok) { NativeBridge.evCancelAcceptance(prep.decision_id, prep.reservation_id); return; }
+            // R1 step 2: CONFIRM - consumes the decision, persists the complete frozen record natively.
+            acc = safeParseNB(NativeBridge.evConfirmAcceptance(prep.decision_id, prep.reservation_id), {});
+            if (acc.status !== 'COMMITTED' && !acc.replay) {
+                alert(`Experimental Paper accept not committed: ${acc.reason || acc.status}`); return;
+            }
+        }
+        const r = await ev12PersistAcceptance(acc, view);
+        if (!r.ok) {
+            addNotificationLog('Experimental Paper trade pending sync', `${acc.decision_id}: ${r.reason}; retried automatically.`, 'urgent');
+            return;
+        }
+        addNotificationLog('Experimental Paper trade', `${r.trade.entry_snapshot.ev_structure} · ${ev12PlannedExitLabel(r.trade)}`, 'entry');
+        renderAll();
+    } finally {
+        STATE.ev12Accepting = false;
+    }
+}
+
+/** Codex R3: native ledger -> journaled patch -> conditional remote write -> readback -> ACK with remote proof. */
+function ev12ClosePatch(entry, trade) {
+    const es = ev12EntrySnapshot(trade || {});
+    if (entry.state === 'UNRESOLVED') {
+        const did = entry.decision_id || es.ev_decision_id || null;
+        return { close_trace_json: { ...(trade?.close_trace_json && typeof trade.close_trace_json === 'object' ? trade.close_trace_json : {}),
+            policy_version: EV12_POLICY_ID, rule_b_state: 'UNRESOLVED', reason: entry.reason || null,
+            ev_decision_id: did, ev_trade_uid: es.ev_trade_uid || null, close_writer: 'RULE_B',
+            close_digest: ev12DigestOf(ev12CloseEvidence('RULE_B', did, es.ev_trade_uid, { rule_b_state: 'UNRESOLVED', reason: entry.reason || null })) } };
+    }
+    const f = entry.fill || {};
+    const econ = entry.economics && entry.economics.status === 'OK' ? entry.economics : null;
+    const units = Number(econ?.units ?? es.entry_fill?.units ?? trade?.lot_size);
+    const entryCash = Number(es.entry_fill?.entry_cash_pts ?? econ?.entry_cash_pts);
+    const closeValue = Number(f.close_value_pts);
+    if (!Number.isFinite(units) || !Number.isFinite(closeValue) || (!econ && !Number.isFinite(entryCash))) return null;
+    const r2 = (x) => Math.round(Number(x) * 100) / 100;
+    const gross = econ ? r2(econ.gross_pnl) : r2(units * (entryCash + closeValue));
+    const reason = f.kind === 'LATE_EXIT' ? 'RULE_B_LATE_EXIT' : 'RULE_B_PLANNED_EXIT';
+    const exitIso = f.ts_iso ? new Date(f.ts_iso).toISOString() : null;
+    const net = econ ? r2(econ.net_pnl) : null;
+    const did = entry.decision_id || es.ev_decision_id || null;
+    const digest = ev12DigestOf(ev12CloseEvidence('RULE_B', did, es.ev_trade_uid, { status: 'CLOSED', exit_reason: reason,
+        exit_date: exitIso, actual_pnl: gross, net_pnl: net, fill: f }));
+    return {
+        status: 'CLOSED', exit_date: exitIso, actual_pnl: gross, canonical_won: gross > 0, outcome_h2: gross > 0 ? 1 : 0,
+        exit_premium: Math.abs(closeValue), exit_reason: reason,
+        // R4: net from the canonical dated Python fee contract (computed natively at fill time); never a JS formula
+        net_pnl: net, net_won: net === null ? null : net > 0,
+        friction_cost: econ ? r2(econ.fees_total) : null,
+        friction_version: econ ? (econ.exit_fee_identity?.fee_contract_version || null) : null,
+        friction_breakdown_json: econ ? { entry_fee: r2(econ.entry_fee), exit_fee: r2(econ.exit_fee),
+            entry_fee_identity: econ.entry_fee_identity || null, exit_fee_identity: econ.exit_fee_identity || null,
+            economics_version: econ.economics_version, units } : null,
+        close_trace_json: {
+            source: 'rule_b_native_ledger', policy_version: EV12_POLICY_ID, exit_reason: reason,
+            ev_decision_id: did, ev_trade_uid: es.ev_trade_uid || null, close_writer: 'RULE_B', close_digest: digest,
+            closed_at: exitIso, gross_close_pnl: gross, net_close_pnl: net,
+            net_status: econ ? 'CANONICAL_DATED_FEES' : `UNKNOWN:${entry.economics?.reason || 'ECONOMICS_UNAVAILABLE'}`,
+            fill: f, trade_mode: 'swing', paper: true
+        }
+    };
+}
+
+/** Deterministic canonical JSON (sorted keys) for close evidence (Codex D2). */
+function ev12Canon(v) {
+    if (Array.isArray(v)) return '[' + v.map(ev12Canon).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + ev12Canon(v[k])).join(',') + '}';
+    return JSON.stringify(v === undefined ? null : v);
+}
+
+function ev12Fnv64(str) {
+    let h = 0xcbf29ce484222325n;
+    const P = 0x100000001b3n, MASK = 0xffffffffffffffffn;
+    for (let i = 0; i < str.length; i++) { h ^= BigInt(str.charCodeAt(i)); h = (h * P) & MASK; }
+    return h.toString(16).padStart(16, '0');
+}
+
+/**
+ * Codex D2: the COMPLETE frozen close evidence in a canonical form - writer, decision, uid, status, exit reason,
+ * exit timestamp, gross, net and (Rule B) the fill kind/time/close value and every leg's instrument, quantity,
+ * executed price, bid/ask and quote source time. Only key order and harmless numeric/timestamp representation are
+ * normalized. Built identically from a patch and from a read-back row, so the STORED fields are what is proven.
+ */
+function ev12CloseEvidence(writer, did, uid, src) {
+    // Codex R4-D2: strict, value-PRESERVING numeric canonicalization (no rounding). A number or numeric string maps to
+    // its exact shortest round-trip form (1, 1.0, '1.000' -> '1'); booleans, objects, non-numeric strings, non-finite
+    // values, fractional quantities and fractional source milliseconds are rejected -> the evidence is INVALID (null)
+    // and no proof / winner can be built from it.
+    const BAD = {};
+    const NUMRE = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+    const num = (x, { nullable = true, integer = false } = {}) => {
+        if (x === null || x === undefined) { if (nullable) return null; throw BAD; }
+        let v;
+        if (typeof x === 'number') v = x;
+        else if (typeof x === 'string' && NUMRE.test(x.trim())) v = Number(x.trim());
+        else throw BAD;
+        if (!Number.isFinite(v) || (integer && !Number.isInteger(v))) throw BAD;
+        return String(v === 0 ? 0 : v);
+    };
+    const iso = (x) => {
+        if (x === null || x === undefined || x === '') return null;
+        if (typeof x !== 'string') throw BAD;
+        const t = Date.parse(x); if (!Number.isFinite(t)) throw BAD;
+        return new Date(t).toISOString();
+    };
+    const str = (x) => { if (x === null || x === undefined || x === '') return null; if (typeof x !== 'string') throw BAD; return x; };
+    try {
+        const ev = { v: 2, writer, did: did || null, uid: uid || null };
+        if (src.rule_b_state === 'UNRESOLVED') {
+            ev.rule_b_state = 'UNRESOLVED'; ev.reason = str(src.reason);
+            return ev12Canon(ev);
+        }
+        Object.assign(ev, { status: str(src.status), exit_reason: str(src.exit_reason), exit_date: iso(src.exit_date),
+            gross: num(src.actual_pnl), net: num(src.net_pnl) });
+        if (writer === 'RULE_B') {
+            const f = src.fill;
+            if (!f || typeof f !== 'object' || Array.isArray(f) || !Array.isArray(f.legs)) throw BAD;
+            ev.fill = { kind: str(f.kind), ts: iso(f.ts_iso), close: num(f.close_value_pts),
+                legs: f.legs.map(l => {
+                    if (!l || typeof l !== 'object' || Array.isArray(l)) throw BAD;
+                    return { k: str(l.instrument_key), q: num(l.qty, { nullable: false, integer: true }),
+                        p: num(l.price, { nullable: false }), b: num(l.bid), a: num(l.ask),
+                        t: num(l.quote_ts_ms, { integer: true }) };
+                }) };
+        }
+        return ev12Canon(ev);
+    } catch (e) {
+        if (e === BAD) return null;
+        throw e;
+    }
+}
+
+function ev12DigestOf(evidence) { return evidence === null ? null : 'ev12close2:' + ev12Fnv64(evidence); }
+
+function ev12RowIdentity(row) {
+    const es = ev12EntrySnapshot(row || {});
+    const ct = row?.close_trace_json && typeof row.close_trace_json === 'object' ? row.close_trace_json : {};
+    return { did: es.ev_decision_id || null, uid: es.ev_trade_uid || null, ct };
+}
+
+function ev12PatchEvidence(patch) {
+    const ct = patch.close_trace_json || {};
+    return ev12CloseEvidence(ct.close_writer, ct.ev_decision_id, ct.ev_trade_uid, {
+        status: patch.status, exit_reason: patch.exit_reason, exit_date: patch.exit_date, actual_pnl: patch.actual_pnl,
+        net_pnl: patch.net_pnl, fill: ct.fill, rule_b_state: ct.rule_b_state, reason: ct.reason });
+}
+
+function ev12RowEvidence(row, writer) {
+    const { did, uid, ct } = ev12RowIdentity(row);
+    return ev12CloseEvidence(writer, did, uid, {
+        status: row.status, exit_reason: row.exit_reason, exit_date: row.exit_date, actual_pnl: row.actual_pnl,
+        net_pnl: row.net_pnl, fill: ct.fill, rule_b_state: ct.rule_b_state, reason: ct.reason });
+}
+
+/** Codex C2/D2: proof that THIS journaled close landed - identity, digest AND every stored evidence field. */
+function ev12RemoteApplied(row, patch) {
+    if (!row || !patch) return false;
+    const want = patch.close_trace_json || {};
+    const { did, uid, ct } = ev12RowIdentity(row);
+    if (!want.close_digest || ct.close_digest !== want.close_digest || ct.close_writer !== want.close_writer) return false;
+    if (did !== want.ev_decision_id || uid !== want.ev_trade_uid) return false;
+    if (patch.status === 'CLOSED' && row.status !== 'CLOSED') return false;
+    const ev = ev12PatchEvidence(patch);
+    return ev !== null && ev12DigestOf(ev) === want.close_digest && ev12RowEvidence(row, want.close_writer) === ev;
+}
+
+/** A competing winner is proven only by a self-consistent stored close (stored fields hash to its digest). */
+function ev12WinnerOf(row, writer, did, uid) {
+    const r = ev12RowIdentity(row);
+    return !!row && row.status === 'CLOSED' && r.ct.close_writer === writer && !!r.ct.close_digest
+        && r.did === did && r.uid === uid && ev12RowEvidence(row, writer) !== null
+        && ev12DigestOf(ev12RowEvidence(row, writer)) === r.ct.close_digest;
+}
+function ev12ManualWinner(row, did, uid) { return ev12WinnerOf(row, 'MANUAL', did, uid); }
+function ev12RuleBWinner(row, did, uid) { return ev12WinnerOf(row, 'RULE_B', did, uid); }
+
+async function applyRuleBFill(entryIn) {
+    let entry = entryIn;
+    const id = String(entry.trade_id || '');
+    if (!id) return { state: 'SKIPPED' };
+    STATE.ev12Applying_ = STATE.ev12Applying_ || {};
+    if (STATE.ev12Applying_[id]) return { state: 'IN_FLIGHT' };
+    STATE.ev12Applying_[id] = true;
+    try {
+        // A missing open-trade cache entry is NOT proof of closure: the remote row decides.
+        const local = findOpenTradeById(id);
+        if (entry.state === 'MANUAL_CLOSED' || entry.manual_pending) {
+            // Codex C2/D1: a manual close retries through the shared arbitration first (user intent); a patchless
+            // legacy intent is reconciled against the remote row.
+            const m = entry.manual_patch ? await ev12ManualDeliver(id, entry.manual_patch, local || null, null)
+                : await ev12ReconcileUnjournaledManual(entry);
+            if (m.state === 'MANUAL_INTENT_WITHDRAWN' && entry.state === 'EXIT_FILLED') entry = { ...entry, manual_pending: false };
+            else if (m.state !== 'RULE_B_WON' || entry.state !== 'EXIT_FILLED') return m;
+            else entry = { ...entry, manual_pending: false };
+        }
+        if (entry.state === 'MANUAL_CLOSED') return { state: 'MANUAL_PENDING', reason: 'NOT_JOURNALED' };
+        const remote = await DB.readTrade(id);
+        if (!remote) { NativeBridge.evRuleBRemoteFailed(id, 'READBACK_FAILED'); return { state: 'REMOTE_PENDING' }; }
+        const trade = local || remote;
+        let patch = entry.journal_patch || null;
+        if (!patch) {
+            patch = ev12ClosePatch(entry, trade);
+            if (!patch) { NativeBridge.evRuleBRemoteFailed(id, 'PATCH_INPUTS_MISSING'); return { state: 'REMOTE_PENDING' }; }
+            const j = NativeBridge.evRuleBJournal(id, JSON.stringify(patch));
+            if (j !== 'JOURNALED' && j !== 'ALREADY_JOURNALED') return { state: 'REMOTE_PENDING', reason: j };
+        }
+        const did = patch.close_trace_json?.ev_decision_id || null;
+        const uid = patch.close_trace_json?.ev_trade_uid || null;
+        const decide = (row) => {
+            if (ev12RemoteApplied(row, patch)) return ev12Ack(id, 'REMOTE_CONFIRMED', trade, patch, !!local);
+            if (ev12ManualWinner(row, did, uid)) return ev12Ack(id, 'MANUAL_CLOSE_CONFLICT', trade, patch, !!local);
+            if (row && row.status && row.status !== 'OPEN') {
+                // closed, but neither this exact frozen close nor a proven manual close of this trade: no ACK
+                NativeBridge.evRuleBRemoteFailed(id, 'CLOSE_PROOF_MISMATCH');
+                return { state: 'ARBITRATION_MISMATCH' };
+            }
+            return null;
+        };
+        const first = decide(remote);
+        if (first) return first;
+        const wrote = await DB.updateOpenTrade(id, patch);       // conditional: only while status = OPEN
+        const after = await DB.readTrade(id);
+        const second = after ? decide(after) : null;
+        if (second) return second;
+        NativeBridge.evRuleBRemoteFailed(id, wrote ? 'READBACK_MISMATCH' : 'UPDATE_FAILED');
+        return { state: 'REMOTE_PENDING' };
+    } finally {
+        delete STATE.ev12Applying_[id];
+    }
+}
+
+function ev12Ack(id, state, trade, patch, wasLocal) {
+    const ok = NativeBridge.evRuleBAckState(id, state);
+    if (state === 'REMOTE_CONFIRMED' && patch.status === 'CLOSED') {
+        if (wasLocal) removeOpenTradeFromState(id);
+        recordClosedTradeToNative({ ...trade, id }, patch);
+        addNotificationLog('Rule B Paper exit', `${ev12EntrySnapshot(trade).ev_structure || trade.strategy_type}: ${patch.exit_reason} gross ₹${patch.actual_pnl}${patch.net_pnl === null ? '' : ` · net ₹${patch.net_pnl}`}`,
+            Number(patch.net_pnl ?? patch.actual_pnl) >= 0 ? 'entry' : 'urgent');
+    } else if (state === 'REMOTE_CONFIRMED') {
+        if (trade && wasLocal) trade.rule_b_state = 'UNRESOLVED';
+        addNotificationLog('Rule B unresolved', `${id}: no valid executable quote by the expiry deadline — manual review required.`, 'urgent');
+    } else {
+        addNotificationLog('Rule B fill superseded', `${id}: the trade was already closed manually; Rule B fill kept as evidence only.`, 'entry');
+    }
+    renderAll();
+    return { state, acked: !!ok };
+}
+
+/**
+ * Codex C2: manual close of a Rule B experiment trade through the shared arbitration. Returns
+ * { state: MANUAL_WON | RULE_B_WON | MANUAL_PENDING, reason }.
+ */
+/** Codex D2: the frozen manual close patch (writer MANUAL, digest over its complete stored evidence). */
+function ev12ManualPatch(trade, remotePatch) {
+    const es = ev12EntrySnapshot(trade);
+    const did = es.ev_decision_id || null, uid = es.ev_trade_uid || null;
+    const ct0 = remotePatch.close_trace_json && typeof remotePatch.close_trace_json === 'object' ? remotePatch.close_trace_json : {};
+    let patch = { ...remotePatch, close_trace_json: { ...ct0, close_writer: 'MANUAL', ev_decision_id: did, ev_trade_uid: uid } };
+    delete patch.close_trace_json.fill;   // the manual writer carries no Rule B fill
+    if (JSON.stringify(patch).length > 15000 && patch.journey_stats) {
+        // bounded native journal: the poll timeline is the only unbounded part of a close patch
+        patch = { ...patch, journey_stats: { ...patch.journey_stats, timeline: [], timeline_dropped: true } };
+    }
+    patch.close_trace_json.close_digest = ev12DigestOf(ev12PatchEvidence(patch));
+    return patch;
+}
+
+/**
+ * Codex C2 + D1: manual close of a Rule B experiment trade. The manual intent and its complete frozen retry patch
+ * are recorded natively in ONE durable transaction (evManualCloseRequest); a refusal records nothing and Rule B keeps
+ * the position. Returns { state: MANUAL_WON | RULE_B_WON | MANUAL_PENDING | NOT_RECORDED | MANUAL_ALREADY_RECORDED }.
+ */
+async function ev12ManualClose(trade, nativePatch, remotePatch) {
+    const id = String(trade.id);
+    const es = ev12EntrySnapshot(trade);
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evManualCloseRequest !== 'function') {
+        return { state: 'NOT_RECORDED', reason: 'NATIVE_LEDGER_UNAVAILABLE' };
+    }
+    const patch = ev12ManualPatch(trade, remotePatch);
+    let r;
+    try { r = NativeBridge.evManualCloseRequest(id, String(es.ev_decision_id || ''), JSON.stringify(patch)); }
+    catch (e) { return { state: 'NOT_RECORDED', reason: 'NATIVE_REQUEST_FAILED' }; }
+    if (r === 'RULE_B_ALREADY_CONFIRMED') return { state: 'RULE_B_WON' };
+    if (r === 'ALREADY_MANUAL') return { state: 'MANUAL_ALREADY_RECORDED' };
+    if (r === 'JOURNALED_PATCH_DIFFERS') return { state: 'MANUAL_PENDING', reason: r };   // the earlier request is retried
+    if (r !== 'MANUAL_PENDING' && r !== 'RULE_B_TERMINAL_PENDING_DELIVERY' && r !== 'ALREADY_JOURNALED') {
+        return { state: 'NOT_RECORDED', reason: r || 'REFUSED' };
+    }
+    return ev12ManualDeliver(id, patch, trade, nativePatch);
+}
+
+/** Codex D1: a manual intent without a journaled patch (pre-D1 interruption) is reconciled, never left hidden. */
+async function ev12ReconcileUnjournaledManual(entry) {
+    const id = String(entry.trade_id || '');
+    const row = await DB.readTrade(id);
+    if (!row) return { state: 'MANUAL_PENDING', reason: 'READBACK_FAILED' };
+    const { did, uid } = ev12RowIdentity(row);
+    if (!row.status || row.status === 'OPEN') {
+        // no manual close landed and no patch exists: withdraw the intent (Rule B owns the position again)
+        const w = typeof NativeBridge.evManualIntentAbandon === 'function' ? NativeBridge.evManualIntentAbandon(id) : 'UNAVAILABLE';
+        // the next acceptance recovery reinstalls the ORIGINAL frozen entry (no longer skipped as manual-pending)
+        addNotificationLog('Experiment manual close not delivered', `${id}: the earlier manual close was interrupted before it was saved; Rule B manages the position again. Close it again if still wanted.`, 'urgent');
+        return { state: 'MANUAL_INTENT_WITHDRAWN', reason: w };
+    }
+    if (ev12ManualWinner(row, did, uid)) { NativeBridge.evManualCloseResult(id, 'MANUAL_WON'); return { state: 'MANUAL_WON' }; }
+    if (entry.state === 'EXIT_FILLED' && ev12RuleBWinner(row, did, uid)) { NativeBridge.evManualCloseResult(id, 'RULE_B_WON'); return { state: 'RULE_B_WON' }; }
+    return { state: 'MANUAL_PENDING', reason: 'CLOSE_PROOF_MISMATCH' };
+}
+
+async function ev12ManualDeliver(id, patch, trade, nativePatch) {
+    const did = patch.close_trace_json?.ev_decision_id || null, uid = patch.close_trace_json?.ev_trade_uid || null;
+    const decide = (row) => {
+        if (!row) return null;
+        if (ev12RemoteApplied(row, patch)) return 'MANUAL_WON';
+        if (ev12RuleBWinner(row, did, uid)) return 'RULE_B_WON';
+        if (row.status && row.status !== 'OPEN') return 'MISMATCH';
+        return null;
+    };
+    let row = await DB.readTrade(id);
+    if (!row) return { state: 'MANUAL_PENDING', reason: 'READBACK_FAILED' };
+    let d = decide(row);
+    if (!d) {
+        const wrote = await DB.updateOpenTrade(id, patch);
+        row = await DB.readTrade(id);
+        d = decide(row) || (wrote ? 'UNCONFIRMED' : 'UPDATE_FAILED');
+    }
+    if (d === 'MANUAL_WON' || d === 'RULE_B_WON') {
+        NativeBridge.evManualCloseResult(id, d);
+        if (d === 'MANUAL_WON') recordClosedTradeToNative({ ...(trade || row), id }, nativePatch || patch);
+        return { state: d, patch: d === 'MANUAL_WON' ? patch : undefined };
+    }
+    return { state: 'MANUAL_PENDING', reason: d === 'MISMATCH' ? 'CLOSE_PROOF_MISMATCH' : d };
+}
+
+/** Manual close of a Rule B trade: Rule B stops natively; the close stays MANUAL_PENDING until arbitration. */
+function ev12NoteManualClose(trade) {
+    if (!isEvRuleBTrade(trade) || typeof NativeBridge === 'undefined' || typeof NativeBridge.evNoteManualClose !== 'function') return null;
+    try { return NativeBridge.evNoteManualClose(String(trade.id), String(ev12EntrySnapshot(trade).ev_decision_id || '')); }
+    catch (_) { return null; }
+}
+
+function applyRuleBFills() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evRuleBPending !== 'function') return;
+    if (STATE.ev12Applying) return;
+    STATE.ev12Applying = true;
+    (async () => {
+        try {
+            const pending0 = safeParseNB(NativeBridge.evRuleBPending(), []);
+            const manual = new Set((Array.isArray(pending0) ? pending0 : [])
+                .filter(e => e && (e.state === 'MANUAL_CLOSED' || e.manual_pending)).map(e => String(e.trade_id)));
+            await ev12RecoverAcceptances(manual);
+            const pending = safeParseNB(NativeBridge.evRuleBPending(), []);
+            for (const e of Array.isArray(pending) ? pending : []) await applyRuleBFill(e);
+        }
+        catch (err) { console.warn('[EV12] Rule B apply failed:', err?.message || err); }
+        finally { STATE.ev12Applying = false; }
+    })();
+}
 
 // ═══════════════════════════════════════════════════════════════
 // UI RENDERING
@@ -4995,6 +5693,7 @@ function renderAll(snapshot = null) {
         }
         if (snap.latestPoll && Object.keys(snap.latestPoll).length) STATE.live = snap.latestPoll;
         refreshBrainData(snap);  // F.2: keep bd fresh for all render functions
+        try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
@@ -6531,7 +7230,9 @@ function renderTradeCard(t, isPaper) {
     const closeHandler = (reason) => `closeTrade(${tradeIdArg}, ${jsArg(reason)})`;
     const closeBusy = isPaper && String(STATE._paperCloseQuoteBusyTradeId || '') === String(t.id);
     const holdingMeta = deriveHoldingHorizon(t);
-    const modeTag = t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '';
+    const modeTag = isEvRuleBTrade(t)
+        ? `<span class="mode-tag mode-swing">EXPERIMENT · ${ev12Escape(ev12PlannedExitLabel(t))}</span>`
+        : (t.trade_mode ? `<span class="mode-tag mode-${t.trade_mode}">${t.trade_mode.toUpperCase()}</span>` : '');
     const horizonTag = holdingMeta.holding_horizon ? `<span class="mode-tag mode-horizon" title="${holdingMeta.data_quality_note || 'Analytical holding horizon (IST)'}">${holdingMeta.holding_horizon}</span>` : '';
     // No Paper-vs-teacher pooling path is active here. Show horizon and warning,
     // but do not claim a comparison filter was applied.
