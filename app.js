@@ -4919,6 +4919,130 @@ function renderEvExperiment() {
     el.innerHTML = `<div class="card" style="border:1px dashed #f59e0b;padding:10px;margin-bottom:10px">${head}${body}</div>`;
 }
 
+// ── 2.6.74 (Codex revised A): persistent "EV experiment (Paper only)" control ──
+// Visible even while Off and before any EV result. Reads the DEVICE's actual preference from native
+// (NativeBridge.evGetStatus); never assumes Off, never keeps a browser-local copy as the device mode, never writes on
+// load/refresh/restore. Off and Observe only (Active entry awaits its separate acceptance stage). Real disables changes.
+const EV12_STATUS_SCHEMA = 'ev_native_status_v1';
+const EV12_MODE_LABEL = { off: 'Off', observe: 'Observe', active: 'Active (set earlier — awaiting its separate acceptance stage; not changed here)' };
+let ev12ControlMsg = '';
+let ev12ControlBusy = false;
+
+/** {available:true, ...status} or {available:false, reason}. Never throws; never falls back to a local value. */
+function ev12NativeStatus() {
+    const nb = (typeof NativeBridge !== 'undefined') ? NativeBridge : null;
+    if (!nb) return { available: false, reason: 'NO_NATIVE_BRIDGE' };
+    if (typeof nb.evGetStatus !== 'function') return { available: false, reason: 'OLDER_APK_NO_STATUS' };
+    let s;
+    try { s = JSON.parse(nb.evGetStatus()); } catch (_) { return { available: false, reason: 'STATUS_READ_FAILED' }; }
+    if (!s || typeof s !== 'object' || s.schema !== EV12_STATUS_SCHEMA || s.error
+        || !['off', 'observe', 'active'].includes(s.mode)) return { available: false, reason: 'STATUS_INVALID' };
+    return { available: true, ...s };
+}
+
+function ev12FmtMs(ms) {
+    if (!(typeof ms === 'number' && Number.isFinite(ms) && ms > 0)) return null;
+    try { return new Date(ms).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) + ' IST'; }
+    catch (_) { return new Date(ms).toISOString(); }
+}
+
+/** The brain's validation for THIS cached publication on a poll after it was stored; else null (Not yet validated). */
+function ev12ValidationFor(st) {
+    const cc = ev12View()?.calibration_check;
+    if (!cc || typeof cc !== 'object' || !st.cached_calibration_version) return null;
+    if (cc.calibration_version !== st.cached_calibration_version) return null;
+    if (typeof st.cache_stored_ms === 'number' && !(typeof cc.poll_ms === 'number' && cc.poll_ms >= st.cache_stored_ms)) return null;
+    return cc;
+}
+
+function renderEvControl() {
+    const el = document.getElementById('ev12-control');
+    if (!el) return;
+    const e = ev12Escape;
+    const st = ev12NativeStatus();
+    const row = (k, v) => `<div style="font-size:12px"><span style="color:var(--text-muted)">${e(k)}:</span> ${e(v)}</div>`;
+    let body, canSet = false;
+    if (!st.available) {
+        body = row('Device EV mode', 'Unknown — native status unavailable')
+            + `<div style="font-size:11px;color:var(--text-muted)">${e(st.reason === 'OLDER_APK_NO_STATUS'
+                ? 'This APK predates 2.6.74 (no native EV status). Install the matching APK to view or change the experiment.'
+                : st.reason === 'NO_NATIVE_BRIDGE' ? 'Not running inside the Market Radar app.' : 'The app could not report its EV status.')}</div>`;
+    } else {
+        const paper = st.execution_mode === 'paper';
+        canSet = paper && st.can_change === true && !ev12ControlBusy;
+        const val = ev12ValidationFor(st);
+        body = row('Device EV mode', (EV12_MODE_LABEL[st.mode] || 'Unknown') + (st.mode_stored === 'UNRECOGNIZED' ? ' (stored value unrecognized → treated as Off)' : ''))
+            + row('Execution mode', paper ? 'Paper' : (st.execution_mode === 'live' ? 'Real' : String(st.execution_mode || 'unknown')))
+            + row('Calibration cache', st.cache_present
+                ? (st.cache_parse === 'PARSED' ? `present — ${st.cached_calibration_version} · available ${st.cached_available_at || '?'}` : 'present but unreadable')
+                : 'absent')
+            + row('Cache stored', ev12FmtMs(st.cache_stored_ms) || 'not recorded')
+            + row('Last fetch attempt', (ev12FmtMs(st.last_fetch_attempt_ms) || 'none') + ' (an attempt, not proof of a successful refresh)')
+            + row('Latest validation', val ? `${val.status} (poll ${ev12FmtMs(val.poll_ms) || '?'})` : 'Not yet validated')
+            + (paper ? '' : `<div style="font-size:11px;color:var(--text-muted)">Experiment changes are disabled outside Paper execution.</div>`);
+    }
+    const dis = canSet ? '' : ' disabled';
+    const btn = (m, label) => `<button onclick="ev12SetMode('${m}')"${dis} style="margin-right:6px;padding:4px 12px;font-size:12px;border:1px solid #f59e0b;background:transparent;color:#f59e0b;border-radius:6px">${label}</button>`;
+    el.innerHTML = `<div class="card" style="border:1px dashed #f59e0b;padding:10px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#f59e0b">EV experiment (Paper only)</div>
+        ${body}
+        <div style="margin-top:6px">${btn('off', 'Off')}${btn('observe', 'Observe')}<span style="font-size:11px;color:var(--text-muted)">Active: awaiting separate acceptance stage</span></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Switching Off does not close existing positions or erase experiment journals.</div>
+        ${ev12ControlMsg ? `<div style="font-size:12px;margin-top:4px">${e(ev12ControlMsg)}</div>` : ''}
+    </div>`;
+}
+
+const EV12_SET_ACK_SCHEMA = 'ev_set_ack_v1';
+
+/** Parsed checked-setter acknowledgment, or null when missing/malformed. */
+function ev12ParseSetAck(raw) {
+    let a;
+    try { a = JSON.parse(raw); } catch (_) { return null; }
+    if (!a || typeof a !== 'object' || a.schema !== EV12_SET_ACK_SCHEMA || typeof a.ok !== 'boolean'
+        || typeof a.reason !== 'string') return null;
+    return a;
+}
+
+/**
+ * Explicit user action only. Saved requires BOTH a successful native acknowledgment (persisted write + matching
+ * native readback) AND a matching status readback. A missing/failed/malformed acknowledgment or a setter exception
+ * is never converted to success because the requested mode is visible afterwards. The effective mode is reported
+ * separately from whether it was saved persistently; no rollback is attempted or claimed.
+ */
+function ev12SetMode(mode) {
+    if (mode !== 'off' && mode !== 'observe') { ev12ControlMsg = 'Only Off and Observe can be selected.'; renderEvControl(); return false; }
+    const before = ev12NativeStatus();
+    if (!before.available) { ev12ControlMsg = 'Not changed: native status unavailable.'; renderEvControl(); return false; }
+    if (before.execution_mode !== 'paper' || before.can_change !== true) { ev12ControlMsg = 'Not changed: experiment changes are allowed only in Paper execution.'; renderEvControl(); return false; }
+    if (typeof NativeBridge.evSetModeChecked !== 'function') { ev12ControlMsg = 'Not changed: this APK has no checked setter (install the matching 2.6.74 APK).'; renderEvControl(); return false; }
+    ev12ControlBusy = true;
+    let ok = false;
+    try {
+        let ack = null, threw = false;
+        try { ack = ev12ParseSetAck(NativeBridge.evSetModeChecked(mode)); } catch (_) { threw = true; }
+        const after = ev12NativeStatus();
+        const eff = after.available ? (EV12_MODE_LABEL[after.mode] || 'unknown') : 'status unavailable';
+        ok = !!ack && ack.ok === true && ack.reason === 'OK' && ack.effective_mode === mode
+            && after.available && after.mode === mode;
+        if (ok) {
+            ev12ControlMsg = `Saved: ${EV12_MODE_LABEL[mode]} (persisted and read back from the device).`;
+        } else if (threw) {
+            ev12ControlMsg = `Not saved: the native setter failed. Effective mode now: ${eff} (not confirmed as saved).`;
+        } else if (!ack) {
+            ev12ControlMsg = `Not saved: no valid acknowledgment from the device. Effective mode now: ${eff} (not confirmed as saved).`;
+        } else if (ack.reason === 'PREFERENCE_WRITE_FAILED') {
+            ev12ControlMsg = `Not saved persistently: the preference write failed. Effective mode now: ${eff}`
+                + (ack.in_memory_changed === true ? ' (in memory only — may revert to the previous mode after a restart).' : ' (unchanged).');
+        } else {
+            ev12ControlMsg = `Not saved (${ack.reason}). Effective mode now: ${eff}.`;
+        }
+    } finally {
+        ev12ControlBusy = false;
+        renderEvControl();
+    }
+    return ok;
+}
+
 async function ev12PollAcceptance(requestId, timeoutMs = 15000) {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
@@ -5081,7 +5205,7 @@ async function acceptEvDecision(sessionDate) {
     const view = ev12View();
     if (!view || !view.recommendation?.actionable) { alert('Experimental decision is not actionable.'); return; }
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evPrepareAcceptance !== 'function') {
-        alert('Experimental acceptance needs the matching APK (2.6.73 / b504).'); return;
+        alert('Experimental acceptance needs the matching APK (2.6.74 / b505).'); return;
     }
     if (STATE.ev12Accepting) return;          // R1: in-flight guard (double tap)
     STATE.ev12Accepting = true;
@@ -5694,6 +5818,7 @@ function renderAll(snapshot = null) {
         if (snap.latestPoll && Object.keys(snap.latestPoll).length) STATE.live = snap.latestPoll;
         refreshBrainData(snap);  // F.2: keep bd fresh for all render functions
         try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
+        try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
@@ -9078,6 +9203,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // form while asynchronous boot work is still running.
     try { initTheme(null); } catch (e) { console.warn('[boot] early theme restore failed:', e.message); }
     try { reconcileNativeSessionUi(); } catch (e) { console.warn('[boot] early native session restore failed:', e.message); }
+    try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
 
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
