@@ -142,17 +142,21 @@ test('R3 probe: UNRESOLVED is not ACKed before its remote update is proven', asy
 test('R3: a manual close that won the race is recorded as MANUAL_CLOSE_CONFLICT, the Rule B close is not applied', async () => {
   const c = sandbox();
   openRuleB(c, 9005);
-  Object.assign(c._store.rows[9005], { status: 'CLOSED', exit_reason: 'Manual', actual_pnl: 12 });
+  // Codex C2: the manual winner is proven by its own close digest + identity (not just "not OPEN")
+  Object.assign(c._store.rows[9005], { status: 'CLOSED', exit_reason: 'Manual', actual_pnl: 12,
+    close_trace_json: { close_writer: 'MANUAL', close_digest: 'ev12close1|MANUAL|x', ev_decision_id: ACC.decision_id, ev_trade_uid: ACC.trade_uid } });
   const e = fillEntry(9005); c.NativeBridge.ledger['9005'] = e;
   const r = await c.applyRuleBFill(e);
   assert.equal(r.state, 'MANUAL_CLOSE_CONFLICT');
   assert.equal(c._store.rows[9005].exit_reason, 'Manual');
   assert.equal(c._store.updates, 0);
   assert.equal(c._closed.length, 0);
-  // manual close path notifies native for Rule B trades
-  assert.match(src, /ev12NoteManualClose\(trade\);\n[^\n]*\n[^\n]*\n[^\n]*\n\s+recordClosedTradeToNative\(trade, closePatch\);/);
+  // the experiment manual close goes through the shared arbitration (no unconditional DB.updateTrade)
+  assert.match(src, /const arb = await ev12ManualClose\(trade, closePatch, remoteClosePatch\);/);
+  assert.match(src, /if \(arb\.state !== 'MANUAL_WON'\) \{/);
+  assert.match(src, /if \(!ev12Experiment\) recordClosedTradeToNative\(trade, closePatch\);/);
   const m = sandbox(); const t = openRuleB(m, 9006);
-  assert.equal(m.ev12NoteManualClose(t), 'MANUAL_CLOSED');
+  assert.equal(m.ev12NoteManualClose(t), 'MANUAL_PENDING');          // pending, not remote-confirmed
   assert.deepEqual(m.NativeBridge.manual, [['9006', ACC.decision_id]]);
   assert.equal(m.ev12NoteManualClose({ ...t, entry_snapshot: {} }), null);
 });

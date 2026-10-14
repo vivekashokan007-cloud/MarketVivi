@@ -25,7 +25,10 @@ export function sandbox(extra = {}, store = remoteStore()) {
     currentOpenTrades: () => ctx._open, _open: [],
     findOpenTradeById: (id) => ctx._open.find(t => String(t.id) === String(id)) || null,
     removeOpenTradeFromState: (id) => { ctx._open = ctx._open.filter(t => String(t.id) !== String(id)); },
-    addOpenTradeToState: (t) => ctx._open.push(t),
+    addOpenTradeToState: (t) => {
+      ctx._open = ctx._open.filter(x => String(x.id) !== String(t.id)); ctx._open.push(t);
+      ctx.NativeBridge.setOpenTrades(JSON.stringify(ctx._open));   // same as the real syncToNative
+    },
     recordClosedTradeToNative: (t, p) => ctx._closed.push({ t, p }), _closed: [],
     addNotificationLog: (...a) => ctx._logs.push(a), _logs: [], renderAll: () => {},
     alert: (m) => ctx._alerts.push(m), _alerts: [], confirm: () => true,
@@ -39,8 +42,9 @@ export function sandbox(extra = {}, store = remoteStore()) {
         if (store.loseInsertResponse) { store.loseInsertResponse = false; return null; }
         return { id };
       },
-      async readTrade(id) { if (store.failReads) return null; const r = store.rows[id]; return r ? JSON.parse(JSON.stringify(r)) : null; },
+      async readTrade(id) { if (store.failReads || (store.failReadsN > 0 && store.failReadsN--)) return null; const r = store.rows[id]; return r ? JSON.parse(JSON.stringify(r)) : null; },
       async updateOpenTrade(id, patch) {
+        if (store.beforeUpdate) { const h = store.beforeUpdate; store.beforeUpdate = null; await h(id, patch); }
         store.updates++;
         if (store.failNextUpdate) { store.failNextUpdate = false; return false; }
         const r = store.rows[id];
@@ -61,10 +65,11 @@ export function sandbox(extra = {}, store = remoteStore()) {
 /** Native stand-in mirroring RuleBFillLedger + EvAcceptance semantics (journal before ACK, remote proof only). */
 function native() {
   const n = {
-    ledger: {}, acks: [], marks: [], manual: [], remoteFailed: [], cancelled: [], confirmed: [], prepared: [],
+    ledger: {}, manualResults: [], acks: [], marks: [], manual: [], remoteFailed: [], cancelled: [], confirmed: [], prepared: [],
     recovery: [],
-    evRuleBPending() { return JSON.stringify(Object.values(n.ledger).filter(e => ['EXIT_FILLED', 'UNRESOLVED'].includes(e.state)
-      && !['REMOTE_CONFIRMED', 'MANUAL_CLOSE_CONFLICT'].includes(e.delivery))); },
+    evRuleBPending() { return JSON.stringify(Object.values(n.ledger).filter(e => (['EXIT_FILLED', 'UNRESOLVED'].includes(e.state)
+      && !['REMOTE_CONFIRMED', 'MANUAL_CLOSE_CONFLICT'].includes(e.delivery))
+      || (e.state === 'MANUAL_CLOSED' && e.delivery === 'MANUAL_PENDING' && e.manual_patch))); },
     evRuleBJournal(id, patch) {
       const e = n.ledger[id]; if (!e) return 'UNKNOWN_TRADE';
       if (e.delivery === 'REMOTE_PENDING') return JSON.stringify(e.journal_patch) === patch ? 'ALREADY_JOURNALED' : 'JOURNALED_PATCH_DIFFERS';
@@ -76,7 +81,38 @@ function native() {
       e.delivery = st; n.acks.push([id, st]); return true;
     },
     evRuleBAck() { return false; },
-    evNoteManualClose(id, did) { n.manual.push([id, did]); return 'MANUAL_CLOSED'; },
+    // mirrors RuleBFillLedger.noteManualClose / manualJournal / manualResult (Codex C2)
+    evNoteManualClose(id, did) {
+      n.manual.push([id, did]);
+      const e = n.ledger[id];
+      if (!e) { n.ledger[id] = { trade_id: id, decision_id: did, state: 'MANUAL_CLOSED', delivery: 'MANUAL_PENDING' }; return 'MANUAL_PENDING'; }
+      if (e.state === 'MANUAL_CLOSED') return e.delivery === 'MANUAL_PENDING' ? 'MANUAL_PENDING' : 'ALREADY_MANUAL';
+      if (e.delivery === 'REMOTE_CONFIRMED' && e.state === 'EXIT_FILLED') return 'RULE_B_ALREADY_CONFIRMED';
+      if (e.delivery === 'MANUAL_CLOSE_CONFLICT') return 'ALREADY_MANUAL';
+      e.manual_pending = true; return 'RULE_B_TERMINAL_PENDING_DELIVERY';
+    },
+    evManualCloseJournal(id, patch) {
+      const e = n.ledger[id]; if (!e) return 'UNKNOWN_TRADE';
+      if (!((e.state === 'MANUAL_CLOSED' && e.delivery === 'MANUAL_PENDING') || e.manual_pending)) return 'NO_PENDING_MANUAL_CLOSE';
+      if (e.manual_patch) return JSON.stringify(e.manual_patch) === patch ? 'ALREADY_JOURNALED' : 'JOURNALED_PATCH_DIFFERS';
+      e.manual_patch = JSON.parse(patch); return 'JOURNALED';
+    },
+    evManualCloseResult(id, r) {
+      const e = n.ledger[id]; if (!e) return 'REFUSED';
+      n.manualResults.push([id, r]);
+      if (r === 'MANUAL_WON') {
+        if (e.state === 'MANUAL_CLOSED') e.delivery = 'REMOTE_CONFIRMED';
+        else if (e.delivery === 'REMOTE_CONFIRMED' && e.state === 'EXIT_FILLED') return 'REFUSED';
+        else e.delivery = 'MANUAL_CLOSE_CONFLICT';
+        delete e.manual_pending; return e.delivery;
+      }
+      if (r === 'RULE_B_WON' && e.state === 'EXIT_FILLED') { delete e.manual_pending; return e.delivery; }
+      return 'REFUSED';
+    },
+    nativeOpen: [], failSetOpen: false, reconciledClosed: [],
+    setOpenTrades(json) { if (n.failSetOpen) throw new Error('native setOpenTrades failed'); n.nativeOpen = JSON.parse(json); },
+    getOpenTrades() { return JSON.stringify(n.nativeOpen); },
+    evAcceptanceReconciledClosed(did) { n.reconciledClosed.push(did); return JSON.stringify({ state: 'CLOSED' }); },
     evMarkTradePersisted(did, id, uid) { n.marks.push([did, id, uid]); return JSON.stringify({ state: 'PERSISTED', trade_id: id }); },
     evAcceptanceRecovery() { return JSON.stringify(n.recovery); },
     evPrepareAcceptance(day, did) { n.prepared.push([day, did]); return JSON.stringify({ ok: true, request_id: 'r1' }); },
