@@ -4965,7 +4965,7 @@ function renderEvControl() {
     if (!st.available) {
         body = row('Device EV mode', 'Unknown — native status unavailable')
             + `<div style="font-size:11px;color:var(--text-muted)">${e(st.reason === 'OLDER_APK_NO_STATUS'
-                ? 'This APK predates 2.6.74 (no native EV status). Install the matching APK to view or change the experiment.'
+                ? 'EV bridge support is unavailable: the page could not reach the native EV status method (installed version not read). Install the matching Market Radar APK (2.6.75 / b506) and reopen the app.'
                 : st.reason === 'NO_NATIVE_BRIDGE' ? 'Not running inside the Market Radar app.' : 'The app could not report its EV status.')}</div>`;
     } else {
         const paper = st.execution_mode === 'paper';
@@ -5014,7 +5014,7 @@ function ev12SetMode(mode) {
     const before = ev12NativeStatus();
     if (!before.available) { ev12ControlMsg = 'Not changed: native status unavailable.'; renderEvControl(); return false; }
     if (before.execution_mode !== 'paper' || before.can_change !== true) { ev12ControlMsg = 'Not changed: experiment changes are allowed only in Paper execution.'; renderEvControl(); return false; }
-    if (typeof NativeBridge.evSetModeChecked !== 'function') { ev12ControlMsg = 'Not changed: this APK has no checked setter (install the matching 2.6.74 APK).'; renderEvControl(); return false; }
+    if (typeof NativeBridge.evSetModeChecked !== 'function') { ev12ControlMsg = 'Not changed: EV bridge setter support is unavailable (install the matching Market Radar APK, 2.6.75 / b506).'; renderEvControl(); return false; }
     ev12ControlBusy = true;
     let ok = false;
     try {
@@ -5205,7 +5205,7 @@ async function acceptEvDecision(sessionDate) {
     const view = ev12View();
     if (!view || !view.recommendation?.actionable) { alert('Experimental decision is not actionable.'); return; }
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evPrepareAcceptance !== 'function') {
-        alert('Experimental acceptance needs the matching APK (2.6.74 / b505).'); return;
+        alert('Experimental acceptance needs the matching APK (2.6.75 / b506).'); return;
     }
     if (STATE.ev12Accepting) return;          // R1: in-flight guard (double tap)
     STATE.ev12Accepting = true;

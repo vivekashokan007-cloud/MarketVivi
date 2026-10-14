@@ -109,7 +109,7 @@ test('render / reload / restore never writes the experiment preference', () => {
 test('absent bridge, older APK and throwing/invalid status show Unavailable and disable the setter', () => {
   const cases = [
     [setup(undefined), /Not running inside the Market Radar app/],
-    [setup({ evGetMode: () => 'off', evSetMode: () => 'off' }), /predates 2\.6\.74/],
+    [setup({ evGetMode: () => 'off', evSetMode: () => 'off' }), /EV bridge support is unavailable[^<]*installed version not read/],
     [setup(Object.assign(device(), { throwStatus: true })), /could not report/],
     [setup({ evGetStatus: () => '{"schema":"other"}' }), /could not report/],
     [setup({ evGetStatus: () => '{"schema":"ev_native_status_v1","error":"STATUS_UNAVAILABLE"}' }), /could not report/],
@@ -254,7 +254,7 @@ test('an APK without the checked setter is never written through the legacy stri
   const dev = device({ mode: 'off' }); delete dev.evSetModeChecked;
   const ctx = setup(dev);
   assert.equal(ctx.ev12SetMode('observe'), false);
-  assert.match(html(ctx), /no checked setter/);
+  assert.match(html(ctx), /EV bridge setter support is unavailable/);
   assert.equal(dev.legacy, undefined);
   assert.equal(dev.prefs.mode, 'off');
   assert.equal([...src.matchAll(/NativeBridge\.evSetMode\(/g)].length, 0);
