@@ -4775,6 +4775,14 @@ async function closeTrade(tradeId, exitReason) {
                 renderAll();
                 return;
             }
+            if (arb.state === 'NOT_RECORDED') {
+                // nothing durable was written: the position stays open under Rule B (restored immediately)
+                ev12InstallOpen(trade);
+                addNotificationLog('Experiment close not recorded', `${trade.id}: manual close could not be saved (${arb.reason}); Rule B keeps the position. Try again.`, 'urgent');
+                applyRuleBFills();
+                renderAll();
+                return;
+            }
             if (arb.state !== 'MANUAL_WON') {
                 addNotificationLog('Experiment close pending', `${trade.id}: manual close journaled (${arb.reason || arb.state}); retried automatically.`, 'urgent');
                 renderAll();
@@ -5117,7 +5125,7 @@ function ev12ClosePatch(entry, trade) {
         return { close_trace_json: { ...(trade?.close_trace_json && typeof trade.close_trace_json === 'object' ? trade.close_trace_json : {}),
             policy_version: EV12_POLICY_ID, rule_b_state: 'UNRESOLVED', reason: entry.reason || null,
             ev_decision_id: did, ev_trade_uid: es.ev_trade_uid || null, close_writer: 'RULE_B',
-            close_digest: ev12CloseDigest('RULE_B', did, es.ev_trade_uid, { state: 'UNRESOLVED', exit_reason: entry.reason || '' }) } };
+            close_digest: ev12DigestOf(ev12CloseEvidence('RULE_B', did, es.ev_trade_uid, { rule_b_state: 'UNRESOLVED', reason: entry.reason || null })) } };
     }
     const f = entry.fill || {};
     const econ = entry.economics && entry.economics.status === 'OK' ? entry.economics : null;
@@ -5131,8 +5139,8 @@ function ev12ClosePatch(entry, trade) {
     const exitIso = f.ts_iso ? new Date(f.ts_iso).toISOString() : null;
     const net = econ ? r2(econ.net_pnl) : null;
     const did = entry.decision_id || es.ev_decision_id || null;
-    const digest = ev12CloseDigest('RULE_B', did, es.ev_trade_uid, { status: 'CLOSED', exit_reason: reason, exit_date: exitIso,
-        actual_pnl: gross, net_pnl: net, fill: f });
+    const digest = ev12DigestOf(ev12CloseEvidence('RULE_B', did, es.ev_trade_uid, { status: 'CLOSED', exit_reason: reason,
+        exit_date: exitIso, actual_pnl: gross, net_pnl: net, fill: f }));
     return {
         status: 'CLOSED', exit_date: exitIso, actual_pnl: gross, canonical_won: gross > 0, outcome_h2: gross > 0 ? 1 : 0,
         exit_premium: Math.abs(closeValue), exit_reason: reason,
@@ -5153,13 +5161,47 @@ function ev12ClosePatch(entry, trade) {
     };
 }
 
-/** Codex C2: stable identity of one frozen close (writer, decision, uid and the result fields that must land). */
-function ev12CloseDigest(writer, did, uid, p) {
-    const n = (x) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x))) ? '' : Number(x).toFixed(2);
-    const f = p.fill || {};
-    return ['ev12close1', writer, did || '', uid || '', p.state || p.status || '', p.exit_reason || '', p.exit_date || '',
-        n(p.actual_pnl), n(p.net_pnl), f.kind || '', f.ts_iso || '', n(f.close_value_pts)].join('|');
+/** Deterministic canonical JSON (sorted keys) for close evidence (Codex D2). */
+function ev12Canon(v) {
+    if (Array.isArray(v)) return '[' + v.map(ev12Canon).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + ev12Canon(v[k])).join(',') + '}';
+    return JSON.stringify(v === undefined ? null : v);
 }
+
+function ev12Fnv64(str) {
+    let h = 0xcbf29ce484222325n;
+    const P = 0x100000001b3n, MASK = 0xffffffffffffffffn;
+    for (let i = 0; i < str.length; i++) { h ^= BigInt(str.charCodeAt(i)); h = (h * P) & MASK; }
+    return h.toString(16).padStart(16, '0');
+}
+
+/**
+ * Codex D2: the COMPLETE frozen close evidence in a canonical form - writer, decision, uid, status, exit reason,
+ * exit timestamp, gross, net and (Rule B) the fill kind/time/close value and every leg's instrument, quantity,
+ * executed price, bid/ask and quote source time. Only key order and harmless numeric/timestamp representation are
+ * normalized. Built identically from a patch and from a read-back row, so the STORED fields are what is proven.
+ */
+function ev12CloseEvidence(writer, did, uid, src) {
+    const num = (x, d) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x))) ? null : Number(x).toFixed(d);
+    const iso = (x) => { if (!x) return null; const t = Date.parse(x); return Number.isFinite(t) ? new Date(t).toISOString() : String(x); };
+    const ev = { v: 2, writer, did: did || null, uid: uid || null };
+    if (src.rule_b_state === 'UNRESOLVED') {
+        ev.rule_b_state = 'UNRESOLVED'; ev.reason = src.reason || null;
+        return ev12Canon(ev);
+    }
+    Object.assign(ev, { status: src.status || null, exit_reason: src.exit_reason || null, exit_date: iso(src.exit_date),
+        gross: num(src.actual_pnl, 2), net: num(src.net_pnl, 2) });
+    if (writer === 'RULE_B') {
+        const f = src.fill || {};
+        ev.fill = { kind: f.kind || null, ts: iso(f.ts_iso), close: num(f.close_value_pts, 4),
+            legs: (Array.isArray(f.legs) ? f.legs : []).map(l => ({ k: l.instrument_key || null, q: num(l.qty, 0),
+                p: num(l.price, 4), b: num(l.bid, 4), a: num(l.ask, 4),
+                t: (l.quote_ts_ms === null || l.quote_ts_ms === undefined) ? null : num(Math.round(Number(l.quote_ts_ms)), 0) })) };
+    }
+    return ev12Canon(ev);
+}
+
+function ev12DigestOf(evidence) { return 'ev12close2:' + ev12Fnv64(evidence); }
 
 function ev12RowIdentity(row) {
     const es = ev12EntrySnapshot(row || {});
@@ -5167,33 +5209,40 @@ function ev12RowIdentity(row) {
     return { did: es.ev_decision_id || null, uid: es.ev_trade_uid || null, ct };
 }
 
-/** Codex C2: authoritative proof that THIS journaled close landed (identity + digest + stored result fields). */
+function ev12PatchEvidence(patch) {
+    const ct = patch.close_trace_json || {};
+    return ev12CloseEvidence(ct.close_writer, ct.ev_decision_id, ct.ev_trade_uid, {
+        status: patch.status, exit_reason: patch.exit_reason, exit_date: patch.exit_date, actual_pnl: patch.actual_pnl,
+        net_pnl: patch.net_pnl, fill: ct.fill, rule_b_state: ct.rule_b_state, reason: ct.reason });
+}
+
+function ev12RowEvidence(row, writer) {
+    const { did, uid, ct } = ev12RowIdentity(row);
+    return ev12CloseEvidence(writer, did, uid, {
+        status: row.status, exit_reason: row.exit_reason, exit_date: row.exit_date, actual_pnl: row.actual_pnl,
+        net_pnl: row.net_pnl, fill: ct.fill, rule_b_state: ct.rule_b_state, reason: ct.reason });
+}
+
+/** Codex C2/D2: proof that THIS journaled close landed - identity, digest AND every stored evidence field. */
 function ev12RemoteApplied(row, patch) {
     if (!row || !patch) return false;
     const want = patch.close_trace_json || {};
     const { did, uid, ct } = ev12RowIdentity(row);
     if (!want.close_digest || ct.close_digest !== want.close_digest || ct.close_writer !== want.close_writer) return false;
     if (did !== want.ev_decision_id || uid !== want.ev_trade_uid) return false;
-    const eq = (a, b) => (a === null || a === undefined) ? (b === null || b === undefined) : Number(a) === Number(b);
-    if (patch.status === 'CLOSED') {
-        return row.status === 'CLOSED' && row.exit_reason === patch.exit_reason
-            && eq(row.actual_pnl, patch.actual_pnl) && eq(row.net_pnl, patch.net_pnl);
-    }
-    return ct.rule_b_state === 'UNRESOLVED';
+    if (patch.status === 'CLOSED' && row.status !== 'CLOSED') return false;
+    const ev = ev12PatchEvidence(patch);
+    return ev12DigestOf(ev) === want.close_digest && ev12RowEvidence(row, want.close_writer) === ev;
 }
 
-/** The row was closed by the manual writer of this same accepted trade (proof of the competing winner). */
-function ev12ManualWinner(row, did, uid) {
+/** A competing winner is proven only by a self-consistent stored close (stored fields hash to its digest). */
+function ev12WinnerOf(row, writer, did, uid) {
     const r = ev12RowIdentity(row);
-    return !!row && row.status === 'CLOSED' && r.ct.close_writer === 'MANUAL' && !!r.ct.close_digest
-        && r.did === did && r.uid === uid;
+    return !!row && row.status === 'CLOSED' && r.ct.close_writer === writer && !!r.ct.close_digest
+        && r.did === did && r.uid === uid && ev12DigestOf(ev12RowEvidence(row, writer)) === r.ct.close_digest;
 }
-
-function ev12RuleBWinner(row, did, uid) {
-    const r = ev12RowIdentity(row);
-    return !!row && row.status === 'CLOSED' && r.ct.close_writer === 'RULE_B' && !!r.ct.close_digest
-        && r.did === did && r.uid === uid;
-}
+function ev12ManualWinner(row, did, uid) { return ev12WinnerOf(row, 'MANUAL', did, uid); }
+function ev12RuleBWinner(row, did, uid) { return ev12WinnerOf(row, 'RULE_B', did, uid); }
 
 async function applyRuleBFill(entryIn) {
     let entry = entryIn;
@@ -5205,11 +5254,14 @@ async function applyRuleBFill(entryIn) {
     try {
         // A missing open-trade cache entry is NOT proof of closure: the remote row decides.
         const local = findOpenTradeById(id);
-        if (entry.manual_patch && (entry.state === 'MANUAL_CLOSED' || entry.manual_pending)) {
-            // Codex C2: a journaled manual close retries through the shared arbitration first (user intent)
-            const m = await ev12ManualDeliver(id, entry.manual_patch, local || null, null);
-            if (m.state !== 'RULE_B_WON' || entry.state !== 'EXIT_FILLED') return m;
-            entry = { ...entry, manual_pending: false };
+        if (entry.state === 'MANUAL_CLOSED' || entry.manual_pending) {
+            // Codex C2/D1: a manual close retries through the shared arbitration first (user intent); a patchless
+            // legacy intent is reconciled against the remote row.
+            const m = entry.manual_patch ? await ev12ManualDeliver(id, entry.manual_patch, local || null, null)
+                : await ev12ReconcileUnjournaledManual(entry);
+            if (m.state === 'MANUAL_INTENT_WITHDRAWN' && entry.state === 'EXIT_FILLED') entry = { ...entry, manual_pending: false };
+            else if (m.state !== 'RULE_B_WON' || entry.state !== 'EXIT_FILLED') return m;
+            else entry = { ...entry, manual_pending: false };
         }
         if (entry.state === 'MANUAL_CLOSED') return { state: 'MANUAL_PENDING', reason: 'NOT_JOURNALED' };
         const remote = await DB.readTrade(id);
@@ -5268,29 +5320,61 @@ function ev12Ack(id, state, trade, patch, wasLocal) {
  * Codex C2: manual close of a Rule B experiment trade through the shared arbitration. Returns
  * { state: MANUAL_WON | RULE_B_WON | MANUAL_PENDING, reason }.
  */
-async function ev12ManualClose(trade, nativePatch, remotePatch) {
-    const id = String(trade.id);
+/** Codex D2: the frozen manual close patch (writer MANUAL, digest over its complete stored evidence). */
+function ev12ManualPatch(trade, remotePatch) {
     const es = ev12EntrySnapshot(trade);
     const did = es.ev_decision_id || null, uid = es.ev_trade_uid || null;
-    const nb = ev12NoteManualClose(trade);
-    if (nb === 'RULE_B_ALREADY_CONFIRMED') return { state: 'RULE_B_WON' };
-    if (nb === 'ALREADY_MANUAL') return { state: 'MANUAL_ALREADY_RECORDED' };   // never re-written
-    if (nb === null) return { state: 'MANUAL_PENDING', reason: 'NATIVE_LEDGER_UNAVAILABLE' };
     const ct0 = remotePatch.close_trace_json && typeof remotePatch.close_trace_json === 'object' ? remotePatch.close_trace_json : {};
-    let patch = { ...remotePatch, close_trace_json: { ...ct0, close_writer: 'MANUAL', ev_decision_id: did, ev_trade_uid: uid,
-        close_digest: ev12CloseDigest('MANUAL', did, uid, { status: 'CLOSED', exit_reason: remotePatch.exit_reason,
-            exit_date: remotePatch.exit_date, actual_pnl: remotePatch.actual_pnl, net_pnl: remotePatch.net_pnl }) } };
+    let patch = { ...remotePatch, close_trace_json: { ...ct0, close_writer: 'MANUAL', ev_decision_id: did, ev_trade_uid: uid } };
+    delete patch.close_trace_json.fill;   // the manual writer carries no Rule B fill
     if (JSON.stringify(patch).length > 15000 && patch.journey_stats) {
         // bounded native journal: the poll timeline is the only unbounded part of a close patch
         patch = { ...patch, journey_stats: { ...patch.journey_stats, timeline: [], timeline_dropped: true } };
     }
-    const j = NativeBridge.evManualCloseJournal(id, JSON.stringify(patch));
-    if (j === 'JOURNALED_PATCH_DIFFERS') {
-        // an earlier manual close of this trade is already journaled: that one is retried, verbatim
-        return { state: 'MANUAL_PENDING', reason: j };
+    patch.close_trace_json.close_digest = ev12DigestOf(ev12PatchEvidence(patch));
+    return patch;
+}
+
+/**
+ * Codex C2 + D1: manual close of a Rule B experiment trade. The manual intent and its complete frozen retry patch
+ * are recorded natively in ONE durable transaction (evManualCloseRequest); a refusal records nothing and Rule B keeps
+ * the position. Returns { state: MANUAL_WON | RULE_B_WON | MANUAL_PENDING | NOT_RECORDED | MANUAL_ALREADY_RECORDED }.
+ */
+async function ev12ManualClose(trade, nativePatch, remotePatch) {
+    const id = String(trade.id);
+    const es = ev12EntrySnapshot(trade);
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evManualCloseRequest !== 'function') {
+        return { state: 'NOT_RECORDED', reason: 'NATIVE_LEDGER_UNAVAILABLE' };
     }
-    if (j !== 'JOURNALED' && j !== 'ALREADY_JOURNALED') return { state: 'MANUAL_PENDING', reason: j };
+    const patch = ev12ManualPatch(trade, remotePatch);
+    let r;
+    try { r = NativeBridge.evManualCloseRequest(id, String(es.ev_decision_id || ''), JSON.stringify(patch)); }
+    catch (e) { return { state: 'NOT_RECORDED', reason: 'NATIVE_REQUEST_FAILED' }; }
+    if (r === 'RULE_B_ALREADY_CONFIRMED') return { state: 'RULE_B_WON' };
+    if (r === 'ALREADY_MANUAL') return { state: 'MANUAL_ALREADY_RECORDED' };
+    if (r === 'JOURNALED_PATCH_DIFFERS') return { state: 'MANUAL_PENDING', reason: r };   // the earlier request is retried
+    if (r !== 'MANUAL_PENDING' && r !== 'RULE_B_TERMINAL_PENDING_DELIVERY' && r !== 'ALREADY_JOURNALED') {
+        return { state: 'NOT_RECORDED', reason: r || 'REFUSED' };
+    }
     return ev12ManualDeliver(id, patch, trade, nativePatch);
+}
+
+/** Codex D1: a manual intent without a journaled patch (pre-D1 interruption) is reconciled, never left hidden. */
+async function ev12ReconcileUnjournaledManual(entry) {
+    const id = String(entry.trade_id || '');
+    const row = await DB.readTrade(id);
+    if (!row) return { state: 'MANUAL_PENDING', reason: 'READBACK_FAILED' };
+    const { did, uid } = ev12RowIdentity(row);
+    if (!row.status || row.status === 'OPEN') {
+        // no manual close landed and no patch exists: withdraw the intent (Rule B owns the position again)
+        const w = typeof NativeBridge.evManualIntentAbandon === 'function' ? NativeBridge.evManualIntentAbandon(id) : 'UNAVAILABLE';
+        // the next acceptance recovery reinstalls the ORIGINAL frozen entry (no longer skipped as manual-pending)
+        addNotificationLog('Experiment manual close not delivered', `${id}: the earlier manual close was interrupted before it was saved; Rule B manages the position again. Close it again if still wanted.`, 'urgent');
+        return { state: 'MANUAL_INTENT_WITHDRAWN', reason: w };
+    }
+    if (ev12ManualWinner(row, did, uid)) { NativeBridge.evManualCloseResult(id, 'MANUAL_WON'); return { state: 'MANUAL_WON' }; }
+    if (entry.state === 'EXIT_FILLED' && ev12RuleBWinner(row, did, uid)) { NativeBridge.evManualCloseResult(id, 'RULE_B_WON'); return { state: 'RULE_B_WON' }; }
+    return { state: 'MANUAL_PENDING', reason: 'CLOSE_PROOF_MISMATCH' };
 }
 
 async function ev12ManualDeliver(id, patch, trade, nativePatch) {

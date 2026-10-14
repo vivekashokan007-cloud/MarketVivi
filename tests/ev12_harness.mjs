@@ -69,7 +69,7 @@ function native() {
     recovery: [],
     evRuleBPending() { return JSON.stringify(Object.values(n.ledger).filter(e => (['EXIT_FILLED', 'UNRESOLVED'].includes(e.state)
       && !['REMOTE_CONFIRMED', 'MANUAL_CLOSE_CONFLICT'].includes(e.delivery))
-      || (e.state === 'MANUAL_CLOSED' && e.delivery === 'MANUAL_PENDING' && e.manual_patch))); },
+      || (e.state === 'MANUAL_CLOSED' && e.delivery === 'MANUAL_PENDING'))); },
     evRuleBJournal(id, patch) {
       const e = n.ledger[id]; if (!e) return 'UNKNOWN_TRADE';
       if (e.delivery === 'REMOTE_PENDING') return JSON.stringify(e.journal_patch) === patch ? 'ALREADY_JOURNALED' : 'JOURNALED_PATCH_DIFFERS';
@@ -90,6 +90,34 @@ function native() {
       if (e.delivery === 'REMOTE_CONFIRMED' && e.state === 'EXIT_FILLED') return 'RULE_B_ALREADY_CONFIRMED';
       if (e.delivery === 'MANUAL_CLOSE_CONFLICT') return 'ALREADY_MANUAL';
       e.manual_pending = true; return 'RULE_B_TERMINAL_PENDING_DELIVERY';
+    },
+    // mirrors RuleBFillLedger.manualCloseRequest (Codex D1): intent + patch in ONE transaction; refusal records nothing
+    failRequest: false, maxPatch: 16000,
+    evManualCloseRequest(id, did, patch) {
+      if (n.failRequest) throw new Error('native request failed');
+      if (patch.length > n.maxPatch) return 'REFUSED_OVERSIZE';
+      let p; try { p = JSON.parse(patch); } catch (_) { return 'REFUSED_INVALID_JSON'; }
+      if (!p || p.status !== 'CLOSED') return 'REFUSED_INVALID_JSON';
+      n.manual.push([id, did]);
+      const e = n.ledger[id];
+      if (!e) { n.ledger[id] = { trade_id: id, decision_id: did, state: 'MANUAL_CLOSED', delivery: 'MANUAL_PENDING', manual_patch: p }; return 'MANUAL_PENDING'; }
+      if (e.manual_patch) return JSON.stringify(e.manual_patch) === patch ? 'ALREADY_JOURNALED' : 'JOURNALED_PATCH_DIFFERS';
+      if (e.state === 'MANUAL_CLOSED') {
+        if (e.delivery !== 'MANUAL_PENDING') return 'ALREADY_MANUAL';
+        e.manual_patch = p; return 'MANUAL_PENDING';
+      }
+      if (e.delivery === 'REMOTE_CONFIRMED' && e.state === 'EXIT_FILLED') return 'RULE_B_ALREADY_CONFIRMED';
+      if (e.delivery === 'MANUAL_CLOSE_CONFLICT') return 'ALREADY_MANUAL';
+      e.manual_pending = true; e.manual_patch = p; return 'RULE_B_TERMINAL_PENDING_DELIVERY';
+    },
+    abandoned: [],
+    evManualIntentAbandon(id) {
+      const e = n.ledger[id]; if (!e) return 'UNKNOWN_TRADE';
+      if (e.manual_patch) return 'JOURNALED_NOT_ABANDONED';
+      n.abandoned.push(id);
+      if (e.state === 'MANUAL_CLOSED' && e.delivery === 'MANUAL_PENDING') { delete n.ledger[id]; return 'WITHDRAWN'; }
+      if (e.manual_pending) { delete e.manual_pending; return 'WITHDRAWN'; }
+      return 'NOTHING_TO_ABANDON';
     },
     evManualCloseJournal(id, patch) {
       const e = n.ledger[id]; if (!e) return 'UNKNOWN_TRADE';

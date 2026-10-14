@@ -143,8 +143,10 @@ test('R3: a manual close that won the race is recorded as MANUAL_CLOSE_CONFLICT,
   const c = sandbox();
   openRuleB(c, 9005);
   // Codex C2: the manual winner is proven by its own close digest + identity (not just "not OPEN")
-  Object.assign(c._store.rows[9005], { status: 'CLOSED', exit_reason: 'Manual', actual_pnl: 12,
-    close_trace_json: { close_writer: 'MANUAL', close_digest: 'ev12close1|MANUAL|x', ev_decision_id: ACC.decision_id, ev_trade_uid: ACC.trade_uid } });
+  // Codex D2: a REAL manual patch (digest over its complete evidence), not a fake digest string
+  const mp = c.ev12ManualPatch(c._store.rows[9005], { status: 'CLOSED', exit_reason: 'Manual', exit_date: '2026-10-12T09:30:00.000Z',
+    actual_pnl: 12, net_pnl: 10 });
+  Object.assign(c._store.rows[9005], mp);
   const e = fillEntry(9005); c.NativeBridge.ledger['9005'] = e;
   const r = await c.applyRuleBFill(e);
   assert.equal(r.state, 'MANUAL_CLOSE_CONFLICT');
