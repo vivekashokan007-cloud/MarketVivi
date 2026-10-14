@@ -28,11 +28,24 @@ function device({ mode = null, exec = 'paper', cache = false, attempt = null, st
         last_fetch_attempt_ms: d.attempt, cache_stored_ms: d.stored, fetch_success_recorded: d.stored != null,
         native_validation: 'NOT_PERFORMED', app_version: '2.6.74' });
     },
-    evSetMode(m) {
+    // Mirrors EvExperiment.setMode/toAck: memory changes on write; disk only when commit succeeds.
+    commit: 'ok', ackOverride: null, disk: { mode },
+    evSetMode(m) { d.legacy = (d.legacy || 0) + 1; return d.resolved(); },
+    evSetModeChecked(m) {
       d.sets.push(m);
-      if (d.exec === 'paper' && ['off', 'observe'].includes(m) && !d.ignoreWrites) d.prefs.mode = m;
-      return d.resolved();
+      if (d.ackOverride) return d.ackOverride(m);
+      const prev = d.resolved();
+      const ack = (ok, reason, persisted) => JSON.stringify({ schema: 'ev_set_ack_v1', ok, reason, requested: m,
+        previous_mode: prev, effective_mode: d.resolved(), persisted, in_memory_changed: d.resolved() !== prev });
+      if (d.exec !== 'paper') return ack(false, 'NOT_PAPER', null);
+      if (!['off', 'observe'].includes(m)) return ack(false, m === 'active' ? 'ACTIVE_NOT_ENABLED' : 'INVALID_MODE', null);
+      if (d.commit === 'throw') throw new Error('disk full');
+      if (!d.ignoreWrites) d.prefs.mode = m;
+      if (d.commit === 'fail') return ack(false, 'PREFERENCE_WRITE_FAILED', false);
+      d.disk.mode = d.prefs.mode;
+      return d.resolved() === m ? ack(true, 'OK', true) : ack(false, 'READBACK_MISMATCH', true);
     },
+    reload() { d.prefs.mode = d.disk.mode; },
   };
   return d;
 }
@@ -68,12 +81,12 @@ test('explicit Observe writes via native and is confirmed by readback; refused w
   assert.equal(ctx.ev12SetMode('observe'), true);
   assert.deepEqual(dev.sets, ['observe']);
   assert.equal(dev.prefs.mode, 'observe');
-  assert.match(html(ctx), /Saved: Observe \(read back from the device\)/);
+  assert.match(html(ctx), /Saved: Observe \(persisted and read back from the device\)/);
   assert.match(html(ctx), /Device EV mode:<\/span> Observe/);
   const dev2 = device(); dev2.ignoreWrites = true;
   const ctx2 = setup(dev2);
   assert.equal(ctx2.ev12SetMode('observe'), false);
-  assert.match(html(ctx2), /Change not confirmed: device reports Off/);
+  assert.match(html(ctx2), /Not saved \(READBACK_MISMATCH\)\. Effective mode now: Off/);
   assert.doesNotMatch(html(ctx2), /Saved/);
 });
 
@@ -82,15 +95,15 @@ test('render / reload / restore never writes the experiment preference', () => {
   for (let i = 0; i < 5; i++) { const ctx = setup(dev); render(ctx); ctx.renderEvExperiment(); }
   assert.deepEqual(dev.sets, []);
   assert.equal(dev.prefs.mode, null);
-  // Static wiring: evSetMode is reached only from the explicit ev12SetMode handler (button onclick).
-  const calls = [...src.matchAll(/NativeBridge\.evSetMode\(/g)].length;
+  // Static wiring: the checked setter is reached only from the explicit ev12SetMode handler (button onclick).
+  const calls = [...src.matchAll(/NativeBridge\.evSetModeChecked\(/g)].length;
   assert.equal(calls, 1);
   const fn = src.slice(src.indexOf('function ev12SetMode('), src.indexOf('async function ev12PollAcceptance('));
-  assert.match(fn, /NativeBridge\.evSetMode\(mode\)/);
+  assert.match(fn, /NativeBridge\.evSetModeChecked\(mode\)/);
   assert.doesNotMatch(src, /localStorage[^\n]*ev12|ev12[^\n]*localStorage|evExperimentMode[^\n]*localStorage/);
   const boot = src.slice(src.indexOf("document.addEventListener('DOMContentLoaded'"));
   assert.match(boot.slice(0, 2500), /renderEvControl\(\)/);
-  assert.doesNotMatch(boot, /ev12SetMode\(|evSetMode\(/);
+  assert.doesNotMatch(boot, /ev12SetMode\(|evSetMode(Checked)?\(/);
 });
 
 test('absent bridge, older APK and throwing/invalid status show Unavailable and disable the setter', () => {
@@ -181,4 +194,69 @@ test('all status text is escaped', () => {
 test('index.html hosts the persistent control above the EV card', () => {
   const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.match(index, /<div id="ev12-control"><\/div>\s*<div id="ev12-card"><\/div>/);
+});
+
+// ---- Codex b505 R1: the native persistence outcome governs "Saved" ----
+test('failed commit with matching Observe readback is NOT Saved; reload shows the durable mode', () => {
+  const dev = device({ mode: 'off' }); dev.commit = 'fail';
+  const ctx = setup(dev);
+  assert.equal(ctx.ev12SetMode('observe'), false);
+  const h = html(ctx);
+  assert.match(h, /Device EV mode:<\/span> Observe/);                       // effective (in memory) shown...
+  assert.match(h, /Not saved persistently: the preference write failed\. Effective mode now: Observe \(in memory only — may revert/);
+  assert.doesNotMatch(h, /Saved:/);                                          // ...but never claimed as saved
+  dev.reload();                                                               // simulated new process (disk state)
+  assert.match(render(setup(dev)), /Device EV mode:<\/span> Off/);
+});
+
+test('throwing, missing and malformed acknowledgments fail safely even when the mode is visible', () => {
+  const variants = [
+    ['throw', (d) => { d.ackOverride = (m) => { d.prefs.mode = m; throw new Error('x'); }; }, /native setter failed\. Effective mode now: Observe \(not confirmed as saved\)/],
+    ['missing', (d) => { d.ackOverride = (m) => { d.prefs.mode = m; return undefined; }; }, /no valid acknowledgment/],
+    ['not json', (d) => { d.ackOverride = (m) => { d.prefs.mode = m; return 'OK'; }; }, /no valid acknowledgment/],
+    ['wrong schema', (d) => { d.ackOverride = (m) => { d.prefs.mode = m; return JSON.stringify({ schema: 'x', ok: true, reason: 'OK', effective_mode: m }); }; }, /no valid acknowledgment/],
+    ['ok not boolean', (d) => { d.ackOverride = (m) => { d.prefs.mode = m; return JSON.stringify({ schema: 'ev_set_ack_v1', ok: 'true', reason: 'OK', effective_mode: m }); }; }, /no valid acknowledgment/],
+    ['ok true but effective differs', (d) => { d.ackOverride = (m) => { d.prefs.mode = m; return JSON.stringify({ schema: 'ev_set_ack_v1', ok: true, reason: 'OK', effective_mode: 'off' }); }; }, /Not saved \(OK\)/],
+    ['commit throws', (d) => { d.commit = 'throw'; }, /native setter failed\. Effective mode now: Off/],
+  ];
+  for (const [name, arm, re] of variants) {
+    const dev = device({ mode: 'off' }); arm(dev);
+    const ctx = setup(dev);
+    assert.equal(ctx.ev12SetMode('observe'), false, name);
+    assert.match(html(ctx), re, name);
+    assert.doesNotMatch(html(ctx), /Saved:/, name);
+  }
+});
+
+test('successful acknowledgment plus readback still succeeds; status mismatch after a good ack fails', () => {
+  const dev = device({ mode: 'off' });
+  const ctx = setup(dev);
+  assert.equal(ctx.ev12SetMode('observe'), true);
+  assert.equal(dev.disk.mode, 'observe');
+  dev.reload();
+  assert.match(render(setup(dev)), /Device EV mode:<\/span> Observe/);
+  const dev2 = device({ mode: 'off' });
+  dev2.ackOverride = (m) => JSON.stringify({ schema: 'ev_set_ack_v1', ok: true, reason: 'OK', effective_mode: m });  // claims ok, status says Off
+  const c2 = setup(dev2);
+  assert.equal(c2.ev12SetMode('observe'), false);
+  assert.doesNotMatch(html(c2), /Saved:/);
+});
+
+test('matching-mode no-op with a failed acknowledgment is not Saved', () => {
+  const dev = device({ mode: 'observe' }); dev.commit = 'fail';
+  const ctx = setup(dev);
+  assert.equal(ctx.ev12SetMode('observe'), false);
+  assert.match(html(ctx), /Not saved persistently: the preference write failed\. Effective mode now: Observe \(unchanged\)/);
+  assert.doesNotMatch(html(ctx), /Saved:/);
+});
+
+test('an APK without the checked setter is never written through the legacy string setter', () => {
+  const dev = device({ mode: 'off' }); delete dev.evSetModeChecked;
+  const ctx = setup(dev);
+  assert.equal(ctx.ev12SetMode('observe'), false);
+  assert.match(html(ctx), /no checked setter/);
+  assert.equal(dev.legacy, undefined);
+  assert.equal(dev.prefs.mode, 'off');
+  assert.equal([...src.matchAll(/NativeBridge\.evSetMode\(/g)].length, 0);
+  assert.equal([...src.matchAll(/NativeBridge\.evSetModeChecked\(/g)].length, 1);
 });

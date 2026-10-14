@@ -4992,20 +4992,50 @@ function renderEvControl() {
     </div>`;
 }
 
-/** Explicit user action only. Writes via native, then reads back; reports failure without a false success. */
+const EV12_SET_ACK_SCHEMA = 'ev_set_ack_v1';
+
+/** Parsed checked-setter acknowledgment, or null when missing/malformed. */
+function ev12ParseSetAck(raw) {
+    let a;
+    try { a = JSON.parse(raw); } catch (_) { return null; }
+    if (!a || typeof a !== 'object' || a.schema !== EV12_SET_ACK_SCHEMA || typeof a.ok !== 'boolean'
+        || typeof a.reason !== 'string') return null;
+    return a;
+}
+
+/**
+ * Explicit user action only. Saved requires BOTH a successful native acknowledgment (persisted write + matching
+ * native readback) AND a matching status readback. A missing/failed/malformed acknowledgment or a setter exception
+ * is never converted to success because the requested mode is visible afterwards. The effective mode is reported
+ * separately from whether it was saved persistently; no rollback is attempted or claimed.
+ */
 function ev12SetMode(mode) {
     if (mode !== 'off' && mode !== 'observe') { ev12ControlMsg = 'Only Off and Observe can be selected.'; renderEvControl(); return false; }
     const before = ev12NativeStatus();
     if (!before.available) { ev12ControlMsg = 'Not changed: native status unavailable.'; renderEvControl(); return false; }
     if (before.execution_mode !== 'paper' || before.can_change !== true) { ev12ControlMsg = 'Not changed: experiment changes are allowed only in Paper execution.'; renderEvControl(); return false; }
+    if (typeof NativeBridge.evSetModeChecked !== 'function') { ev12ControlMsg = 'Not changed: this APK has no checked setter (install the matching 2.6.74 APK).'; renderEvControl(); return false; }
     ev12ControlBusy = true;
     let ok = false;
     try {
-        try { NativeBridge.evSetMode(mode); } catch (_) { /* readback below decides */ }
+        let ack = null, threw = false;
+        try { ack = ev12ParseSetAck(NativeBridge.evSetModeChecked(mode)); } catch (_) { threw = true; }
         const after = ev12NativeStatus();
-        ok = after.available && after.mode === mode;
-        ev12ControlMsg = ok ? `Saved: ${EV12_MODE_LABEL[mode]} (read back from the device).`
-            : `Change not confirmed: device reports ${after.available ? (EV12_MODE_LABEL[after.mode] || 'unknown') : 'status unavailable'}.`;
+        const eff = after.available ? (EV12_MODE_LABEL[after.mode] || 'unknown') : 'status unavailable';
+        ok = !!ack && ack.ok === true && ack.reason === 'OK' && ack.effective_mode === mode
+            && after.available && after.mode === mode;
+        if (ok) {
+            ev12ControlMsg = `Saved: ${EV12_MODE_LABEL[mode]} (persisted and read back from the device).`;
+        } else if (threw) {
+            ev12ControlMsg = `Not saved: the native setter failed. Effective mode now: ${eff} (not confirmed as saved).`;
+        } else if (!ack) {
+            ev12ControlMsg = `Not saved: no valid acknowledgment from the device. Effective mode now: ${eff} (not confirmed as saved).`;
+        } else if (ack.reason === 'PREFERENCE_WRITE_FAILED') {
+            ev12ControlMsg = `Not saved persistently: the preference write failed. Effective mode now: ${eff}`
+                + (ack.in_memory_changed === true ? ' (in memory only — may revert to the previous mode after a restart).' : ' (unchanged).');
+        } else {
+            ev12ControlMsg = `Not saved (${ack.reason}). Effective mode now: ${eff}.`;
+        }
     } finally {
         ev12ControlBusy = false;
         renderEvControl();
