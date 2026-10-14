@@ -58,6 +58,30 @@ jobs:
         with:
           node-version: '22'
 
+      # b506: the PWA-chain test executes the REAL injected NativeBridge facade from Marketapp's MainActivity.kt.
+      # Same branch name when it exists in Marketapp (paired review), else Marketapp main.
+      - name: Resolve paired Marketapp ref
+        id: pair
+        run: |
+          ref="${{ github.head_ref || github.ref_name }}"
+          if git ls-remote --exit-code --heads https://github.com/vivekashokan007-cloud/Marketapp.git "$ref" >/dev/null; then
+            echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout paired Marketapp (read-only, for the real bridge facade)
+        uses: actions/checkout@v4
+        with:
+          repository: vivekashokan007-cloud/Marketapp
+          ref: ${{ steps.pair.outputs.ref }}
+          path: _marketapp
+          persist-credentials: false
+          sparse-checkout: |
+            tools/bridge_facade
+            app/src/main/java/com/marketradar/app/MainActivity.kt
+            app/src/main/java/com/marketradar/app/NativeBridge.kt
+          sparse-checkout-cone-mode: false
+
       - name: Validate app syntax
         run: node --check app.js
 
@@ -66,10 +90,13 @@ jobs:
           shopt -s nullglob
           files=(test_*.mjs tests/test_*.mjs)
           test "${#files[@]}" -ge 20 || { echo "expected >=20 test files, found ${#files[@]}"; exit 1; }
-          for f in tests/test_ev_v12_pwa.mjs tests/test_ev_v12_review_r2.mjs tests/test_ev_v12_review_r3.mjs tests/test_ev_v12_review_r4.mjs tests/test_ev_v12_review_r5.mjs tests/test_b505_version.mjs tests/test_ev_v12_control_b505.mjs; do
+          for f in tests/test_ev_v12_pwa.mjs tests/test_ev_v12_review_r2.mjs tests/test_ev_v12_review_r3.mjs tests/test_ev_v12_review_r4.mjs tests/test_ev_v12_review_r5.mjs tests/test_b506_version.mjs tests/test_ev_v12_control_b505.mjs tests/test_ev_v12_bridge_chain_b506.mjs; do
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
-          node --test "${files[@]}"
+          MARKETAPP_DIR="$PWD/_marketapp" node --test "${files[@]}"
+          MARKETAPP_DIR="$PWD/_marketapp" node --test tests/test_ev_v12_bridge_chain_b506.mjs | tee /tmp/chain.log
+          grep -q '^# pass 5' /tmp/chain.log
+          (cd _marketapp && git rev-parse HEAD)
 
       - name: Verify Pages artifact excludes repository documents
         run: |
