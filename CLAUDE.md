@@ -481,3 +481,6 @@ git push origin main
 
 - Always bump version in `<span class="version">` (index.html) and `?v=` cache busters
 - GitHub Pages auto-deploys from main branch
+
+### Implied-EV v1.2 review R2 (14 Oct 2026, b504 / app.js?v=1367 unchanged)
+Accept flow: `NativeBridge.evPrepareAcceptance(sessionDate, decisionId)` → confirm dialog → `evConfirmAcceptance` | `evCancelAcceptance` → idempotent insert keyed by `entry_snapshot.ev_trade_uid` (readback before/after) → `evMarkTradePersisted(decisionId, rowId, uid)`. Rule B fills: journal → conditional update (`status='OPEN'`) → readback → `evRuleBAckState`. Never ACK without remote proof. Tests: `tests/test_ev_v12_pwa.mjs`, `tests/test_ev_v12_review_r2.mjs` (harness `tests/ev12_harness.mjs`). CI runs every root and tests/ `test_*.mjs`.

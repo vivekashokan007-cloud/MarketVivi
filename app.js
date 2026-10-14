@@ -1087,6 +1087,48 @@ const DB = {
             return null;
         }
     },
+    /** EV12 (Codex R1): the row stamped with this acceptance uid, or null. */
+    async findTradeByEvUid(uid) {
+        try {
+            const sb = this.supabase;
+            if (!sb) return null;
+            const { data, error } = await sb.from('trades_v2').select('id,status,exit_reason')
+                .eq('entry_snapshot->>ev_trade_uid', String(uid)).limit(1);
+            if (error) throw error;
+            return Array.isArray(data) && data.length ? data[0] : null;
+        } catch (e) {
+            console.warn('[DB] findTradeByEvUid failed:', e.message);
+            return null;
+        }
+    },
+    /** EV12 (Codex R3): authoritative readback of one row (null on failure; never "closed"). */
+    async readTrade(id) {
+        try {
+            const sb = this.supabase;
+            if (!sb) return null;
+            const { data, error } = await sb.from('trades_v2')
+                .select('id,status,exit_reason,close_trace_json,entry_snapshot,strategy_type,paper')
+                .eq('id', id).maybeSingle();
+            if (error) throw error;
+            return data || null;
+        } catch (e) {
+            console.warn('[DB] readTrade failed:', e.message);
+            return null;
+        }
+    },
+    /** EV12 (Codex R3): conditional update - applies only while the row is still OPEN (manual close wins). */
+    async updateOpenTrade(id, patch) {
+        try {
+            const sb = this.supabase;
+            if (!sb) return false;
+            const { error } = await sb.from('trades_v2').update(patch).eq('id', id).eq('status', 'OPEN');
+            if (error) throw error;
+            return true;
+        } catch (e) {
+            console.warn('[DB] updateOpenTrade failed:', e.message);
+            return false;
+        }
+    },
     async updateTrade(id, patch) {
         // R4: real path is updateTradeWithSupabase (mocked-client tests call that /
         // DB.updateTrade with an injected _client).
@@ -3378,6 +3420,15 @@ function confirmPaperTest(candidate, finalAuthorization, capacity, opts = {}) {
     );
 }
 
+/** Compact identity projection for the native closed-trade ledger (null for non-experiment trades). */
+function ev12NativeSnapshot(trade) {
+    let es = trade?.entry_snapshot;
+    if (typeof es === 'string') { try { es = JSON.parse(es); } catch (_) { es = null; } }
+    if (!es || typeof es !== 'object' || !es.position_policy_id) return null;
+    return { position_policy_id: es.position_policy_id, ev_decision_id: es.ev_decision_id ?? null,
+        ev_trade_uid: es.ev_trade_uid ?? null, planned_exit_session: es.planned_exit_session ?? null };
+}
+
 function recordClosedTradeToNative(trade, closePatch) {
     const bridge = window.NativeBridge || window.AndroidBridge;
     if (!bridge?.recordClosedTrade || !trade?.id) return;
@@ -3405,6 +3456,15 @@ function recordClosedTradeToNative(trade, closePatch) {
         extrema_unit: extrema.extrema_unit,
         extrema_source: extrema.extrema_source,
         extrema_contract_version: extrema.extrema_contract_version,
+        // Codex R4: keep the joins the experiment outcome needs (decision / trade uid / policy / exit reason / net)
+        exit_reason: closePatch.exit_reason ?? null,
+        strategy_type: trade.strategy_type ?? null,
+        entry_snapshot: ev12NativeSnapshot(trade),
+        close_trace: closePatch.close_trace_json ? {
+            source: closePatch.close_trace_json.source ?? null,
+            policy_version: closePatch.close_trace_json.policy_version ?? null,
+            net_status: closePatch.close_trace_json.net_status ?? null,
+        } : null,
     };
     try {
         bridge.recordClosedTrade(JSON.stringify(record));
@@ -4690,6 +4750,9 @@ async function closeTrade(tradeId, exitReason) {
         closePatch.extrema_contract_version = closeExtrema.extrema_contract_version;
         closePatch.close_extrema_meta = closeExtrema.close_extrema_meta;
 
+        // EV12 (Codex R3): a manual close of a Rule B trade stops Rule B natively (a racing fill is decided by the
+        // conditional remote update and recorded as MANUAL_CLOSE_CONFLICT).
+        ev12NoteManualClose(trade);
         // Persist the risk-relevant close locally before the remote write. The
         // next native brain poll can enforce the daily STOP even if Supabase is
         // slow or this WebView reloads.
@@ -4797,13 +4860,6 @@ function ev12View() {
     return ev && typeof ev === 'object' && ev.source_label === EV12_SOURCE_LABEL ? ev : null;
 }
 
-function ev12OpenEnginePositions() {
-    return currentOpenTrades().filter(isEvRuleBTrade).map(t => {
-        const es = ev12EntrySnapshot(t);
-        return { structure: es.ev_structure || null, expiry: t.expiry || es.expiry || null, trade_id: t.id };
-    });
-}
-
 function ev12CapitalAvailable() {
     const used = currentOpenTrades().filter(isEvRuleBTrade)
         .reduce((a, t) => a + (Number(ev12EntrySnapshot(t).risk_allowance_at_acceptance) || Number(t.max_loss) || 0), 0);
@@ -4849,7 +4905,6 @@ async function ev12PollAcceptance(requestId, timeoutMs = 15000) {
 }
 
 function ev12TradeFromAcceptance(view, acc) {
-    const pick = view.recommendation.pick;
     const fill = acc.entry_fill;
     const fp = acc.frozen_policy;
     const legs = fill.legs.map(l => ({ ...l, ot: Number(l.cp) === 1 ? 'CE' : 'PE' }));
@@ -4859,11 +4914,13 @@ function ev12TradeFromAcceptance(view, acc) {
     const s1 = shorts[0] || null, s2 = shorts[1] || null;
     const b1 = s1 ? pairLong(s1) : (longs[0] || null);
     const b2 = longs.find(l => l !== b1) || null;
-    const family = String(pick.family || '');
+    const family = String(fp.family || view?.recommendation?.pick?.family || '');
     const isCredit = EV12_CREDIT_FAMILIES.has(family);
-    const units = Number(fp.contract_lot) * Number(fp.n_lots || 1);
+    const units = Number(fill.units) || (Number(fp.contract_lot) * Number(fp.n_lots || 1));
     const entryCash = Number(fill.entry_cash_pts);
-    const maxLossRupees = Math.round(Number(acc.risk_allowance_at_acceptance));
+    // Codex R2: structural GROSS bounds from the frozen legs (points x units). The fee-inclusive risk allowance is
+    // a different quantity and stays in entry_snapshot.risk_allowance_at_acceptance only.
+    const structural = (pts) => Number.isFinite(Number(pts)) ? Math.round(Number(pts) * units * 100) / 100 : null;
     return {
         strategy_type: EV12_TYPE_BY_FAMILY[family] || family,
         index_key: 'NF',
@@ -4879,7 +4936,8 @@ function ev12TradeFromAcceptance(view, acc) {
         sell_instrument_key2: s2 ? s2.instrument_key : null,
         buy_strike2: b2 ? Number(b2.strike) : null, buy_type2: b2 ? b2.ot : null, buy_ltp2: b2 ? Number(b2.price) : null,
         buy_instrument_key2: b2 ? b2.instrument_key : null,
-        max_profit: null, max_loss: maxLossRupees, is_credit: isCredit,
+        max_profit: structural(fill.structural_max_profit_pts), max_loss: structural(fill.structural_loss_pts),
+        is_credit: isCredit,
         lot_size: units, number_of_lots: Number(fp.n_lots || 1), contract_lot_size: Number(fp.contract_lot), lots: Number(fp.n_lots || 1),
         status: 'OPEN', current_pnl: 0, peak_pnl: 0, paper: true,
         // Rule B is a multi-session hold: the IC/IB 'intraday' stamping does NOT apply to experiment trades.
@@ -4887,6 +4945,7 @@ function ev12TradeFromAcceptance(view, acc) {
         entry_snapshot: {
             position_policy_id: EV12_POLICY_ID,
             ev_decision_id: fp.decision_id,
+            ev_trade_uid: acc.trade_uid,
             ev_structure: fp.structure,
             ev_source_label: EV12_SOURCE_LABEL,
             planned_exit_session: fp.planned_exit_session,
@@ -4895,6 +4954,7 @@ function ev12TradeFromAcceptance(view, acc) {
             entry_fill: fill,
             ev_robust_at_acceptance: acc.ev_robust_at_acceptance,
             risk_allowance_at_acceptance: acc.risk_allowance_at_acceptance,
+            max_bounds_basis: 'structural_gross_points_x_units',
             selection_source: 'implied_ev_v12_experiment',
             evidence_source: 'experiment_rule_b',
             contract_lot_size: Number(fp.contract_lot), number_of_lots: Number(fp.n_lots || 1), lot_size: units,
@@ -4903,91 +4963,207 @@ function ev12TradeFromAcceptance(view, acc) {
     };
 }
 
+/**
+ * Codex R1 step 3 (shared by accept and startup recovery): idempotent insert of the COMMITTED acceptance.
+ * Read back by entry_snapshot.ev_trade_uid first, insert only when absent, read back again after a lost or failed
+ * insert response, then report the persisted row id to native. Never creates a second row for one decision.
+ */
+async function ev12PersistAcceptance(acc, view) {
+    STATE.ev12Persisting = STATE.ev12Persisting || {};
+    const uid = String(acc.trade_uid || '');
+    const did = String(acc.decision_id || acc.frozen_policy?.decision_id || '');
+    if (!uid || !did) return { ok: false, reason: 'ACCEPTANCE_RECORD_INCOMPLETE' };
+    if (STATE.ev12Persisting[uid]) return { ok: false, reason: 'IN_FLIGHT' };
+    STATE.ev12Persisting[uid] = true;
+    try {
+        const trade = ev12TradeFromAcceptance(view, acc);
+        let row = await DB.findTradeByEvUid(uid);
+        let inserted = false;
+        if (!row) {
+            const saved = await DB.insertTrade(trade);
+            if (saved && saved.id != null) { row = { id: saved.id }; inserted = true; }
+            else row = await DB.findTradeByEvUid(uid);   // lost response: the insert may have landed
+        }
+        if (!row || row.id == null) return { ok: false, reason: 'INSERT_UNCONFIRMED' };
+        trade.id = row.id;
+        const m = safeParseNB(NativeBridge.evMarkTradePersisted(did, String(row.id), uid), {});
+        if (m.state !== 'PERSISTED') return { ok: false, reason: m.reason || 'MARK_PERSISTED_FAILED', trade };
+        if (!findOpenTradeById(row.id) && (!row.status || row.status === 'OPEN')) addOpenTradeToState(trade);
+        return { ok: true, trade, inserted };
+    } finally {
+        delete STATE.ev12Persisting[uid];
+    }
+}
+
+/** Startup / poll: finish COMMITTED-but-not-PERSISTED acceptances (crash or timeout between commit and insert). */
+async function ev12RecoverAcceptances() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evAcceptanceRecovery !== 'function') return [];
+    const pending = safeParseNB(NativeBridge.evAcceptanceRecovery(), []);
+    const out = [];
+    for (const acc of Array.isArray(pending) ? pending : []) {
+        try { out.push(await ev12PersistAcceptance(acc, null)); } catch (e) { out.push({ ok: false, reason: e?.message || 'error' }); }
+    }
+    return out;
+}
+
 async function acceptEvDecision(sessionDate) {
     const view = ev12View();
     if (!view || !view.recommendation?.actionable) { alert('Experimental decision is not actionable.'); return; }
-    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evRequestAcceptance !== 'function') {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evPrepareAcceptance !== 'function') {
         alert('Experimental acceptance needs the matching APK (2.6.73 / b504).'); return;
     }
-    // Paper margin is not measured: capital available = C.CAPITAL minus the frozen risk allowances
-    // of open experiment trades (v7 Paper trades keep their own budget logic).
-    const capital = ev12CapitalAvailable();
-    const start = safeParseNB(NativeBridge.evRequestAcceptance(String(sessionDate), JSON.stringify(ev12OpenEnginePositions()), capital), {});
-    if (!start.ok) { alert(`Acceptance could not start: ${start.reason || 'native error'}`); return; }
-    const acc = await ev12PollAcceptance(start.request_id);
-    if (acc.status !== 'ACCEPTED') {
-        alert(`Experimental Paper accept refused: ${acc.reason || acc.status}`); return;
+    if (STATE.ev12Accepting) return;          // R1: in-flight guard (double tap)
+    STATE.ev12Accepting = true;
+    try {
+        // R1 step 1: PREPARE - native revalidates with fresh source-timed quotes; mode/capital are native-owned.
+        const start = safeParseNB(NativeBridge.evPrepareAcceptance(String(sessionDate),
+            String(view.recommendation.decision_id || '')), {});
+        if (!start.ok) { alert(`Acceptance could not start: ${start.reason || 'native error'}`); return; }
+        const prep = await ev12PollAcceptance(start.request_id);
+        if (prep.status !== 'RESERVED' && !prep.replay) {
+            alert(`Experimental Paper accept refused: ${prep.reason || prep.status}`); return;
+        }
+        let acc = prep;
+        if (prep.status === 'RESERVED') {
+            const label = `${prep.frozen_policy?.structure || ''}`;
+            const ok = confirm(`EXPERIMENTAL Paper trade\n${label}\nPlanned exit ${prep.frozen_policy?.planned_exit_session || '?'} 15:15 IST (Rule B)\nRevalidated EV/lot ₹${Math.round(prep.ev_robust_at_acceptance)}\nConfirm within 45 s.`);
+            if (!ok) { NativeBridge.evCancelAcceptance(prep.decision_id, prep.reservation_id); return; }
+            // R1 step 2: CONFIRM - consumes the decision, persists the complete frozen record natively.
+            acc = safeParseNB(NativeBridge.evConfirmAcceptance(prep.decision_id, prep.reservation_id), {});
+            if (acc.status !== 'COMMITTED' && !acc.replay) {
+                alert(`Experimental Paper accept not committed: ${acc.reason || acc.status}`); return;
+            }
+        }
+        const r = await ev12PersistAcceptance(acc, view);
+        if (!r.ok) {
+            addNotificationLog('Experimental Paper trade pending sync', `${acc.decision_id}: ${r.reason}; retried automatically.`, 'urgent');
+            return;
+        }
+        addNotificationLog('Experimental Paper trade', `${r.trade.entry_snapshot.ev_structure} · ${ev12PlannedExitLabel(r.trade)}`, 'entry');
+        renderAll();
+    } finally {
+        STATE.ev12Accepting = false;
     }
-    const trade = ev12TradeFromAcceptance(view, acc);
-    if (!confirm(`EXPERIMENTAL Paper trade\n${friendlyType(trade.strategy_type)} ${trade.entry_snapshot.ev_structure}\n${ev12PlannedExitLabel(trade)}\nRevalidated EV/lot ₹${Math.round(acc.ev_robust_at_acceptance)}`)) return;
-    const saved = await DB.insertTrade(trade);
-    if (!saved) { alert('❌ Experimental Paper trade could not be saved.'); return; }
-    trade.id = saved.id;
-    addOpenTradeToState(trade);
-    addNotificationLog('Experimental Paper trade', `${trade.entry_snapshot.ev_structure} · ${ev12PlannedExitLabel(trade)}`, 'entry');
-    renderAll();
 }
 
-/** Close one Rule B trade at the native ledger's frozen fill. Idempotent (closed ids are remembered). */
-async function applyRuleBFill(entry) {
-    STATE.ev12Applied = STATE.ev12Applied || {};
-    const id = String(entry.trade_id || '');
-    if (!id || STATE.ev12Applied[id]) { if (id) NativeBridge.evRuleBAck(id); return; }
-    const trade = findOpenTradeById(id);
-    if (!trade || !isEvRuleBTrade(trade)) {
-        // already closed (e.g. a previous WebView instance) - acknowledge so the ledger stops offering it
-        NativeBridge.evRuleBAck(id); return;
-    }
+/** Codex R3: native ledger -> journaled patch -> conditional remote write -> readback -> ACK with remote proof. */
+function ev12ClosePatch(entry, trade) {
+    const es = ev12EntrySnapshot(trade || {});
     if (entry.state === 'UNRESOLVED') {
-        trade.rule_b_state = 'UNRESOLVED';
-        addNotificationLog('Rule B unresolved', `${id}: no valid executable quote by the expiry deadline — manual review required.`, 'urgent');
-        DB.updateTrade(trade.id, { close_trace_json: { policy_version: EV12_POLICY_ID, rule_b_state: 'UNRESOLVED', reason: entry.reason } }).catch(() => {});
-        STATE.ev12Applied[id] = true;
-        NativeBridge.evRuleBAck(id);
-        return;
+        return { close_trace_json: { ...(trade?.close_trace_json && typeof trade.close_trace_json === 'object' ? trade.close_trace_json : {}),
+            policy_version: EV12_POLICY_ID, rule_b_state: 'UNRESOLVED', reason: entry.reason || null,
+            ev_decision_id: entry.decision_id || es.ev_decision_id || null, ev_trade_uid: es.ev_trade_uid || null } };
     }
     const f = entry.fill || {};
-    const units = Number(trade.lot_size);
-    const es = ev12EntrySnapshot(trade);
-    const entryCash = Number(es.entry_fill?.entry_cash_pts);
+    const econ = entry.economics && entry.economics.status === 'OK' ? entry.economics : null;
+    const units = Number(econ?.units ?? es.entry_fill?.units ?? trade?.lot_size);
+    const entryCash = Number(es.entry_fill?.entry_cash_pts ?? econ?.entry_cash_pts);
     const closeValue = Number(f.close_value_pts);
-    if (!Number.isFinite(units) || !Number.isFinite(entryCash) || !Number.isFinite(closeValue)) return;
-    const gross = Math.round(units * (entryCash + closeValue) * 100) / 100;
+    if (!Number.isFinite(units) || !Number.isFinite(closeValue) || (!econ && !Number.isFinite(entryCash))) return null;
+    const r2 = (x) => Math.round(Number(x) * 100) / 100;
+    const gross = econ ? r2(econ.gross_pnl) : r2(units * (entryCash + closeValue));
     const reason = f.kind === 'LATE_EXIT' ? 'RULE_B_LATE_EXIT' : 'RULE_B_PLANNED_EXIT';
-    const exitIso = f.ts_iso ? new Date(f.ts_iso).toISOString() : new Date().toISOString();
-    STATE.ev12Applied[id] = true;
-    removeOpenTradeFromState(id);
-    const patch = {
+    const exitIso = f.ts_iso ? new Date(f.ts_iso).toISOString() : null;
+    const net = econ ? r2(econ.net_pnl) : null;
+    return {
         status: 'CLOSED', exit_date: exitIso, actual_pnl: gross, canonical_won: gross > 0, outcome_h2: gross > 0 ? 1 : 0,
         exit_premium: Math.abs(closeValue), exit_reason: reason,
+        // R4: net from the canonical dated Python fee contract (computed natively at fill time); never a JS formula
+        net_pnl: net, net_won: net === null ? null : net > 0,
+        friction_cost: econ ? r2(econ.fees_total) : null,
+        friction_version: econ ? (econ.exit_fee_identity?.fee_contract_version || null) : null,
+        friction_breakdown_json: econ ? { entry_fee: r2(econ.entry_fee), exit_fee: r2(econ.exit_fee),
+            entry_fee_identity: econ.entry_fee_identity || null, exit_fee_identity: econ.exit_fee_identity || null,
+            economics_version: econ.economics_version, units } : null,
         close_trace_json: {
             source: 'rule_b_native_ledger', policy_version: EV12_POLICY_ID, exit_reason: reason,
-            ev_decision_id: entry.decision_id || es.ev_decision_id || null, closed_at: exitIso,
-            gross_close_pnl: gross, fill: f, trade_mode: 'swing', paper: true,
-            fee_note: 'gross; net fees per ev_v12_fees are reported in the experiment outcome amendment'
+            ev_decision_id: entry.decision_id || es.ev_decision_id || null, ev_trade_uid: es.ev_trade_uid || null,
+            closed_at: exitIso, gross_close_pnl: gross, net_close_pnl: net,
+            net_status: econ ? 'CANONICAL_DATED_FEES' : `UNKNOWN:${entry.economics?.reason || 'ECONOMICS_UNAVAILABLE'}`,
+            fill: f, trade_mode: 'swing', paper: true
         }
     };
-    recordClosedTradeToNative(trade, patch);
-    const ok = await DB.updateTrade(trade.id, patch);
-    if (!ok) addNotificationLog('Rule B close sync failed', `${id}: closed locally; Supabase update failed.`, 'urgent');
-    addNotificationLog('Rule B Paper exit', `${es.ev_structure || trade.strategy_type}: ${reason} gross ₹${gross}`, gross >= 0 ? 'entry' : 'urgent');
-    NativeBridge.evRuleBAck(id);
+}
+
+function ev12RemoteApplied(row, patch) {
+    if (!row) return false;
+    if (patch.status === 'CLOSED') return row.status === 'CLOSED' && row.exit_reason === patch.exit_reason;
+    return row.close_trace_json?.rule_b_state === 'UNRESOLVED';
+}
+
+async function applyRuleBFill(entry) {
+    const id = String(entry.trade_id || '');
+    if (!id) return { state: 'SKIPPED' };
+    STATE.ev12Applying_ = STATE.ev12Applying_ || {};
+    if (STATE.ev12Applying_[id]) return { state: 'IN_FLIGHT' };
+    STATE.ev12Applying_[id] = true;
+    try {
+        // A missing open-trade cache entry is NOT proof of closure: the remote row decides.
+        const local = findOpenTradeById(id);
+        const remote = await DB.readTrade(id);
+        if (!remote) { NativeBridge.evRuleBRemoteFailed(id, 'READBACK_FAILED'); return { state: 'REMOTE_PENDING' }; }
+        const trade = local || remote;
+        let patch = entry.journal_patch || null;
+        if (!patch) {
+            patch = ev12ClosePatch(entry, trade);
+            if (!patch) { NativeBridge.evRuleBRemoteFailed(id, 'PATCH_INPUTS_MISSING'); return { state: 'REMOTE_PENDING' }; }
+            const j = NativeBridge.evRuleBJournal(id, JSON.stringify(patch));
+            if (j !== 'JOURNALED' && j !== 'ALREADY_JOURNALED') return { state: 'REMOTE_PENDING', reason: j };
+        }
+        if (ev12RemoteApplied(remote, patch)) return ev12Ack(id, 'REMOTE_CONFIRMED', trade, patch, !!local);
+        if (remote.status && remote.status !== 'OPEN') {
+            // closed by something other than this Rule B patch: a manual close won the race
+            return ev12Ack(id, 'MANUAL_CLOSE_CONFLICT', trade, patch, !!local);
+        }
+        const wrote = await DB.updateOpenTrade(id, patch);       // conditional: only while status = OPEN
+        const after = await DB.readTrade(id);
+        if (ev12RemoteApplied(after, patch)) return ev12Ack(id, 'REMOTE_CONFIRMED', trade, patch, !!local);
+        if (after && after.status && after.status !== 'OPEN') return ev12Ack(id, 'MANUAL_CLOSE_CONFLICT', trade, patch, !!local);
+        NativeBridge.evRuleBRemoteFailed(id, wrote ? 'READBACK_MISMATCH' : 'UPDATE_FAILED');
+        return { state: 'REMOTE_PENDING' };
+    } finally {
+        delete STATE.ev12Applying_[id];
+    }
+}
+
+function ev12Ack(id, state, trade, patch, wasLocal) {
+    const ok = NativeBridge.evRuleBAckState(id, state);
+    if (state === 'REMOTE_CONFIRMED' && patch.status === 'CLOSED') {
+        if (wasLocal) removeOpenTradeFromState(id);
+        recordClosedTradeToNative({ ...trade, id }, patch);
+        addNotificationLog('Rule B Paper exit', `${ev12EntrySnapshot(trade).ev_structure || trade.strategy_type}: ${patch.exit_reason} gross ₹${patch.actual_pnl}${patch.net_pnl === null ? '' : ` · net ₹${patch.net_pnl}`}`,
+            Number(patch.net_pnl ?? patch.actual_pnl) >= 0 ? 'entry' : 'urgent');
+    } else if (state === 'REMOTE_CONFIRMED') {
+        if (trade && wasLocal) trade.rule_b_state = 'UNRESOLVED';
+        addNotificationLog('Rule B unresolved', `${id}: no valid executable quote by the expiry deadline — manual review required.`, 'urgent');
+    } else {
+        addNotificationLog('Rule B fill superseded', `${id}: the trade was already closed manually; Rule B fill kept as evidence only.`, 'entry');
+    }
     renderAll();
+    return { state, acked: !!ok };
+}
+
+/** Manual close of a Rule B trade: Rule B stops (or a racing fill is decided by the conditional update). */
+function ev12NoteManualClose(trade) {
+    if (!isEvRuleBTrade(trade) || typeof NativeBridge === 'undefined' || typeof NativeBridge.evNoteManualClose !== 'function') return null;
+    try { return NativeBridge.evNoteManualClose(String(trade.id), String(ev12EntrySnapshot(trade).ev_decision_id || '')); }
+    catch (_) { return null; }
 }
 
 function applyRuleBFills() {
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evRuleBPending !== 'function') return;
     if (STATE.ev12Applying) return;
-    const pending = safeParseNB(NativeBridge.evRuleBPending(), []);
-    if (!Array.isArray(pending) || !pending.length) return;
     STATE.ev12Applying = true;
     (async () => {
-        try { for (const e of pending) await applyRuleBFill(e); }
+        try {
+            await ev12RecoverAcceptances();
+            const pending = safeParseNB(NativeBridge.evRuleBPending(), []);
+            for (const e of Array.isArray(pending) ? pending : []) await applyRuleBFill(e);
+        }
         catch (err) { console.warn('[EV12] Rule B apply failed:', err?.message || err); }
         finally { STATE.ev12Applying = false; }
     })();
 }
-
 
 // ═══════════════════════════════════════════════════════════════
 // UI RENDERING
