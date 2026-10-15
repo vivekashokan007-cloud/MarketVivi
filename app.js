@@ -501,7 +501,11 @@ function brainFreshnessStatus(brain = bd, nowMs = Date.now()) {
     }
     // b507 R1 (F4): age is the OLDER of analysis completion and market-data collection, so a refresh over a
     // cached snapshot cannot make old quotes look newly collected.
-    const collectedAtMs = Number(brain?.input_identity?.market_collected_at_ms) || 0;
+    const collectedAtMs = Number(brain?.input_identity?.market_collected_at_ms);
+    if (brain?.input_identity && (!Number.isFinite(collectedAtMs) || collectedAtMs <= 0 || collectedAtMs > nowMs + 60_000)) {
+        return { fresh: false, completedAtMs: brainResultTimestampMs(brain), ageMs: null,
+            reason: 'Market collection timestamp unavailable or invalid', historical: true };
+    }
     const completedAtMs = collectedAtMs > 0 ? Math.min(brainResultTimestampMs(brain) || collectedAtMs, collectedAtMs) : brainResultTimestampMs(brain);
     if (!completedAtMs) {
         return {
@@ -700,6 +704,7 @@ const B507_REASON_TEXT = {
     REVISION_MISMATCH: 'saved values do not match their identity',
     MALFORMED_INPUT: 'saved inputs malformed',
     BRIDGE_UNAVAILABLE: `install APK ${B507_REQUIRED_APK}`,
+    AUTHORITY_UNAVAILABLE: 'saved input authority could not be read; retrying',
 };
 
 function b507ReasonText(code) {
@@ -714,13 +719,29 @@ function b507FmtIstTime(ms) {
     return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} IST`;
 }
 
-/** Read the native authority; null when the installed APK is older than b507. */
+// Once this page has seen b507 capability, a failed/lost bridge must never enable legacy authority.
+let b507AuthoritySeen = false;
+function b507UnavailableAuthority() {
+    return { schema: 'overnight_inputs_v1', status: 'AUTHORITY_UNAVAILABLE', authority_read_status: 'UNAVAILABLE' };
+}
+
+/** null means genuinely unsupported; an unreadable supported capability has an explicit unavailable state. */
 function b507ReadNativeInputState(bridge) {
-    if (!bridge || typeof bridge.getOvernightInputState !== 'function') return null;
+    let getter;
+    try { getter = bridge?.getOvernightInputState; }
+    catch (_) { b507AuthoritySeen = true; return b507UnavailableAuthority(); }
+    if (typeof getter !== 'function') {
+        return b507AuthoritySeen ? b507UnavailableAuthority() : null;
+    }
+    b507AuthoritySeen = true;
     try {
-        const s = JSON.parse(bridge.getOvernightInputState());
-        return s && typeof s === 'object' ? s : null;
-    } catch (_) { return null; }
+        const s = JSON.parse(getter.call(bridge));
+        if (!s || typeof s !== 'object' || Array.isArray(s) || s.schema !== 'overnight_inputs_v1'
+            || typeof s.session !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.session)
+            || typeof s.input_revision !== 'string' || !s.input_revision
+            || typeof s.status !== 'string' || !s.status) return b507UnavailableAuthority();
+        return s;
+    } catch (_) { return b507UnavailableAuthority(); }
 }
 
 /** Condition 4: a save counts only with an authoritative ack carrying the stored record + revision. */
@@ -731,6 +752,7 @@ function b507CheckedAck(response, kind) {
     if (!response.revision || !response.record || response.kind !== kind) {
         return { ok: false, error: `${kind} save not confirmed by the app — install APK ${B507_REQUIRED_APK}` };
     }
+    b507AuthoritySeen = true;
     return { ok: true, revision: response.revision, record: response.record, state: response.state || null };
 }
 
@@ -840,7 +862,12 @@ function b507DraftDifferences(state, readField) {
  * session + input revision; otherwise it is historical (still viewable for research, never authoritative).
  */
 function b507ResultAuthority(result, state) {
-    if (!state) return { current: true, reason: '' };          // pre-b507 APK: legacy time-only rules apply
+    if (!state) return result?.input_identity
+        ? { current: false, reason: 'Saved input authority unavailable' }
+        : { current: true, reason: '' };          // genuinely pre-b507 result/capability: legacy time-only rule
+    if (state.authority_read_status === 'UNAVAILABLE') {
+        return { current: false, reason: 'Saved input authority unavailable — retrying' };
+    }
     const id = result && result.input_identity;
     if (!id) return { current: false, reason: 'Brain result has no input identity (historical)' };
     if (id.session !== state.session) return { current: false, reason: 'Brain result is from another session (historical)' };

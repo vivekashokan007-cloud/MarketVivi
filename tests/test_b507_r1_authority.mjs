@@ -20,7 +20,7 @@ const staleLine = /^const BRAIN_RESULT_STALE_MS.*$/m.exec(src)[0];
 const S = '2026-10-15';
 const NOW = Date.UTC(2026, 9, 15, 4, 0);          // 09:30 IST
 function nativeState(rev, { locked = true } = {}) {
-  return { schema: 'overnight_input_state_v1', session: S, status: 'OK', input_revision: rev, pair_revision: 'p' + rev,
+  return { schema: 'overnight_inputs_v1', session: S, status: 'OK', input_revision: rev, pair_revision: 'p' + rev,
     morning: locked ? { session: S, captured_at_ms: NOW - 25 * 60e3, seq: 1, revision: 'm1', snapshot_revision: 'snap1',
       dowClose: '46300', crudeSettle: '61', giftSpot: '25300',
       snapshot: { fiiCash: '-1200', fiiShortPct: '71', diiCash: '900', fiiIdxFut: null, fiiStkFut: null,
@@ -121,4 +121,61 @@ test('F5: no native lock -> draft title, never "locked"', () => {
   const html = c.buildMorningSummaryHtml();
   assert.match(html, /NOT locked \(draft\)/);
   assert.ok(!html.includes('🔒 Morning data locked'));
+});
+
+test('R2: unreadable supported authority never re-enables result A after acknowledged B', () => {
+  for (const get of [() => { throw new Error('bridge unavailable'); }, () => '{', () => 'null',
+    () => '[]', () => '{}', () => JSON.stringify({ ...nativeState('B'), schema: 'unknown' })]) {
+    const state = { current: nativeState('A') };
+    const c = app({ state });
+    c.adoptBrainResult(result('A'));
+    assert.equal(c.finalEntryAuthorization(CAND).allowed, true);
+    state.current = nativeState('B');
+    c.b507InvalidateCurrentAuthority();
+    const restore = c.NativeBridge.getOvernightInputState;
+    c.NativeBridge.getOvernightInputState = get;
+    c.adoptBrainResult({});
+    assert.equal(c.brainFreshnessStatus().fresh, false);
+    assert.equal(c.STATE.brainReady, false);
+    assert.equal(c.finalEntryAuthorization(CAND).allowed, false);
+    assert.equal(c.b507OvernightCardModel(c.bd, c.b507NativeState()).reason, 'AUTHORITY_UNAVAILABLE');
+    assert.equal(c.hasBrainPayload(c.bd), true, 'historical result remains viewable');
+    assert.match(c.buildMorningSummaryHtml(), /NOT locked \(draft\)/);
+    c.NativeBridge.getOvernightInputState = restore;
+    assert.equal(c.finalEntryAuthorization(CAND).allowed, false, 'A stays obsolete when B read recovers');
+    c.adoptBrainResult(result('B'));
+    assert.equal(c.finalEntryAuthorization(CAND).allowed, true);
+  }
+});
+
+test('R2: a lost capability or acknowledged save cannot downgrade to legacy authority', () => {
+  const c = app({ state: { current: nativeState('B') } });
+  c.adoptBrainResult(result('B'));
+  delete c.NativeBridge.getOvernightInputState;
+  assert.equal(c.finalEntryAuthorization(CAND).allowed, false);
+  assert.equal(c.b507NativeState().authority_read_status, 'UNAVAILABLE');
+  const ackOnly = app({ state: { current: nativeState('B') } });
+  delete ackOnly.NativeBridge.getOvernightInputState;
+  ackOnly.b507CheckedAck({ ok: true, kind: 'morning', revision: 'B', record: {} }, 'morning');
+  assert.equal(ackOnly.b507NativeState().authority_read_status, 'UNAVAILABLE');
+});
+
+test('R2: genuinely unsupported legacy capability preserves only legacy result time rules', () => {
+  const c = app({ state: { current: nativeState('B') } });
+  delete c.NativeBridge.getOvernightInputState;
+  assert.equal(c.b507NativeState(), null);
+  c.adoptBrainResult({ ...result('B'), input_identity: undefined });
+  assert.equal(c.brainFreshnessStatus().fresh, true);
+  assert.equal(c.finalEntryAuthorization(CAND).allowed, true);
+  c.adoptBrainResult(result('B'));
+  assert.equal(c.finalEntryAuthorization(CAND).allowed, false, 'b507 result needs its authority');
+});
+
+test('R2: invalid market collection identity cannot use the completion clock as a fallback', () => {
+  const c = app({ state: { current: nativeState('B') } });
+  for (const ts of [undefined, null, 0, -1, 'bad', NOW + 120e3]) {
+    c.adoptBrainResult(result('B', { input_identity: { session: S, input_revision: 'B', market_collected_at_ms: ts } }));
+    assert.equal(c.brainFreshnessStatus().fresh, false);
+    assert.equal(c.finalEntryAuthorization(CAND).allowed, false);
+  }
 });
