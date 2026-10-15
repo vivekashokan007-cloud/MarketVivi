@@ -119,7 +119,11 @@ test('lock: only a native morning record for today is a lock; restored drafts ca
   assert.equal(ctx.b507MorningLockedToday(st, '2026-10-16'), false);
   assert.equal(ctx.b507MorningLockedToday({ status: 'MORNING_NOT_LOCKED', morning: null }, '2026-10-15'), false);
   const rows = ctx.b507MorningSummaryRows(st);
-  assert.equal(JSON.stringify(rows.slice(0, 3).map(r => r[1])), '["46300","61","25300"]');
+  // b507 R1 (F5): every summary field comes from the acknowledged native snapshot
+  const byLabel = Object.fromEntries(rows);
+  assert.equal(byLabel['FII Cash'], st.morning.snapshot.fiiCash);
+  assert.equal(JSON.stringify([byLabel.Dow, byLabel.Crude, byLabel.GIFT]), '["46300","61","25300"]');
+  assert.equal(byLabel.Snapshot, st.morning.snapshot_revision);
   // no b507 bridge -> no authority (legacy path), card states it
   const bare = { console, JSON, Number, String, Date, Array, Object, Math };
   vm.createContext(bare); vm.runInContext(BLOCK, bare);

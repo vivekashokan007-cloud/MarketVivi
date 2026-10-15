@@ -26,6 +26,9 @@ const helpers = src.slice(
 
 const sandbox = {
   Number, String, Array, Object, Date,
+  // b507 R1: no b507 bridge in this sandbox -> legacy time-only authority (b507ResultAuthority(x, null)).
+  b507ResultAuthority: () => ({ current: true, reason: '' }),
+  b507NativeState: () => null,
   BRAIN_RESULT_STALE_MS: 12 * 60 * 1000,
   bd: { brain_result_completed_at_ms: Date.now(), positions: {} },
   asFiniteNumber(value) {
