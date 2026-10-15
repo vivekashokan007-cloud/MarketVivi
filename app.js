@@ -494,7 +494,19 @@ function brainResultTimestampMs(brain = bd) {
 }
 
 function brainFreshnessStatus(brain = bd, nowMs = Date.now()) {
-    const completedAtMs = brainResultTimestampMs(brain);
+    // b507 R1 (F1): current-decision authority first requires the acknowledged input identity.
+    const authority = b507ResultAuthority(brain, b507NativeState());
+    if (!authority.current) {
+        return { fresh: false, completedAtMs: brainResultTimestampMs(brain), ageMs: null, reason: authority.reason, historical: true };
+    }
+    // b507 R1 (F4): age is the OLDER of analysis completion and market-data collection, so a refresh over a
+    // cached snapshot cannot make old quotes look newly collected.
+    const collectedAtMs = Number(brain?.input_identity?.market_collected_at_ms);
+    if (brain?.input_identity && (!Number.isFinite(collectedAtMs) || collectedAtMs <= 0 || collectedAtMs > nowMs + 60_000)) {
+        return { fresh: false, completedAtMs: brainResultTimestampMs(brain), ageMs: null,
+            reason: 'Market collection timestamp unavailable or invalid', historical: true };
+    }
+    const completedAtMs = collectedAtMs > 0 ? Math.min(brainResultTimestampMs(brain) || collectedAtMs, collectedAtMs) : brainResultTimestampMs(brain);
     if (!completedAtMs) {
         return {
             fresh: false,
@@ -670,7 +682,223 @@ function getTodayLocalBaseline() {
     }
 }
 
+// ═══ B507 OVERNIGHT INPUT AUTHORITY (2.6.76 / b507) ═══
+// One acknowledged native identity for the morning snapshot + evening reference (NativeBridge.getOvernightInputState).
+// Header, morning summary, lock state and the overnight card all read this; restored form values never create a lock.
+const B507_REQUIRED_APK = '2.6.76 (b507)';
+const B507_REASON_TEXT = {
+    MORNING_NOT_LOCKED: 'morning data not locked for this session',
+    NO_EVENING_REFERENCE: 'no evening reference saved for this session',
+    MISSING_IDENTITY: 'saved inputs have no identity (re-enter them)',
+    NO_INPUT_IDENTITY: 'no acknowledged inputs',
+    UNKNOWN_SCHEMA: 'unrecognised input record',
+    WRONG_SESSION: 'inputs belong to another session',
+    MORNING_WRONG_SESSION: 'morning lock is from another session',
+    REFERENCE_WRONG_SESSION: 'evening reference is for another session',
+    REFERENCE_OUTSIDE_WINDOW: 'evening reference is stale',
+    REFERENCE_SESSION_INCONSISTENT: 'evening reference session inconsistent',
+    FUTURE_CAPTURE: 'input time is in the future',
+    NON_TRADING_SESSION: 'not a trading session',
+    CALENDAR_UNAVAILABLE: 'trading calendar unavailable',
+    INVALID_VALUES: 'saved values invalid',
+    REVISION_MISMATCH: 'saved values do not match their identity',
+    MALFORMED_INPUT: 'saved inputs malformed',
+    BRIDGE_UNAVAILABLE: `install APK ${B507_REQUIRED_APK}`,
+    AUTHORITY_UNAVAILABLE: 'saved input authority could not be read; retrying',
+};
+
+function b507ReasonText(code) {
+    return B507_REASON_TEXT[code] || String(code || 'unknown');
+}
+
+function b507FmtIstTime(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n <= 0) return '--';
+    const d = new Date(n + 330 * 60000);
+    const p = (x) => String(x).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} IST`;
+}
+
+// Once this page has seen b507 capability, a failed/lost bridge must never enable legacy authority.
+let b507AuthoritySeen = false;
+function b507UnavailableAuthority() {
+    return { schema: 'overnight_inputs_v1', status: 'AUTHORITY_UNAVAILABLE', authority_read_status: 'UNAVAILABLE' };
+}
+
+/** null means genuinely unsupported; an unreadable supported capability has an explicit unavailable state. */
+function b507ReadNativeInputState(bridge) {
+    let getter;
+    try { getter = bridge?.getOvernightInputState; }
+    catch (_) { b507AuthoritySeen = true; return b507UnavailableAuthority(); }
+    if (typeof getter !== 'function') {
+        return b507AuthoritySeen ? b507UnavailableAuthority() : null;
+    }
+    b507AuthoritySeen = true;
+    try {
+        const s = JSON.parse(getter.call(bridge));
+        if (!s || typeof s !== 'object' || Array.isArray(s) || s.schema !== 'overnight_inputs_v1'
+            || typeof s.session !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.session)
+            || typeof s.input_revision !== 'string' || !s.input_revision
+            || typeof s.status !== 'string' || !s.status) return b507UnavailableAuthority();
+        return s;
+    } catch (_) { return b507UnavailableAuthority(); }
+}
+
+/** Condition 4: a save counts only with an authoritative ack carrying the stored record + revision. */
+function b507CheckedAck(response, kind) {
+    if (!response || response.ok !== true) {
+        return { ok: false, error: (response && response.error) || `${kind} was not saved` };
+    }
+    if (!response.revision || !response.record || response.kind !== kind) {
+        return { ok: false, error: `${kind} save not confirmed by the app — install APK ${B507_REQUIRED_APK}` };
+    }
+    b507AuthoritySeen = true;
+    return { ok: true, revision: response.revision, record: response.record, state: response.state || null };
+}
+
+/** The lock exists only when native holds a morning record for today's session. */
+function b507MorningLockedToday(state, today) {
+    const m = state && state.morning;
+    return !!(m && typeof m === 'object' && m.session === today && m.revision);
+}
+
+/**
+ * Condition 5/9: model for the overnight card. CURRENT only when the result was computed for the exact acknowledged
+ * input revision; otherwise PENDING (named) or UNAVAILABLE (named). A result without b507 identity is HISTORICAL.
+ */
+function b507OvernightCardModel(result, state) {
+    const r = result && typeof result === 'object' ? result : {};
+    const od = r.overnightDelta && typeof r.overnightDelta === 'object' ? r.overnightDelta : null;
+    const id = r.input_identity && typeof r.input_identity === 'object' ? r.input_identity : null;
+    const base = {
+        computedAt: id ? b507FmtIstTime(id.computed_at_ms) : '--',
+        poll: id ? (id.mode === 'REFRESH' ? `refresh of poll ${id.poll_t || '--'}` : `poll ${id.poll_t || '--'}`) : '--',
+        session: (state && state.session) || (id && id.session) || '--',
+        pairRevision: (state && state.pair_revision) || '--',
+        referenceAt: state && state.evening ? b507FmtIstTime(state.evening.captured_at_ms) : '--',
+        morningAt: state && state.morning ? b507FmtIstTime(state.morning.captured_at_ms) : '--',
+    };
+    if (!state) return { ...base, kind: 'UNAVAILABLE', reason: 'BRIDGE_UNAVAILABLE', signals: [], summary: '' };
+    if (state.status !== 'OK') return { ...base, kind: 'UNAVAILABLE', reason: state.status, signals: [], summary: '' };
+    if (!id) return { ...base, kind: 'HISTORICAL', reason: 'RESULT_WITHOUT_IDENTITY', signals: od?.signals || [], summary: od?.summary || '' };
+    if (id.session !== state.session || id.input_revision !== state.input_revision) {
+        const waiting = state.refresh && state.refresh.state === 'WAITING_FOR_POLL';
+        return { ...base, kind: 'PENDING', reason: waiting ? 'WAITING_FOR_POLL' : 'RECALCULATING', signals: [], summary: '' };
+    }
+    if (!od || od.status !== 'OK') {
+        return { ...base, kind: 'UNAVAILABLE', reason: (od && od.reason) || 'NOT_COMPUTED', signals: [], summary: '' };
+    }
+    return { ...base, kind: 'CURRENT', reason: null, signals: Array.isArray(od.signals) ? od.signals : [], summary: od.summary || '' };
+}
+
+function b507Esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function b507FmtPct(p) {
+    const n = Number(p);
+    if (!Number.isFinite(n)) return '--';
+    return `${n > 0 ? '+' : ''}${n}%`;
+}
+
+function b507RenderOvernightCard(model) {
+    const prov = `<div class="b507-provenance" style="font-size:10px; color:var(--text-muted); margin-top:3px">` +
+        `Session ${b507Esc(model.session)} · computed ${b507Esc(model.computedAt)} (${b507Esc(model.poll)}) · ` +
+        `pair ${b507Esc(model.pairRevision)} · morning lock ${b507Esc(model.morningAt)} · evening ref ${b507Esc(model.referenceAt)}</div>`;
+    if (model.kind === 'UNAVAILABLE' || model.kind === 'PENDING') {
+        const head = model.kind === 'PENDING'
+            ? (model.reason === 'WAITING_FOR_POLL' ? '⏳ Overnight comparison pending — waiting for the next poll'
+                : '⏳ Overnight comparison pending — recalculating for the saved inputs')
+            : `⚪ Overnight comparison unavailable — ${b507Esc(b507ReasonText(model.reason))}`;
+        return `<div class="b507-overnight b507-${model.kind.toLowerCase()}" data-kind="${model.kind}" data-reason="${b507Esc(model.reason)}" ` +
+            `style="padding:6px 10px; margin:4px 0; border-radius:8px; background:rgba(128,128,128,0.06); border-left:3px solid var(--text-muted)">` +
+            `<div style="font-weight:600; font-size:12px">${head}</div>${prov}</div>`;
+    }
+    const tone = model.summary.includes('BEARISH') ? ['rgba(211,47,47,0.08)', 'var(--danger)']
+        : model.summary.includes('BULLISH') ? ['rgba(56,142,60,0.08)', 'var(--green)'] : ['rgba(128,128,128,0.06)', 'var(--text-muted)'];
+    const label = model.kind === 'HISTORICAL' ? '<span class="b507-historical-tag">HISTORICAL — not computed for the current inputs · </span>' : '';
+    const sigs = model.signals.map((s) => {
+        const color = s.dir === 'BEAR' ? 'var(--danger)' : s.dir === 'BULL' ? 'var(--green)' : 'var(--text-muted)';
+        return `<span style="color:${color}">${b507Esc(s.name)}: ${b507Esc(s.from)}→${b507Esc(s.to ?? '?')} (${b507FmtPct(s.pct)})</span>`;
+    }).join(' · ');
+    return `<div class="b507-overnight b507-${model.kind.toLowerCase()}" data-kind="${model.kind}" style="padding:6px 10px; margin:4px 0; border-radius:8px; background:${tone[0]}; border-left:3px solid ${tone[1]}">` +
+        `<div style="font-weight:600; font-size:12px; margin-bottom:3px">${label}${b507Esc(model.summary)}</div>` +
+        `<div style="font-size:11px; color:var(--text-muted)">${sigs}</div>${prov}</div>`;
+}
+
+/** b507 R1 (F5): every locked-summary row comes from the acknowledged native snapshot (never form fields). */
+const B507_SUMMARY_FIELDS = [
+    ['FII Cash', 'fiiCash', 'in-fii-cash'], ['FII Short%', 'fiiShortPct', 'in-fii-short'], ['DII Cash', 'diiCash', 'in-dii-cash'],
+    ['Idx Fut', 'fiiIdxFut', 'in-fii-idx-fut'], ['Stk Fut', 'fiiStkFut', 'in-fii-stk-fut'], ['Dow', 'dowClose', 'in-dow-close'],
+    ['Crude', 'crudeSettle', 'in-crude-settle'], ['GIFT', 'giftSpot', 'in-gift-spot'], ['Upstox', 'upstoxBias', 'in-upstox-bias'],
+];
+
+function b507MorningSummaryRows(state) {
+    const m = state && state.morning;
+    if (!m || !m.snapshot || typeof m.snapshot !== 'object') return null;
+    const snap = m.snapshot;
+    const rows = B507_SUMMARY_FIELDS.map(([label, key]) => [label,
+        snap[key] === null || snap[key] === undefined || snap[key] === '' ? (key === 'upstoxBias' ? 'Not entered' : '--') : String(snap[key])]);
+    rows.push(['Locked', b507FmtIstTime(m.captured_at_ms)], ['Snapshot', String(m.snapshot_revision || '--')],
+        ['Evening ref', state.evening ? `${state.evening.dow} / ${state.evening.crude} / ${state.evening.gift} (${b507FmtIstTime(state.evening.captured_at_ms)})` : 'not saved'],
+        ['Overnight', state.status === 'OK' ? 'inputs OK' : b507ReasonText(state.status)]);
+    return rows;
+}
+
+/** Form values that differ from the acknowledged snapshot are drafts (shown separately, never as locked). */
+function b507DraftDifferences(state, readField) {
+    const snap = state && state.morning && state.morning.snapshot;
+    if (!snap) return [];
+    const norm = (v) => { const t = String(v ?? '').trim(); const n = Number(t); return t !== '' && Number.isFinite(n) ? String(n) : t; };
+    return B507_SUMMARY_FIELDS.filter(([, key, id]) => {
+        const draft = readField(id);
+        return draft !== null && draft !== undefined && String(draft).trim() !== '' && norm(draft) !== norm(snap[key]);
+    }).map(([label, key, id]) => [label, String(readField(id)).trim()]);
+}
+
+/**
+ * b507 R1 (F1): one identity check for every current-decision consumer (verdict, confidence, ranking/selection,
+ * entry/notification authority, readiness). With a b507 bridge a result is current only for the acknowledged
+ * session + input revision; otherwise it is historical (still viewable for research, never authoritative).
+ */
+function b507ResultAuthority(result, state) {
+    if (!state) return result?.input_identity
+        ? { current: false, reason: 'Saved input authority unavailable' }
+        : { current: true, reason: '' };          // genuinely pre-b507 result/capability: legacy time-only rule
+    if (state.authority_read_status === 'UNAVAILABLE') {
+        return { current: false, reason: 'Saved input authority unavailable — retrying' };
+    }
+    const id = result && result.input_identity;
+    if (!id) return { current: false, reason: 'Brain result has no input identity (historical)' };
+    if (id.session !== state.session) return { current: false, reason: 'Brain result is from another session (historical)' };
+    if (id.input_revision !== state.input_revision) {
+        return { current: false, reason: 'Brain result was computed for earlier inputs — recalculating' };
+    }
+    return { current: true, reason: '' };
+}
+
+/** After an acknowledged save: the retained result is no longer current (until a matching result arrives). */
+function b507InvalidateCurrentAuthority() {
+    if (typeof STATE === 'undefined') return;
+    const authority = b507ResultAuthority(typeof bd !== 'undefined' ? bd : null, b507NativeState());
+    if (!authority.current) {
+        STATE.brainReady = false;
+        STATE.brainRefreshPending = true;
+        STATE.brainRefreshReason = 'inputs_changed_recalculating';
+        STATE.brainResultHistoricalReason = authority.reason;
+    }
+}
+
+function b507NativeState() {
+    return b507ReadNativeInputState(typeof NativeBridge !== 'undefined' ? NativeBridge : null);
+}
+// ═══ END B507 ═══
+
 function hasLockedMorningForToday(snapshot = null) {
+    // b507: with a b507 APK the lock is the native morning record for today; a restored local baseline or form
+    // values cannot claim a lock.
+    const st = b507ReadNativeInputState(typeof NativeBridge !== 'undefined' ? NativeBridge : null);
+    if (st) return b507MorningLockedToday(st, API.todayIST());
     return !!getTodayNativeBaseline(snapshot) || !!getTodayLocalBaseline();
 }
 
@@ -1642,6 +1870,15 @@ function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
     const currentHasPayload = hasBrainPayload(bd);
 
     if (!incomingHasPayload && preserveLastGood && currentHasPayload) {
+        // b507 R1 (F1): the kept result stays viewable but loses current authority immediately when the
+        // acknowledged inputs moved past it (brainReady/freshness/entry all read b507ResultAuthority).
+        const authority = b507ResultAuthority(bd, b507NativeState());
+        if (!authority.current) {
+            STATE.brainReady = false;
+            STATE.brainRefreshPending = true;
+            STATE.brainRefreshReason = 'inputs_changed_recalculating';
+            STATE.brainResultHistoricalReason = authority.reason;
+        }
         return false;
     }
 
@@ -1651,6 +1888,7 @@ function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
     if (incomingHasPayload) {
         const completedAtMs = brainResultTimestampMs(incoming);
         STATE.brainReady = brainFreshnessStatus(incoming).fresh;
+        STATE.brainResultHistoricalReason = b507ResultAuthority(incoming, b507NativeState()).reason;
         STATE.brainInsights = incoming;
         STATE.brainLastRun = completedAtMs;
         STATE.brainError = incoming.candidate_error || null;
@@ -4965,7 +5203,7 @@ function renderEvControl() {
     if (!st.available) {
         body = row('Device EV mode', 'Unknown — native status unavailable')
             + `<div style="font-size:11px;color:var(--text-muted)">${e(st.reason === 'OLDER_APK_NO_STATUS'
-                ? 'EV bridge support is unavailable: the page could not reach the native EV status method (installed version not read). Install the matching Market Radar APK (2.6.75 / b506) and reopen the app.'
+                ? 'EV bridge support is unavailable: the page could not reach the native EV status method (installed version not read). Install the matching Market Radar APK (2.6.76 / b507) and reopen the app.'
                 : st.reason === 'NO_NATIVE_BRIDGE' ? 'Not running inside the Market Radar app.' : 'The app could not report its EV status.')}</div>`;
     } else {
         const paper = st.execution_mode === 'paper';
@@ -5014,7 +5252,7 @@ function ev12SetMode(mode) {
     const before = ev12NativeStatus();
     if (!before.available) { ev12ControlMsg = 'Not changed: native status unavailable.'; renderEvControl(); return false; }
     if (before.execution_mode !== 'paper' || before.can_change !== true) { ev12ControlMsg = 'Not changed: experiment changes are allowed only in Paper execution.'; renderEvControl(); return false; }
-    if (typeof NativeBridge.evSetModeChecked !== 'function') { ev12ControlMsg = 'Not changed: EV bridge setter support is unavailable (install the matching Market Radar APK, 2.6.75 / b506).'; renderEvControl(); return false; }
+    if (typeof NativeBridge.evSetModeChecked !== 'function') { ev12ControlMsg = 'Not changed: EV bridge setter support is unavailable (install the matching Market Radar APK, 2.6.76 / b507).'; renderEvControl(); return false; }
     ev12ControlBusy = true;
     let ok = false;
     try {
@@ -5205,7 +5443,7 @@ async function acceptEvDecision(sessionDate) {
     const view = ev12View();
     if (!view || !view.recommendation?.actionable) { alert('Experimental decision is not actionable.'); return; }
     if (typeof NativeBridge === 'undefined' || typeof NativeBridge.evPrepareAcceptance !== 'function') {
-        alert('Experimental acceptance needs the matching APK (2.6.75 / b506).'); return;
+        alert('Experimental acceptance needs the matching APK (2.6.76 / b507).'); return;
     }
     if (STATE.ev12Accepting) return;          // R1: in-flight guard (double tap)
     STATE.ev12Accepting = true;
@@ -6566,19 +6804,8 @@ function renderMarket(snapshot = null) {
         </div>
         ` : ''}
 
-        <!-- OVERNIGHT DELTA — Phase 10: Evening close vs morning inputs -->
-        ${bd.overnightDelta && bd.overnightDelta.signals.length > 0 ? `
-        <div style="padding:6px 10px; margin:4px 0; border-radius:8px; background:${bd.overnightDelta.summary.includes('BEARISH') ? 'rgba(211,47,47,0.08)' : bd.overnightDelta.summary.includes('BULLISH') ? 'rgba(56,142,60,0.08)' : 'rgba(128,128,128,0.06)'}; border-left:3px solid ${bd.overnightDelta.summary.includes('BEARISH') ? 'var(--danger)' : bd.overnightDelta.summary.includes('BULLISH') ? 'var(--green)' : 'var(--text-muted)'}">
-            <div style="font-weight:600; font-size:12px; margin-bottom:3px">${bd.overnightDelta.summary}</div>
-            <div style="font-size:11px; color:var(--text-muted)">
-                ${bd.overnightDelta.signals.map(s => {
-                    const color = s.dir === 'BEAR' ? 'var(--danger)' : s.dir === 'BULL' ? 'var(--green)' : 'var(--text-muted)';
-                    const val = s.isSigma ? `${s.pct > 0 ? '+' : ''}${s.pct.toFixed(2)}σ` : `${s.pct > 0 ? '+' : ''}${s.pct}%`;
-                    return `<span style="color:${color}">${s.name}: ${s.from}→${s.to ?? '?'} (${val})</span>`;
-                }).join(' · ')}
-            </div>
-        </div>
-        ` : ''}
+        <!-- OVERNIGHT DELTA — b507: computed for the acknowledged input revision, else named pending/unavailable -->
+        ${b507RenderOvernightCard(b507OvernightCardModel(bd, b507ReadNativeInputState(typeof NativeBridge !== 'undefined' ? NativeBridge : null)))}
 
         <!-- TOP GRID: Key numbers at a glance -->
         <div class="env-grid-3">
@@ -8544,6 +8771,10 @@ function lockMorningData() {
         if (morningResult && morningResult.error) {
             throw new Error(`Morning input error: ${morningResult.error}`);
         }
+        // b507: show locked only after the app confirmed the durable write and returned the stored revision.
+        const morningAck = b507CheckedAck(morningResult, 'morning');
+        if (!morningAck.ok) throw new Error(`Morning data NOT locked: ${morningAck.error}`);
+        b507InvalidateCurrentAuthority();
 
         localStorage.setItem('mr2_morning_inputs', JSON.stringify(rawInputs));
         localStorage.setItem('mr2_morning', JSON.stringify(rawInputs));
@@ -8630,10 +8861,8 @@ function restoreMorningData(cloudConfig) {
         const gd = (typeof NativeBridge !== 'undefined' && NativeBridge.getGlobalDirection)
             ? safeParseNB(NativeBridge.getGlobalDirection(), {})
             : {};
-        gd.dowClose = parseFloat(dowClose);
-        if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
-            NativeBridge.setGlobalDirection(JSON.stringify(gd));
-        }
+        // b507: restoring a form value never writes native inputs (the morning record is the authority).
+        void gd;
     }
     if (crudeSettle !== undefined) {
         const el = document.getElementById('in-crude-settle');
@@ -8641,10 +8870,8 @@ function restoreMorningData(cloudConfig) {
         const gd = (typeof NativeBridge !== 'undefined' && NativeBridge.getGlobalDirection)
             ? safeParseNB(NativeBridge.getGlobalDirection(), {})
             : {};
-        gd.crudeSettle = parseFloat(crudeSettle);
-        if (typeof NativeBridge !== 'undefined' && NativeBridge.setGlobalDirection) {
-            NativeBridge.setGlobalDirection(JSON.stringify(gd));
-        }
+        // b507: restoring a form value never writes native inputs (the morning record is the authority).
+        void gd;
     }
     // Restore morning bias (the plan — survives device change via Supabase)
     const biasCloud = cloudConfig?.morning_bias;
@@ -8740,22 +8967,40 @@ function morningFieldValue(id, fallback = '--') {
 }
 
 function buildMorningSummaryHtml() {
-    const upstox = morningFieldValue('in-upstox-bias', 'Not entered');
-    const rows = [
-        ['FII Cash', morningFieldValue('in-fii-cash')],
-        ['FII Short%', morningFieldValue('in-fii-short')],
-        ['DII Cash', morningFieldValue('in-dii-cash')],
-        ['Idx Fut', morningFieldValue('in-fii-idx-fut')],
-        ['Stk Fut', morningFieldValue('in-fii-stk-fut')],
-        ['Dow', morningFieldValue('in-dow-close')],
-        ['Crude', morningFieldValue('in-crude-settle')],
-        ['GIFT', morningFieldValue('in-gift-spot')],
-        ['Upstox', upstox]
-    ];
+    // b507 R1 (F5): with a b507 bridge the locked summary is the acknowledged native snapshot; form values that
+    // differ are listed as drafts. No native lock means unlocked/draft, never "locked".
+    const st = b507NativeState();
+    let rows;
+    let title = '🔒 Morning data locked';
+    let drafts = [];
+    if (st) {
+        const nativeRows = b507MorningLockedToday(st, API.todayIST()) ? b507MorningSummaryRows(st) : null;
+        if (nativeRows) {
+            rows = nativeRows.map(([l, v]) => [l, b507Esc(v)]);
+            drafts = b507DraftDifferences(st, (id) => document.getElementById(id)?.value ?? null);
+        } else {
+            title = '✏️ Morning data NOT locked (draft)';
+            rows = B507_SUMMARY_FIELDS.map(([label, , id]) => [label, b507Esc(morningFieldValue(id, label === 'Upstox' ? 'Not entered' : '--'))]);
+        }
+    } else {
+        const upstox = morningFieldValue('in-upstox-bias', 'Not entered');
+        rows = [
+            ['FII Cash', morningFieldValue('in-fii-cash')],
+            ['FII Short%', morningFieldValue('in-fii-short')],
+            ['DII Cash', morningFieldValue('in-dii-cash')],
+            ['Idx Fut', morningFieldValue('in-fii-idx-fut')],
+            ['Stk Fut', morningFieldValue('in-fii-stk-fut')],
+            ['Dow', morningFieldValue('in-dow-close')],
+            ['Crude', morningFieldValue('in-crude-settle')],
+            ['GIFT', morningFieldValue('in-gift-spot')],
+            ['Upstox', upstox]
+        ];
+    }
+    const draftHtml = drafts.length ? `<div class="b507-drafts" style="font-size:11px; color:var(--text-muted)">Draft (not locked): ${drafts.map(([l, v]) => `${b507Esc(l)} ${b507Esc(v)}`).join(' · ')}</div>` : '';
     return `
         <div class="morning-collapsed-bar" role="button" tabindex="0" aria-label="Show locked morning inputs">
             <div>
-                <strong>🔒 Morning data locked</strong>
+                <strong>${title}</strong>
                 <span class="morning-summary-hint">Tap to review full inputs</span>
                 <div class="morning-summary-grid">
                     ${rows.map(([label, value]) => `
@@ -8764,6 +9009,7 @@ function buildMorningSummaryHtml() {
                         </span>
                     `).join('')}
                 </div>
+                ${draftHtml}
             </div>
             <span class="morning-summary-arrow">▾</span>
         </div>
@@ -8850,10 +9096,16 @@ function saveEveningClose() {
         if (nativeResult && nativeResult.error) {
             throw new Error(`Evening close error: ${nativeResult.error}`);
         }
-        STATE.eveningClose = payload;
-        localStorage.setItem('mr2_evening_close', JSON.stringify(payload));
+        // b507: "Saved" only from the authoritative ack; values shown are the STORED ones.
+        const eveAck = b507CheckedAck(nativeResult, 'evening');
+        if (!eveAck.ok) throw new Error(eveAck.error);
+        b507InvalidateCurrentAuthority();
+        const rec = eveAck.record;
+        STATE.eveningClose = { ...payload, dow: rec.dow, crude: rec.crude, gift: rec.gift, revision: eveAck.revision,
+            intended_session: rec.intended_session, captured_at_ms: rec.captured_at_ms };
+        localStorage.setItem('mr2_evening_close', JSON.stringify(STATE.eveningClose));
         if (statusEl) {
-            statusEl.textContent = `Saved: ${payload.date} · Dow ${payload.dow}, Crude ${payload.crude}, GIFT ${payload.gift}`;
+            statusEl.textContent = `Saved for session ${rec.intended_session} at ${b507FmtIstTime(rec.captured_at_ms)} · Dow ${rec.dow}, Crude ${rec.crude}, GIFT ${rec.gift} · recalculating`;
         }
         renderAll();
     } catch (e) {
@@ -8884,7 +9136,12 @@ function restoreEveningClose(cloudConfig) {
     if (data.gift) { const el = document.getElementById('in-eve-gift'); if (el) el.value = data.gift; }
 
     const statusEl = document.getElementById('evening-status');
-    if (statusEl) statusEl.textContent = `Loaded: ${data.date} · Dow ${data.dow || '--'}, Crude ${data.crude || '--'}, GIFT ${data.gift || '--'}`;
+    // b507: restored values are a form draft only; the saved reference is whatever native acknowledged.
+    const st = b507ReadNativeInputState(typeof NativeBridge !== 'undefined' ? NativeBridge : null);
+    const ev = st && st.evening;
+    if (statusEl) statusEl.textContent = ev
+        ? `Saved reference for session ${ev.intended_session} at ${b507FmtIstTime(ev.captured_at_ms)} · Dow ${ev.dow}, Crude ${ev.crude}, GIFT ${ev.gift}`
+        : `Draft restored (not saved for any session): Dow ${data.dow || '--'}, Crude ${data.crude || '--'}, GIFT ${data.gift || '--'}`;
 }
 
 // Compute overnight delta — called during morning scan

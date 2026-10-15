@@ -23,6 +23,7 @@ on:
       - work/g8-g10-integrity-20260913
       - review/codex-corrective-20260914
       - work/paper-implied-ev-v12-20261013
+      - work/overnight-integrity-b507-20261015
     paths:
       - 'app.js'
       - 'api.js'
@@ -78,6 +79,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             tools/bridge_facade
+            tools/b507_chain
             app/src/main/java/com/marketradar/app/MainActivity.kt
             app/src/main/java/com/marketradar/app/NativeBridge.kt
           sparse-checkout-cone-mode: false
@@ -90,12 +92,18 @@ jobs:
           shopt -s nullglob
           files=(test_*.mjs tests/test_*.mjs)
           test "${#files[@]}" -ge 20 || { echo "expected >=20 test files, found ${#files[@]}"; exit 1; }
-          for f in tests/test_ev_v12_pwa.mjs tests/test_ev_v12_review_r2.mjs tests/test_ev_v12_review_r3.mjs tests/test_ev_v12_review_r4.mjs tests/test_ev_v12_review_r5.mjs tests/test_b506_version.mjs tests/test_ev_v12_control_b505.mjs tests/test_ev_v12_bridge_chain_b506.mjs; do
+          for f in tests/test_ev_v12_pwa.mjs tests/test_ev_v12_review_r2.mjs tests/test_ev_v12_review_r3.mjs tests/test_ev_v12_review_r4.mjs tests/test_ev_v12_review_r5.mjs tests/test_b507_version.mjs tests/test_b507_overnight_chain.mjs tests/test_b507_r1_authority.mjs tests/test_ev_v12_control_b505.mjs tests/test_ev_v12_bridge_chain_b506.mjs; do
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
           MARKETAPP_DIR="$PWD/_marketapp" node --test "${files[@]}"
           MARKETAPP_DIR="$PWD/_marketapp" node --test tests/test_ev_v12_bridge_chain_b506.mjs | tee /tmp/chain.log
           grep -q '^# pass 5' /tmp/chain.log
+          # b507 real overnight chain: Kotlin SessionInputs golden -> Python brain golden -> real facade -> real app.js
+          test -f _marketapp/tools/b507_chain/native_context_golden.json
+          test -f _marketapp/tools/b507_chain/brain_output_golden.json
+          MARKETAPP_DIR="$PWD/_marketapp" node --test tests/test_b507_overnight_chain.mjs | tee /tmp/b507chain.log
+          grep -q '^# pass 7' /tmp/b507chain.log
+          grep -q '^# fail 0' /tmp/b507chain.log
           (cd _marketapp && git rev-parse HEAD)
 
       - name: Verify Pages artifact excludes repository documents
