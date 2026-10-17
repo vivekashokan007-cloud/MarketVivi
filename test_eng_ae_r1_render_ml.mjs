@@ -13,6 +13,7 @@ function extract(startMarker, endMarker) {
 }
 
 const helpers = [
+  extract('function mlEvaluationAttemptState(', '\nfunction renderML('),
   extract('function deriveHoldingHorizon', '\nfunction filterPaperRowsForSameSessionTeacherComparison'),
   extract('function filterPaperRowsForSameSessionTeacherComparison', '\nfunction buildTeacherLaneStatsFromOutcomes'),
 ].join('\n');
@@ -178,6 +179,20 @@ assert.match(mlEl.innerHTML, /Labels saved:\s*<b[^>]*>NO<\/b>/);
 assert.doesNotMatch(mlEl.innerHTML, /Day evaluation:\s*<b[^>]*>LABELS_SAVED<\/b>/);
 assert.match(mlEl.innerHTML, /INCOMPLETE_IDENTITY|Identity coverage incomplete/);
 assert.match(mlEl.innerHTML, /44 missing/);
+
+// A readback timeout proves neither absence nor successful labels. Render the
+// actual diagnostic and leave recovery available for this same session.
+mlEl.innerHTML = '';
+sandbox.renderML({ serviceStatus: {
+  evaluationPhase: 'FAILED_IDENTITY_COVERAGE', evaluationTargetDate: '2026-10-16',
+  labelsSaved: false, labelsSavedKnown: true, missingIdentityCount: 19320,
+  identityReadbackFailed: true, identityReadbackError: 'recommendation_readback code=57014',
+  lastEvaluationOutcomeCount: 19320, lastEvaluationProducedCount: 19320,
+}, brainResult: {}, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '' });
+assert.match(mlEl.innerHTML, /19320 identities unverified/);
+assert.match(mlEl.innerHTML, /57014/);
+assert.match(mlEl.innerHTML, /Labels saved:\s*<b[^>]*>NO<\/b>/);
+assert.doesNotMatch(mlEl.innerHTML, /19320 missing/);
 
 mlEl.innerHTML = '';
 sandbox.renderML({
