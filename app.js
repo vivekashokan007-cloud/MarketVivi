@@ -5868,6 +5868,34 @@ function renderBrainCard(ins) {
     </div>`;
 }
 
+// ═══ B510 MARKET VIEW SEMANTICS ═══
+// The legacy verdict `direction` is MIXED (synthesis view before alignment, selected
+// strategy lane after it). The market label trusts ONLY the frozen synthesis view
+// (verdict.market_direction, semantics v>=1) or a thesis captured with it. It never
+// falls back to legacy `direction`; a legacy payload shows unavailable.
+function b510MarketView(verdict) {
+    const v = verdict && typeof verdict === 'object' ? verdict : {};
+    const ok = (x) => x === 'BULL' || x === 'BEAR' || x === 'NEUTRAL';
+    if (Number(v.direction_semantics_version) >= 1 && v.market_view_status === 'AVAILABLE' && ok(v.market_direction)) {
+        return v.market_direction;
+    }
+    const t = v.market_thesis;
+    if (t && typeof t === 'object' && ok(t.market_direction)) return t.market_direction;
+    return null;
+}
+
+function b510MarketViewLine(verdict) {
+    const view = b510MarketView(verdict);
+    return view ? `Market view: ${view} · unvalidated, not a forecast` : 'Market view: unavailable';
+}
+
+function b510StrategyDirectionLine(verdict) {
+    const lane = verdict && typeof verdict === 'object' ? verdict.execution_lane_direction : null;
+    if (lane !== 'BULL' && lane !== 'BEAR' && lane !== 'NEUTRAL') return '';
+    return `Strategy direction: ${lane} · selected spread lane, not buy-call/buy-put advice`;
+}
+// ═══ END B510 MARKET VIEW ═══
+
 function renderBrainInsights() {
     const bi = bd;
     const liveWindow = isLiveRecommendationWindow();
@@ -5904,6 +5932,8 @@ function renderBrainInsights() {
             <div style="font-size:14px;font-weight:700;color:${vColor}">${verdict.action}${verdict.strategy ? ' — ' + verdict.strategy.replace('_', ' ') : ''}</div>
             <div style="font-size:12px;font-weight:600;margin-top:2px">${urgencyText} ${verdict.confidence > 0 ? '· Confidence: ' + verdict.confidence + '%' : ''}</div>
             ${confBar}
+            <div class="brain-detail">${b510MarketViewLine(verdict)}</div>
+            ${b510StrategyDirectionLine(verdict) ? `<div class="brain-detail">${b510StrategyDirectionLine(verdict)}</div>` : ''}
             <div class="brain-detail" style="margin-top:4px">${verdict.reasoning || ''}</div>
             ${verdict.conflicts?.length ? `<div style="font-size:10px;color:var(--warn);margin-top:3px">⚠️ ${verdict.conflicts.join(' · ')}</div>` : ''}
         </div>`;
@@ -7212,7 +7242,8 @@ function renderWatchlist(snapshot = null) {
 
     let html = `<div class="${goClass}">
         <div class="go-title">${goIcon} ${bannerState} · ${modeLabel}</div>
-        <div class="go-detail">${executable} final-authorized · ${entryReadyCandidates.length} backend entry-ready · ${brainWatchlist.length} monitor/watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Bias: ${biasLabel}</div>
+        <div class="go-detail">${executable} final-authorized · ${entryReadyCandidates.length} backend entry-ready · ${brainWatchlist.length} monitor/watchlist (of ${total} generated) · VIX: ${vix.toFixed(1)} · Context bias: ${biasLabel}</div>
+        <div class="go-detail">${b510MarketViewLine(brainVerdict)}</div>
         ${!executable && brainVerdict.decision_gate?.reason ? `<div class="go-detail" style="font-size:11px;color:var(--warn)">Final gate: ${brainVerdict.decision_gate.reason}</div>` : ''}
         ${STATE.brainRefreshPending ? `<div class="go-detail" style="font-size:11px;color:var(--accent)">🔄 Refreshing ${STATE.tradeMode.toUpperCase()} candidates...</div>` : ''}
         ${(() => {
