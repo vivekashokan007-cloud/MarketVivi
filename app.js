@@ -7931,6 +7931,88 @@ function mlIdentityCoverageState(service) {
     return { readbackFailed, count, preview, error, description };
 }
 
+// ═══ B510 X1 PAPER BUYING RESEARCH STATUS ═══
+// Read-only display of the native X1 v2 journal status. Quote simulation only: no buy button,
+// no candidate, no recommendation. The collection session is NOT the ML evaluation date.
+const B510_X1_STATUS_TEXT = {
+    NOT_STARTED: 'Not started (waits for a live Paper poll)',
+    OK: 'Collecting',
+    NOT_A_SESSION: 'Not a trading session',
+    BLOCK_COMPLETE_REVIEW_REQUIRED: 'Endpoint reached — offline review required',
+    JOURNAL_FULL_REVIEW_REQUIRED: 'Journal full — review required',
+    JOURNAL_SIZE_LIMIT: 'Journal size limit — review required',
+    JOURNAL_CORRUPT: 'Journal unreadable — stopped (export for review)',
+    UNKNOWN_SCHEMA_VERSION: 'Unknown journal version — stopped',
+    PROTOCOL_DIGEST_MISMATCH: 'Protocol mismatch — stopped',
+    BLOCK_CONTRACT_MISMATCH: 'Contract mismatch — stopped',
+    STALE_CONTEXT: 'Stale poll — skipped',
+    LOCK_UNAVAILABLE: 'Journal busy — skipped',
+    WRITE_FAILED: 'Write failed — skipped',
+    CALENDAR_UNSUPPORTED: 'Calendar unsupported — stopped',
+    STATUS_UNREADABLE: 'Status unreadable',
+    STATUS_SIZE_LIMIT: 'Status too large',
+};
+
+function b510X1Count(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+function b510X1StatusModel(status) {
+    const s = status && typeof status === 'object' && !Array.isArray(status) ? status : {};
+    const code = typeof s.status === 'string' && s.status ? s.status : 'UNAVAILABLE';
+    const target = b510X1Count(s.target_resolved_per_index) || 60;
+    const counts = s.counts && typeof s.counts === 'object' ? s.counts : {};
+    const indices = ['NF', 'BNF'].map(ix => {
+        const c = counts[ix] && typeof counts[ix] === 'object' ? counts[ix] : {};
+        const delayed = c.delayed && typeof c.delayed === 'object' ? c.delayed : {};
+        return {
+            index: ix, resolved: b510X1Count(c.resolved), target,
+            unresolved: b510X1Count(c.unresolved), skipped: b510X1Count(c.skip), open: b510X1Count(c.open),
+            delayedResolved: b510X1Count(delayed.resolved),
+        };
+    });
+    const session = typeof s.session_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.session_date) ? s.session_date : '';
+    const today = (Array.isArray(s.today) ? s.today : []).slice(0, 4).map(r => ({
+        index: String(r?.index || ''), arm: String(r?.arm || ''), status: String(r?.status || ''),
+        reason: String(r?.reason || ''), side: String(r?.side || ''), strike: r?.strike ?? '',
+    }));
+    return {
+        code, label: B510_X1_STATUS_TEXT[code] || code, session, indices, today,
+        recordCount: b510X1Count(s.record_count), maxRecords: b510X1Count(s.max_records),
+        protocolId: String(s.protocol_id || ''),
+    };
+}
+
+function b510X1StatusHtml(status, esc) {
+    const m = b510X1StatusModel(status);
+    const rows = m.indices.map(i => `<div class="brain-detail"><b>${esc(i.index)}</b> primary resolved ${i.resolved}/${i.target} · unresolved ${i.unresolved} · skipped ${i.skipped}${i.open ? ` · open ${i.open}` : ''} · delayed control resolved ${i.delayedResolved}</div>`).join('');
+    const today = m.today.length ? `<div class="brain-detail">Collection session rows: ${m.today.map(r => esc(`${r.index} ${r.arm} ${r.status}${r.side ? ` ${r.side} ${r.strike}` : ''}${r.reason ? ` (${r.reason})` : ''}`)).join(' · ')}</div>` : '';
+    return `
+        <section class="section" id="x1-research-card">
+            <h2>🧪 Paper X1 buying research</h2>
+            <div class="brain-card">
+                <div class="brain-detail"><b>Quote simulation only; no trade recommendation.</b> Phone fetch times, ask entry / bid exit; not fills.</div>
+                <div class="brain-detail">Collection session: ${esc(m.session || '—')} · Status: ${esc(m.label)}</div>
+                ${rows}
+                ${today}
+                <div class="brain-detail">Records ${m.recordCount}${m.maxRecords ? `/${m.maxRecords}` : ''}${m.protocolId ? ` · ${esc(m.protocolId)}` : ''}</div>
+                <div class="v1-trade-btns" style="margin-top:8px">
+                    <button onclick="exportX1ResearchJournal()" class="btn-paper" style="flex:1;padding:7px 10px;font-size:11px">⬇ Export research journal</button>
+                </div>
+            </div>
+        </section>
+    `;
+}
+// ═══ END B510 X1 STATUS ═══
+
+function exportX1ResearchJournal() {
+    const res = readNativeJson('exportPaperBuyingResearchJournal', null);
+    if (!res) { alert('Native bridge not available. Use APK version.'); return; }
+    alert(res.ok ? `Research journal exported to Downloads: ${res.file || ''}` : `Export not completed: ${res.status || 'UNKNOWN'}`);
+}
+window.exportX1ResearchJournal = exportX1ResearchJournal;
+
 function renderML(snapshot = null) {
     const el = document.getElementById('ml-content');
     if (!el) return;
@@ -8717,6 +8799,8 @@ function renderML(snapshot = null) {
             </div>
         </section>
     `;
+
+    html += b510X1StatusHtml(readNativeJson('getPaperBuyingResearchStatus', { status: 'UNAVAILABLE' }), escapeHtml);
 
     html += `
         <section class="section">
