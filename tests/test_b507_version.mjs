@@ -6,10 +6,10 @@ import { readFileSync } from 'node:fs';
 test('b507 version labels and cache key are in sync', () => {
   const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.match(index, /<title>Market Radar v2\.6\.80<\/title>/);
-  assert.match(index, /<span class="version">v2\.6\.80 · b511<\/span>/);
-  assert.match(index, /app\.js\?v=1375"/);
-  assert.doesNotMatch(index, /2\.6\.75|b506|v=1369/);
+  assert.match(index, /<title>Market Radar v2\.6\.81<\/title>/);
+  assert.match(index, /<span class="version">v2\.6\.81 · b512<\/span>/);
+  assert.match(index, /app\.js\?v=1376"/);
+  assert.doesNotMatch(index, /2\.6\.75|b506|v=1369|2\.6\.80|b511|v=1375/);
   assert.match(app, /matching APK \(2\.6\.76 \/ b507\)/);
   assert.match(app, /const B507_REQUIRED_APK = '2\.6\.76 \(b507\)'/);
   assert.doesNotMatch(app, /2\.6\.75 \/ b506|predates/);

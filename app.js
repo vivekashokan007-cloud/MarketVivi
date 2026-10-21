@@ -9193,6 +9193,114 @@ function switchTab(tabName) {
         tc.classList.toggle('active', tc.id === `tab-${tabName}`);
     });
     STATE.activeTab = tabName;
+    b512NavGen++;                        // b512 R2: any newer navigation invalidates pending restore-scroll callbacks
+    b512SaveUiState();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// b512: UI-state restore across Activity/WebView re-creation and process restore.
+// Only navigation state (active tab, per-tab scroll offset) is kept. Never form contents, trade intents,
+// order/broker actions or anything that could re-execute: restore only switches tabs and scrolls.
+// ═══════════════════════════════════════════════════════════════
+const B512_UI_STATE_KEY = 'mr_ui_state_v1';
+const B512_UI_STATE_MAX_AGE_MS = 6 * 3600 * 1000;
+let b512UiRestoreDone = false;
+// b512 R2 ordering rule (Android + PWA): a fresh explicit destination (native openTab / user tab tap) wins; saved
+// UI state is only the fallback. Before restore runs, an explicit destination is held here and applied BY the restore.
+let b512ExplicitTab = null;
+let b512NavGen = 0;
+
+function b512TabNameOk(tab) { return typeof tab === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(tab); }
+
+// Native (MainActivity LaunchNavigation) entry point. Navigation only: switches a tab, never runs any action.
+// Returns 'ok' (switched), 'queued' (held until restore; restore will apply it) or 'rejected'.
+function b512NativeNav(tab) {
+    if (!b512TabNameOk(tab)) return 'rejected';
+    if (!b512UiRestoreDone) { b512ExplicitTab = tab; return 'queued'; }
+    let valid = [];
+    try { valid = Array.from(document.querySelectorAll('.tab-btn')).map(btn => btn.dataset.tab).filter(Boolean); } catch (e) { valid = []; }
+    if (valid.length && !valid.includes(tab)) return 'rejected';
+    switchTab(tab);
+    return 'ok';
+}
+
+// Tab-button taps: switch immediately and, if restore has not run yet, make sure restore keeps this tab.
+function b512UserNav(tab) {
+    if (!b512UiRestoreDone && b512TabNameOk(tab)) b512ExplicitTab = tab;
+    switchTab(tab);
+}
+
+// Manual scrolling/touch on the restored tab also supersedes the pending restore scroll.
+function b512SupersedeRestoreScroll() { b512NavGen++; }
+
+function b512UiStateRestorePlan(raw, todayIst, nowMs, validTabs) {
+    let st = null;
+    try { st = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+    if (!st || typeof st !== 'object' || st.v !== 1) return null;
+    if (typeof st.tab !== 'string' || !validTabs.includes(st.tab)) return null;
+    if (st.date !== todayIst) return null;                        // a new session starts on the default screen
+    const age = nowMs - Number(st.ts);
+    if (!Number.isFinite(age) || age < 0 || age > B512_UI_STATE_MAX_AGE_MS) return null;
+    const y = Number(st.scroll && st.scroll[st.tab]);
+    return { tab: st.tab, scrollY: Number.isFinite(y) && y > 0 ? Math.min(Math.round(y), 200000) : 0 };
+}
+
+function b512SaveUiState() {
+    try {
+        if (!b512UiRestoreDone || typeof localStorage === 'undefined') return;   // do not overwrite before restore ran
+        const tab = STATE.activeTab;
+        if (typeof tab !== 'string' || !tab) return;
+        let prev = {};
+        try { prev = JSON.parse(localStorage.getItem(B512_UI_STATE_KEY) || '{}') || {}; } catch (e) { prev = {}; }
+        const scroll = (prev && prev.date === API.todayIST() && prev.scroll && typeof prev.scroll === 'object') ? prev.scroll : {};
+        const y = (typeof window !== 'undefined') ? Number(window.scrollY || (document.scrollingElement || {}).scrollTop || 0) : 0;
+        if (b512LastScrollTab === tab) scroll[tab] = Math.max(0, Math.round(y));
+        b512LastScrollTab = tab;
+        localStorage.setItem(B512_UI_STATE_KEY, JSON.stringify({ v: 1, tab, scroll, ts: Date.now(), date: API.todayIST() }));
+    } catch (e) { /* storage full / disabled: navigation state is best effort */ }
+}
+let b512LastScrollTab = null;
+
+function b512RestoreUiState(validTabs) {
+    let plan = null;
+    try { plan = b512UiStateRestorePlan(localStorage.getItem(B512_UI_STATE_KEY), API.todayIST(), Date.now(), validTabs); } catch (e) { plan = null; }
+    const explicit = b512ExplicitTab;
+    b512ExplicitTab = null;
+    b512UiRestoreDone = true;
+    if (explicit && Array.isArray(validTabs) && validTabs.includes(explicit)) {
+        // a newer native/user destination arrived during startup: it wins over the saved tab and its scroll
+        b512LastScrollTab = null;
+        switchTab(explicit);
+        console.info('[boot] b512 explicit destination kept over saved UI state:', explicit);
+        return { tab: explicit, scrollY: 0, source: 'explicit' };
+    }
+    if (!plan) return null;
+    b512LastScrollTab = null;            // the switch below must not record scroll 0 over the saved offset
+    switchTab(plan.tab);
+    b512LastScrollTab = plan.tab;
+    if (plan.scrollY > 0 && typeof window !== 'undefined') {
+        const gen = b512NavGen;          // R3: stale if any navigation / manual scroll happens before the callback fires
+        const go = () => {
+            if (gen !== b512NavGen || STATE.activeTab !== plan.tab) return;
+            try { window.scrollTo(0, plan.scrollY); } catch (e) {}
+        };
+        try { requestAnimationFrame(go); } catch (e) { go(); }
+        setTimeout(go, 400);             // late-rendered cards
+    }
+    console.info('[boot] b512 UI state restored:', plan.tab, plan.scrollY);
+    return plan;
+}
+
+function b512BindUiStatePersistence() {
+    if (typeof window === 'undefined') return;
+    let t = null;
+    window.addEventListener('scroll', () => {
+        if (t) return;
+        t = setTimeout(() => { t = null; b512SaveUiState(); }, 250);
+    }, { passive: true });
+    window.addEventListener('pagehide', () => b512SaveUiState());
+    ['touchstart', 'wheel', 'keydown'].forEach(ev => window.addEventListener(ev, () => b512SupersedeRestoreScroll(), { passive: true, once: true }));
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') b512SaveUiState(); });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -9541,7 +9649,7 @@ window.exportAllData = exportAllData;
 function bindCriticalUiHandlers() {
     const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
     tabButtons.forEach(btn => {
-        btn.onclick = () => switchTab(btn.dataset.tab);
+        btn.onclick = () => b512UserNav(btn.dataset.tab);
     });
 
     const firstTab = tabButtons[0];
@@ -9651,10 +9759,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { await loadApprovedBranchProposals(true); } catch (e) { console.warn('[boot] loadApprovedBranchProposals failed:', e.message); }
     // Boot-time signal-accuracy fetch retired with afternoon positioning.
 
-    // If open trades exist, show positions tab
-    if (readNativeJson('getOpenTrades', []).length > 0) {
+    // b512: a same-day UI state from before an Activity/WebView re-creation wins; otherwise
+    // open trades show the positions tab as before.
+    const b512ValidTabs = Array.from(document.querySelectorAll('.tab-btn')).map(btn => btn.dataset.tab).filter(Boolean);
+    const b512Plan = b512RestoreUiState(b512ValidTabs);
+    if (!b512Plan && readNativeJson('getOpenTrades', []).length > 0) {
         switchTab('positions');
     }
+    b512BindUiStatePersistence();
 
     try { renderAll(); } catch (e) { console.warn('[boot] renderAll failed:', e.message); }
     try {
