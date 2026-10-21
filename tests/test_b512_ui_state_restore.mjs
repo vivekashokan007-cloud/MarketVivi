@@ -68,6 +68,6 @@ test('boot wiring: restored tab wins, open-trades default otherwise; no action r
   const boot = app.slice(app.indexOf("document.addEventListener('DOMContentLoaded'"));
   assert.match(boot, /const b512Plan = b512RestoreUiState\(b512ValidTabs\);\s*if \(!b512Plan && readNativeJson\('getOpenTrades', \[\]\)\.length > 0\) \{\s*switchTab\('positions'\);/);
   assert.match(boot, /b512BindUiStatePersistence\(\);/);
-  assert.match(app, /function switchTab\(tabName\) \{[\s\S]*?STATE\.activeTab = tabName;\s*b512SaveUiState\(\);\s*\}/);
+  assert.match(app, /function switchTab\(tabName\) \{[\s\S]*?STATE\.activeTab = tabName;\s*b512NavGen\+\+;[^\n]*\n\s*b512SaveUiState\(\);\s*\}/);
   assert.doesNotMatch(block, /placeOrder|sendOrder|execute|submit|getOpenTrades|AndroidBridge|\.value\b/);
 });

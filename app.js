@@ -9193,6 +9193,7 @@ function switchTab(tabName) {
         tc.classList.toggle('active', tc.id === `tab-${tabName}`);
     });
     STATE.activeTab = tabName;
+    b512NavGen++;                        // b512 R2: any newer navigation invalidates pending restore-scroll callbacks
     b512SaveUiState();
 }
 
@@ -9204,6 +9205,33 @@ function switchTab(tabName) {
 const B512_UI_STATE_KEY = 'mr_ui_state_v1';
 const B512_UI_STATE_MAX_AGE_MS = 6 * 3600 * 1000;
 let b512UiRestoreDone = false;
+// b512 R2 ordering rule (Android + PWA): a fresh explicit destination (native openTab / user tab tap) wins; saved
+// UI state is only the fallback. Before restore runs, an explicit destination is held here and applied BY the restore.
+let b512ExplicitTab = null;
+let b512NavGen = 0;
+
+function b512TabNameOk(tab) { return typeof tab === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(tab); }
+
+// Native (MainActivity LaunchNavigation) entry point. Navigation only: switches a tab, never runs any action.
+// Returns 'ok' (switched), 'queued' (held until restore; restore will apply it) or 'rejected'.
+function b512NativeNav(tab) {
+    if (!b512TabNameOk(tab)) return 'rejected';
+    if (!b512UiRestoreDone) { b512ExplicitTab = tab; return 'queued'; }
+    let valid = [];
+    try { valid = Array.from(document.querySelectorAll('.tab-btn')).map(btn => btn.dataset.tab).filter(Boolean); } catch (e) { valid = []; }
+    if (valid.length && !valid.includes(tab)) return 'rejected';
+    switchTab(tab);
+    return 'ok';
+}
+
+// Tab-button taps: switch immediately and, if restore has not run yet, make sure restore keeps this tab.
+function b512UserNav(tab) {
+    if (!b512UiRestoreDone && b512TabNameOk(tab)) b512ExplicitTab = tab;
+    switchTab(tab);
+}
+
+// Manual scrolling/touch on the restored tab also supersedes the pending restore scroll.
+function b512SupersedeRestoreScroll() { b512NavGen++; }
 
 function b512UiStateRestorePlan(raw, todayIst, nowMs, validTabs) {
     let st = null;
@@ -9236,13 +9264,26 @@ let b512LastScrollTab = null;
 function b512RestoreUiState(validTabs) {
     let plan = null;
     try { plan = b512UiStateRestorePlan(localStorage.getItem(B512_UI_STATE_KEY), API.todayIST(), Date.now(), validTabs); } catch (e) { plan = null; }
+    const explicit = b512ExplicitTab;
+    b512ExplicitTab = null;
     b512UiRestoreDone = true;
+    if (explicit && Array.isArray(validTabs) && validTabs.includes(explicit)) {
+        // a newer native/user destination arrived during startup: it wins over the saved tab and its scroll
+        b512LastScrollTab = null;
+        switchTab(explicit);
+        console.info('[boot] b512 explicit destination kept over saved UI state:', explicit);
+        return { tab: explicit, scrollY: 0, source: 'explicit' };
+    }
     if (!plan) return null;
     b512LastScrollTab = null;            // the switch below must not record scroll 0 over the saved offset
     switchTab(plan.tab);
     b512LastScrollTab = plan.tab;
     if (plan.scrollY > 0 && typeof window !== 'undefined') {
-        const go = () => { try { window.scrollTo(0, plan.scrollY); } catch (e) {} };
+        const gen = b512NavGen;          // R3: stale if any navigation / manual scroll happens before the callback fires
+        const go = () => {
+            if (gen !== b512NavGen || STATE.activeTab !== plan.tab) return;
+            try { window.scrollTo(0, plan.scrollY); } catch (e) {}
+        };
         try { requestAnimationFrame(go); } catch (e) { go(); }
         setTimeout(go, 400);             // late-rendered cards
     }
@@ -9258,6 +9299,7 @@ function b512BindUiStatePersistence() {
         t = setTimeout(() => { t = null; b512SaveUiState(); }, 250);
     }, { passive: true });
     window.addEventListener('pagehide', () => b512SaveUiState());
+    ['touchstart', 'wheel', 'keydown'].forEach(ev => window.addEventListener(ev, () => b512SupersedeRestoreScroll(), { passive: true, once: true }));
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') b512SaveUiState(); });
 }
 
@@ -9607,7 +9649,7 @@ window.exportAllData = exportAllData;
 function bindCriticalUiHandlers() {
     const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
     tabButtons.forEach(btn => {
-        btn.onclick = () => switchTab(btn.dataset.tab);
+        btn.onclick = () => b512UserNav(btn.dataset.tab);
     });
 
     const firstTab = tabButtons[0];
