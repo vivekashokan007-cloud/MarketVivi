@@ -5247,13 +5247,15 @@ const M0_LABELS = {
     DISABLED: 'Full-day research — collector off',
     CALENDAR_UNAVAILABLE: 'Full-day research — calendar unavailable (coverage unknown)',
     ENABLED_NOT_CAPTURING: 'Full-day research — enabled, not currently capturing',
+    INTEGRITY_FAULT: 'Full-day research — evidence integrity fault (not healthy)',
+    BACKLOG_AT_CAPACITY: 'Full-day research — archive backlog at capacity; capture paused',
 };
 
 /** Pure view: the "collecting" wording appears ONLY for label COLLECTING from the native collector. */
 function m0ResearchView(st) {
     const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     if (!st || !st.available) {
-        const why = st?.reason === 'OLDER_APK_NO_STATUS' ? 'collector status is not available in the installed app'
+        const why = (st?.reason === 'OLDER_APK_NO_STATUS' || st?.reason === 'NATIVE_METHOD_ABSENT') ? 'collector status is not available in the installed app'
             : st?.reason === 'NO_NATIVE_BRIDGE' ? 'not running inside the Market Radar app' : 'collector status unreadable';
         return `<div class="card m0-research" style="border:1px dashed #64748b;padding:10px;margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#94a3b8">Full-day research — status unknown</div><div style="font-size:11px;color:var(--text-muted)">${e(why)}</div></div>`;
     }
