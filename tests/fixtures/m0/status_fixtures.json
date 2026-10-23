@@ -1,0 +1,164 @@
+{
+ "incomplete": {
+  "schema": "research_m0_collector_v1:status",
+  "enabled": true,
+  "collection_start": "2026-10-22",
+  "calendar_version": "research_m0_cal_v1",
+  "label": "ENABLED_NOT_CAPTURING",
+  "sessions": [
+   {
+    "session_date": "2026-10-22",
+    "NF": {
+     "available": true,
+     "reason": null,
+     "expected": 78,
+     "pending": 40,
+     "captured": 20,
+     "late": 0,
+     "partial": 0,
+     "missing": 18,
+     "unavailable": 0,
+     "chain_durable_acked": 20,
+     "chain_local_or_failed": 0
+    },
+    "BNF": {
+     "available": true,
+     "reason": null,
+     "expected": 78,
+     "pending": 40,
+     "captured": 30,
+     "late": 0,
+     "partial": 0,
+     "missing": 8,
+     "unavailable": 0,
+     "chain_durable_acked": 30,
+     "chain_local_or_failed": 0
+    }
+   }
+  ],
+  "envelopes_today": {
+   "VALID": 3,
+   "NEUTRAL": 5,
+   "MISSING": 1,
+   "MALFORMED": 0,
+   "FORECAST_UNAVAILABLE": 1
+  },
+  "envelopes_upload": "LOCAL_ONLY_UPLOAD_NOT_DEPLOYED",
+  "protection": {
+   "integrity": "OK",
+   "STAGED": 0,
+   "LAG_EXCEEDED": 0,
+   "CAPACITY_REJECTED": 0
+  },
+  "conflicts_total": 0,
+  "failures": {}
+ },
+ "partial": {
+  "schema": "research_m0_collector_v1:status",
+  "enabled": true,
+  "collection_start": "2026-10-22",
+  "calendar_version": "research_m0_cal_v1",
+  "label": "COLLECTING",
+  "sessions": [
+   {
+    "session_date": "2026-10-22",
+    "NF": {
+     "available": true,
+     "reason": null,
+     "expected": 78,
+     "pending": 30,
+     "captured": 40,
+     "late": 2,
+     "partial": 4,
+     "missing": 2,
+     "unavailable": 0,
+     "chain_durable_acked": 44,
+     "chain_local_or_failed": 2
+    },
+    "BNF": {
+     "available": true,
+     "reason": null,
+     "expected": 78,
+     "pending": 30,
+     "captured": 46,
+     "late": 0,
+     "partial": 2,
+     "missing": 0,
+     "unavailable": 0,
+     "chain_durable_acked": 48,
+     "chain_local_or_failed": 0
+    }
+   }
+  ],
+  "envelopes_today": {
+   "VALID": 3,
+   "NEUTRAL": 5,
+   "MISSING": 1,
+   "MALFORMED": 0,
+   "FORECAST_UNAVAILABLE": 1
+  },
+  "envelopes_upload": "LOCAL_ONLY_UPLOAD_NOT_DEPLOYED",
+  "protection": {
+   "integrity": "OK",
+   "STAGED": 0,
+   "LAG_EXCEEDED": 0,
+   "CAPACITY_REJECTED": 0
+  },
+  "conflicts_total": 0,
+  "failures": {}
+ },
+ "complete": {
+  "schema": "research_m0_collector_v1:status",
+  "enabled": true,
+  "collection_start": "2026-10-22",
+  "calendar_version": "research_m0_cal_v1",
+  "label": "COLLECTING",
+  "sessions": [
+   {
+    "session_date": "2026-10-22",
+    "NF": {
+     "available": true,
+     "reason": null,
+     "expected": 78,
+     "pending": 0,
+     "captured": 78,
+     "late": 0,
+     "partial": 0,
+     "missing": 0,
+     "unavailable": 0,
+     "chain_durable_acked": 78,
+     "chain_local_or_failed": 0
+    },
+    "BNF": {
+     "available": true,
+     "reason": null,
+     "expected": 78,
+     "pending": 0,
+     "captured": 78,
+     "late": 0,
+     "partial": 0,
+     "missing": 0,
+     "unavailable": 0,
+     "chain_durable_acked": 78,
+     "chain_local_or_failed": 0
+    }
+   }
+  ],
+  "envelopes_today": {
+   "VALID": 3,
+   "NEUTRAL": 5,
+   "MISSING": 1,
+   "MALFORMED": 0,
+   "FORECAST_UNAVAILABLE": 1
+  },
+  "envelopes_upload": "LOCAL_ONLY_UPLOAD_NOT_DEPLOYED",
+  "protection": {
+   "integrity": "OK",
+   "STAGED": 0,
+   "LAG_EXCEEDED": 0,
+   "CAPACITY_REJECTED": 0
+  },
+  "conflicts_total": 0,
+  "failures": {}
+ }
+}

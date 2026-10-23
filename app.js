@@ -5230,6 +5230,153 @@ function renderEvControl() {
     </div>`;
 }
 
+// ── M0 full-day research collector (collection only; no conclusions) ──────────────────────────────────────
+/** Parsed native collector status, or {available:false, reason}. Never throws. */
+function m0ResearchStatus() {
+    if (typeof NativeBridge === 'undefined') return { available: false, reason: 'NO_NATIVE_BRIDGE' };
+    if (typeof NativeBridge.getResearchCollectorStatus !== 'function') return { available: false, reason: 'OLDER_APK_NO_STATUS' };
+    try {
+        const st = JSON.parse(NativeBridge.getResearchCollectorStatus() || 'null');
+        if (!st || typeof st !== 'object' || typeof st.label !== 'string') return { available: false, reason: 'MALFORMED' };
+        return Object.assign({ available: true }, st);
+    } catch (_) { return { available: false, reason: 'STATUS_ERROR' }; }
+}
+
+const M0_LABELS = {
+    COLLECTING: 'Full-day research — collecting',
+    DISABLED: 'Full-day research — collector off',
+    CALENDAR_UNAVAILABLE: 'Full-day research — calendar unavailable (coverage unknown)',
+    ENABLED_NOT_CAPTURING: 'Full-day research — enabled, not currently capturing',
+    INTEGRITY_FAULT: 'Full-day research — evidence integrity fault (not healthy)',
+    BACKLOG_AT_CAPACITY: 'Full-day research — archive backlog at capacity; capture paused',
+};
+
+/** Pure view: the "collecting" wording appears ONLY for label COLLECTING from the native collector. */
+function m0ResearchView(st) {
+    const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    if (!st || !st.available) {
+        const why = (st?.reason === 'OLDER_APK_NO_STATUS' || st?.reason === 'NATIVE_METHOD_ABSENT') ? 'collector status is not available in the installed app'
+            : st?.reason === 'NO_NATIVE_BRIDGE' ? 'not running inside the Market Radar app' : 'collector status unreadable';
+        return `<div class="card m0-research" style="border:1px dashed #64748b;padding:10px;margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#94a3b8">Full-day research — status unknown</div><div style="font-size:11px;color:var(--text-muted)">${e(why)}</div></div>`;
+    }
+    const title = M0_LABELS[st.label] || 'Full-day research — status unknown';
+    const rows = [];
+    for (const s of (Array.isArray(st.sessions) ? st.sessions : [])) {
+        for (const ix of ['NF', 'BNF']) {
+            const c = s && s[ix];
+            if (!c) continue;
+            if (c.available === false) { rows.push(`<tr><td>${e(s.session_date)}</td><td>${ix}</td><td colspan="7">coverage unknown (${e(c.reason)})</td></tr>`); continue; }
+            rows.push(`<tr><td>${e(s.session_date)}</td><td>${ix}</td><td>${e(c.expected)}</td><td>${e(c.pending)}</td><td>${e(c.captured)}</td><td>${e(c.late)}</td><td>${e(c.partial)}</td><td>${e(c.missing)}</td><td>${e(c.chain_durable_acked)} / ${e(c.chain_local_or_failed)}</td></tr>`);
+        }
+    }
+    const ev = st.envelopes_today || {};
+    const pr = st.protection || {};
+    const fails = st.failures && typeof st.failures === 'object' ? Object.entries(st.failures).map(([k, v]) => `${k}:${v}`).join(', ') : '';
+    return `<div class="card m0-research" style="border:1px dashed #38bdf8;padding:10px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#38bdf8">${e(title)}</div>
+        <div style="font-size:11px;color:var(--text-muted)">Collection start: ${e(st.collection_start || 'not started')} · calendar ${e(st.calendar_version || '?')}</div>
+        <table style="font-size:11px;width:100%"><tr><th>Session</th><th>Idx</th><th>Exp</th><th>Pend</th><th>Capt</th><th>Late</th><th>Part</th><th>Miss</th><th>Durable / local</th></tr>${rows.join('')}</table>
+        <div style="font-size:11px">Forecast envelopes today: valid ${e(ev.VALID ?? 0)} · neutral ${e(ev.NEUTRAL ?? 0)} · missing ${e(ev.MISSING ?? 0)} · malformed ${e(ev.MALFORMED ?? 0)} · unavailable ${e(ev.FORECAST_UNAVAILABLE ?? 0)} (stored on device only: ${e(st.envelopes_upload || 'LOCAL_ONLY')})</div>
+        <div style="font-size:11px">Integrity: ${e(pr.integrity || 'unknown')} · staged ${e(pr.STAGED ?? 0)} · lag exceeded ${e(pr.LAG_EXCEEDED ?? 0)} · capacity rejected ${e(pr.CAPACITY_REJECTED ?? 0)} · conflicts ${e(st.conflicts_total ?? 0)}${fails ? ' · collector errors ' + e(fails) : ''}</div>
+        ${m0CapacityView(st.capacity, e)}
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Collection only — no winner, profitability, validated EV, multiday maturity or trained-model claim. EV v1.2 Observe is a separate label, not an execution mode.</div>
+        <div style="margin-top:6px"><button onclick="m0SetResearchEnabled(${st.enabled ? 'false' : 'true'})" style="padding:4px 12px;font-size:12px;border:1px solid #38bdf8;background:transparent;color:#38bdf8;border-radius:6px">${st.enabled ? 'Turn collector off' : 'Turn collector on'}</button>
+        <button onclick="m0ExportResearch()" style="margin-left:6px;padding:4px 12px;font-size:12px;border:1px solid #94a3b8;background:transparent;color:#94a3b8;border-radius:6px">Export research evidence (read-only)</button></div>
+        ${m0ToggleReadbackView(e)}
+        <div style="font-size:11px;color:var(--text-muted)">${e(st.toggle_semantics || 'Turning the collector off stops new research attempts only; market polling, position monitoring and evening evaluation are not affected.')}</div>
+        ${m0ExportResultView(e)}
+    </div>`;
+}
+
+// ── M0 Stage 2 CI-4: utilisation from the native capacity status (accepted formula; unknown is never 0) ──────
+const M0_U_FIELDS = ['active', 'ledger_bytes', 'capacity', 'max_bytes', 'entry_growth_reserve_bytes', 'compaction_reserve_bytes', 'reject_reserve_bytes'];
+/** {known:true,u_count,u_bytes,u,...} or {known:false, reason}. Caps come from the status, never assumed. */
+function m0Utilization(cap) {
+    if (!cap || typeof cap !== 'object') return { known: false, reason: 'capacity status not available in the installed app' };
+    if (cap.known === false) return { known: false, reason: `${cap.integrity || 'UNKNOWN'}${cap.reason ? ' (' + cap.reason + ')' : ''}` };
+    for (const k of M0_U_FIELDS) {
+        const v = cap[k];
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return { known: false, reason: `malformed ${k}` };
+    }
+    const denom = cap.max_bytes - cap.reject_reserve_bytes;
+    if (cap.capacity <= 0 || denom <= 0) return { known: false, reason: 'malformed caps' };
+    const u_count = cap.active / cap.capacity;
+    const u_bytes = (cap.ledger_bytes + cap.entry_growth_reserve_bytes * cap.active + cap.compaction_reserve_bytes) / denom;
+    return { known: true, u_count, u_bytes, u: Math.max(u_count, u_bytes), active: cap.active, capacity: cap.capacity,
+        ledger_bytes: cap.ledger_bytes, max_bytes: cap.max_bytes, denom };
+}
+
+function m0CapacityView(cap, e) {
+    const u = m0Utilization(cap);
+    const pct = (x) => (x * 100).toFixed(2) + '%';
+    const fresh = cap && typeof cap.ledger_age_ms === 'number' ? `ledger written ${Math.round(cap.ledger_age_ms / 60000)} min ago` : 'ledger age unknown';
+    const at = cap && typeof cap.computed_ms === 'number' ? new Date(cap.computed_ms).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST' : 'unknown';
+    if (!u.known) return `<div class="m0-capacity" style="font-size:11px;color:#f59e0b">Capacity: UNKNOWN — ${e(u.reason)} (not zero; do not start a session on this reading) · read ${e(at)}</div>`;
+    const ref = cap && cap.counts ? `staged ${e(cap.counts.STAGED)} · lag exceeded ${e(cap.counts.LAG_EXCEEDED)} · archive acked ${e(cap.counts.ARCHIVE_ACKED)} · released ${e(cap.counts.RELEASED)}` : '';
+    return `<div class="m0-capacity" style="font-size:11px">Capacity: active ${e(u.active)} / ${e(u.capacity)} (U_count ${e(pct(u.u_count))}) · sealed ledger ${e(u.ledger_bytes)} B, reserve-inclusive ${e(u.ledger_bytes + (cap.entry_growth_reserve_bytes * u.active) + cap.compaction_reserve_bytes)} / ${e(u.denom)} B (U_bytes ${e(pct(u.u_bytes))}) · <b>U ${e(pct(u.u))}</b></div>
+        <div style="font-size:11px">${ref} · refusals: capacity rejected ${e(cap.rejected_total)} · identity conflicts ${e(cap.identity_conflicts_total)} · byte-cap refusals (this process) ${e(cap.cap_refusals_process ?? 'unknown')} · integrity ${e(cap.integrity)} · ${e(fresh)} · read ${e(at)}</div>`;
+}
+
+// ── toggle with actual readback ────────────────────────────────────────────────────────────────────────────
+let m0LastToggle = null;
+function m0ToggleReadbackView(e) {
+    if (!m0LastToggle) return '';
+    const t = m0LastToggle;
+    const said = (v) => v === true ? 'on' : v === false ? 'off' : 'unknown';
+    const ok = t.readback === t.requested;
+    return `<div class="m0-toggle-readback" style="font-size:11px;color:${ok ? 'var(--text-muted)' : '#f59e0b'}">Requested ${said(t.requested)} · app reads back ${said(t.readback)}${ok ? '' : ' — NOT applied; check the collector state'}</div>`;
+}
+
+// ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
+let m0ExportState = null;
+const M0_PWA_IDENTITY = { version: '2.6.83', build: 514, app_js_v: 1378 };
+function m0ExportResultView(e) {
+    const r = m0ExportState;
+    if (!r) return '';
+    const st = String(r.status || 'UNKNOWN');
+    const good = st === 'COMPLETE_VERIFIED';
+    const rb = r.readback && typeof r.readback === 'object' ? (r.readback.ok ? `readback verified (${e(r.readback.files_verified)} files)` : `readback FAILED (${e(r.readback.reason || (r.readback.mismatches || []).join(', '))})`) : '';
+    const findings = r.evidence_status && r.evidence_status !== 'NO_FINDINGS' ? ` · evidence findings: ${e(r.evidence_status)} (corrupt ${e(r.corrupt_count)}, missing refs ${e(r.missing_reference_count)}) — exported as-is, not repaired` : '';
+    const partial = r.partial_output && r.partial_output !== 'NONE_WRITTEN' ? ` · the saved document is INCOMPLETE and not valid evidence` : '';
+    return `<div class="m0-export" style="font-size:11px;color:${good ? '#22c55e' : '#f59e0b'}">Export: ${e(st)}${r.zip_sha256 ? ' · zip sha256 ' + e(r.zip_sha256) : ''}${r.zip_bytes != null ? ' · ' + e(r.zip_bytes) + ' B' : ''}${rb ? ' · ' + rb : ''}${findings}${partial}${r.error ? ' · ' + e(r.error) : ''}</div>`;
+}
+function m0ExportResearch() {
+    if (typeof NativeBridge === 'undefined' || typeof NativeBridge.exportResearchEvidence !== 'function') {
+        m0ExportState = { status: 'UNAVAILABLE', error: 'export is not available in the installed app' };
+    } else {
+        try { m0ExportState = JSON.parse(NativeBridge.exportResearchEvidence(JSON.stringify(M0_PWA_IDENTITY)) || 'null') || { status: 'UNKNOWN' }; }
+        catch (_) { m0ExportState = { status: 'ERROR', error: 'export call failed' }; }
+    }
+    renderResearchCollector();
+}
+/** Called by the native layer when the SAF export finishes (or is cancelled / fails). */
+function m0OnResearchExportResult(json) {
+    try { m0ExportState = typeof json === 'string' ? JSON.parse(json) : json; } catch (_) { m0ExportState = { status: 'MALFORMED_RESULT' }; }
+    renderResearchCollector();
+}
+if (typeof window !== 'undefined') window.m0OnResearchExportResult = m0OnResearchExportResult;
+
+function renderResearchCollector() {
+    const el = document.getElementById('research-m0');
+    if (!el) return;
+    el.innerHTML = m0ResearchView(m0ResearchStatus());
+}
+
+function m0SetResearchEnabled(on) {
+    let readback;
+    try {
+        if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.setResearchCollectorEnabled === 'function') {
+            const r = JSON.parse(NativeBridge.setResearchCollectorEnabled(!!on) || 'null');
+            readback = r && typeof r.enabled === 'boolean' ? r.enabled : undefined;
+        }
+    } catch (_) { /* status below reports the real state */ }
+    // the card is re-read from native; the readback shown is the app's actual state, not the request
+    const st = m0ResearchStatus();
+    if (readback === undefined && st.available && typeof st.enabled === 'boolean') readback = st.enabled;
+    m0LastToggle = { requested: !!on, readback };
+    renderResearchCollector();
+}
+
 const EV12_SET_ACK_SCHEMA = 'ev_set_ack_v1';
 
 /** Parsed checked-setter acknowledgment, or null when missing/malformed. */
@@ -6087,6 +6234,7 @@ function renderAll(snapshot = null) {
         refreshBrainData(snap);  // F.2: keep bd fresh for all render functions
         try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
+        try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
@@ -9721,6 +9869,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { initTheme(null); } catch (e) { console.warn('[boot] early theme restore failed:', e.message); }
     try { reconcileNativeSessionUi(); } catch (e) { console.warn('[boot] early native session restore failed:', e.message); }
     try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
+    try { renderResearchCollector(); } catch (e) { console.warn('[boot] M0 research render failed:', e.message); }   // read-only
 
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.

@@ -104,6 +104,10 @@ jobs:
           MARKETAPP_DIR="$PWD/_marketapp" node --test tests/test_b507_overnight_chain.mjs | tee /tmp/b507chain.log
           grep -q '^# pass 7' /tmp/b507chain.log
           grep -q '^# fail 0' /tmp/b507chain.log
+          # M0 Batch 1 W1: research collector through the REAL facade (AndroidBridge only)
+          MARKETAPP_DIR="$PWD/_marketapp" node --test tests/test_m0_real_bridge.mjs | tee /tmp/m0bridge.log
+          grep -q '^# pass 4' /tmp/m0bridge.log
+          grep -q '^# fail 0' /tmp/m0bridge.log
           (cd _marketapp && git rev-parse HEAD)
 
       - name: Verify Pages artifact excludes repository documents
