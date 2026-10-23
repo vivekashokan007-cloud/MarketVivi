@@ -5230,6 +5230,72 @@ function renderEvControl() {
     </div>`;
 }
 
+// ── M0 full-day research collector (collection only; no conclusions) ──────────────────────────────────────
+/** Parsed native collector status, or {available:false, reason}. Never throws. */
+function m0ResearchStatus() {
+    if (typeof NativeBridge === 'undefined') return { available: false, reason: 'NO_NATIVE_BRIDGE' };
+    if (typeof NativeBridge.getResearchCollectorStatus !== 'function') return { available: false, reason: 'OLDER_APK_NO_STATUS' };
+    try {
+        const st = JSON.parse(NativeBridge.getResearchCollectorStatus() || 'null');
+        if (!st || typeof st !== 'object' || typeof st.label !== 'string') return { available: false, reason: 'MALFORMED' };
+        return Object.assign({ available: true }, st);
+    } catch (_) { return { available: false, reason: 'STATUS_ERROR' }; }
+}
+
+const M0_LABELS = {
+    COLLECTING: 'Full-day research — collecting',
+    DISABLED: 'Full-day research — collector off',
+    CALENDAR_UNAVAILABLE: 'Full-day research — calendar unavailable (coverage unknown)',
+    ENABLED_NOT_CAPTURING: 'Full-day research — enabled, not currently capturing',
+    INTEGRITY_FAULT: 'Full-day research — evidence integrity fault (not healthy)',
+    BACKLOG_AT_CAPACITY: 'Full-day research — archive backlog at capacity; capture paused',
+};
+
+/** Pure view: the "collecting" wording appears ONLY for label COLLECTING from the native collector. */
+function m0ResearchView(st) {
+    const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    if (!st || !st.available) {
+        const why = (st?.reason === 'OLDER_APK_NO_STATUS' || st?.reason === 'NATIVE_METHOD_ABSENT') ? 'collector status is not available in the installed app'
+            : st?.reason === 'NO_NATIVE_BRIDGE' ? 'not running inside the Market Radar app' : 'collector status unreadable';
+        return `<div class="card m0-research" style="border:1px dashed #64748b;padding:10px;margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#94a3b8">Full-day research — status unknown</div><div style="font-size:11px;color:var(--text-muted)">${e(why)}</div></div>`;
+    }
+    const title = M0_LABELS[st.label] || 'Full-day research — status unknown';
+    const rows = [];
+    for (const s of (Array.isArray(st.sessions) ? st.sessions : [])) {
+        for (const ix of ['NF', 'BNF']) {
+            const c = s && s[ix];
+            if (!c) continue;
+            if (c.available === false) { rows.push(`<tr><td>${e(s.session_date)}</td><td>${ix}</td><td colspan="7">coverage unknown (${e(c.reason)})</td></tr>`); continue; }
+            rows.push(`<tr><td>${e(s.session_date)}</td><td>${ix}</td><td>${e(c.expected)}</td><td>${e(c.pending)}</td><td>${e(c.captured)}</td><td>${e(c.late)}</td><td>${e(c.partial)}</td><td>${e(c.missing)}</td><td>${e(c.chain_durable_acked)} / ${e(c.chain_local_or_failed)}</td></tr>`);
+        }
+    }
+    const ev = st.envelopes_today || {};
+    const pr = st.protection || {};
+    const fails = st.failures && typeof st.failures === 'object' ? Object.entries(st.failures).map(([k, v]) => `${k}:${v}`).join(', ') : '';
+    return `<div class="card m0-research" style="border:1px dashed #38bdf8;padding:10px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#38bdf8">${e(title)}</div>
+        <div style="font-size:11px;color:var(--text-muted)">Collection start: ${e(st.collection_start || 'not started')} · calendar ${e(st.calendar_version || '?')}</div>
+        <table style="font-size:11px;width:100%"><tr><th>Session</th><th>Idx</th><th>Exp</th><th>Pend</th><th>Capt</th><th>Late</th><th>Part</th><th>Miss</th><th>Durable / local</th></tr>${rows.join('')}</table>
+        <div style="font-size:11px">Forecast envelopes today: valid ${e(ev.VALID ?? 0)} · neutral ${e(ev.NEUTRAL ?? 0)} · missing ${e(ev.MISSING ?? 0)} · malformed ${e(ev.MALFORMED ?? 0)} · unavailable ${e(ev.FORECAST_UNAVAILABLE ?? 0)} (stored on device only: ${e(st.envelopes_upload || 'LOCAL_ONLY')})</div>
+        <div style="font-size:11px">Integrity: ${e(pr.integrity || 'unknown')} · staged ${e(pr.STAGED ?? 0)} · lag exceeded ${e(pr.LAG_EXCEEDED ?? 0)} · capacity rejected ${e(pr.CAPACITY_REJECTED ?? 0)} · conflicts ${e(st.conflicts_total ?? 0)}${fails ? ' · collector errors ' + e(fails) : ''}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Collection only — no winner, profitability, validated EV, multiday maturity or trained-model claim. EV v1.2 Observe is a separate label, not an execution mode.</div>
+        <div style="margin-top:6px"><button onclick="m0SetResearchEnabled(${st.enabled ? 'false' : 'true'})" style="padding:4px 12px;font-size:12px;border:1px solid #38bdf8;background:transparent;color:#38bdf8;border-radius:6px">${st.enabled ? 'Turn collector off' : 'Turn collector on'}</button></div>
+    </div>`;
+}
+
+function renderResearchCollector() {
+    const el = document.getElementById('research-m0');
+    if (!el) return;
+    el.innerHTML = m0ResearchView(m0ResearchStatus());
+}
+
+function m0SetResearchEnabled(on) {
+    try {
+        if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.setResearchCollectorEnabled === 'function') NativeBridge.setResearchCollectorEnabled(!!on);
+    } catch (_) { /* status below reports the real state */ }
+    renderResearchCollector();
+}
+
 const EV12_SET_ACK_SCHEMA = 'ev_set_ack_v1';
 
 /** Parsed checked-setter acknowledgment, or null when missing/malformed. */
@@ -6087,6 +6153,7 @@ function renderAll(snapshot = null) {
         refreshBrainData(snap);  // F.2: keep bd fresh for all render functions
         try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
+        try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
@@ -9721,6 +9788,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { initTheme(null); } catch (e) { console.warn('[boot] early theme restore failed:', e.message); }
     try { reconcileNativeSessionUi(); } catch (e) { console.warn('[boot] early native session restore failed:', e.message); }
     try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
+    try { renderResearchCollector(); } catch (e) { console.warn('[boot] M0 research render failed:', e.message); }   // read-only
 
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
