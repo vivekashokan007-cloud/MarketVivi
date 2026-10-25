@@ -67,7 +67,10 @@ test('S2a. utilisation uses the accepted formula with caps read from status (Cod
 
 test('S2b. unknown / malformed / corrupt capacity is explicit, never zero', () => {
   for (const [cap, re] of [[null, /not available in the installed app/], [CAP({ known: false, integrity: 'LEDGER_CORRUPT', reason: 'ledger_unreadable:digest_mismatch', active: null }), /LEDGER_CORRUPT \(ledger_unreadable:digest_mismatch\)/],
-    [CAP({ ledger_bytes: '301773' }), /malformed ledger_bytes/], [CAP({ active: -1 }), /malformed active/], [CAP({ capacity: undefined }), /malformed capacity/], [CAP({ active: 1.5 }), /malformed active/]]) {
+    [CAP({ ledger_bytes: '301773' }), /malformed ledger_bytes/],
+    [CAP({ counts: { STAGED: 774, LAG_EXCEEDED: 0, ARCHIVE_ACKED: 0, RELEASED: 0, UNRECOGNISED: 1 } }), /unsupported ledger state UNRECOGNISED/],
+    [CAP({ known: undefined }), /not marked known/], [CAP({ counts: { STAGED: 1, LAG_EXCEEDED: 0, ARCHIVE_ACKED: 0, RELEASED: 0 } }), /active does not equal/],
+    [CAP({ known: false, integrity: 'MALFORMED', reason: 'entry_state_unsupported:UNRECOGNISED', active: null, u: null }), /MALFORMED \(entry_state_unsupported:UNRECOGNISED\)/], [CAP({ active: -1 }), /malformed active/], [CAP({ capacity: undefined }), /malformed capacity/], [CAP({ active: 1.5 }), /malformed active/]]) {
     const { ab } = androidBridge({ cap });
     const h = card(chain(ab));
     assert.match(h, /Capacity: UNKNOWN — /); assert.match(h, re);

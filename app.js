@@ -5289,15 +5289,25 @@ function m0ResearchView(st) {
 }
 
 // ── M0 Stage 2 CI-4: utilisation from the native capacity status (accepted formula; unknown is never 0) ──────
+const M0_LEDGER_STATES = ['STAGED', 'LAG_EXCEEDED', 'ARCHIVE_ACKED', 'RELEASED'];
 const M0_U_FIELDS = ['active', 'ledger_bytes', 'capacity', 'max_bytes', 'entry_growth_reserve_bytes', 'compaction_reserve_bytes', 'reject_reserve_bytes'];
 /** {known:true,u_count,u_bytes,u,...} or {known:false, reason}. Caps come from the status, never assumed. */
 function m0Utilization(cap) {
     if (!cap || typeof cap !== 'object') return { known: false, reason: 'capacity status not available in the installed app' };
     if (cap.known === false) return { known: false, reason: `${cap.integrity || 'UNKNOWN'}${cap.reason ? ' (' + cap.reason + ')' : ''}` };
+    if (cap.known !== true) return { known: false, reason: 'capacity reading not marked known' };
     for (const k of M0_U_FIELDS) {
         const v = cap[k];
         if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return { known: false, reason: `malformed ${k}` };
     }
+    // R2 (CDX-S2-BUILD-R1): a native reading with any unsupported state counter is not trusted as a number
+    const counts = cap.counts;
+    if (!counts || typeof counts !== 'object') return { known: false, reason: 'malformed counts' };
+    for (const [k, v] of Object.entries(counts)) {
+        if (!M0_LEDGER_STATES.includes(k)) return { known: false, reason: `unsupported ledger state ${k}` };
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return { known: false, reason: `malformed count ${k}` };
+    }
+    if ((counts.STAGED || 0) + (counts.LAG_EXCEEDED || 0) + (counts.ARCHIVE_ACKED || 0) !== cap.active) return { known: false, reason: 'active does not equal STAGED+LAG_EXCEEDED+ARCHIVE_ACKED' };
     const denom = cap.max_bytes - cap.reject_reserve_bytes;
     if (cap.capacity <= 0 || denom <= 0) return { known: false, reason: 'malformed caps' };
     const u_count = cap.active / cap.capacity;
