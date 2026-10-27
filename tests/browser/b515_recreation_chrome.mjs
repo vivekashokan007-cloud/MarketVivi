@@ -171,5 +171,45 @@ await scenario('cold-start-next-day-no-resurrection', async (context, logs) => {
   return { after: { tab: after.tab, fii: after.fii }, actions: after.calls.filter(c => ACTIONS.test(c)), restoreLogs: logs.filter(l => /ui-restore/.test(l)) };
 });
 
+// R1 (Codex b515 review): the SAME live document crosses IST midnight; then only a flush (native onPause) happens, or
+// a genuine edit to one field on the new day. Yesterday's untouched edits must never come back on the new day.
+await scenario('live-document-crosses-midnight-then-flush', async (context, logs) => {
+  const a = await open(context, logs, 'P1');
+  await bootDone(a.page, logs, 'P1');
+  await typeIn(a.page, 'in-fii-cash', '-1200');
+  await typeIn(a.page, 'in-eve-gift', '23300');
+  await a.page.evaluate(() => window.mrUiFlush && window.mrUiFlush('native_pause'));     // legitimate 26 Oct flush
+  const dateBefore = await a.page.evaluate(() => API.todayIST());
+  await a.page.evaluate(() => { window.__shiftMs = 24 * 3600 * 1000; });                 // same document, next IST day
+  const dateAfter = await a.page.evaluate(() => API.todayIST());
+  await a.page.evaluate(() => window.mrUiFlush && window.mrUiFlush('native_pause'));     // flush only, no edit
+  const storedAfterFlush = await a.page.evaluate(() => localStorage.getItem('mr_ui_drafts_v1'));
+  await a.page.close({ runBeforeUnload: false });
+  await context.addInitScript(`window.__shiftMs = 24 * 3600 * 1000;`);
+  const b = await open(context, logs, 'P2');
+  await bootDone(b.page, logs, 'P2');
+  const after = await state(b.page);
+  return { dateBefore, dateAfter, storedAfterFlush, after: { fii: after.fii, gift: after.gift }, actions: after.calls.filter(c => ACTIONS.test(c)),
+    restoreLogs: logs.filter(l => /ui-restore/.test(l)) };
+});
+
+await scenario('live-document-crosses-midnight-then-one-real-edit', async (context, logs) => {
+  const a = await open(context, logs, 'P1');
+  await bootDone(a.page, logs, 'P1');
+  await typeIn(a.page, 'in-fii-cash', '-1200');
+  await typeIn(a.page, 'in-eve-gift', '23300');
+  await a.page.evaluate(() => { window.__shiftMs = 24 * 3600 * 1000; });
+  await typeIn(a.page, 'in-eve-gift', '23400');                                           // the genuine new-day edit
+  await a.page.evaluate(() => window.mrUiFlush && window.mrUiFlush('native_pause'));
+  const stored = await a.page.evaluate(() => JSON.parse(localStorage.getItem('mr_ui_drafts_v1') || 'null'));
+  await a.page.close({ runBeforeUnload: false });
+  await context.addInitScript(`window.__shiftMs = 24 * 3600 * 1000;`);
+  const b = await open(context, logs, 'P2');
+  await bootDone(b.page, logs, 'P2');
+  const after = await state(b.page);
+  return { storedFields: stored && Object.keys(stored.fields), storedDate: stored && stored.date, after: { fii: after.fii, gift: after.gift },
+    actions: after.calls.filter(c => ACTIONS.test(c)), restoreLogs: logs.filter(l => /ui-restore/.test(l)) };
+});
+
 await browser.close(); server.close();
 console.log(JSON.stringify({ pwaDir: PWA, marketappDir: MA, delayMs: DELAY_MS, chrome: CHROME, results }, null, 2));

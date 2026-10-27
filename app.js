@@ -9365,25 +9365,40 @@ function expandMorning(options = {}) {
 // field, and only while that field still shows the authoritative value it had when the draft was typed (base) — so a
 // saved/locked morning record or a newer evening reference always wins. Restore sets .value only: it dispatches no
 // input/change event, calls no bridge method and never saves, locks or scans.
+// R1 (Codex b515 review): every draft field carries the IST date (and time) of the genuine user edit that produced it.
+// A flush (hidden / pagehide / freeze / native onPause) never redates an edit: on an IST date transition the
+// previous day's edits are dropped from tracking before anything is serialised, and only a new input/change event on
+// that same field makes it a draft of the new day. Untouched old fields are never carried by another field's edit.
+// R2 (Codex b515 review): after an ACKNOWLEDGED save the baseline of the saved fields advances to the stored record
+// (exactly what the next boot's authoritative restore will show) and their saved drafts are cleared; other unsaved
+// fields keep their drafts. A failed / rejected / cancelled save never reaches the hook.
 // ═══════════════════════════════════════════════════════════════
 const B515_DRAFT_KEY = 'mr_ui_drafts_v1';
+const B515_DRAFT_VERSION = 2;          // v2: per-field origin date/time (R1). v1 records are discarded as malformed.
 const B515_DRAFT_MAX_AGE_MS = 12 * 3600 * 1000;
 const B515_DRAFT_FIELDS = ['in-fii-cash', 'in-fii-short', 'in-dii-cash', 'in-fii-idx-fut', 'in-fii-stk-fut',
     'in-dow-close', 'in-crude-settle', 'in-upstox-bias', 'in-gift-spot', 'in-eve-dow', 'in-eve-crude', 'in-eve-gift'];
-let b515DraftBase = null;      // id -> authoritative value at boot (before drafts were applied); null until armed
+let b515DraftBase = null;      // id -> authoritative value (boot restore, advanced by an acknowledged save); null until armed
+let b515DraftOrigin = {};      // id -> { d: IST date, t: ms } of the genuine edit (or restored draft) behind the field value
+let b515DraftAcked = {};       // id -> form text that an acknowledged save accepted (stored as b515DraftBase[id])
+let b515DraftDate = null;      // IST date the tracking was last reconciled for
 let b515LastDraftSummary = { status: 'not_run', applied: 0, skipped: {} };
 
 function b515DraftValueOk(v) {
     return typeof v === 'string' && v.length <= 32 && /^[0-9A-Za-z .,+%\-\u2212\u2013\u2014]*$/.test(v);
 }
 
+function b515DraftOriginOk(d) {
+    return !!d && typeof d.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.d) && Number.isFinite(Number(d.t)) && Number(d.t) > 0;
+}
+
 // Pure: which drafts may be applied. `fields` maps id -> { value, disabled, options? } as the page shows it NOW.
 function b515DraftRestorePlan(raw, todayIst, nowMs, fields) {
-    const out = { status: 'none', apply: {}, skipped: {} };
+    const out = { status: 'none', apply: {}, origin: {}, skipped: {} };
     if (raw === null || raw === undefined || raw === '') return out;
     let st = null;
     try { st = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { out.status = 'malformed'; return out; }
-    if (!st || typeof st !== 'object' || st.v !== 1 || !st.fields || typeof st.fields !== 'object') { out.status = 'malformed'; return out; }
+    if (!st || typeof st !== 'object' || st.v !== B515_DRAFT_VERSION || !st.fields || typeof st.fields !== 'object') { out.status = 'malformed'; return out; }
     if (st.date !== todayIst) { out.status = 'stale_date'; return out; }
     const age = nowMs - Number(st.ts);
     if (!Number.isFinite(age) || age < 0 || age > B515_DRAFT_MAX_AGE_MS) { out.status = 'stale_age'; return out; }
@@ -9392,12 +9407,17 @@ function b515DraftRestorePlan(raw, todayIst, nowMs, fields) {
         const d = st.fields[id];
         const f = fields[id];
         if (!B515_DRAFT_FIELDS.includes(id) || !f) { out.skipped[id] = 'not_allowlisted'; continue; }
-        if (!d || !b515DraftValueOk(d.v) || !b515DraftValueOk(d.base)) { out.skipped[id] = 'malformed'; continue; }
+        if (!d || !b515DraftValueOk(d.v) || !b515DraftValueOk(d.base) || !b515DraftOriginOk(d)) { out.skipped[id] = 'malformed'; continue; }
+        // R1: the edit itself must be from today's IST session and recent, whatever date the record was flushed under.
+        if (d.d !== todayIst) { out.skipped[id] = 'stale_date'; continue; }
+        const fieldAge = nowMs - Number(d.t);
+        if (fieldAge < 0 || fieldAge > B515_DRAFT_MAX_AGE_MS) { out.skipped[id] = 'stale_age'; continue; }
         if (f.disabled) { out.skipped[id] = 'locked'; continue; }
         if (String(f.value) !== d.base) { out.skipped[id] = 'authority_changed'; continue; }
         if (Array.isArray(f.options) && !f.options.includes(d.v)) { out.skipped[id] = 'not_an_option'; continue; }
         if (d.v === d.base) continue;
         out.apply[id] = d.v;
+        out.origin[id] = { d: d.d, t: Number(d.t) };
     }
     return out;
 }
@@ -9420,41 +9440,97 @@ function b515RestoreDrafts() {
         if (morningLocked && !id.startsWith('in-eve-')) f.disabled = true;   // a locked morning record is the authority
         fields[id] = f; base[id] = f.value;
     }
-    let plan = { status: 'storage_error', apply: {}, skipped: {} };
-    try { plan = b515DraftRestorePlan(localStorage.getItem(B515_DRAFT_KEY), API.todayIST(), Date.now(), fields); } catch (e) {}
+    let today = null;
+    try { today = API.todayIST(); } catch (e) { today = null; }
+    let plan = { status: 'storage_error', apply: {}, origin: {}, skipped: {} };
+    try { plan = b515DraftRestorePlan(localStorage.getItem(B515_DRAFT_KEY), today, Date.now(), fields); } catch (e) {}
     let raw = null;
     try { raw = JSON.parse(localStorage.getItem(B515_DRAFT_KEY) || 'null'); } catch (e) { raw = null; }
-    // The authoritative base travels with an applied draft, so a second re-creation can still restore it.
+    const origin = {};
+    // The authoritative base and the edit's origin travel with an applied draft, so a second re-creation can still
+    // restore it and a later flush cannot redate it.
     for (const [id, v] of Object.entries(plan.apply)) {
         fields[id].el.value = v;
         if (raw && raw.fields && raw.fields[id]) base[id] = raw.fields[id].base;
+        origin[id] = plan.origin[id];
     }
     b515DraftBase = base;
+    b515DraftOrigin = origin;
+    b515DraftAcked = {};
+    b515DraftDate = today;
     b515LastDraftSummary = { status: plan.status, applied: Object.keys(plan.apply).length, skipped: plan.skipped };
     if (plan.status !== 'ok') { try { localStorage.removeItem(B515_DRAFT_KEY); } catch (e) {} }
     b515SaveDrafts('boot');
     return b515LastDraftSummary;
 }
 
+// R1: on an IST date transition, edits from an earlier date stop being drafts before any field is serialised.
+function b515ReconcileDraftDate(today) {
+    if (b515DraftDate === today) return 0;
+    let dropped = 0;
+    for (const id of Object.keys(b515DraftOrigin)) {
+        if (!b515DraftOrigin[id] || b515DraftOrigin[id].d !== today) { delete b515DraftOrigin[id]; dropped++; }
+    }
+    if (b515DraftDate !== null) {
+        try { console.info(`[ui-restore] b515 drafts date rollover from=${b515DraftDate} to=${today} dropped=${dropped}`); } catch (e) {}
+    }
+    b515DraftDate = today;
+    return dropped;
+}
+
+// A genuine user edit (input/change event on an allowlisted field): stamps that field only.
+function b515MarkDraftEdit(id) {
+    if (!b515DraftBase || !B515_DRAFT_FIELDS.includes(id)) return;
+    const today = API.todayIST();
+    b515ReconcileDraftDate(today);
+    b515DraftOrigin[id] = { d: today, t: Date.now() };
+}
+
 function b515SaveDrafts(reason = 'input') {
     try {
         if (!b515DraftBase || typeof localStorage === 'undefined') return false;   // never before boot restore ran
+        const today = API.todayIST();
+        b515ReconcileDraftDate(today);                                               // R1: before serialising anything
         const out = {};
         for (const id of B515_DRAFT_FIELDS) {
             const f = b515ReadField(id);
             if (!f || f.disabled || !(id in b515DraftBase)) continue;
-            if (f.value === b515DraftBase[id] || !b515DraftValueOk(f.value) || !b515DraftValueOk(b515DraftBase[id])) continue;
-            out[id] = { v: f.value, base: b515DraftBase[id] };
+            if (f.value === b515DraftBase[id] || (id in b515DraftAcked && f.value === b515DraftAcked[id])) continue;
+            const o = b515DraftOrigin[id];
+            if (!b515DraftOriginOk(o) || o.d !== today) continue;                    // no genuine edit today: not a draft
+            if (!b515DraftValueOk(f.value) || !b515DraftValueOk(b515DraftBase[id])) continue;
+            out[id] = { v: f.value, base: b515DraftBase[id], d: o.d, t: o.t };
         }
         if (!Object.keys(out).length) { localStorage.removeItem(B515_DRAFT_KEY); return true; }
-        localStorage.setItem(B515_DRAFT_KEY, JSON.stringify({ v: 1, date: API.todayIST(), ts: Date.now(), fields: out }));
+        localStorage.setItem(B515_DRAFT_KEY, JSON.stringify({ v: B515_DRAFT_VERSION, date: today, ts: Date.now(), fields: out }));
         return true;
     } catch (e) { return false; }   // storage full / disabled: drafts are best effort
 }
 
+// R2: called ONLY after an acknowledged save, with the stored record. `entries` = [{ id, stored, sent }]: `stored` is
+// the stored record value (what the next authoritative restore will put in the field), `sent` the form text the save
+// accepted. Advances those fields' baselines, clears their saved drafts and keeps every other unsaved field.
+function b515DraftsAcknowledged(entries, reason = 'saved') {
+    if (!b515DraftBase || !Array.isArray(entries)) return false;
+    for (const e of entries) {
+        if (!e || !B515_DRAFT_FIELDS.includes(e.id) || !(e.id in b515DraftBase)) continue;
+        const stored = (e.stored === undefined || e.stored === null || e.stored === '') ? '' : String(e.stored);
+        const sent = String(e.sent ?? '');
+        b515DraftBase[e.id] = stored;
+        b515DraftAcked[e.id] = sent;
+        const f = b515ReadField(e.id);
+        if (!f || f.value === stored || f.value === sent) delete b515DraftOrigin[e.id];
+    }
+    return b515SaveDrafts(reason);
+}
+
 function b515BindDraftPersistence() {
     if (typeof document === 'undefined') return;
-    const onEdit = (e) => { if (e && e.target && B515_DRAFT_FIELDS.includes(e.target.id)) b515SaveDrafts(e.type); };
+    const onEdit = (e) => {
+        if (!e || !e.target || !B515_DRAFT_FIELDS.includes(e.target.id)) return;
+        try { b515MarkDraftEdit(e.target.id); } catch (err) {}
+        b515SaveDrafts(e.type);
+    };
     document.addEventListener('input', onEdit, true);     // synchronous write: no timer that a paused WebView could drop
     document.addEventListener('change', onEdit, true);
 }
@@ -9702,6 +9778,10 @@ function saveEveningClose() {
         STATE.eveningClose = { ...payload, dow: rec.dow, crude: rec.crude, gift: rec.gift, revision: eveAck.revision,
             intended_session: rec.intended_session, captured_at_ms: rec.captured_at_ms };
         localStorage.setItem('mr2_evening_close', JSON.stringify(STATE.eveningClose));
+        // b515 R2: the acknowledged stored record is the new draft baseline; its saved drafts are cleared.
+        try {
+            b515DraftsAcknowledged(EVENING_NUMERIC_FIELDS.map(d => ({ id: d.id, stored: rec[d.key], sent: parsedInputs.raw[d.key] })), 'saved_evening');
+        } catch (e) { console.warn('[b515] draft baseline update skipped:', e.message); }
         if (statusEl) {
             statusEl.textContent = `Saved for session ${rec.intended_session} at ${b507FmtIstTime(rec.captured_at_ms)} · Dow ${rec.dow}, Crude ${rec.crude}, GIFT ${rec.gift} · recalculating`;
         }
