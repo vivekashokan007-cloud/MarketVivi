@@ -211,5 +211,30 @@ await scenario('live-document-crosses-midnight-then-one-real-edit', async (conte
     actions: after.calls.filter(c => ACTIONS.test(c)), restoreLogs: logs.filter(l => /ui-restore/.test(l)) };
 });
 
+// R3 (Codex b515 re-review): a saved NONBLANK 26 Oct morning record is the restored baseline; the same document lives
+// into 27 Oct and the user genuinely enters FII Cash -900 and re-enters DII Cash 5706 (equal to yesterday's value).
+// The 27 Oct re-creation's real restoreMorningData drops the 26 Oct record; both new-day entries must return as drafts.
+await scenario('nonblank-prior-day-morning-base-then-new-day-edits', async (context, logs) => {
+  const s = await open(context, logs, 'P0');
+  await s.page.evaluate(() => localStorage.setItem('mr2_morning', JSON.stringify({ date: '2026-10-26', fiiCash: -1000, diiCash: 5706 })));
+  await s.page.close({ runBeforeUnload: false });
+  const a = await open(context, logs, 'P1');
+  await bootDone(a.page, logs, 'P1');
+  const restored = await state(a.page);
+  await a.page.evaluate(() => { window.__shiftMs = 24 * 3600 * 1000; });
+  await typeIn(a.page, 'in-fii-cash', '-900');
+  await typeIn(a.page, 'in-dii-cash', '5706');
+  await a.page.evaluate(() => window.mrUiFlush && window.mrUiFlush('native_pause'));
+  const stored = await a.page.evaluate(() => JSON.parse(localStorage.getItem('mr_ui_drafts_v1') || 'null'));
+  await a.page.close({ runBeforeUnload: false });
+  await context.addInitScript(`window.__shiftMs = 24 * 3600 * 1000;`);
+  const b = await open(context, logs, 'P2');
+  await bootDone(b.page, logs, 'P2');
+  const after = await state(b.page);
+  const morningAfter = await b.page.evaluate(() => localStorage.getItem('mr2_morning'));
+  return { restoredDay1: { fii: restored.fii, dii: restored.dii }, stored, after: { fii: after.fii, dii: after.dii }, morningRecordAfter: morningAfter,
+    actions: after.calls.filter(c => ACTIONS.test(c)), restoreLogs: logs.filter(l => /ui-restore/.test(l)) };
+});
+
 await browser.close(); server.close();
 console.log(JSON.stringify({ pwaDir: PWA, marketappDir: MA, delayMs: DELAY_MS, chrome: CHROME, results }, null, 2));

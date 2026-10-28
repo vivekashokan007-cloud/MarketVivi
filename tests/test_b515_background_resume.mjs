@@ -473,3 +473,132 @@ test('source contract: the b515 ack hook sits after the acknowledged evening sav
   assert.ok(hookAt < save.indexOf('} catch (e) {'));
   assert.equal(app.split('b515DraftsAcknowledged(').length - 1, 2, 'defined once, called once (evening save)');
 });
+
+// ═══ R3 correction (Codex b515 re-review, 28 Oct 2026): the draft baseline is date-scoped too ═══
+// Codex's failing regression (verbatim). Uses this file's existing helpers fnSrc, rollOver, TODAY, DAY2, T1 and page.
+test('review: new-day morning edit after nonblank old authority', () => {
+  const storage = new Map([['mr2_morning',
+    JSON.stringify({ date: TODAY, fiiCash: -1000 })]]);
+  const morningSrc =
+    fnSrc('clearMorningStorage') + '\n' + fnSrc('restoreMorningData');
+
+  const old = page(storage);
+  old.bootEarly();
+  old.run(morningSrc);
+  old.run('restoreMorningData(null)');
+  assert.equal(old.els['in-fii-cash'].value, '-1000');
+  old.bootDrafts();
+
+  rollOver(old);
+  old.type('in-fii-cash', '-900');
+  old.nativePause();
+
+  const next = page(storage, { now: T1 + 60000, today: DAY2 });
+  next.bootEarly();
+  next.run(morningSrc);
+  next.run('restoreMorningData(null)');
+  assert.equal(storage.has('mr2_morning'), false);
+  next.bootDrafts();
+  assert.equal(next.els['in-fii-cash'].value, '-900');
+});
+
+const MORNING_SRC = fnSrc('clearMorningStorage') + '\n' + fnSrc('restoreMorningData');
+// A document that booted on 26 Oct with the saved morning record restored (and optionally an evening record).
+function morningPage(storage, opts = {}) {
+  const p = page(storage, opts);
+  p.bootEarly();
+  p.run(MORNING_SRC);
+  p.run('restoreMorningData(null)');
+  if (opts.withSave) p.run('restoreEveningClose(null)');
+  p.bootDrafts();
+  return p;
+}
+function recreate(storage, opts = {}) {
+  const p = page(storage, { now: T1 + 60000, today: DAY2, ...opts });
+  p.bootEarly();
+  p.run(MORNING_SRC);
+  p.run('restoreMorningData(null)');
+  if (opts.withSave) p.run('restoreEveningClose(null)');
+  return { p, s: JSON.parse(p.bootDrafts()) };
+}
+const MORNING26 = JSON.stringify({ date: TODAY, fiiCash: -1000, diiCash: 5706, giftSpot: 24100, upstoxBias: 'Bearish' });
+
+test('R3: a genuine new-day entry numerically EQUAL to yesterday\'s base is a draft and survives re-creation', () => {
+  const storage = new Map([['mr2_morning', MORNING26]]);
+  const old = morningPage(storage);
+  assert.equal(old.els['in-fii-cash'].value, '-1000');
+  rollOver(old);
+  old.type('in-fii-cash', '-1000');                            // re-entered on 27 Oct: same number as yesterday
+  old.nativePause();
+  const rec = JSON.parse(storage.get('mr_ui_drafts_v1'));
+  assert.equal(rec.date, DAY2);
+  assert.deepEqual(rec.fields['in-fii-cash'], { v: '-1000', base: '', d: DAY2, t: T1 }, 'compared with 27 Oct authority (none), not 26 Oct');
+  assert.deepEqual(Object.keys(rec.fields), ['in-fii-cash'], 'untouched 26 Oct morning values are not drafts');
+  assert.ok(old.logs.some(l => /b515 drafts date rollover from=2026-10-26 to=2026-10-27 dropped=0 rebased=9/.test(l)));
+  const { p: next, s } = recreate(storage);
+  assert.equal(storage.has('mr2_morning'), false, 'the real restore removed the 26 Oct record');
+  assert.equal(s.status, 'ok'); assert.equal(s.applied, 1);
+  assert.equal(next.els['in-fii-cash'].value, '-1000');
+  for (const id of ['in-dii-cash', 'in-gift-spot', 'in-upstox-bias']) assert.equal(next.els[id].value, '', id);
+  assert.equal(next.events.dispatched, 0, 'restore only: no event, no save, no lock, no scan');
+});
+
+test('R3: untouched nonblank previous-day morning values never return after rollover + flush', () => {
+  const storage = new Map([['mr2_morning', MORNING26]]);
+  const old = morningPage(storage);
+  rollOver(old);
+  old.hidden(); old.nativePause(); old.pagehide();
+  assert.equal(storage.has('mr_ui_drafts_v1'), false);
+  assert.equal(old.els['in-fii-cash'].value, '-1000', 'visible form left alone (no auto-clear)');
+  const { p: next, s } = recreate(storage);
+  assert.equal(s.applied, 0);
+  for (const id of ['in-fii-cash', 'in-dii-cash', 'in-gift-spot', 'in-upstox-bias']) assert.equal(next.els[id].value, '', id);
+});
+
+test('R3: newer current-day saved/locked morning authority still wins over a genuine new-day draft', () => {
+  // (a) a 27 Oct record saved AFTER the draft was typed (another path / device) wins
+  const sa = new Map([['mr2_morning', MORNING26]]);
+  const a = morningPage(sa);
+  rollOver(a); a.type('in-fii-cash', '-900'); a.nativePause();
+  sa.set('mr2_morning', JSON.stringify({ date: DAY2, fiiCash: -950 }));
+  const { p: na, s: ssa } = recreate(sa);
+  assert.equal(ssa.skipped['in-fii-cash'], 'authority_changed');
+  assert.equal(na.els['in-fii-cash'].value, '-950');
+  // (b) morning locked for 27 Oct: the locked record wins, the draft is skipped as locked
+  const sb = new Map([['mr2_morning', MORNING26]]);
+  const b = morningPage(sb);
+  rollOver(b); b.type('in-fii-cash', '-900'); b.nativePause();
+  sb.set('mr2_morning', JSON.stringify({ date: DAY2, fiiCash: -975 }));
+  const { p: nb, s: ssb } = recreate(sb, { locked: true });
+  assert.equal(ssb.skipped['in-fii-cash'], 'locked');
+  assert.equal(nb.els['in-fii-cash'].value, '-975');
+  // (c) a 27 Oct record already present at rollover is the new base: a later edit compares against IT, and an even
+  // newer 27 Oct record still wins
+  const sc = new Map([['mr2_morning', MORNING26]]);
+  const c = morningPage(sc);
+  sc.set('mr2_morning', JSON.stringify({ date: DAY2, fiiCash: -800, upstoxBias: 'Neutral' }));
+  rollOver(c); c.type('in-fii-cash', '-900'); c.nativePause();
+  assert.equal(JSON.parse(sc.get('mr_ui_drafts_v1')).fields['in-fii-cash'].base, '-800');
+  const { p: nc, s: ssc } = recreate(sc);
+  assert.equal(ssc.applied, 1); assert.equal(nc.els['in-fii-cash'].value, '-900');
+  assert.equal(nc.els['in-upstox-bias'].value, 'Neutral');
+  sc.set('mr2_morning', JSON.stringify({ date: DAY2, fiiCash: -850 }));
+  const { p: nd, s: ssd } = recreate(sc, { now: T1 + 120000 });
+  assert.equal(ssd.skipped['in-fii-cash'], 'authority_changed'); assert.equal(nd.els['in-fii-cash'].value, '-850');
+});
+
+test('R3: evening baseline is not blanked by the rollover (its restore is not date-scoped)', () => {
+  const storage = new Map([['mr2_morning', MORNING26], ['mr2_evening_close', JSON.stringify(EVE0)]]);
+  const old = morningPage(storage, { withSave: true, bridge: {} });
+  assert.equal(old.els['in-eve-gift'].value, '23000');
+  rollOver(old);
+  old.type('in-eve-gift', '23400');
+  old.nativePause();
+  assert.equal(JSON.parse(storage.get('mr_ui_drafts_v1')).fields['in-eve-gift'].base, '23000');
+  const { p: next, s } = recreate(storage, { withSave: true, bridge: {} });
+  assert.equal(next.els['in-eve-gift'].value, '23400'); assert.equal(s.applied, 1);
+  // a newer evening reference saved for the new day still wins
+  storage.set('mr2_evening_close', JSON.stringify({ ...EVE0, gift: 23350, date: DAY2 }));
+  const { p: n2, s: s2 } = recreate(storage, { withSave: true, bridge: {}, now: T1 + 120000 });
+  assert.equal(s2.skipped['in-eve-gift'], 'authority_changed'); assert.equal(n2.els['in-eve-gift'].value, '23350');
+});

@@ -9464,15 +9464,55 @@ function b515RestoreDrafts() {
     return b515LastDraftSummary;
 }
 
+// R3 (Codex b515 re-review): the morning form's authority is date-scoped. What restoreMorningData() will show for
+// `today` in a fresh document: the stored local morning record's values when that record is dated `today`, otherwise
+// nothing (restoreMorningData clears an older record and leaves the fields blank). Same field mapping as that restore.
+// A cloud record for `today` that arrives later is newer authority and still wins at restore (authority_changed).
+function b515MorningAuthorityFor(today) {
+    const out = {};
+    for (const id of B515_DRAFT_FIELDS) if (!id.startsWith('in-eve-')) out[id] = '';
+    let data = null;
+    try { data = JSON.parse(localStorage.getItem('mr2_morning') || 'null'); } catch (e) { data = null; }
+    if (!data || typeof data !== 'object' || !data.date || data.date !== today) return out;
+    const first = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '');
+    const map = {
+        'in-fii-cash': first(data.fiiCash, data.fii_cash),
+        'in-fii-short': first(data.fiiShortPct, data.fii_short_pct),
+        'in-dii-cash': first(data.diiCash, data.dii_cash),
+        'in-fii-idx-fut': first(data.fiiIdxFut, data.fii_idx_fut),
+        'in-fii-stk-fut': first(data.fiiStkFut, data.fii_stk_fut),
+        'in-gift-spot': first(data.giftSpot, data.gift_spot),
+        'in-dow-close': first(data.dowClose, data.dow_close, data.dow),
+        'in-crude-settle': first(data.crudeSettle, data.crude_settle, data.crude),
+        'in-upstox-bias': data.upstoxBias || undefined,
+    };
+    for (const id of Object.keys(out)) if (map[id] !== undefined) out[id] = String(map[id]);
+    return out;
+}
+
 // R1: on an IST date transition, edits from an earlier date stop being drafts before any field is serialised.
+// R3: the baseline's session identity moves with the date too. Morning fields are rebased to the new day's morning
+// authority (b515MorningAuthorityFor), so a genuine new-day edit is compared with today's record, not yesterday's
+// (and an entry equal to yesterday's value is still a draft). Evening fields keep their base: restoreEveningClose is
+// not date-scoped, so the same stored reference remains their authority on the new day. Nothing is saved, cleared on
+// screen, locked or scanned; the restore-time authority_changed / locked guards are unchanged.
 function b515ReconcileDraftDate(today) {
     if (b515DraftDate === today) return 0;
-    let dropped = 0;
+    let dropped = 0, rebased = 0;
     for (const id of Object.keys(b515DraftOrigin)) {
         if (!b515DraftOrigin[id] || b515DraftOrigin[id].d !== today) { delete b515DraftOrigin[id]; dropped++; }
     }
+    if (b515DraftDate !== null && b515DraftBase) {
+        const morning = b515MorningAuthorityFor(today);
+        for (const id of Object.keys(morning)) {
+            if (!(id in b515DraftBase)) continue;
+            b515DraftBase[id] = morning[id];
+            delete b515DraftAcked[id];
+            rebased++;
+        }
+    }
     if (b515DraftDate !== null) {
-        try { console.info(`[ui-restore] b515 drafts date rollover from=${b515DraftDate} to=${today} dropped=${dropped}`); } catch (e) {}
+        try { console.info(`[ui-restore] b515 drafts date rollover from=${b515DraftDate} to=${today} dropped=${dropped} rebased=${rebased}`); } catch (e) {}
     }
     b515DraftDate = today;
     return dropped;
