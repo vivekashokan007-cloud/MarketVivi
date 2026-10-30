@@ -3292,6 +3292,9 @@ function finalEntryAuthorization(candidate) {
     const gate = verdict.decision_gate || {};
     const action = String(verdict.action || '').toUpperCase();
     const gateState = String(gate.state || '').toUpperCase();
+    if (gateState === 'PER_INDEX_AUTHORITY') {
+        return indexAuthorityEntryAuthorization(candidate, bd);
+    }
     const actionable = gateState === 'ACTIONABLE'
         && (action === 'BUY PREMIUM' || action === 'SELL PREMIUM');
     if (!actionable) {
@@ -6080,6 +6083,8 @@ function renderBrainInsights() {
             <div style="font-size:14px;font-weight:700;color:var(--danger)">Brain result unavailable</div>
             <div class="brain-detail" style="margin-top:4px">${freshness.reason}. Old recommendations are display-only and cannot authorize a trade.</div>
         </div>`;
+    } else if (isIndexAuthorityActive(bi)) {
+        verdictHtml = renderIndexAuthorityPanels(bi);
     } else if (verdict && verdict.action) {
         const vColor = verdict.action === 'WAIT' || verdict.action === 'STOP' ? 'var(--warn)' :
             verdict.direction === 'BULL' ? 'var(--green)' : verdict.direction === 'BEAR' ? 'var(--danger)' : 'var(--accent)';
@@ -6105,6 +6110,133 @@ function renderBrainInsights() {
         ${verdictHtml}
         ${detailsHtml}
     </div>`;
+}
+
+// ═══ Delivery A (draft): per-index direction authority (index_direction_v1) ═══
+// One authority per index; no combined direction, no cross-index ranking. Real's displayed
+// recommendations follow it (owner decision D3); Real order restrictions are unchanged.
+const INDEX_SELECTOR_KEY = 'mr_index_selector_v1';
+function isIndexAuthorityActive(bi) {
+    return bi?.direction_authority?.active === 'index_direction_v1' && bi?.by_index && typeof bi.by_index === 'object';
+}
+function getIndexSelector() {
+    try {
+        const v = String(localStorage.getItem(INDEX_SELECTOR_KEY) || 'BOTH').toUpperCase();
+        return (v === 'NF' || v === 'BNF' || v === 'BOTH') ? v : 'BOTH';
+    } catch (e) { return 'BOTH'; }
+}
+function setIndexSelector(v) {
+    try { localStorage.setItem(INDEX_SELECTOR_KEY, v); } catch (e) { /* display preference only */ }
+    if (typeof renderAll === 'function') renderAll();
+}
+function iaEsc(x) {
+    return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function indexAuthorityEntryAuthorization(candidate, bi) {
+    const ix = String(candidate?.index || candidate?.index_key || '').toUpperCase();
+    const sel = getIndexSelector();
+    if (sel !== 'BOTH' && sel !== ix) return { allowed: false, reason: `Index selector is ${sel}; ${ix || 'this index'} is display-only` };
+    const dec = bi?.by_index?.[ix];
+    if (!dec) return { allowed: false, reason: 'No per-index decision for this candidate' };
+    const act = dec.action || {};
+    if (act.value !== 'CANDIDATES') return { allowed: false, reason: `${ix} action ${act.value}: ${(act.reasons || []).join(', ') || dec.reason_codes?.join(', ') || ''}` };
+    if (!(act.candidate_ids || []).includes(candidate?.id)) return { allowed: false, reason: `Candidate is not one of ${ix}'s policy candidates` };
+    if (candidate?.entryEligible !== true) return { allowed: false, reason: 'Execution/risk checks not met' };
+    const managed = bi?.managed_policy?.[ix];
+    if (!managed?.selected || managed.selected.candidate_id !== candidate?.id) {
+        return { allowed: false, reason: `Managed entry not admitted: ${managed?.reason || 'unknown'}` };
+    }
+    return { allowed: true, reason: '' };
+}
+function renderIndexAuthorityPanel(ix, dec, cands, managed) {
+    if (!dec) return `<div class="brain-card"><b>${ix}</b>: no decision</div>`;
+    const di = dec.direction || {};
+    const v = di.value || 'UNAVAILABLE';
+    const col = v === 'BULL' ? 'var(--green)' : v === 'BEAR' ? 'var(--danger)' : v === 'NEUTRAL' ? 'var(--accent)' : 'var(--text-muted)';
+    const reasons = (dec.reason_codes || []).join(', ');
+    const cal = dec.calendar_coverage && dec.calendar_coverage.status !== 'COVERED'
+        ? `<div class="brain-detail" style="color:var(--warn)">CALENDAR_UNAVAILABLE: ${iaEsc(dec.calendar_coverage.reason)}</div>` : '';
+    const act = dec.action || {};
+    const candRows = (cands || []).map(c => {
+        const el = c.entryEligibility || {};
+        const g = (managed?.gates || []).find(x => x.candidate_id === c.id);
+        return `<div class="brain-detail">• ${iaEsc(c.type)} ${iaEsc((c.legs || []).map(l => `${l.action[0]}${l.strike}${l.option_type}`).join(' '))}
+            · W${iaEsc(c.width)} · max loss ${c.maxLoss == null ? 'n/a (lot unavailable)' : '₹' + Math.round(c.maxLoss)}
+            · ${c.entryEligible ? 'checks OK' : 'not eligible: ' + iaEsc((el.reasons || []).join(', '))}
+            ${g ? ` · managed: ${g.admit ? 'admissible' : iaEsc((g.reasons || []).join(', '))}` : ''}</div>`;
+    }).join('');
+    return `<div class="brain-card ia-panel" data-index="${ix}" style="border-left-color:${col};border-left-width:4px;padding:10px 12px">
+        <div style="font-size:14px;font-weight:700;color:${col}">${ix} · ${iaEsc(v)}${di.strength ? ' ' + iaEsc(di.strength) : ''}</div>
+        <div class="brain-detail">${iaEsc(dec.display || '')}</div>
+        ${v === 'UNAVAILABLE' ? `<div class="brain-detail" style="color:var(--warn)">Unavailable: ${iaEsc(reasons)}</div>` : ''}
+        ${cal}
+        <div class="brain-detail">Regime: ${iaEsc(dec.regime?.value)} · Allowed: ${iaEsc((dec.structure_policy?.allowed || []).join(', ') || 'none')}</div>
+        <div class="brain-detail">Action: <b>${iaEsc(act.value)}</b>${(act.reasons || []).length ? ' — ' + iaEsc(act.reasons.join(', ')) : ''}</div>
+        ${candRows ? `<div style="margin-top:3px;font-size:11px">Policy candidates (alternatives, not ranked):</div>${candRows}` : ''}
+        <div class="brain-detail" style="color:var(--text-muted)">Context only, not used: VIX ${iaEsc(dec.structure_policy?.vol_context?.value?.vix ?? 'n/a')}, PCR, walls, max pain, ML, EV, calibration</div>
+    </div>`;
+}
+function renderIndexAuthorityPanels(bi) {
+    const sel = getIndexSelector();
+    const shown = sel === 'BOTH' ? ['NF', 'BNF'] : [sel];
+    const btn = v => `<button class="ia-sel" onclick="setIndexSelector('${v}')" style="font-size:11px;padding:2px 8px;margin-right:4px;${sel === v ? 'font-weight:700;border:1px solid var(--accent)' : ''}">${v === 'BOTH' ? 'Both' : v}</button>`;
+    const da = bi.direction_authority || {};
+    return `<div class="ia-wrap">
+        <div style="margin:4px 0">${btn('NF')}${btn('BNF')}${btn('BOTH')}
+            <span style="font-size:10px;color:var(--text-muted)">selector controls display and new entries; positions on both indices stay monitored</span></div>
+        ${shown.map(ix => renderIndexAuthorityPanel(ix, bi.by_index[ix], (bi.candidates_by_index || {})[ix], (bi.managed_policy || {})[ix])).join('')}
+        <div style="font-size:10px;color:var(--text-muted)">Policy ${iaEsc(da.active)} · ${iaEsc(da.structure_policy)} · ${iaEsc(da.construction)} · combined NF+BNF direction retired · Real orders unchanged (manual)</div>
+        ${renderDailyReviewCard()}
+    </div>`;
+}
+let DAILY_REVIEW_CACHE = null;
+function iaTodayIst() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+}
+function loadDailyReview(run) {
+    try {
+        if (!window.NativeBridge || typeof window.NativeBridge.dailyReviewLatest !== 'function') {
+            DAILY_REVIEW_CACHE = { status: 'BRIDGE_UNAVAILABLE' };
+        } else {
+            const d = iaTodayIst();
+            if (run && typeof window.NativeBridge.dailyReviewRun === 'function') window.NativeBridge.dailyReviewRun(d, '[]', '');
+            DAILY_REVIEW_CACHE = JSON.parse(window.NativeBridge.dailyReviewLatest(d) || '{}');
+        }
+    } catch (e) {
+        DAILY_REVIEW_CACHE = { status: 'READ_ERROR' };
+    }
+    if (typeof renderAll === 'function') renderAll();
+}
+function exportDailyReview() {
+    try {
+        const raw = JSON.stringify(DAILY_REVIEW_CACHE || {}, null, 2);
+        const b64 = btoa(unescape(encodeURIComponent(raw)));
+        window.NativeBridge?.saveExportFile?.(`daily_review_${iaTodayIst()}.json`, 'application/json', b64);
+    } catch (e) { /* export is optional */ }
+}
+function renderDailyReviewCard() {
+    const r = DAILY_REVIEW_CACHE;
+    const latest = r?.latest;
+    let body = '<div class="brain-detail">Not loaded.</div>';
+    if (r && !latest) body = `<div class="brain-detail">Status: ${iaEsc(r.status || 'NO_REPORT')}</div>`;
+    if (latest) {
+        body = ['NF', 'BNF'].map(ix => {
+            const b = latest.by_index?.[ix] || {};
+            const c = b.coverage || {};
+            const lc = b.label_counts || {};
+            return `<div class="brain-detail"><b>${ix}</b> · decisions ${c.recorded ?? 0} · mature ${c.mature ?? 0}
+                (match ${lc.MATCH || 0}, mismatch ${lc.MISMATCH || 0}, tie ${lc.TIE || 0}) · abstain ${c.abstained ?? 0}
+                · unavailable ${c.unavailable ?? 0} · unresolved ${c.unresolved ?? 0} · n/a ${c.target_not_applicable ?? 0}
+                ${Object.keys(b.data_issues || {}).length ? '<br>Data issues: ' + iaEsc(Object.entries(b.data_issues).map(([k, v]) => k + '×' + v).join(', ')) : ''}
+                ${b.paper_trades_supplied === false ? '<br>Paper outcomes: not supplied' : ''}</div>`;
+        }).join('') + `<div style="font-size:10px;color:var(--text-muted)">Report ${iaEsc(latest.report_status)} · rev ${iaEsc(latest.revision)} · ${iaEsc(latest.label_target_version)} · not model training</div>`;
+    }
+    return `<details class="brain-card" style="padding:8px 12px"><summary style="font-size:12px;font-weight:700;cursor:pointer">📋 Daily review (local)</summary>
+        ${body}
+        <div style="margin-top:4px"><button style="font-size:11px" onclick="loadDailyReview(false)">Load</button>
+        <button style="font-size:11px" onclick="loadDailyReview(true)">Build now</button>
+        <button style="font-size:11px" onclick="exportDailyReview()">Export</button></div>
+    </details>`;
 }
 
 // B3 item 2: Brain monitors Paper positions from the first poll while the
