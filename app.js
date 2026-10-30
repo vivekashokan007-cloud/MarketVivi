@@ -3941,7 +3941,13 @@ async function takeTradeImpl(candidateId, isPaper = false) {
         .filter(c => c.index === cand.index);
     const renderedRank = rankList.findIndex(c => String(c.id) === String(cand.id)) + 1;
     const rankedValue = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
-    const candRank = rankedValue(cand.pc2PaperRank) || rankedValue(cand.rank) || renderedRank || null;
+    // Delivery A R5: authority candidates are in a FIXED presentation order, not a rank
+    const authorityOrdered = cand.authorityOrder === 'FIXED_PRESENTATION_ORDER_NOT_A_RANK';
+    const candRank = authorityOrdered ? null
+        : (rankedValue(cand.pc2PaperRank) || rankedValue(cand.rank) || renderedRank || null);
+    const pendingChoice = typeof PENDING_STRUCTURE_CHOICE !== 'undefined' ? PENDING_STRUCTURE_CHOICE : null;
+    const structureChoice = (isPaper && pendingChoice && pendingChoice.candidate_id === cand.id) ? pendingChoice : null;
+    if (pendingChoice) PENDING_STRUCTURE_CHOICE = null;
     const researchRank = rankedValue(cand.pc2PaperResearchRank);
     const paperCapacity = isPaper ? paperTradeCapacity(cand.index) : null;
 
@@ -4178,9 +4184,12 @@ async function takeTradeImpl(candidateId, isPaper = false) {
             candidate_rank: candRank,
             varsity_tier: cand.varsityTier || null,
             // App vs trader tracking — was this the app's #1 pick?
-            app_top_strategy: rankList[0]?.type || null,
-            app_top_strike: rankList[0]?.sellStrike || null,
-            followed_app: candRank === 1,
+            app_top_strategy: authorityOrdered ? null : (rankList[0]?.type || null),
+            app_top_strike: authorityOrdered ? null : (rankList[0]?.sellStrike || null),
+            followed_app: authorityOrdered ? null : candRank === 1,
+            // Delivery A R5: explicit user choice between the index's allowed alternatives (validated natively)
+            structure_choice: structureChoice,
+            index_decision_id: authorityOrdered ? (bd?.by_index?.[cand.index]?.decision_id || null) : undefined,
             // R3.1: contract_lot_size = units/lot; legacy lot_size = total quantity_units.
             contract_lot_size: entryLotSize,
             number_of_lots: isPaper ? entryNumberOfLots : 1,
@@ -6126,8 +6135,38 @@ function getIndexSelector() {
     } catch (e) { return 'BOTH'; }
 }
 function setIndexSelector(v) {
-    try { localStorage.setItem(INDEX_SELECTOR_KEY, v); } catch (e) { /* display preference only */ }
+    try { localStorage.setItem(INDEX_SELECTOR_KEY, v); } catch (e) { /* display preference */ }
+    // R5 s2: the selector also gates NEW managed admission natively (read into the analysis context)
+    try { window.NativeBridge?.setIndexSelector?.(v); } catch (e) { /* native unavailable: display only */ }
     if (typeof renderAll === 'function') renderAll();
+}
+// R5 s2: explicit user choice between the index's allowed alternatives for a manual Paper entry.
+// No EV / ML preference and no default: the user taps one specific alternative; native validates it against
+// the CURRENT published result (same decision, allowed, executable) and persists the choice.
+let PENDING_STRUCTURE_CHOICE = null;
+function indexStructureChoiceAvailable(candidate, dec) {
+    const ix = String(candidate?.index || '').toUpperCase();
+    const sel = getIndexSelector();
+    if (sel !== 'BOTH' && sel !== ix) return false;
+    return dec?.action?.value === 'CANDIDATES' && candidate?.entryEligible === true
+        && (dec?.structure_policy?.allowed || []).includes(candidate?.type);
+}
+function chooseIndexStructureForPaper(ix, decisionId, candidateId) {
+    let out = null;
+    try {
+        if (typeof window.NativeBridge?.indexAuthorityChoose !== 'function') {
+            out = { status: 'REJECTED', reason: 'BRIDGE_UNAVAILABLE' };
+        } else {
+            out = JSON.parse(window.NativeBridge.indexAuthorityChoose(ix, decisionId, candidateId) || '{}');
+        }
+    } catch (e) { out = { status: 'ERROR' }; }
+    if (out?.status !== 'CHOSEN') {
+        alert(`Choice not accepted: ${out?.reason || out?.status || 'unknown'}`);
+        return out;
+    }
+    PENDING_STRUCTURE_CHOICE = out.choice;
+    if (typeof takeTrade === 'function') takeTrade(candidateId, true);
+    return out;
 }
 function iaEsc(x) {
     return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -6163,7 +6202,8 @@ function renderIndexAuthorityPanel(ix, dec, cands, managed) {
         return `<div class="brain-detail">• ${iaEsc(c.type)} ${iaEsc((c.legs || []).map(l => `${l.action[0]}${l.strike}${l.option_type}`).join(' '))}
             · W${iaEsc(c.width)} · max loss ${c.maxLoss == null ? 'n/a (lot unavailable)' : '₹' + Math.round(c.maxLoss)}
             · ${c.entryEligible ? 'checks OK' : 'not eligible: ' + iaEsc((el.reasons || []).join(', '))}
-            ${g ? ` · managed: ${g.admit ? 'admissible' : iaEsc((g.reasons || []).join(', '))}` : ''}</div>`;
+            ${g ? ` · managed: ${g.admit ? 'admissible' : iaEsc((g.reasons || []).join(', '))}` : ''}
+            ${indexStructureChoiceAvailable(c, dec) ? `<button class="ia-choose" style="font-size:11px;margin-left:4px" onclick="chooseIndexStructureForPaper('${iaEsc(ix)}','${iaEsc(dec.decision_id)}','${iaEsc(c.id)}')">Choose for Paper</button>` : ''}</div>`;
     }).join('');
     return `<div class="brain-card ia-panel" data-index="${ix}" style="border-left-color:${col};border-left-width:4px;padding:10px 12px">
         <div style="font-size:14px;font-weight:700;color:${col}">${ix} · ${iaEsc(v)}${di.strength ? ' ' + iaEsc(di.strength) : ''}</div>
@@ -6172,7 +6212,8 @@ function renderIndexAuthorityPanel(ix, dec, cands, managed) {
         ${cal}
         <div class="brain-detail">Regime: ${iaEsc(dec.regime?.value)} · Allowed: ${iaEsc((dec.structure_policy?.allowed || []).join(', ') || 'none')}</div>
         <div class="brain-detail">Action: <b>${iaEsc(act.value)}</b>${(act.reasons || []).length ? ' — ' + iaEsc(act.reasons.join(', ')) : ''}</div>
-        ${candRows ? `<div style="margin-top:3px;font-size:11px">Policy candidates (alternatives, not ranked):</div>${candRows}` : ''}
+        ${candRows ? `<div style="margin-top:3px;font-size:11px">Policy candidates (alternatives, not ranked — choose one explicitly):</div>${candRows}` : ''}
+        ${renderIndexAlerts(ix)}
         <div class="brain-detail" style="color:var(--text-muted)">Context only, not used: VIX ${iaEsc(dec.structure_policy?.vol_context?.value?.vix ?? 'n/a')}, PCR, walls, max pain, ML, EV, calibration</div>
     </div>`;
 }
@@ -6188,6 +6229,10 @@ function renderIndexAuthorityPanels(bi) {
         <div style="font-size:10px;color:var(--text-muted)">Policy ${iaEsc(da.active)} · ${iaEsc(da.structure_policy)} · ${iaEsc(da.construction)} · combined NF+BNF direction retired · Real orders unchanged (manual)</div>
         ${renderDailyReviewCard()}
     </div>`;
+}
+function renderIndexAlerts(ix) {
+    const rows = ((typeof bd !== 'undefined' && bd?.alerts) || []).filter(a => a?.category === 'INDEX' && a.index === ix);
+    return rows.map(a => `<div class="brain-detail ia-alert" style="color:var(--accent)">🔔 ${iaEsc(a.title)}</div>`).join('');
 }
 let DAILY_REVIEW_CACHE = null;
 function iaTodayIst() {
