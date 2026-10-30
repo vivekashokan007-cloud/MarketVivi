@@ -6227,7 +6227,62 @@ function renderIndexAuthorityPanels(bi) {
             <span style="font-size:10px;color:var(--text-muted)">selector controls display and new entries; positions on both indices stay monitored</span></div>
         ${shown.map(ix => renderIndexAuthorityPanel(ix, bi.by_index[ix], (bi.candidates_by_index || {})[ix], (bi.managed_policy || {})[ix])).join('')}
         <div style="font-size:10px;color:var(--text-muted)">Policy ${iaEsc(da.active)} · ${iaEsc(da.structure_policy)} · ${iaEsc(da.construction)} · combined NF+BNF direction retired · Real orders unchanged (manual)</div>
+        ${renderSingleLegCard(bi)}
         ${renderDailyReviewCard()}
+    </div>`;
+}
+// Delivery B: index_single_leg_v1 local Paper (explicit opt-in, explicit per-proposal admission). Shows every
+// block reason; admission is re-validated natively against the CURRENT published result. No broker order.
+let SINGLE_LEG_STORE = null;
+function singleLegEnabled() {
+    try { return window.NativeBridge?.getSingleLegPaperEnabled?.() === true; } catch (e) { return false; }
+}
+function setSingleLegEnabled(v) {
+    try { window.NativeBridge?.setSingleLegPaperEnabled?.(v === true); } catch (e) { /* native unavailable */ }
+    if (typeof renderAll === 'function') renderAll();
+}
+function loadSingleLegStore() {
+    try {
+        SINGLE_LEG_STORE = typeof window.NativeBridge?.singleLegRead === 'function'
+            ? JSON.parse(window.NativeBridge.singleLegRead() || '{}') : { status: 'BRIDGE_UNAVAILABLE' };
+    } catch (e) { SINGLE_LEG_STORE = { status: 'READ_ERROR' }; }
+    return SINGLE_LEG_STORE;
+}
+function admitSingleLeg(ix) {
+    let out = null;
+    try {
+        out = typeof window.NativeBridge?.singleLegAdmit === 'function'
+            ? JSON.parse(window.NativeBridge.singleLegAdmit(ix) || '{}') : { status: 'REJECTED', reason: 'BRIDGE_UNAVAILABLE' };
+    } catch (e) { out = { status: 'ERROR' }; }
+    if (out?.status !== 'ADMITTED' && out?.status !== 'DUPLICATE_IGNORED') {
+        alert(`Single-leg Paper not admitted: ${out?.reason || out?.status || 'unknown'}${(out?.reasons || []).length ? ' (' + out.reasons.join(', ') + ')' : ''}`);
+    }
+    loadSingleLegStore();
+    if (typeof renderAll === 'function') renderAll();
+    return out;
+}
+function renderSingleLegCard(bi) {
+    const on = singleLegEnabled();
+    const plans = bi?.single_leg_by_index || {};
+    const sel = getIndexSelector();
+    const rows = ['NF', 'BNF'].filter(ix => sel === 'BOTH' || sel === ix).map(ix => {
+        const p = plans[ix];
+        if (!p) return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: no single-leg proposal${on ? '' : ' (Paper single-leg is off)'}</div>`;
+        const why = (p.reasons || []).join(', ');
+        const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? 'n/a')} · capital ${p.capital_required == null ? 'n/a' : '₹' + Math.round(p.capital_required)} (${iaEsc(p.capital_basis || '')})` : 'no action';
+        const btn = on && p.admit === true
+            ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: admit</button>` : '';
+        return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${p.admit ? 'admissible' : 'blocked: ' + iaEsc(why || 'unknown')}${btn}</div>`;
+    }).join('');
+    const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
+    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}</div>`).join('');
+    const stErr = st && st.status ? `<div class="brain-detail" style="color:var(--warn)">Store: ${iaEsc(st.status)}</div>` : '';
+    return `<div class="brain-card sl-card" style="padding:8px 12px">
+        <div style="font-size:13px;font-weight:700">Single-leg (index_single_leg_v1) · Paper only
+            <button class="sl-toggle" style="font-size:11px;margin-left:6px" onclick="setSingleLegEnabled(${on ? 'false' : 'true'})">${on ? 'Turn off' : 'Turn on'}</button></div>
+        ${rows}
+        ${pos ? `<div style="font-size:11px;margin-top:3px">Local Paper positions:</div>${pos}` : ''}${stErr}
+        <div style="font-size:10px;color:var(--text-muted)">Live contract metadata / margin / quote freshness are not fetched in this build: live proposals stay blocked with named reasons. No real orders.</div>
     </div>`;
 }
 function renderIndexAlerts(ix) {

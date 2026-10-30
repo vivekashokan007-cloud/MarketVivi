@@ -12,12 +12,13 @@ function fn(name) {
 }
 const FNS = ['isIndexAuthorityActive', 'getIndexSelector', 'iaEsc', 'indexAuthorityEntryAuthorization',
   'renderIndexAuthorityPanel', 'renderIndexAuthorityPanels', 'renderDailyReviewCard', 'iaTodayIst',
-  'indexStructureChoiceAvailable', 'renderIndexAlerts', 'chooseIndexStructureForPaper', 'setIndexSelector'];
+  'indexStructureChoiceAvailable', 'renderIndexAlerts', 'chooseIndexStructureForPaper', 'setIndexSelector',
+  'singleLegEnabled', 'setSingleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'renderSingleLegCard'];
 function ctx(sel = 'BOTH') {
   const store = { mr_index_selector_v1: sel };
   const c = { JSON, String, Object, Array, Math, Intl, Date, calls: [], alerts: [], window: {}, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
   vm.createContext(c);
-  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 const cand = { id: 'NF-BULL_CALL-1', index: 'NF', type: 'BULL_CALL', entryEligible: true, legs: [] };
@@ -99,4 +100,37 @@ test('R5: authority candidates carry no rank into the Paper entry snapshot', () 
   assert.match(src, /authorityOrdered \? null\s*: \(rankedValue\(cand\.pc2PaperRank\)/);
   assert.match(src, /followed_app: authorityOrdered \? null : candRank === 1/);
   assert.match(src, /structure_choice: structureChoice/);
+});
+
+// Delivery B: single-leg Paper card (explicit opt-in, every block reason shown, explicit admission via native)
+test('single-leg card: off by default, shows every block reason, admit only when on and admissible', () => {
+  const c = ctx();
+  const b = bi();
+  b.single_leg_by_index = { NF: { admit: false, action: 'BUY_CE', strike: 24100, reasons: ['CONTRACT_METADATA_UNAVAILABLE', 'QUOTE_FRESHNESS_UNVERIFIED'] },
+    BNF: { admit: false, reasons: ['DIRECTION_UNAVAILABLE'] } };
+  const off = c.renderSingleLegCard(b);
+  assert.match(off, /CONTRACT_METADATA_UNAVAILABLE, QUOTE_FRESHNESS_UNVERIFIED/);
+  assert.match(off, /DIRECTION_UNAVAILABLE/);
+  assert.match(off, /Turn on/);
+  assert.doesNotMatch(off, /sl-admit/);
+  const calls = [];
+  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => JSON.stringify({ positions: [{ index: 'NF', action: 'BUY_CE', instrument_key: 'SYNTH_FO|1', status: 'OPEN' }] }),
+    singleLegAdmit: ix => { calls.push(ix); return JSON.stringify({ status: 'ADMITTED', position_id: 'p1' }); } };
+  vm.runInContext('SINGLE_LEG_STORE=null', c);
+  b.single_leg_by_index.NF = { admit: true, action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
+  const on = c.renderSingleLegCard(b);
+  assert.match(on, /admitSingleLeg\('NF'\)/);
+  assert.doesNotMatch(on, /admitSingleLeg\('BNF'\)/);
+  assert.match(on, /SYNTH_FO\|1 · OPEN/);
+  assert.equal(c.admitSingleLeg('NF').status, 'ADMITTED');
+  assert.deepEqual(calls, ['NF']);
+  assert.equal(c.alerts.length, 0);
+});
+test('single-leg admit: native rejection is surfaced with its reasons, never silently accepted', () => {
+  const c = ctx();
+  c.window.NativeBridge = { singleLegAdmit: () => JSON.stringify({ status: 'REJECTED', reason: 'PROPOSAL_NOT_ADMISSIBLE', reasons: ['MARGIN_EVIDENCE_STALE'] }), singleLegRead: () => '{}' };
+  assert.equal(c.admitSingleLeg('NF').status, 'REJECTED');
+  assert.match(c.alerts[0], /PROPOSAL_NOT_ADMISSIBLE \(MARGIN_EVIDENCE_STALE\)/);
+  const none = ctx(); none.admitSingleLeg('NF');
+  assert.match(none.alerts[0], /BRIDGE_UNAVAILABLE/);
 });
