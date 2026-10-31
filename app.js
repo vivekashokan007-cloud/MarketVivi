@@ -6269,20 +6269,24 @@ function renderSingleLegCard(bi) {
         const p = plans[ix];
         if (!p) return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: no single-leg proposal${on ? '' : ' (Paper single-leg is off)'}</div>`;
         const why = (p.reasons || []).join(', ');
-        const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? 'n/a')} · capital ${p.capital_required == null ? 'n/a' : '₹' + Math.round(p.capital_required)} (${iaEsc(p.capital_basis || '')})` : 'no action';
-        const btn = on && p.admit === true
-            ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: admit</button>` : '';
-        return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${p.admit ? 'admissible' : 'blocked: ' + iaEsc(why || 'unknown')}${btn}</div>`;
+        const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? p.contract?.lot_size ?? 'n/a')} · capital ${p.capital_required == null ? 'n/a' : '₹' + Math.round(p.capital_required)} (${iaEsc(p.capital_basis || '')})` : 'no action';
+        // R7: a proposal waiting only for the broker snapshot is admissible-on-tap: native fetches the exact
+        // instrument's dedicated quote and re-checks every gate at the actual time; otherwise every reason shows.
+        const tappable = p.status === 'ADMISSIBLE' || p.status === 'ELIGIBLE_PENDING_SNAPSHOT';
+        const btn = on && tappable
+            ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: fetch quote &amp; admit</button>` : '';
+        const state = p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
+        return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}</div>`;
     }).join('');
     const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
-    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}</div>`).join('');
+    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
     const stErr = st && st.status ? `<div class="brain-detail" style="color:var(--warn)">Store: ${iaEsc(st.status)}</div>` : '';
     return `<div class="brain-card sl-card" style="padding:8px 12px">
         <div style="font-size:13px;font-weight:700">Single-leg (index_single_leg_v1) · Paper only
             <button class="sl-toggle" style="font-size:11px;margin-left:6px" onclick="setSingleLegEnabled(${on ? 'false' : 'true'})">${on ? 'Turn off' : 'Turn on'}</button></div>
         ${rows}
         ${pos ? `<div style="font-size:11px;margin-top:3px">Local Paper positions:</div>${pos}` : ''}${stErr}
-        <div style="font-size:10px;color:var(--text-muted)">Live contract metadata / margin / quote freshness are not fetched in this build: live proposals stay blocked with named reasons. No real orders.</div>
+        <div class="sl-disclosure" style="font-size:10px;color:var(--text-muted)">Paper fill estimate from broker snapshot; exchange quote age unavailable. A resolved Paper calculation is still simulated execution. No real orders.</div>
     </div>`;
 }
 function renderIndexAlerts(ix) {

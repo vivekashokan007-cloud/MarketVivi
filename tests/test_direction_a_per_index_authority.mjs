@@ -117,11 +117,12 @@ test('single-leg card: off by default, shows every block reason, admit only when
   c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => JSON.stringify({ positions: [{ index: 'NF', action: 'BUY_CE', instrument_key: 'SYNTH_FO|1', status: 'OPEN' }] }),
     singleLegAdmit: ix => { calls.push(ix); return JSON.stringify({ status: 'ADMITTED', position_id: 'p1' }); } };
   vm.runInContext('SINGLE_LEG_STORE=null', c);
-  b.single_leg_by_index.NF = { admit: true, action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
+  b.single_leg_by_index.NF = { admit: true, status: 'ADMISSIBLE', action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
   const on = c.renderSingleLegCard(b);
   assert.match(on, /admitSingleLeg\('NF'\)/);
   assert.doesNotMatch(on, /admitSingleLeg\('BNF'\)/);
   assert.match(on, /SYNTH_FO\|1 · OPEN/);
+  assert.match(on, /Paper fill estimate from broker snapshot; exchange quote age unavailable\./);
   assert.equal(c.admitSingleLeg('NF').status, 'ADMITTED');
   assert.deepEqual(calls, ['NF']);
   assert.equal(c.alerts.length, 0);
@@ -133,4 +134,18 @@ test('single-leg admit: native rejection is surfaced with its reasons, never sil
   assert.match(c.alerts[0], /PROPOSAL_NOT_ADMISSIBLE \(MARGIN_EVIDENCE_STALE\)/);
   const none = ctx(); none.admitSingleLeg('NF');
   assert.match(none.alerts[0], /BRIDGE_UNAVAILABLE/);
+});
+
+test('R7: proposal waiting only for a broker snapshot is tappable (non-circular); blocked ones are not', () => {
+  const c = ctx();
+  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}' };
+  const b = bi();
+  b.single_leg_by_index = { NF: { admit: false, status: 'ELIGIBLE_PENDING_SNAPSHOT', action: 'BUY_CE', strike: 24100, reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] },
+    BNF: { admit: false, status: 'BLOCKED', action: 'SELL_PE', reasons: ['MARGIN_UNAVAILABLE', 'QUANTITY_SHORTFALL'] } };
+  const html = c.renderSingleLegCard(b);
+  assert.match(html, /needs a fresh broker snapshot at tap/);
+  assert.match(html, /admitSingleLeg\('NF'\)/);
+  assert.doesNotMatch(html, /admitSingleLeg\('BNF'\)/);
+  assert.match(html, /MARGIN_UNAVAILABLE, QUANTITY_SHORTFALL/);
+  assert.doesNotMatch(html, /FRESHNESS_VERIFIED/);
 });
