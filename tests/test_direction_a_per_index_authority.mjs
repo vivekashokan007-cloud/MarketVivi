@@ -14,12 +14,13 @@ const FNS = ['isIndexAuthorityActive', 'getIndexSelector', 'iaEsc', 'indexAuthor
   'renderIndexAuthorityPanel', 'renderIndexAuthorityPanels', 'renderDailyReviewCard', 'iaTodayIst',
   'indexStructureChoiceAvailable', 'renderIndexAlerts', 'chooseIndexStructureForPaper', 'setIndexSelector',
   'singleLegEnabled', 'setSingleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'renderSingleLegCard',
-  'pollSingleLegAdmit', 'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups'];
+  'pollSingleLegAdmit', 'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups',
+  'sessionEvidenceSupported', 'renderSessionEvidenceLine', 'renderReviewInputs'];
 function ctx(sel = 'BOTH') {
   const store = { mr_index_selector_v1: sel };
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, calls: [], alerts: [], timers: [], window: {}, setTimeout: f => c.timers.push(f), prompt: () => c.promptValue, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
   vm.createContext(c);
-  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 const cand = { id: 'NF-BULL_CALL-1', index: 'NF', type: 'BULL_CALL', entryEligible: true, legs: [] };

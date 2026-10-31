@@ -5351,7 +5351,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.85', build: 516, app_js_v: 1380 };
+const M0_PWA_IDENTITY = { version: '2.6.86', build: 517, app_js_v: 1381 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6387,6 +6387,41 @@ function exportDailyReview() {
         window.NativeBridge?.saveExportFile?.(`daily_review_${iaTodayIst()}.json`, 'application/json', b64);
     } catch (e) { /* export is optional */ }
 }
+// PM1-5: session evidence export (native, allow-listed, bounded).  Feature-detected: on an APK without the
+// bridge method (<= 2.6.85 / b516) the card says an app update is needed instead of calling an absent method.
+let SESSION_EVIDENCE_RESULT = null;
+function sessionEvidenceSupported() {
+    return !!(window.NativeBridge && typeof window.NativeBridge.exportSessionEvidence === 'function');
+}
+function exportSessionEvidence() {
+    if (!sessionEvidenceSupported()) {
+        SESSION_EVIDENCE_RESULT = { status: 'APP_UPDATE_NEEDED' };
+    } else {
+        SESSION_EVIDENCE_RESULT = { status: 'EXPORTING' };
+        if (typeof renderAll === 'function') renderAll();
+        try {
+            const v = `${M0_PWA_IDENTITY.version}/b${M0_PWA_IDENTITY.build}/v${M0_PWA_IDENTITY.app_js_v}`;
+            SESSION_EVIDENCE_RESULT = JSON.parse(window.NativeBridge.exportSessionEvidence(iaTodayIst(), v) || '{}');
+        } catch (e) {
+            SESSION_EVIDENCE_RESULT = { status: 'EXPORT_ERROR' };
+        }
+    }
+    if (typeof renderAll === 'function') renderAll();
+}
+function renderSessionEvidenceLine() {
+    const r = SESSION_EVIDENCE_RESULT;
+    if (!r) return sessionEvidenceSupported() ? '' : '<div style="font-size:10px;color:var(--text-muted)">Session evidence export: app update needed (2.6.86 · b517)</div>';
+    if (r.status === 'APP_UPDATE_NEEDED') return '<div style="font-size:10px;color:var(--warn)">Session evidence export: app update needed (2.6.86 · b517)</div>';
+    if (r.status === 'EXPORTING') return '<div style="font-size:10px">Exporting…</div>';
+    if (r.ok) return `<div style="font-size:10px">Saved ${iaEsc(r.fileName || '')} · ${iaEsc(r.bytes)} bytes · sha256 ${iaEsc(String(r.sha256 || '').slice(0, 12))} · session ${iaEsc(r.session_date_used || '')}</div>`;
+    return `<div style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status || 'UNKNOWN')}${r.bytes ? ' · ' + iaEsc(r.bytes) + ' bytes' : ''}</div>`;
+}
+// PM1-2: which manual-trade input the review used (older reports carry no provenance; said so literally).
+function renderReviewInputs(latest) {
+    const i = latest && latest.inputs;
+    if (!i) return '<div style="font-size:10px;color:var(--text-muted)">Inputs: provenance not recorded (older build)</div>';
+    return `<div style="font-size:10px;color:var(--text-muted)">Inputs: manual trades ${iaEsc(i.manual_status)} (${iaEsc(i.manual_trade_rows)} rows, ${iaEsc(i.trades_source)}) · local single-leg outcomes ${iaEsc(i.single_leg_outcome_rows)} rows</div>`;
+}
 // R8 (Codex R7 s3): per index, per policy/version segment; actual Paper and hypothetical kept apart; unknown
 // stays unknown; long premium and short margin denominators shown separately; never a combined NF/BNF score.
 function reviewNet(g) {
@@ -6423,13 +6458,15 @@ function renderDailyReviewCard() {
                 ${Object.keys(b.data_issues || {}).length ? '<br>Data issues: ' + iaEsc(Object.entries(b.data_issues).map(([k, v]) => k + '×' + v).join(', ')) : ''}
                 ${b.paper_trades_supplied === false ? '<br>Paper outcomes: not supplied' : ''}
                 ${renderReviewGroups(b.paper_outcome_groups)}</div>`;
-        }).join('') + `<div style="font-size:10px;color:var(--text-muted)">Report ${iaEsc(latest.report_status)} · rev ${iaEsc(latest.revision)} · ${iaEsc(latest.label_target_version)} · not model training</div>`;
+        }).join('') + `<div style="font-size:10px;color:var(--text-muted)">Report ${iaEsc(latest.report_status)} · rev ${iaEsc(latest.revision)} · ${iaEsc(latest.label_target_version)} · not model training</div>` + renderReviewInputs(latest);
     }
     return `<details class="brain-card" style="padding:8px 12px"><summary style="font-size:12px;font-weight:700;cursor:pointer">📋 Daily review (local)</summary>
         ${body}
         <div style="margin-top:4px"><button style="font-size:11px" onclick="loadDailyReview(false)">Load</button>
         <button style="font-size:11px" onclick="loadDailyReview(true)">Build now</button>
-        <button style="font-size:11px" onclick="exportDailyReview()">Export</button></div>
+        <button style="font-size:11px" onclick="exportDailyReview()">Export</button>
+        <button style="font-size:11px" onclick="exportSessionEvidence()">Export session evidence</button></div>
+        ${renderSessionEvidenceLine()}
     </details>`;
 }
 
