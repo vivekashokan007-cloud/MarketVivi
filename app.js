@@ -6250,7 +6250,24 @@ function loadSingleLegStore() {
 }
 // R8 (Codex R7 s2): admission is non-blocking. Native returns PENDING with a stable request id; the page
 // polls singleLegAdmitStatus(id) until the coordinator reports a completed (or reconciled) outcome.
+// R9 (Codex R8): no poll limit - a request stays "pending / outcome unconfirmed" until native reports a definitive
+// (recorded or fenced) outcome; polling backs off and the pending ids survive a page reload, so a late outcome is
+// still shown.
+const SINGLE_LEG_PENDING_KEY = 'mr_single_leg_pending_v1';
 let SINGLE_LEG_PENDING = {};
+let SINGLE_LEG_POLLING = {};
+function saveSingleLegPending() {
+    try { localStorage.setItem(SINGLE_LEG_PENDING_KEY, JSON.stringify(SINGLE_LEG_PENDING)); } catch (e) { /* storage optional */ }
+}
+function resumeSingleLegPending() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(SINGLE_LEG_PENDING_KEY) || '{}') || {}; } catch (e) { saved = {}; }
+    for (const [ix, p] of Object.entries(saved)) {
+        if (!p?.request_id) continue;
+        if (!SINGLE_LEG_PENDING[ix]) SINGLE_LEG_PENDING[ix] = p;
+        if (!SINGLE_LEG_POLLING[p.request_id]) { SINGLE_LEG_POLLING[p.request_id] = true; setTimeout(() => pollSingleLegAdmit(ix, p.request_id, 0), 400); }
+    }
+}
 function admitSingleLeg(ix) {
     let out = null;
     try {
@@ -6259,6 +6276,8 @@ function admitSingleLeg(ix) {
     } catch (e) { out = { status: 'ERROR' }; }
     if (out?.status === 'PENDING' && out.request_id) {
         SINGLE_LEG_PENDING[ix] = { request_id: out.request_id, phase: 'QUEUED' };
+        SINGLE_LEG_POLLING[out.request_id] = true;
+        saveSingleLegPending();
         if (typeof renderAll === 'function') renderAll();
         setTimeout(() => pollSingleLegAdmit(ix, out.request_id, 0), 400);
         return out;
@@ -6267,21 +6286,25 @@ function admitSingleLeg(ix) {
 }
 function pollSingleLegAdmit(ix, rid, n) {
     let st = null;
-    try {
-        st = typeof window.NativeBridge?.singleLegAdmitStatus === 'function'
-            ? JSON.parse(window.NativeBridge.singleLegAdmitStatus(rid) || '{}') : { status: 'ERROR', completed: true };
-    } catch (e) { st = { status: 'ERROR', completed: true }; }
-    if (!st?.completed && st?.found !== true && n < 150) {
+    if (typeof window.NativeBridge?.singleLegAdmitStatus !== 'function') {
+        st = { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', reason: 'BRIDGE_UNAVAILABLE' };
+    } else {
+        try { st = JSON.parse(window.NativeBridge.singleLegAdmitStatus(rid) || '{}'); }
+        catch (e) { st = { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', reason: 'STATUS_READ_ERROR' }; }
+    }
+    if (!st?.completed && st?.found !== true) {
         SINGLE_LEG_PENDING[ix] = { request_id: rid, phase: st?.phase || 'PENDING' };
+        saveSingleLegPending();
         if (typeof renderAll === 'function') renderAll();
-        setTimeout(() => pollSingleLegAdmit(ix, rid, n + 1), 400);
+        setTimeout(() => pollSingleLegAdmit(ix, rid, n + 1), n < 150 ? 400 : 5000);
         return st;
     }
-    if (!st?.completed && st?.found !== true) st = { status: 'PENDING_UNRESOLVED', reason: 'STATUS_POLL_LIMIT', request_id: rid };
+    delete SINGLE_LEG_POLLING[rid];
     return finishSingleLegAdmit(ix, st);
 }
 function finishSingleLegAdmit(ix, out) {
     delete SINGLE_LEG_PENDING[ix];
+    saveSingleLegPending();
     if (out?.status !== 'ADMITTED' && out?.status !== 'DUPLICATE_IGNORED') {
         alert(`Single-leg Paper not admitted: ${out?.reason || out?.status || 'unknown'}${(out?.reasons || []).length ? ' (' + out.reasons.join(', ') + ')' : ''}`);
     }
@@ -6302,6 +6325,7 @@ function setSingleLegCapitalPrompt() {
     return out;
 }
 function renderSingleLegCard(bi) {
+    resumeSingleLegPending();
     const on = singleLegEnabled();
     const plans = bi?.single_leg_by_index || {};
     const sel = getIndexSelector();
@@ -6314,7 +6338,7 @@ function renderSingleLegCard(bi) {
         // instrument's dedicated quote and re-checks every gate at the actual time; otherwise every reason shows.
         const tappable = p.status === 'ADMISSIBLE' || p.status === 'ELIGIBLE_PENDING_SNAPSHOT';
         const pend = SINGLE_LEG_PENDING[ix];
-        const btn = pend ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">admission pending (${iaEsc(pend.phase)})…</span>` : on && tappable
+        const btn = pend ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase)})…</span>` : on && tappable
             ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: fetch quote &amp; admit</button>` : '';
         const state = p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
         return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}</div>`;

@@ -14,12 +14,12 @@ const FNS = ['isIndexAuthorityActive', 'getIndexSelector', 'iaEsc', 'indexAuthor
   'renderIndexAuthorityPanel', 'renderIndexAuthorityPanels', 'renderDailyReviewCard', 'iaTodayIst',
   'indexStructureChoiceAvailable', 'renderIndexAlerts', 'chooseIndexStructureForPaper', 'setIndexSelector',
   'singleLegEnabled', 'setSingleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'renderSingleLegCard',
-  'pollSingleLegAdmit', 'finishSingleLegAdmit', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups'];
+  'pollSingleLegAdmit', 'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups'];
 function ctx(sel = 'BOTH') {
   const store = { mr_index_selector_v1: sel };
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, calls: [], alerts: [], timers: [], window: {}, setTimeout: f => c.timers.push(f), prompt: () => c.promptValue, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
   vm.createContext(c);
-  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; let SINGLE_LEG_PENDING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 const cand = { id: 'NF-BULL_CALL-1', index: 'NF', type: 'BULL_CALL', entryEligible: true, legs: [] };
@@ -204,4 +204,31 @@ test('R8: daily review shows single-leg BUY/SELL, multi-leg by strategy, unknown
   assert.match(html, /MULTI_LEG:IRON_CONDOR: .*net after costs ₹-30/s);
   assert.match(html, /LONG_PREMIUM_PLUS_FEE 2\/2/);
   assert.doesNotMatch(html, /combined/i);
+});
+
+test('R9: outcome after the normal polling period is still shown; reload resumes; never a timer-made rejection', () => {
+  const c = ctx();
+  let n = 0;
+  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}',
+    singleLegAdmit: () => JSON.stringify({ status: 'PENDING', request_id: 'rq9' }),
+    singleLegAdmitStatus: id => { n++; return JSON.stringify(n < 160 ? { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', request_id: id }
+      : { status: 'ADMITTED', position_id: 'sl1_x', completed: true, reconciled: true, request_id: id }); } };
+  c.admitSingleLeg('NF');
+  for (let i = 0; i < 155; i++) c.timers.shift()();
+  assert.equal(c.alerts.length, 0);                                  // no NOT_ADMITTED / poll-limit verdict
+  const b = bi(); b.single_leg_by_index = { NF: { status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
+  assert.match(c.renderSingleLegCard(b), /outcome not yet confirmed/);
+  // page reload: a fresh context sharing the same localStorage resumes polling the persisted id
+  const saved = c.localStorage.getItem('mr_single_leg_pending_v1');
+  assert.match(saved, /rq9/);
+  const d = ctx(); d.localStorage.setItem('mr_single_leg_pending_v1', saved);
+  d.window.NativeBridge = { ...c.window.NativeBridge, singleLegAdmitStatus: id => JSON.stringify({ status: 'ADMITTED', completed: true, request_id: id }) };
+  d.renderSingleLegCard(b);
+  d.timers.shift()();
+  assert.equal(d.alerts.length, 0);                                  // ADMITTED -> no failure alert
+  assert.doesNotMatch(d.renderSingleLegCard(b), /pending/);
+  assert.doesNotMatch(d.localStorage.getItem('mr_single_leg_pending_v1'), /rq9/);
+  while (c.timers.length && n < 170) c.timers.shift()();
+  assert.equal(c.alerts.length, 0);
+  assert.doesNotMatch(c.renderSingleLegCard(b), /pending/);
 });
