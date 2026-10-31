@@ -82,6 +82,7 @@ jobs:
             tools/b507_chain
             app/src/main/java/com/marketradar/app/MainActivity.kt
             app/src/main/java/com/marketradar/app/NativeBridge.kt
+            app/src/main/java/com/marketradar/app/BackgroundResume.kt
           sparse-checkout-cone-mode: false
 
       - name: Validate app syntax

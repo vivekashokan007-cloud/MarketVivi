@@ -66,7 +66,11 @@ test('saving before restore is a no-op, then tab and scroll are recorded', () =>
 
 test('boot wiring: restored tab wins, open-trades default otherwise; no action replay', () => {
   const boot = app.slice(app.indexOf("document.addEventListener('DOMContentLoaded'"));
-  assert.match(boot, /const b512Plan = b512RestoreUiState\(b512ValidTabs\);\s*if \(!b512Plan && readNativeJson\('getOpenTrades', \[\]\)\.length > 0\) \{\s*switchTab\('positions'\);/);
+  // b515: the restore moved BEFORE the first network await; the open-trades default still only applies without a
+  // restored plan (and now also only if nobody navigated during boot).
+  assert.ok(boot.indexOf('const b512Plan = b512RestoreUiState(b512ValidTabs);') > 0);
+  assert.ok(boot.indexOf('const b512Plan = b512RestoreUiState(b512ValidTabs);') < boot.indexOf('await '), 'restore precedes the first await');
+  assert.match(boot, /if \(!b512Plan && b512NavGen === b515NavGenAfterRestore && readNativeJson\('getOpenTrades', \[\]\)\.length > 0\) \{\s*switchTab\('positions'\);/);
   assert.match(boot, /b512BindUiStatePersistence\(\);/);
   assert.match(app, /function switchTab\(tabName\) \{[\s\S]*?STATE\.activeTab = tabName;\s*b512NavGen\+\+;[^\n]*\n\s*b512SaveUiState\(\);\s*\}/);
   assert.doesNotMatch(block, /placeOrder|sendOrder|execute|submit|getOpenTrades|AndroidBridge|\.value\b/);

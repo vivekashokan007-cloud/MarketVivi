@@ -5351,7 +5351,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.83', build: 514, app_js_v: 1378 };
+const M0_PWA_IDENTITY = { version: '2.6.84', build: 515, app_js_v: 1379 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -9684,6 +9684,246 @@ function expandMorning(options = {}) {
     section.classList.remove('collapsed');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// b515: unsaved-input drafts across Activity/WebView re-creation (CDX-GROK-BACKGROUND-RESUME-1).
+// Allowlisted, non-secret morning/evening reference fields only. Never tokens, URLs, trade-entry forms, the Paper/Real
+// controls or anything that could act. A draft is restored only for the same IST session date, only into an enabled
+// field, and only while that field still shows the authoritative value it had when the draft was typed (base) — so a
+// saved/locked morning record or a newer evening reference always wins. Restore sets .value only: it dispatches no
+// input/change event, calls no bridge method and never saves, locks or scans.
+// R1 (Codex b515 review): every draft field carries the IST date (and time) of the genuine user edit that produced it.
+// A flush (hidden / pagehide / freeze / native onPause) never redates an edit: on an IST date transition the
+// previous day's edits are dropped from tracking before anything is serialised, and only a new input/change event on
+// that same field makes it a draft of the new day. Untouched old fields are never carried by another field's edit.
+// R2 (Codex b515 review): after an ACKNOWLEDGED save the baseline of the saved fields advances to the stored record
+// (exactly what the next boot's authoritative restore will show) and their saved drafts are cleared; other unsaved
+// fields keep their drafts. A failed / rejected / cancelled save never reaches the hook.
+// ═══════════════════════════════════════════════════════════════
+const B515_DRAFT_KEY = 'mr_ui_drafts_v1';
+const B515_DRAFT_VERSION = 2;          // v2: per-field origin date/time (R1). v1 records are discarded as malformed.
+const B515_DRAFT_MAX_AGE_MS = 12 * 3600 * 1000;
+const B515_DRAFT_FIELDS = ['in-fii-cash', 'in-fii-short', 'in-dii-cash', 'in-fii-idx-fut', 'in-fii-stk-fut',
+    'in-dow-close', 'in-crude-settle', 'in-upstox-bias', 'in-gift-spot', 'in-eve-dow', 'in-eve-crude', 'in-eve-gift'];
+let b515DraftBase = null;      // id -> authoritative value (boot restore, advanced by an acknowledged save); null until armed
+let b515DraftOrigin = {};      // id -> { d: IST date, t: ms } of the genuine edit (or restored draft) behind the field value
+let b515DraftAcked = {};       // id -> form text that an acknowledged save accepted (stored as b515DraftBase[id])
+let b515DraftDate = null;      // IST date the tracking was last reconciled for
+let b515LastDraftSummary = { status: 'not_run', applied: 0, skipped: {} };
+
+function b515DraftValueOk(v) {
+    return typeof v === 'string' && v.length <= 32 && /^[0-9A-Za-z .,+%\-\u2212\u2013\u2014]*$/.test(v);
+}
+
+function b515DraftOriginOk(d) {
+    return !!d && typeof d.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.d) && Number.isFinite(Number(d.t)) && Number(d.t) > 0;
+}
+
+// Pure: which drafts may be applied. `fields` maps id -> { value, disabled, options? } as the page shows it NOW.
+function b515DraftRestorePlan(raw, todayIst, nowMs, fields) {
+    const out = { status: 'none', apply: {}, origin: {}, skipped: {} };
+    if (raw === null || raw === undefined || raw === '') return out;
+    let st = null;
+    try { st = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { out.status = 'malformed'; return out; }
+    if (!st || typeof st !== 'object' || st.v !== B515_DRAFT_VERSION || !st.fields || typeof st.fields !== 'object') { out.status = 'malformed'; return out; }
+    if (st.date !== todayIst) { out.status = 'stale_date'; return out; }
+    const age = nowMs - Number(st.ts);
+    if (!Number.isFinite(age) || age < 0 || age > B515_DRAFT_MAX_AGE_MS) { out.status = 'stale_age'; return out; }
+    out.status = 'ok';
+    for (const id of Object.keys(st.fields)) {
+        const d = st.fields[id];
+        const f = fields[id];
+        if (!B515_DRAFT_FIELDS.includes(id) || !f) { out.skipped[id] = 'not_allowlisted'; continue; }
+        if (!d || !b515DraftValueOk(d.v) || !b515DraftValueOk(d.base) || !b515DraftOriginOk(d)) { out.skipped[id] = 'malformed'; continue; }
+        // R1: the edit itself must be from today's IST session and recent, whatever date the record was flushed under.
+        if (d.d !== todayIst) { out.skipped[id] = 'stale_date'; continue; }
+        const fieldAge = nowMs - Number(d.t);
+        if (fieldAge < 0 || fieldAge > B515_DRAFT_MAX_AGE_MS) { out.skipped[id] = 'stale_age'; continue; }
+        if (f.disabled) { out.skipped[id] = 'locked'; continue; }
+        if (String(f.value) !== d.base) { out.skipped[id] = 'authority_changed'; continue; }
+        if (Array.isArray(f.options) && !f.options.includes(d.v)) { out.skipped[id] = 'not_an_option'; continue; }
+        if (d.v === d.base) continue;
+        out.apply[id] = d.v;
+        out.origin[id] = { d: d.d, t: Number(d.t) };
+    }
+    return out;
+}
+
+function b515ReadField(id) {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    const options = (el.tagName === 'SELECT' && el.options) ? Array.from(el.options).map(o => o.value) : undefined;
+    return { el, value: String(el.value ?? ''), disabled: !!el.disabled, options };
+}
+
+// Boot step, AFTER the authoritative restores (restoreMorningData / restoreEveningClose) and the native session lock.
+function b515RestoreDrafts() {
+    const fields = {}; const base = {};
+    let morningLocked = false;
+    try { morningLocked = typeof hasLockedMorningForToday === 'function' && !!hasLockedMorningForToday(); } catch (e) { morningLocked = false; }
+    for (const id of B515_DRAFT_FIELDS) {
+        const f = b515ReadField(id);
+        if (!f) continue;
+        if (morningLocked && !id.startsWith('in-eve-')) f.disabled = true;   // a locked morning record is the authority
+        fields[id] = f; base[id] = f.value;
+    }
+    let today = null;
+    try { today = API.todayIST(); } catch (e) { today = null; }
+    let plan = { status: 'storage_error', apply: {}, origin: {}, skipped: {} };
+    try { plan = b515DraftRestorePlan(localStorage.getItem(B515_DRAFT_KEY), today, Date.now(), fields); } catch (e) {}
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(B515_DRAFT_KEY) || 'null'); } catch (e) { raw = null; }
+    const origin = {};
+    // The authoritative base and the edit's origin travel with an applied draft, so a second re-creation can still
+    // restore it and a later flush cannot redate it.
+    for (const [id, v] of Object.entries(plan.apply)) {
+        fields[id].el.value = v;
+        if (raw && raw.fields && raw.fields[id]) base[id] = raw.fields[id].base;
+        origin[id] = plan.origin[id];
+    }
+    b515DraftBase = base;
+    b515DraftOrigin = origin;
+    b515DraftAcked = {};
+    b515DraftDate = today;
+    b515LastDraftSummary = { status: plan.status, applied: Object.keys(plan.apply).length, skipped: plan.skipped };
+    if (plan.status !== 'ok') { try { localStorage.removeItem(B515_DRAFT_KEY); } catch (e) {} }
+    b515SaveDrafts('boot');
+    return b515LastDraftSummary;
+}
+
+// R3 (Codex b515 re-review): the morning form's authority is date-scoped. What restoreMorningData() will show for
+// `today` in a fresh document: the stored local morning record's values when that record is dated `today`, otherwise
+// nothing (restoreMorningData clears an older record and leaves the fields blank). Same field mapping as that restore.
+// A cloud record for `today` that arrives later is newer authority and still wins at restore (authority_changed).
+function b515MorningAuthorityFor(today) {
+    const out = {};
+    for (const id of B515_DRAFT_FIELDS) if (!id.startsWith('in-eve-')) out[id] = '';
+    let data = null;
+    try { data = JSON.parse(localStorage.getItem('mr2_morning') || 'null'); } catch (e) { data = null; }
+    if (!data || typeof data !== 'object' || !data.date || data.date !== today) return out;
+    const first = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '');
+    const map = {
+        'in-fii-cash': first(data.fiiCash, data.fii_cash),
+        'in-fii-short': first(data.fiiShortPct, data.fii_short_pct),
+        'in-dii-cash': first(data.diiCash, data.dii_cash),
+        'in-fii-idx-fut': first(data.fiiIdxFut, data.fii_idx_fut),
+        'in-fii-stk-fut': first(data.fiiStkFut, data.fii_stk_fut),
+        'in-gift-spot': first(data.giftSpot, data.gift_spot),
+        'in-dow-close': first(data.dowClose, data.dow_close, data.dow),
+        'in-crude-settle': first(data.crudeSettle, data.crude_settle, data.crude),
+        'in-upstox-bias': data.upstoxBias || undefined,
+    };
+    for (const id of Object.keys(out)) if (map[id] !== undefined) out[id] = String(map[id]);
+    return out;
+}
+
+// R1: on an IST date transition, edits from an earlier date stop being drafts before any field is serialised.
+// R3: the baseline's session identity moves with the date too. Morning fields are rebased to the new day's morning
+// authority (b515MorningAuthorityFor), so a genuine new-day edit is compared with today's record, not yesterday's
+// (and an entry equal to yesterday's value is still a draft). Evening fields keep their base: restoreEveningClose is
+// not date-scoped, so the same stored reference remains their authority on the new day. Nothing is saved, cleared on
+// screen, locked or scanned; the restore-time authority_changed / locked guards are unchanged.
+function b515ReconcileDraftDate(today) {
+    if (b515DraftDate === today) return 0;
+    let dropped = 0, rebased = 0;
+    for (const id of Object.keys(b515DraftOrigin)) {
+        if (!b515DraftOrigin[id] || b515DraftOrigin[id].d !== today) { delete b515DraftOrigin[id]; dropped++; }
+    }
+    if (b515DraftDate !== null && b515DraftBase) {
+        const morning = b515MorningAuthorityFor(today);
+        for (const id of Object.keys(morning)) {
+            if (!(id in b515DraftBase)) continue;
+            b515DraftBase[id] = morning[id];
+            delete b515DraftAcked[id];
+            rebased++;
+        }
+    }
+    if (b515DraftDate !== null) {
+        try { console.info(`[ui-restore] b515 drafts date rollover from=${b515DraftDate} to=${today} dropped=${dropped} rebased=${rebased}`); } catch (e) {}
+    }
+    b515DraftDate = today;
+    return dropped;
+}
+
+// A genuine user edit (input/change event on an allowlisted field): stamps that field only.
+function b515MarkDraftEdit(id) {
+    if (!b515DraftBase || !B515_DRAFT_FIELDS.includes(id)) return;
+    const today = API.todayIST();
+    b515ReconcileDraftDate(today);
+    b515DraftOrigin[id] = { d: today, t: Date.now() };
+}
+
+function b515SaveDrafts(reason = 'input') {
+    try {
+        if (!b515DraftBase || typeof localStorage === 'undefined') return false;   // never before boot restore ran
+        const today = API.todayIST();
+        b515ReconcileDraftDate(today);                                               // R1: before serialising anything
+        const out = {};
+        for (const id of B515_DRAFT_FIELDS) {
+            const f = b515ReadField(id);
+            if (!f || f.disabled || !(id in b515DraftBase)) continue;
+            if (f.value === b515DraftBase[id] || (id in b515DraftAcked && f.value === b515DraftAcked[id])) continue;
+            const o = b515DraftOrigin[id];
+            if (!b515DraftOriginOk(o) || o.d !== today) continue;                    // no genuine edit today: not a draft
+            if (!b515DraftValueOk(f.value) || !b515DraftValueOk(b515DraftBase[id])) continue;
+            out[id] = { v: f.value, base: b515DraftBase[id], d: o.d, t: o.t };
+        }
+        if (!Object.keys(out).length) { localStorage.removeItem(B515_DRAFT_KEY); return true; }
+        localStorage.setItem(B515_DRAFT_KEY, JSON.stringify({ v: B515_DRAFT_VERSION, date: today, ts: Date.now(), fields: out }));
+        return true;
+    } catch (e) { return false; }   // storage full / disabled: drafts are best effort
+}
+
+// R2: called ONLY after an acknowledged save, with the stored record. `entries` = [{ id, stored, sent }]: `stored` is
+// the stored record value (what the next authoritative restore will put in the field), `sent` the form text the save
+// accepted. Advances those fields' baselines, clears their saved drafts and keeps every other unsaved field.
+function b515DraftsAcknowledged(entries, reason = 'saved') {
+    if (!b515DraftBase || !Array.isArray(entries)) return false;
+    for (const e of entries) {
+        if (!e || !B515_DRAFT_FIELDS.includes(e.id) || !(e.id in b515DraftBase)) continue;
+        const stored = (e.stored === undefined || e.stored === null || e.stored === '') ? '' : String(e.stored);
+        const sent = String(e.sent ?? '');
+        b515DraftBase[e.id] = stored;
+        b515DraftAcked[e.id] = sent;
+        const f = b515ReadField(e.id);
+        if (!f || f.value === stored || f.value === sent) delete b515DraftOrigin[e.id];
+    }
+    return b515SaveDrafts(reason);
+}
+
+function b515BindDraftPersistence() {
+    if (typeof document === 'undefined') return;
+    const onEdit = (e) => {
+        if (!e || !e.target || !B515_DRAFT_FIELDS.includes(e.target.id)) return;
+        try { b515MarkDraftEdit(e.target.id); } catch (err) {}
+        b515SaveDrafts(e.type);
+    };
+    document.addEventListener('input', onEdit, true);     // synchronous write: no timer that a paused WebView could drop
+    document.addEventListener('change', onEdit, true);
+}
+
+// One flush entry point for every "about to be hidden" signal, including the native onPause hook (b515 APK).
+function mrUiFlush(reason = 'unknown') {
+    try { b512SaveUiState(); } catch (e) {}
+    try { b515SaveDrafts(reason); } catch (e) {}
+    return 'ok';
+}
+if (typeof window !== 'undefined') window.mrUiFlush = mrUiFlush;
+
+function b515NavigationType() {
+    try {
+        const nav = performance.getEntriesByType('navigation')[0];
+        return (nav && nav.type) || 'unknown';
+    } catch (e) { return 'unknown'; }
+}
+
+function b515RestoreSummaryLine(phase) {
+    const d = b515LastDraftSummary || {};
+    const skipped = Object.entries(d.skipped || {}).map(([id, r]) => `${id}:${r}`).join(',') || '-';
+    const p = b512PendingScroll;
+    return `[ui-restore] b515 phase=${phase} nav=${b515NavigationType()} state=${b512LastPlanReason} tab=${STATE.activeTab}` +
+        ` scrollPending=${p ? p.y : 0} drafts=${d.status}/applied:${d.applied || 0} skipped=${skipped}`;
+}
+
 // ═══ TAB SWITCHING ═══
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -9754,16 +9994,38 @@ function b512SaveUiState() {
         try { prev = JSON.parse(localStorage.getItem(B512_UI_STATE_KEY) || '{}') || {}; } catch (e) { prev = {}; }
         const scroll = (prev && prev.date === API.todayIST() && prev.scroll && typeof prev.scroll === 'object') ? prev.scroll : {};
         const y = (typeof window !== 'undefined') ? Number(window.scrollY || (document.scrollingElement || {}).scrollTop || 0) : 0;
-        if (b512LastScrollTab === tab) scroll[tab] = Math.max(0, Math.round(y));
+        // b515: while the restored offset for this tab is still pending (content not rendered yet), the fresh page's
+        // scroll 0 / clamped offset must not overwrite it.
+        const pendingSame = b512PendingScroll && b512PendingScroll.tab === tab && b512PendingScroll.gen === b512NavGen;
+        if (b512LastScrollTab === tab && !pendingSame) scroll[tab] = Math.max(0, Math.round(y));
         b512LastScrollTab = tab;
         localStorage.setItem(B512_UI_STATE_KEY, JSON.stringify({ v: 1, tab, scroll, ts: Date.now(), date: API.todayIST() }));
     } catch (e) { /* storage full / disabled: navigation state is best effort */ }
 }
 let b512LastScrollTab = null;
+// b515: restored scroll target that is applied again once late content has rendered (boot restores the tab before
+// any network await; the cards that give the page its height render later).
+let b512PendingScroll = null;
+let b512LastPlanReason = 'not_run';
+
+// b515 diagnostics only: why a saved navigation state was (not) used. Never changes the plan.
+function b512UiStatePlanReason(raw, todayIst, nowMs, validTabs) {
+    if (raw === null || raw === undefined || raw === '') return 'none';
+    let st = null;
+    try { st = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return 'malformed'; }
+    if (!st || typeof st !== 'object') return 'malformed';
+    if (st.v !== 1) return 'version';
+    if (typeof st.tab !== 'string' || !validTabs.includes(st.tab)) return 'unknown_tab';
+    if (st.date !== todayIst) return 'stale_date';
+    const age = nowMs - Number(st.ts);
+    if (!Number.isFinite(age) || age < 0 || age > B512_UI_STATE_MAX_AGE_MS) return 'stale_age';
+    return 'ok';
+}
 
 function b512RestoreUiState(validTabs) {
     let plan = null;
     try { plan = b512UiStateRestorePlan(localStorage.getItem(B512_UI_STATE_KEY), API.todayIST(), Date.now(), validTabs); } catch (e) { plan = null; }
+    try { b512LastPlanReason = b512UiStatePlanReason(localStorage.getItem(B512_UI_STATE_KEY), API.todayIST(), Date.now(), validTabs); } catch (e) { b512LastPlanReason = 'storage_error'; }
     const explicit = b512ExplicitTab;
     b512ExplicitTab = null;
     b512UiRestoreDone = true;
@@ -9771,6 +10033,7 @@ function b512RestoreUiState(validTabs) {
         // a newer native/user destination arrived during startup: it wins over the saved tab and its scroll
         b512LastScrollTab = null;
         switchTab(explicit);
+        b512LastPlanReason = 'explicit';
         console.info('[boot] b512 explicit destination kept over saved UI state:', explicit);
         return { tab: explicit, scrollY: 0, source: 'explicit' };
     }
@@ -9780,6 +10043,7 @@ function b512RestoreUiState(validTabs) {
     b512LastScrollTab = plan.tab;
     if (plan.scrollY > 0 && typeof window !== 'undefined') {
         const gen = b512NavGen;          // R3: stale if any navigation / manual scroll happens before the callback fires
+        b512PendingScroll = { tab: plan.tab, y: plan.scrollY, gen };
         const go = () => {
             if (gen !== b512NavGen || STATE.activeTab !== plan.tab) return;
             try { window.scrollTo(0, plan.scrollY); } catch (e) {}
@@ -9791,6 +10055,37 @@ function b512RestoreUiState(validTabs) {
     return plan;
 }
 
+// b515: re-apply the restored offset after late renders. Stops as soon as the page reached it, on any newer
+// navigation / manual touch (b512NavGen), or after maxTries. Navigation only: scrolls, never acts.
+function b512ApplyPendingScroll(reason = 'render') {
+    const p = b512PendingScroll;
+    if (!p || typeof window === 'undefined') return 'none';
+    if (p.gen !== b512NavGen || STATE.activeTab !== p.tab) { b512PendingScroll = null; return 'superseded'; }
+    try { window.scrollTo(0, p.y); } catch (e) {}
+    const y = Number(window.scrollY || (document.scrollingElement || {}).scrollTop || 0);
+    if (Math.abs(y - p.y) <= 2) {
+        b512PendingScroll = null;
+        console.info(`[ui-restore] b515 scroll applied tab=${p.tab} y=${p.y} via=${reason}`);
+        return 'applied';
+    }
+    return 'pending';
+}
+
+function b512SchedulePendingScroll(maxTries = 30, stepMs = 200) {
+    let tries = 0;
+    const tick = () => {
+        const r = b512ApplyPendingScroll('retry');
+        if (r !== 'pending') return;
+        if (++tries >= maxTries) {
+            const p = b512PendingScroll; b512PendingScroll = null;
+            console.info(`[ui-restore] b515 scroll gave up tab=${p && p.tab} target=${p && p.y} reached=${Math.round(Number(window.scrollY || 0))}`);
+            return;
+        }
+        setTimeout(tick, stepMs);
+    };
+    tick();
+}
+
 function b512BindUiStatePersistence() {
     if (typeof window === 'undefined') return;
     let t = null;
@@ -9798,9 +10093,10 @@ function b512BindUiStatePersistence() {
         if (t) return;
         t = setTimeout(() => { t = null; b512SaveUiState(); }, 250);
     }, { passive: true });
-    window.addEventListener('pagehide', () => b512SaveUiState());
+    window.addEventListener('pagehide', () => mrUiFlush('pagehide'));
+    document.addEventListener('freeze', () => mrUiFlush('freeze'));
     ['touchstart', 'wheel', 'keydown'].forEach(ev => window.addEventListener(ev, () => b512SupersedeRestoreScroll(), { passive: true, once: true }));
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') b512SaveUiState(); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') mrUiFlush('hidden'); });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -9848,6 +10144,10 @@ function saveEveningClose() {
         STATE.eveningClose = { ...payload, dow: rec.dow, crude: rec.crude, gift: rec.gift, revision: eveAck.revision,
             intended_session: rec.intended_session, captured_at_ms: rec.captured_at_ms };
         localStorage.setItem('mr2_evening_close', JSON.stringify(STATE.eveningClose));
+        // b515 R2: the acknowledged stored record is the new draft baseline; its saved drafts are cleared.
+        try {
+            b515DraftsAcknowledged(EVENING_NUMERIC_FIELDS.map(d => ({ id: d.id, stored: rec[d.key], sent: parsedInputs.raw[d.key] })), 'saved_evening');
+        } catch (e) { console.warn('[b515] draft baseline update skipped:', e.message); }
         if (statusEl) {
             statusEl.textContent = `Saved for session ${rec.intended_session} at ${b507FmtIstTime(rec.captured_at_ms)} · Dow ${rec.dow}, Crude ${rec.crude}, GIFT ${rec.gift} · recalculating`;
         }
@@ -10207,6 +10507,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
     try { renderResearchCollector(); } catch (e) { console.warn('[boot] M0 research render failed:', e.message); }   // read-only
 
+    // b515: navigation state (tab now, scroll once content exists) is restored BEFORE any network await, so a
+    // re-created WebView does not sit on the default screen while Supabase/native reads run. Persistence is bound
+    // immediately so touches/scrolls during the rest of boot supersede the pending restore scroll.
+    const b512ValidTabs = Array.from(document.querySelectorAll('.tab-btn')).map(btn => btn.dataset.tab).filter(Boolean);
+    const b512Plan = b512RestoreUiState(b512ValidTabs);
+    const b515NavGenAfterRestore = b512NavGen;
+    b512BindUiStatePersistence();
+    try { console.info(b515RestoreSummaryLine('early')); } catch (e) {}
+
     // F.2.1b — DB module deleted in F.2; null-guard all DB.* calls so boot completes
     // and button event listeners get attached. Restores rely on localStorage fallback.
     try { if (typeof DB !== 'undefined' && DB.init) DB.init(); } catch (e) { console.warn('[boot] DB.init skipped:', e.message); }
@@ -10220,6 +10529,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { restoreMorningData(cloudConfig); } catch (e) { console.warn('[boot] restoreMorningData failed:', e.message); }
     try { restoreGlobalContext(cloudConfig); } catch (e) { console.warn('[boot] restoreGlobalContext failed:', e.message); }
     try { restoreEveningClose(cloudConfig); } catch (e) { console.warn('[boot] restoreEveningClose failed:', e.message); }
+    // b515: unsaved drafts only after the authoritative form values above (and the native lock) are in place.
+    try { b515RestoreDrafts(); } catch (e) { console.warn('[boot] b515 draft restore failed:', e.message); }
+    b515BindDraftPersistence();
 
     // Phase 11: Restore today's poll history (survives refresh + background kill)
     // Fetched separately because getAllConfig now excludes poll_history_* for performance
@@ -10260,16 +10572,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { await loadApprovedBranchProposals(true); } catch (e) { console.warn('[boot] loadApprovedBranchProposals failed:', e.message); }
     // Boot-time signal-accuracy fetch retired with afternoon positioning.
 
-    // b512: a same-day UI state from before an Activity/WebView re-creation wins; otherwise
-    // open trades show the positions tab as before.
-    const b512ValidTabs = Array.from(document.querySelectorAll('.tab-btn')).map(btn => btn.dataset.tab).filter(Boolean);
-    const b512Plan = b512RestoreUiState(b512ValidTabs);
-    if (!b512Plan && readNativeJson('getOpenTrades', []).length > 0) {
+    // b512/b515: a same-day UI state restored above wins; otherwise open trades show the positions tab as before —
+    // unless the user (or a native openTab) already navigated during boot.
+    if (!b512Plan && b512NavGen === b515NavGenAfterRestore && readNativeJson('getOpenTrades', []).length > 0) {
         switchTab('positions');
     }
-    b512BindUiStatePersistence();
 
     try { renderAll(); } catch (e) { console.warn('[boot] renderAll failed:', e.message); }
+    b512SchedulePendingScroll();
+    try { console.info(b515RestoreSummaryLine('boot')); } catch (e) {}
     try {
         const restoredJobId = STATE.evaluatorJob?.job_id;
         const restoredJobStatus = String(STATE.evaluatorJob?.status || '').toLowerCase();
