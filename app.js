@@ -6248,16 +6248,56 @@ function loadSingleLegStore() {
     } catch (e) { SINGLE_LEG_STORE = { status: 'READ_ERROR' }; }
     return SINGLE_LEG_STORE;
 }
+// R8 (Codex R7 s2): admission is non-blocking. Native returns PENDING with a stable request id; the page
+// polls singleLegAdmitStatus(id) until the coordinator reports a completed (or reconciled) outcome.
+let SINGLE_LEG_PENDING = {};
 function admitSingleLeg(ix) {
     let out = null;
     try {
         out = typeof window.NativeBridge?.singleLegAdmit === 'function'
             ? JSON.parse(window.NativeBridge.singleLegAdmit(ix) || '{}') : { status: 'REJECTED', reason: 'BRIDGE_UNAVAILABLE' };
     } catch (e) { out = { status: 'ERROR' }; }
+    if (out?.status === 'PENDING' && out.request_id) {
+        SINGLE_LEG_PENDING[ix] = { request_id: out.request_id, phase: 'QUEUED' };
+        if (typeof renderAll === 'function') renderAll();
+        setTimeout(() => pollSingleLegAdmit(ix, out.request_id, 0), 400);
+        return out;
+    }
+    return finishSingleLegAdmit(ix, out);
+}
+function pollSingleLegAdmit(ix, rid, n) {
+    let st = null;
+    try {
+        st = typeof window.NativeBridge?.singleLegAdmitStatus === 'function'
+            ? JSON.parse(window.NativeBridge.singleLegAdmitStatus(rid) || '{}') : { status: 'ERROR', completed: true };
+    } catch (e) { st = { status: 'ERROR', completed: true }; }
+    if (!st?.completed && st?.found !== true && n < 150) {
+        SINGLE_LEG_PENDING[ix] = { request_id: rid, phase: st?.phase || 'PENDING' };
+        if (typeof renderAll === 'function') renderAll();
+        setTimeout(() => pollSingleLegAdmit(ix, rid, n + 1), 400);
+        return st;
+    }
+    if (!st?.completed && st?.found !== true) st = { status: 'PENDING_UNRESOLVED', reason: 'STATUS_POLL_LIMIT', request_id: rid };
+    return finishSingleLegAdmit(ix, st);
+}
+function finishSingleLegAdmit(ix, out) {
+    delete SINGLE_LEG_PENDING[ix];
     if (out?.status !== 'ADMITTED' && out?.status !== 'DUPLICATE_IGNORED') {
         alert(`Single-leg Paper not admitted: ${out?.reason || out?.status || 'unknown'}${(out?.reasons || []).length ? ' (' + out.reasons.join(', ') + ')' : ''}`);
     }
     loadSingleLegStore();
+    if (typeof renderAll === 'function') renderAll();
+    return out;
+}
+function singleLegCapital() {
+    try { return JSON.parse(window.NativeBridge?.getSingleLegCapital?.() || '{"status":"UNAVAILABLE"}'); }
+    catch (e) { return { status: 'UNAVAILABLE' }; }
+}
+function setSingleLegCapitalPrompt() {
+    const v = Number(prompt('Capital (₹) used for single-leg Paper admission and the managed policy budget:', ''));
+    let out = null;
+    try { out = JSON.parse(window.NativeBridge?.setSingleLegCapital?.(v) || '{}'); } catch (e) { out = { status: 'ERROR' }; }
+    if (out?.status !== 'OK') alert(`Capital not saved: ${out?.reason || out?.status || 'unknown'}`);
     if (typeof renderAll === 'function') renderAll();
     return out;
 }
@@ -6273,7 +6313,8 @@ function renderSingleLegCard(bi) {
         // R7: a proposal waiting only for the broker snapshot is admissible-on-tap: native fetches the exact
         // instrument's dedicated quote and re-checks every gate at the actual time; otherwise every reason shows.
         const tappable = p.status === 'ADMISSIBLE' || p.status === 'ELIGIBLE_PENDING_SNAPSHOT';
-        const btn = on && tappable
+        const pend = SINGLE_LEG_PENDING[ix];
+        const btn = pend ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">admission pending (${iaEsc(pend.phase)})…</span>` : on && tappable
             ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: fetch quote &amp; admit</button>` : '';
         const state = p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
         return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}</div>`;
@@ -6281,9 +6322,13 @@ function renderSingleLegCard(bi) {
     const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
     const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
     const stErr = st && st.status ? `<div class="brain-detail" style="color:var(--warn)">Store: ${iaEsc(st.status)}</div>` : '';
+    const cap = singleLegCapital();
+    const capRow = `<div class="brain-detail sl-capital">Capital: ${cap.status === 'SET' ? '₹' + Math.round(cap.capital) : '<span style="color:var(--warn)">not set — admission is rejected until set</span>'}
+        <button style="font-size:11px;margin-left:4px" onclick="setSingleLegCapitalPrompt()">Set</button></div>`;
     return `<div class="brain-card sl-card" style="padding:8px 12px">
         <div style="font-size:13px;font-weight:700">Single-leg (index_single_leg_v1) · Paper only
             <button class="sl-toggle" style="font-size:11px;margin-left:6px" onclick="setSingleLegEnabled(${on ? 'false' : 'true'})">${on ? 'Turn off' : 'Turn on'}</button></div>
+        ${capRow}
         ${rows}
         ${pos ? `<div style="font-size:11px;margin-top:3px">Local Paper positions:</div>${pos}` : ''}${stErr}
         <div class="sl-disclosure" style="font-size:10px;color:var(--text-muted)">Paper fill estimate from broker snapshot; exchange quote age unavailable. A resolved Paper calculation is still simulated execution. No real orders.</div>
@@ -6318,6 +6363,26 @@ function exportDailyReview() {
         window.NativeBridge?.saveExportFile?.(`daily_review_${iaTodayIst()}.json`, 'application/json', b64);
     } catch (e) { /* export is optional */ }
 }
+// R8 (Codex R7 s3): per index, per policy/version segment; actual Paper and hypothetical kept apart; unknown
+// stays unknown; long premium and short margin denominators shown separately; never a combined NF/BNF score.
+function reviewNet(g) {
+    if (g.net_status === 'NO_OBSERVATIONS') return '0 observations';
+    if (g.net_pnl_after_costs == null) return `net unknown (${g.net_unknown ?? 0} unknown${g.unresolved ? ', ' + g.unresolved + ' unresolved' : ''})`;
+    return `net after costs ₹${g.net_pnl_after_costs}${g.unresolved ? ' (+' + g.unresolved + ' unresolved, excluded)' : ''}`;
+}
+function renderReviewGroups(segs) {
+    if (!segs) return '';
+    return Object.values(segs).map(seg => {
+        const rows = Object.entries(seg.groups || {}).map(([k, g]) => {
+            const acts = g.by_action ? ' [' + Object.entries(g.by_action).map(([a, x]) => `${a}: ${x.entries} · ${reviewNet(x)}`).join('; ') + ']' : '';
+            const den = Object.entries(g.denominators || {}).map(([b, d]) => `${b} ${d.capital_known}/${d.n}`).join(', ');
+            const ex = Object.entries(g.exit_reasons || {}).map(([r, n]) => r + '×' + n).join(', ');
+            return `<div class="rv-group" data-group="${iaEsc(k)}">${iaEsc(k)}: entries ${g.entries} · exits ${g.exits} · resolved ${g.resolved} · unresolved ${g.unresolved}
+                · fees ${g.fees_total == null ? 'unknown' : '₹' + g.fees_total} · ${iaEsc(reviewNet(g))}${ex ? ' · exits: ' + iaEsc(ex) : ''}${den ? ' · basis: ' + iaEsc(den) : ''}${iaEsc(acts)}${g.provenance ? ' · provenance: ' + iaEsc(Object.entries(g.provenance).map(([p, n]) => p + '×' + n).join(', ')) : ''}</div>`;
+        }).join('');
+        return `<div class="rv-seg" style="font-size:11px;margin-top:2px"><i>${iaEsc(seg.source === 'HYPOTHETICAL' ? 'Hypothetical' : 'Actual Paper')} · ${iaEsc(seg.policy_version)}</i>${rows}</div>`;
+    }).join('');
+}
 function renderDailyReviewCard() {
     const r = DAILY_REVIEW_CACHE;
     const latest = r?.latest;
@@ -6332,7 +6397,8 @@ function renderDailyReviewCard() {
                 (match ${lc.MATCH || 0}, mismatch ${lc.MISMATCH || 0}, tie ${lc.TIE || 0}) · abstain ${c.abstained ?? 0}
                 · unavailable ${c.unavailable ?? 0} · unresolved ${c.unresolved ?? 0} · n/a ${c.target_not_applicable ?? 0}
                 ${Object.keys(b.data_issues || {}).length ? '<br>Data issues: ' + iaEsc(Object.entries(b.data_issues).map(([k, v]) => k + '×' + v).join(', ')) : ''}
-                ${b.paper_trades_supplied === false ? '<br>Paper outcomes: not supplied' : ''}</div>`;
+                ${b.paper_trades_supplied === false ? '<br>Paper outcomes: not supplied' : ''}
+                ${renderReviewGroups(b.paper_outcome_groups)}</div>`;
         }).join('') + `<div style="font-size:10px;color:var(--text-muted)">Report ${iaEsc(latest.report_status)} · rev ${iaEsc(latest.revision)} · ${iaEsc(latest.label_target_version)} · not model training</div>`;
     }
     return `<details class="brain-card" style="padding:8px 12px"><summary style="font-size:12px;font-weight:700;cursor:pointer">📋 Daily review (local)</summary>

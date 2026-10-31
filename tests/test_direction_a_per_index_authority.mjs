@@ -13,12 +13,13 @@ function fn(name) {
 const FNS = ['isIndexAuthorityActive', 'getIndexSelector', 'iaEsc', 'indexAuthorityEntryAuthorization',
   'renderIndexAuthorityPanel', 'renderIndexAuthorityPanels', 'renderDailyReviewCard', 'iaTodayIst',
   'indexStructureChoiceAvailable', 'renderIndexAlerts', 'chooseIndexStructureForPaper', 'setIndexSelector',
-  'singleLegEnabled', 'setSingleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'renderSingleLegCard'];
+  'singleLegEnabled', 'setSingleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'renderSingleLegCard',
+  'pollSingleLegAdmit', 'finishSingleLegAdmit', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups'];
 function ctx(sel = 'BOTH') {
   const store = { mr_index_selector_v1: sel };
-  const c = { JSON, String, Object, Array, Math, Intl, Date, calls: [], alerts: [], window: {}, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
+  const c = { JSON, String, Object, Array, Math, Intl, Date, Number, calls: [], alerts: [], timers: [], window: {}, setTimeout: f => c.timers.push(f), prompt: () => c.promptValue, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
   vm.createContext(c);
-  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; let SINGLE_LEG_PENDING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 const cand = { id: 'NF-BULL_CALL-1', index: 'NF', type: 'BULL_CALL', entryEligible: true, legs: [] };
@@ -148,4 +149,59 @@ test('R7: proposal waiting only for a broker snapshot is tappable (non-circular)
   assert.doesNotMatch(html, /admitSingleLeg\('BNF'\)/);
   assert.match(html, /MARGIN_UNAVAILABLE, QUANTITY_SHORTFALL/);
   assert.doesNotMatch(html, /FRESHNESS_VERIFIED/);
+});
+
+test('R8: admission is non-blocking - PENDING with request id, page polls status until completed', () => {
+  const c = ctx();
+  let n = 0;
+  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}',
+    singleLegAdmit: () => JSON.stringify({ status: 'PENDING', request_id: 'rq1' }),
+    singleLegAdmitStatus: id => { n++; return JSON.stringify(n < 2 ? { status: 'PENDING', phase: 'FETCHING', request_id: id }
+      : { status: 'REJECTED', reason: 'STATE_CHANGED_DURING_FETCH:selector', completed: true, request_id: id }); } };
+  assert.equal(c.admitSingleLeg('NF').status, 'PENDING');
+  assert.equal(c.alerts.length, 0);
+  const b = bi(); b.single_leg_by_index = { NF: { status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
+  assert.match(c.renderSingleLegCard(b), /admission pending \(QUEUED\)/);
+  c.timers.shift()();                                   // first poll: still fetching
+  assert.match(c.renderSingleLegCard(b), /admission pending \(FETCHING\)/);
+  c.timers.shift()();                                   // second poll: completed
+  assert.match(c.alerts[0], /STATE_CHANGED_DURING_FETCH:selector/);
+  assert.doesNotMatch(c.renderSingleLegCard(b), /admission pending/);
+});
+
+test('R8: capital is native-owned; unset capital is shown and rejected, never assumed', () => {
+  const c = ctx();
+  const saved = [];
+  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}',
+    getSingleLegCapital: () => JSON.stringify({ status: 'UNSET' }),
+    setSingleLegCapital: v => { saved.push(v); return JSON.stringify(v > 0 ? { status: 'OK', capital: v } : { status: 'REJECTED', reason: 'CAPITAL_CONFIG_INVALID' }); } };
+  assert.match(c.renderSingleLegCard(bi()), /Capital: .*not set/);
+  c.promptValue = '-5'; c.setSingleLegCapitalPrompt();
+  assert.match(c.alerts[0], /CAPITAL_CONFIG_INVALID/);
+  c.promptValue = '300000'; assert.equal(c.setSingleLegCapitalPrompt().status, 'OK');
+  assert.deepEqual(saved, [-5, 300000]);
+  c.window.NativeBridge.getSingleLegCapital = () => JSON.stringify({ status: 'SET', capital: 300000 });
+  assert.match(c.renderSingleLegCard(bi()), /Capital: ₹300000/);
+});
+
+test('R8: daily review shows single-leg BUY/SELL, multi-leg by strategy, unknown as unknown, per index', () => {
+  const c = ctx();
+  const seg = { 'ACTUAL_PAPER|index_single_leg_v1': { source: 'ACTUAL_PAPER', policy_version: 'index_single_leg_v1', groups: {
+      SINGLE_LEG_BUY: { entries: 2, exits: 1, resolved: 1, unresolved: 1, fees_total: 40, net_pnl_after_costs: null, net_unknown: 1, net_status: 'UNKNOWN',
+        exit_reasons: { STOP: 1 }, denominators: { LONG_PREMIUM_PLUS_FEE: { n: 2, capital_known: 2 } },
+        by_action: { BUY_CE: { entries: 2, net_status: 'UNKNOWN', net_pnl_after_costs: null, net_unknown: 1 }, BUY_PE: { entries: 0, net_status: 'NO_OBSERVATIONS' } } },
+      SINGLE_LEG_SELL: { entries: 0, exits: 0, resolved: 0, unresolved: 0, fees_total: null, net_pnl_after_costs: null, net_status: 'NO_OBSERVATIONS',
+        exit_reasons: {}, denominators: {}, by_action: { SELL_CE: { entries: 0, net_status: 'NO_OBSERVATIONS' }, SELL_PE: { entries: 0, net_status: 'NO_OBSERVATIONS' } } } } },
+    'HYPOTHETICAL|index_managed_v1': { source: 'HYPOTHETICAL', policy_version: 'index_managed_v1', groups: {
+      'MULTI_LEG:IRON_CONDOR': { entries: 1, exits: 1, resolved: 1, unresolved: 0, fees_total: 80, net_pnl_after_costs: -30, net_status: 'KNOWN', exit_reasons: {}, denominators: {} } } } };
+  c.DAILY_REVIEW_CACHE = null;
+  vm.runInContext(`DAILY_REVIEW_CACHE = ${JSON.stringify({ latest: { by_index: { NF: { coverage: {}, paper_outcome_groups: seg }, BNF: { coverage: {} } } } })};`, c);
+  const html = c.renderDailyReviewCard();
+  assert.match(html, /SINGLE_LEG_BUY: entries 2 .*net unknown \(1 unknown, 1 unresolved\)/s);
+  assert.match(html, /BUY_PE: 0 · 0 observations/);
+  assert.match(html, /SINGLE_LEG_SELL: entries 0/);
+  assert.match(html, /Hypothetical · index_managed_v1/);
+  assert.match(html, /MULTI_LEG:IRON_CONDOR: .*net after costs ₹-30/s);
+  assert.match(html, /LONG_PREMIUM_PLUS_FEE 2\/2/);
+  assert.doesNotMatch(html, /combined/i);
 });
