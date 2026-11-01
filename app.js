@@ -6344,6 +6344,9 @@ function renderSingleLegCard(bi) {
         return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}</div>`;
     }).join('');
     const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
+    const overdue = (st?.positions || []).some(x => ['OPEN', 'EXIT_PENDING'].includes(x.status) &&
+        ((x.session_date && x.session_date < iaTodayIst()) || new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(new Date()) >= '15:10'));
+    const overdueWarning = overdue ? '<div class="brain-detail sl-overdue" style="color:var(--warn)">Paper position overdue or exit pending — check monitoring and fresh quotes. No exit fill is assumed.</div>' : '';
     const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
     const stErr = st && st.status ? `<div class="brain-detail" style="color:var(--warn)">Store: ${iaEsc(st.status)}</div>` : '';
     const cap = singleLegCapital();
@@ -6353,6 +6356,7 @@ function renderSingleLegCard(bi) {
         <div style="font-size:13px;font-weight:700">Single-leg (index_single_leg_v1) · Paper only
             <button class="sl-toggle" style="font-size:11px;margin-left:6px" onclick="setSingleLegEnabled(${on ? 'false' : 'true'})">${on ? 'Turn off' : 'Turn on'}</button></div>
         ${capRow}
+        ${overdueWarning}
         ${rows}
         ${pos ? `<div style="font-size:11px;margin-top:3px">Local Paper positions:</div>${pos}` : ''}${stErr}
         <div class="sl-disclosure" style="font-size:10px;color:var(--text-muted)">Paper fill estimate from broker snapshot; exchange quote age unavailable. A resolved Paper calculation is still simulated execution. No real orders.</div>
