@@ -101,7 +101,7 @@ test('S2d. export button forwards PWA identity through the real facade; result c
   const { ab, d } = androidBridge();
   const ctx = chain(ab);
   ctx.m0ExportResearch();
-  assert.deepEqual(JSON.parse(d.exportArgs[0]), { version: '2.6.88', build: 519, app_js_v: 1383 });
+  assert.deepEqual(JSON.parse(d.exportArgs[0]), { version: '2.6.89', build: 520, app_js_v: 1384 });
   assert.match(card(ctx), /Export: PICKER_OPENING/);
   assert.equal(d.calls.filter((c) => c[0] === 'set' || c[0] === 'MARKET').length, 0, 'export never toggles or touches market');
   ctx.m0OnResearchExportResult(JSON.stringify({ status: 'COMPLETE_VERIFIED', zip_sha256: 'ab'.repeat(32), zip_bytes: 95525,

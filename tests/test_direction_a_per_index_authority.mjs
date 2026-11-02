@@ -149,6 +149,9 @@ test('R7: proposal waiting only for a broker snapshot is tappable (non-circular)
   assert.match(html, /admitSingleLeg\('NF'\)/);
   assert.doesNotMatch(html, /admitSingleLeg\('BNF'\)/);
   assert.match(html, /MARGIN_UNAVAILABLE, QUANTITY_SHORTFALL/);
+  assert.match(html, /required margin: pending broker check/);
+  assert.match(html, /required capital: pending quote check/);
+  assert.doesNotMatch(html, /capital n\/a \(\)/);
   assert.doesNotMatch(html, /FRESHNESS_VERIFIED/);
 });
 
@@ -227,9 +230,9 @@ test('R9: outcome after the normal polling period is still shown; reload resumes
   d.renderSingleLegCard(b);
   d.timers.shift()();
   assert.equal(d.alerts.length, 0);                                  // ADMITTED -> no failure alert
-  assert.doesNotMatch(d.renderSingleLegCard(b), /pending/);
+  assert.doesNotMatch(d.renderSingleLegCard(b), /sl-pending/);
   assert.doesNotMatch(d.localStorage.getItem('mr_single_leg_pending_v1'), /rq9/);
   while (c.timers.length && n < 170) c.timers.shift()();
   assert.equal(c.alerts.length, 0);
-  assert.doesNotMatch(c.renderSingleLegCard(b), /pending/);
+  assert.doesNotMatch(c.renderSingleLegCard(b), /sl-pending/);
 });

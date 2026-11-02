@@ -255,4 +255,49 @@ const bareAuth = sandbox.paperAnalysisAuthorization({
 assert(bareAuth.allowed === false, 'bare allowed:true must not authorize analysis');
 assert(/authorization/i.test(bareAuth.source + bareAuth.reason), 'authorization incomplete source');
 
+// 2 Nov phone regression: REAL observation authorization + REAL takeTradeImpl +
+// REAL sanitization. No stub replaces quote projection or Paper authorization.
+const authorityDebit = {
+  id:'phone_bnf_debit', authorityPolicyVersion:'index_direction_v1', authorityOrder:'FIXED_PRESENTATION_ORDER_NOT_A_RANK',
+  index:'BNF',type:'BEAR_PUT',expiry:'2026-11-23',lotSize:30,lots:1,isCredit:false,netPremium:-169.4,
+  sellStrike:54400,sellType:'PE',buyStrike:54800,buyType:'PE',width:400,maxProfit:6918,maxLoss:5082,
+  entryEligible:true,blocked:true, // manual analysis stays available while final managed entry is blocked
+  lotEvidence:{status:'VERIFIED',index:'BNF',expiry:'2026-11-23'},
+  legs:[{action:'SELL',strike:54400,option_type:'PE',bid:622.45,ask:624,instrument_key:'NSE_FO|BNF54400PE'},
+    {action:'BUY',strike:54800,option_type:'PE',bid:789.75,ask:791.85,instrument_key:'NSE_FO|BNF54800PE'}],
+};
+const authorityFour = {
+  ...authorityDebit,id:'phone_nf_condor',index:'NF',type:'IRON_CONDOR',expiry:'2026-11-03',lotSize:65,isCredit:true,
+  sellStrike:23250,sellType:'CE',buyStrike:23400,buyType:'CE',sellStrike2:23150,sellType2:'PE',buyStrike2:23000,buyType2:'PE',
+  lotEvidence:{status:'VERIFIED',index:'NF',expiry:'2026-11-03'},
+  legs:[['SELL',23250,'CE',59.7,59.8],['SELL',23150,'PE',72.75,72.95],['BUY',23400,'CE',21.85,21.95],['BUY',23000,'PE',29.8,29.95]]
+    .map(([action,strike,option_type,bid,ask])=>({action,strike,option_type,bid,ask,instrument_key:`NSE_FO|NF${strike}${option_type}`})),
+};
+for (const [source, premium, units] of [[authorityDebit,169.4,30],[authorityFour,80.55,65]]) {
+  candidates[source.id]=source;sandbox.bd.generated_candidates.push(source);
+  const before=JSON.stringify(source);stored.length=0;alerts.length=0;confirms.length=0;
+  await sandbox.takeTradeImpl(source.id,true);
+  assert(stored.length===1, 'phone-shaped Paper candidate saved: '+alerts.join(' | '));
+  const saved=JSON.parse(JSON.stringify(stored[0])); // durable JSON round trip
+  assert(saved.entry_premium===premium,'positive debit/credit convention');
+  assert(saved.entry_snapshot.quantity_units===units && saved.entry_snapshot.contract_lot_size===units,'correct index units after schema sanitization');
+  assert(saved.sell_ltp===source.legs[0].bid,'SELL records simulated bid');
+  assert(saved.entry_snapshot.paper_entry_quote.basis==='SIMULATED_BUY_ASK_SELL_BID','quote basis retained');
+  assert(saved.entry_snapshot.paper_entry_quote.exchange_freshness_verified===false,'no exchange freshness claim');
+  assert(saved.entry_snapshot.paper_entry_quote.legs.length===source.legs.length,'all exact legs retained');
+  assert(saved.entry_snapshot.paper_entry_quote.lot_evidence.index===source.index,'lot provenance index retained');
+  assert(saved.entry_snapshot.candidate_rank===null,'no rank invented');
+  assert(saved.entry_snapshot.paper_test.paper_lane==='paper_analysis','manual observation does not claim managed admission');
+  assert(confirms.some(x=>x.includes('BUY at ask, SELL at bid')),'simulated price basis is disclosed before confirmation');
+  assert(JSON.stringify(source)===before,'published candidate remains untouched');
+}
+stored.length=0;
+await sandbox.takeTradeImpl(authorityDebit.id,false);
+assert(stored.length===0,'blocked Real path cannot use the Paper adapter');
+for (const bad of [{...authorityDebit,id:'bad_bid',legs:authorityDebit.legs.map(l=>({...l,bid:null}))},
+                   {...authorityDebit,id:'bad_expiry',legs:authorityDebit.legs.map(l=>({...l,expiry:'2026-11-03'}))}]) {
+  candidates[bad.id]=bad;stored.length=0;await sandbox.takeTradeImpl(bad.id,true);
+  assert(stored.length===0,'invalid exact Paper quotes cannot save');
+}
+
 console.log('PASS: test_paper_save_path_r2.mjs');

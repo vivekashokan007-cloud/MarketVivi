@@ -3473,9 +3473,65 @@ function paperTradeAuthorization(candidate) {
 // structurally valid candidate to be captured as an analysis-only paper record
 // when lot provenance is absent.  It never authorizes a real order and never
 // invents quantity or rupee P&L.
+function paperObservationCandidate(candidate) {
+    if (candidate?.authorityPolicyVersion !== 'index_direction_v1') return { candidate, reasons: [] };
+    // Legacy *_LTP storage columns contain ENTRY PRICES. For this manual Paper
+    // lane they are simulated BUY-at-ask / SELL-at-bid prices, never actual LTP
+    // or proof of exchange freshness. Do not mutate the published brain result.
+    const out = { ...candidate }, reasons = [], records = [], counts = { BUY: 0, SELL: 0 };
+    const legs = candidate.legs;
+    if (!Array.isArray(legs) || ![2, 4].includes(legs.length)) return { candidate, reasons: ['Paper structure must have 2 or 4 exact legs'] };
+    if (typeof candidate.isCredit !== 'boolean') reasons.push('Paper credit/debit identity is missing');
+    if ((candidate.lotEvidence?.index && candidate.lotEvidence.index !== candidate.index)
+        || (candidate.lotEvidence?.expiry && candidate.lotEvidence.expiry !== candidate.expiry)) reasons.push('Paper lot provenance conflicts with index or expiry');
+    for (const side of ['sell', 'buy']) {
+        if (legs.length === 2 && ['Strike2', 'Type2', 'InstrumentKey2'].some(k => candidate[side + k] != null)) {
+            reasons.push('Paper flattened leg count conflicts with exact legs');
+        }
+        if (legs.length === 2) for (const key of ['Strike2', 'Type2', 'LTP2', 'InstrumentKey2']) out[side + key] = null;
+    }
+    const keys = new Set();
+    let net = 0;
+    for (const leg of legs) {
+        const action = leg?.action, ot = leg?.option_type;
+        const k = leg?.strike, bid = leg?.bid, ask = leg?.ask;
+        const positive = x => typeof x === 'number' && Number.isFinite(x) && x > 0;
+        if (!['BUY', 'SELL'].includes(action) || !['CE', 'PE'].includes(ot) || !positive(k)) {
+            reasons.push('Paper leg identity is invalid'); continue;
+        }
+        if (!leg.instrument_key || keys.has(leg.instrument_key) || (leg.expiry && leg.expiry !== candidate.expiry)) {
+            reasons.push('Paper exact contract identity is missing or conflicting');
+        }
+        keys.add(leg.instrument_key);
+        if (!positive(bid) || !positive(ask) || bid > ask) reasons.push('Paper two-sided bid/ask is unavailable or crossed');
+        const n = counts[action]++, suffix = n === 0 ? '' : '2', side = action === 'SELL' ? 'sell' : 'buy';
+        if (n > 1 || (candidate[`${side}Strike${suffix}`] != null && candidate[`${side}Strike${suffix}`] !== k)
+            || (candidate[`${side}Type${suffix}`] != null && candidate[`${side}Type${suffix}`] !== ot)
+            || (candidate[`${side}InstrumentKey${suffix}`] != null && candidate[`${side}InstrumentKey${suffix}`] !== leg.instrument_key)) {
+            reasons.push('Paper flattened leg identity conflicts with exact legs');
+        }
+        const fill = action === 'SELL' ? bid : ask;
+        out[`${side}Strike${suffix}`] = k; out[`${side}Type${suffix}`] = ot;
+        out[`${side}LTP${suffix}`] = fill; out[`${side}InstrumentKey${suffix}`] = leg.instrument_key;
+        net += action === 'SELL' ? fill : -fill;
+        records.push({ index: candidate.index, expiry: candidate.expiry, instrument_key: leg.instrument_key,
+            action, strike: k, option_type: ot, bid, ask, simulated_entry_price: fill,
+            price_side: action === 'SELL' ? 'BID' : 'ASK' });
+    }
+    if (counts.BUY !== legs.length / 2 || counts.SELL !== legs.length / 2) reasons.push('Paper buy/sell leg counts disagree');
+    if (!Number.isFinite(net) || (candidate.isCredit === true ? net <= 0 : net >= 0)) reasons.push('Paper premium disagrees with credit/debit structure');
+    out.netPremium = Math.round(Math.abs(net) * 10000) / 10000;
+    out.paperEntryQuote = { schema: 'manual_paper_bid_ask_v1', basis: 'SIMULATED_BUY_ASK_SELL_BID',
+        exchange_freshness_verified: false, source_poll_ts: candidate.poll_ts ?? null,
+        legacy_ltp_columns_are_simulated_entry_prices: true, legs: records, lot_evidence: candidate.lotEvidence ?? null };
+    return { candidate: out, reasons: [...new Set(reasons)] };
+}
+
 function paperObservationAuthorization(candidate) {
+    const projection = paperObservationCandidate(candidate);
+    candidate = projection.candidate;
     const strict = paperTradeAuthorization(candidate);
-    const reasons = [];
+    const reasons = [...projection.reasons];
     const freshness = brainFreshnessStatus();
     if (!freshness.fresh) reasons.push(freshness.reason);
     const indexKey = normalizePaperIndexKey(candidate?.index || candidate?.index_key);
@@ -3641,12 +3697,15 @@ function confirmPaperTest(candidate, finalAuthorization, capacity, opts = {}) {
         ? reasons.map(reason => `• ${reason}`).join('\n')
         : '• No current final-entry veto.';
     const lane = opts.paper_lane === 'paper_analysis' ? 'paper_analysis' : 'paper_primary';
+    const quoteNote = candidate.paperEntryQuote
+        ? 'Simulated entry from the displayed snapshot: BUY at ask, SELL at bid. Exchange quote age is unverified; these are not confirmed fills.\n\n' : '';
     if (lane === 'paper_analysis') {
         return confirm(
             `📋 PAPER ANALYSIS — EXPERIMENTAL LANE — ${candidate.index} ${friendlyType(candidate.type)}\n\n`
             + 'This is NOT the primary Paper recommendation.\n'
             + 'No broker or sandbox order will be sent. Records an experimental paper_analysis observation only.\n'
             + 'Real/Sandbox remain blocked for this alternative.\n\n'
+            + quoteNote
             + `Current brain status:\n${blockText}\n\n`
             + `Paper capacity: ${capacity.count}/${capacity.limit} active for ${candidate.index}.\n\n`
             + 'Continue with PAPER ANALYSIS (experimental)?'
@@ -3655,6 +3714,7 @@ function confirmPaperTest(candidate, finalAuthorization, capacity, opts = {}) {
     return confirm(
         `📋 PAPER TEST — ${candidate.index} ${friendlyType(candidate.type)}\n\n`
         + 'No broker or sandbox order will be sent. This records a managed paper_primary observation.\n\n'
+        + quoteNote
         + `Current brain status:\n${blockText}\n\n`
         + `Paper capacity: ${capacity.count}/${capacity.limit} active for ${candidate.index}.\n\n`
         + 'Continue with PAPER TEST?'
@@ -3886,8 +3946,11 @@ async function previewSandboxOrder(candidateId) {
 }
 
 async function takeTradeImpl(candidateId, isPaper = false) {
-    const cand = findCandidateById(candidateId);
-    if (!cand) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+    const sourceCandidate = findCandidateById(candidateId);
+    if (!sourceCandidate) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+    const projection = isPaper ? paperObservationCandidate(sourceCandidate) : { candidate: sourceCandidate, reasons: [] };
+    if (projection.reasons.length) { alert(`Paper analysis unavailable: ${projection.reasons.join(' · ')}`); return; }
+    const cand = projection.candidate;
     const freshness = brainFreshnessStatus();
     if (!freshness.fresh) {
         alert(`Trade blocked: ${freshness.reason}. Wait for a successful market poll before using a Brain candidate.`);
@@ -4180,6 +4243,7 @@ async function takeTradeImpl(candidateId, isPaper = false) {
 
         // ═══ RICH SNAPSHOT — everything for calibration (JSONB) ═══
         entry_snapshot: {
+            ...(isPaper && cand.paperEntryQuote ? { paper_entry_quote: cand.paperEntryQuote } : {}),
             // Candidate quality
             candidate_rank: candRank,
             varsity_tier: cand.varsityTier || null,
@@ -5351,7 +5415,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.88', build: 519, app_js_v: 1383 };
+const M0_PWA_IDENTITY = { version: '2.6.89', build: 520, app_js_v: 1384 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6334,7 +6398,10 @@ function renderSingleLegCard(bi) {
         const p = plans[ix];
         if (!p) return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: no single-leg proposal${on ? '' : ' (Paper single-leg is off)'}</div>`;
         const why = (p.reasons || []).join(', ');
-        const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? p.contract?.lot_size ?? 'n/a')} · capital ${p.capital_required == null ? 'n/a' : '₹' + Math.round(p.capital_required)} (${iaEsc(p.capital_basis || '')})` : 'no action';
+        const required = p.capital_required == null
+            ? (p.action?.startsWith('SELL') ? 'required margin: pending broker check' : 'required capital: pending quote check')
+            : `required capital ₹${Math.round(p.capital_required)} (${iaEsc(p.capital_basis || '')})`;
+        const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? p.contract?.lot_size ?? 'n/a')} · ${required}` : 'no action';
         // R7: a proposal waiting only for the broker snapshot is admissible-on-tap: native fetches the exact
         // instrument's dedicated quote and re-checks every gate at the actual time; otherwise every reason shows.
         const tappable = p.status === 'ADMISSIBLE' || p.status === 'ELIGIBLE_PENDING_SNAPSHOT';
@@ -7086,9 +7153,18 @@ function renderIntradayChart(index = 'NF', snapshot = null) {
         }
     }
 
-    // Range detection — if last 3 polls within ±0.3σ, highlight green
+    // The active policy is the sole direction/regime label, including on charts.
     let rangeIndicator = '';
-    if (spots.length >= 3) {
+    const chartBrain = snap?.brainResult || bd;
+    if (isIndexAuthorityActive(chartBrain)) {
+        const dec = chartBrain.by_index?.[index];
+        const fresh = brainFreshnessStatus(chartBrain).fresh;
+        const direction = fresh ? dec?.direction?.value || 'UNAVAILABLE' : 'UNAVAILABLE';
+        const regime = fresh ? dec?.regime?.value : null;
+        const label = direction + (regime ? ' · ' + regime : '');
+        const color = direction === 'BEAR' ? 'var(--danger)' : direction === 'BULL' ? 'var(--green)' : 'var(--text-muted)';
+        rangeIndicator = `<text x="${W - PAD_R}" y="${PAD_T + 10}" text-anchor="end" fill="${color}" font-size="7">${iaEsc(label)}</text>`;
+    } else if (spots.length >= 3) {
         const last3 = spots.slice(-3);
         const range3 = Math.max(...last3) - Math.min(...last3);
         const spot = spots[spots.length - 1];
@@ -7887,6 +7963,7 @@ function renderAuthorityCandidateCard(cand) {
     const capacity = paperTradeCapacity(cand.index);
     const why = cand.entryEligibility?.reasons || [];
     const lotEvidence = cand.lotEvidence || {};
+    const managedGate = bd.managed_policy?.[cand.index]?.gates?.find(g => g.candidate_id === cand.id);
     const lot = Number.isInteger(cand.lotSize) && cand.lotSize > 0 ? String(cand.lotSize) : 'Unavailable';
     const choose = indexStructureChoiceAvailable(cand, dec);
     const arg = x => esc(JSON.stringify(String(x || '')));
@@ -7905,6 +7982,8 @@ function renderAuthorityCandidateCard(cand) {
         <div>Estimated costs: ${cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable'} · Broker margin: unavailable in this candidate</div>
         <div class="section-note">Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
         <div>${cand.entryEligible === true ? 'Construction checks passed; admission still requires current checks and your choice.' : 'Entry blocked: ' + esc(why.join(', ') || cand.constructionReason || 'checks unavailable')}</div>
+        ${managedGate && !managedGate.admit ? `<div class="section-note">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
+        ${!auth.allowed ? `<div class="section-note">Manual Paper unavailable: ${esc(auth.reason)}</div>` : '<div class="section-note">Manual Paper records simulated bid/ask entry prices; it does not authorize managed or broker execution.</div>'}
         ${choose ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>` : ''}
         ${paperButton}
     </div>`;
