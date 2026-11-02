@@ -8681,6 +8681,56 @@ function exportX1ResearchJournal() {
 }
 window.exportX1ResearchJournal = exportX1ResearchJournal;
 
+// ML eval count correction (2 Nov 2026). Single consumer of the native
+// training_label_progress contract (chosen_primary_training_labels_v1). No fallback:
+// missing contract, RESEARCH_ONLY, labels_saved=false or zero eligible labels => 0 labels
+// and an UNKNOWN win rate. Never emits "READY FOR RETRAIN GATE" from a count.
+function mlTrainingLabelProgressView(contract, ctx = {}) {
+    const c = contract && typeof contract === 'object' ? contract : null;
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const valid = !!c && c.contract_version === 'chosen_primary_training_labels_v1';
+    const eligible = valid && c.eligible === true;
+    const labeledCount = eligible ? num(c.verified_training_labels) : 0;
+    const winCount = eligible ? num(c.verified_training_wins) : 0;
+    const winRateText = labeledCount > 0 ? `${((winCount / labeledCount) * 100).toFixed(1)}%` : 'UNKNOWN (no eligible labels)';
+    const reason = !valid ? 'CONTRACT_UNAVAILABLE'
+        : (eligible ? null : String(c.ineligible_reason || (String(ctx.evaluationPhaseRaw || '').toUpperCase() === 'RESEARCH_ONLY' ? 'RESEARCH_ONLY' : 'NOT_ELIGIBLE')));
+    let statusText;
+    if (reason === 'RESEARCH_ONLY') statusText = 'RESEARCH ONLY · 0 new training labels';
+    else if (reason) statusText = `NO VERIFIED TRAINING LABELS · ${reason}`;
+    else if (labeledCount >= 500) statusText = 'TARGET COUNT REACHED · retrain gate needs separate validation';
+    else statusText = 'COLLECT MORE VERIFIED CHOSEN LABELS';
+    const idx = valid && c.index_totals && typeof c.index_totals === 'object' ? c.index_totals : {};
+    const laneLine = (k) => {
+        const v = idx[k] || {};
+        const n = eligible ? num(v.verified_training_labels) : 0;
+        const w = eligible ? num(v.verified_training_wins) : 0;
+        return `${k}: <b>${n}</b> labels · win rate <b>${n > 0 ? `${((w / n) * 100).toFixed(1)}%` : 'UNKNOWN'}</b>`;
+    };
+    const perIndexHtml = `${laneLine('NF')} · ${laneLine('BNF')} (separate, not pooled)<br>`;
+    const research = [];
+    if (valid) {
+        research.push(`Secondary/alternative research rows: <b>${num(c.secondary_research_rows)}</b> (${num(c.secondary_research_labeled)} with outcomes; not training labels)`);
+        research.push(`Rejected research rows: <b>${num(c.rejected_research_rows)}</b>`);
+        if (num(c.primary_labeled_unverified) > 0) research.push(`Primary rows with outcomes not verified: <b>${num(c.primary_labeled_unverified)}</b>`);
+        if (num(c.primary_outcome_unknown) > 0) research.push(`Primary outcome unknown: <b>${num(c.primary_outcome_unknown)}</b>`);
+        research.push(`Attribution pending: <b>${num(c.attribution_pending_rows)}</b>`);
+        if (num(c.duplicate_rows) > 0) research.push(`Duplicates excluded: <b>${num(c.duplicate_rows)}</b>`);
+        if (num(c.other_session_rows) > 0) research.push(`Other-session rows excluded: <b>${num(c.other_session_rows)}</b>`);
+    }
+    if (num(ctx.persistedOutcomeRows) > 0) research.push(`Persisted outcome rows (research, not labels): <b>${num(ctx.persistedOutcomeRows)}</b>`);
+    const researchHtml = research.length ? `${research.join(' · ')}<br>` : '';
+    const sourceText = !valid
+        ? 'training label contract unavailable on this app build · no training progress claimed'
+        : `verified chosen primary labels · session ${c.session_date || '--'} · ${c.source_scope || '--'}${reason ? ` · ${reason}` : ''}`;
+    return {
+        valid, eligible, reason, labeledCount, winCount, winRateText,
+        winCountText: labeledCount > 0 ? String(winCount) : 'UNKNOWN',
+        statusText, perIndexHtml, researchHtml, sourceText,
+        scopeText: 'chosen_primary_training_labels_v1 (canonical_won/outcome_h2 unchanged)'
+    };
+}
+
 function renderML(snapshot = null) {
     const el = document.getElementById('ml-content');
     if (!el) return;
@@ -8866,20 +8916,15 @@ function renderML(snapshot = null) {
     const outcomeLaneTotal = Object.values(outcomeLaneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0);
     const teacherLaneTotal = Object.values(teacherLaneStats).reduce((sum, lane) => sum + (lane.rows || 0), 0);
     const persistedOutcomeRows = Number.isFinite(evaluationOutcomeCount) ? evaluationOutcomeCount : 0;
-    const attributionBackfillNeeded = (summaryRowsToday > 0 && summaryAttributedRows === 0) || (persistedOutcomeRows > 0 && outcomeLaneTotal === 0);
-    const laneStats = outcomeLaneTotal > 0 ? outcomeLaneStats : (attributionBackfillNeeded ? {
-        NF_intraday: { index: 'NF', mode: 'intraday', rows: 0, labeled: 0, wins: 0, winRate: null },
-        NF_swing: { index: 'NF', mode: 'swing', rows: 0, labeled: 0, wins: 0, winRate: null },
-        BNF_intraday: { index: 'BNF', mode: 'intraday', rows: 0, labeled: 0, wins: 0, winRate: null },
-        BNF_swing: { index: 'BNF', mode: 'swing', rows: 0, labeled: 0, wins: 0, winRate: null }
-    } : fallbackLaneStats);
-    const labeledCount = outcomeLaneTotal > 0
-        ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.labeled || 0), 0)
-        : (attributionBackfillNeeded ? persistedOutcomeRows : fallbackLabeledCount);
-    const winCount = outcomeLaneTotal > 0
-        ? Object.values(laneStats).reduce((sum, lane) => sum + (lane.wins || 0), 0)
-        : (attributionBackfillNeeded ? 0 : fallbackWinCount);
-    const labeledWinRate = labeledCount > 0 ? ((winCount / labeledCount) * 100).toFixed(1) : '--';
+    // ML eval count correction (2 Nov 2026): training progress comes ONLY from the native
+    // chosen-primary contract (training_label_progress). Persisted/un-attributed outcome
+    // counts and secondary/alternative rows are research quantities and never labels.
+    const trainingProgress = mlTrainingLabelProgressView(evaluationLaneSummary?.training_label_progress, {
+        evaluationPhaseRaw, persistedOutcomeRows, summaryRowsToday, summaryAttributedRows
+    });
+    const labeledCount = trainingProgress.labeledCount;
+    const winCount = trainingProgress.winCount;
+    const labeledWinRate = trainingProgress.winRateText;
     const teacherSuccessCount = hasNativeTeacherSummary
         ? Number(summaryTeacher?.successes || 0)
         : Object.values(teacherLaneStats).reduce((sum, lane) => sum + (lane.successes || 0), 0);
@@ -9084,7 +9129,7 @@ function renderML(snapshot = null) {
                 <div class="brain-detail">
                     Decision rows: <b>${decisions.length}</b> · Afternoon signal accuracy: <b>${accuracyPct}</b><br>
                     Service: <b>${service.running ? 'RUNNING' : 'STOPPED'}</b>${service.polls != null ? ` · Poll #${service.polls}` : ''}${service.lastPoll ? ` · Last poll ${service.lastPoll}` : ''}<br>
-                    Day evaluation: <b style="color:${(incompleteSession || incompleteH2MarketData) ? 'var(--warn)' : (evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)')))}">${incompleteSession ? 'INCOMPLETE_SESSION' : ((incompleteIdentity || incompleteH2MarketData) ? evaluationPhaseRaw : (evaluationDone ? 'EVALUATION_DATE_RECORDED' : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationAttempt.failed ? evaluationAttempt.phase : (evaluationRetryable ? 'RETRYABLE' : 'PENDING')))))}</b> · Labels saved: <b style="color:${labelsSaved ? 'var(--green)' : (labelsSavedKnown ? 'var(--warn)' : 'var(--text)')}">${labelsSavedText}</b> · Evidence ready: <b style="color:${evidenceReady ? 'var(--green)' : 'var(--warn)'}">${evidenceReady ? 'YES' : 'NO'}</b> · Model trained this run: <b>${modelTrained ? 'YES' : 'NO'}</b> · Model validated: <b>${modelValidated ? 'YES' : 'NO'}</b> · New Paper model active: <b>${paperModelActive ? 'YES' : 'NO'}</b> · C3: <b style="color:${c3StaleForTarget ? 'var(--warn)' : (c3Verified ? 'var(--green)' : (c3Failed ? 'var(--danger)' : (c3Ineligible ? 'var(--warn)' : 'var(--text)')))}">${c3StaleForTarget ? 'STALE/UNAVAILABLE' : (c3Verified ? 'VERIFIED' : (c3Failed ? 'FAILED' : (c3Ineligible ? (c3Phase === 'SKIPPED_NO_FRAMES' ? 'SKIPPED_NO_FRAMES' : 'INELIGIBLE') : (c3Pending ? (c3Phase || 'PENDING') : (c3Phase || 'PENDING')))))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · ${mlOutcomeCountLabel(service)}: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${evaluationAlarmFiredForTarget ? `<br><span style="color:var(--accent)">Evaluation alarm fired for this session${evaluationAutoStartForTarget ? ` · Auto-start: ${escapeHtml(evaluationAutoStartStatus || 'UNKNOWN')}` : ''}</span>` : ''}${evaluationAutoStartPending ? `<br><span style="color:var(--warn)">Evaluation alarm fired, but no auto-start state was recorded. Treat this as scheduler evidence, not a completed evaluation.</span>` : ''}${evaluationAutoStartFailed ? `<br><span style="color:var(--warn)">Evaluation auto-start failed: ${escapeHtml(evaluationAutoStartError || 'unknown error')}</span>` : ''}${incompleteSession ? `<br><span style="color:var(--warn)">${escapeHtml(evaluationIncompleteMessage)}</span>${evaluationForceAllowed ? `<br><span style="color:var(--accent)">Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.</span>` : ''}` : ''}${teacherReportPendingNotFailed ? `<br><span style="color:var(--accent)">Teacher research artifact pending until post-close evaluation completes.</span>` : (teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : '')}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${incompleteIdentity ? `<br><span style="color:var(--danger)">${escapeHtml(identityCoverage.description)}${identityCoverage.error ? ` ${escapeHtml(identityCoverage.error)}` : ''} Labels are not saved. Retry is available and will preserve the selected session.</span>` : ''}${incompleteH2MarketData ? `<br><span style="color:var(--danger)">Closing-window option marks are incomplete. Labels are not saved, C3 is not started, and no price is fabricated.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 && !incompleteSession ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}${labelsSaved && c3Failed ? `<br><span style="color:var(--warn)">Labels saved, but C3 percentile finalization FAILED — evidence preparation is incomplete.</span>` : ''}${labelsSaved && c3Ineligible ? `<br><span style="color:var(--accent)">Labels saved; C3 marked ineligible from original evidence (no fabricated rows). Evidence ready only if every applicable stage is verified or explicitly ineligible. This does not mean the model trained.</span>` : ''}${c3Ineligible && c3Reason ? `<br><span style="color:var(--warn)">C3 ineligible reason: ${escapeHtml(c3ReasonCode ? `${c3ReasonCode}: ${c3Reason}` : c3Reason)}</span>` : ''}${c3Failed && (service.c3FinalizationError || c3Reason) ? `<br><span style="color:var(--danger)">C3 failed: ${escapeHtml(String(service.c3FinalizationError || c3Reason))}</span>` : ''}${c3StaleForTarget ? `<br><span style="color:var(--warn)">C3 status belongs to session ${escapeHtml(c3SessionDate)}, not the selected evaluation target ${escapeHtml(evaluationTargetDate)}. Treating C3 as unavailable for this target.</span>` : ''}${researchNoGradeableTeacherOutcomes ? `<br><span style="color:var(--warn)">Persisted rows exist, but 0 gradeable teacher outcomes passed integrity checks. Expectancy-style summaries are blocked for this session.</span>` : ''}
+                    Day evaluation: <b style="color:${(incompleteSession || incompleteH2MarketData) ? 'var(--warn)' : (evaluationDone ? 'var(--green)' : (evaluationRunning ? 'var(--warn)' : (evaluationRetryable ? 'var(--warn)' : 'var(--text)')))}">${incompleteSession ? 'INCOMPLETE_SESSION' : ((incompleteIdentity || incompleteH2MarketData) ? evaluationPhaseRaw : (evaluationDone ? (researchOnlyEvaluation ? 'RESEARCH EVALUATION COMPLETE · 0 training labels' : 'EVALUATION_DATE_RECORDED') : (evaluationRunning ? (evaluationPhaseLabel || 'RUNNING') : (evaluationAttempt.failed ? evaluationAttempt.phase : (evaluationRetryable ? 'RETRYABLE' : 'PENDING')))))}</b> · Labels saved: <b style="color:${labelsSaved ? 'var(--green)' : (labelsSavedKnown ? 'var(--warn)' : 'var(--text)')}">${labelsSavedText}</b> · Evidence ready: <b style="color:${evidenceReady ? 'var(--green)' : 'var(--warn)'}">${evidenceReady ? 'YES' : 'NO'}</b> · Model trained this run: <b>${modelTrained ? 'YES' : 'NO'}</b> · Model validated: <b>${modelValidated ? 'YES' : 'NO'}</b> · New Paper model active: <b>${paperModelActive ? 'YES' : 'NO'}</b> · C3: <b style="color:${c3StaleForTarget ? 'var(--warn)' : (c3Verified ? 'var(--green)' : (c3Failed ? 'var(--danger)' : (c3Ineligible ? 'var(--warn)' : 'var(--text)')))}">${c3StaleForTarget ? 'STALE/UNAVAILABLE' : (c3Verified ? 'VERIFIED' : (c3Failed ? 'FAILED' : (c3Ineligible ? (c3Phase === 'SKIPPED_NO_FRAMES' ? 'SKIPPED_NO_FRAMES' : 'INELIGIBLE') : (c3Pending ? (c3Phase || 'PENDING') : (c3Phase || 'PENDING')))))}</b>${evaluationTargetDate ? ` · Session: <b>${evaluationTargetLabel || evaluationTargetDate}</b>` : ''}${evaluationOutcomeCount != null ? ` · ${mlOutcomeCountLabel(service)}: <b>${evaluationOutcomeCount}</b>` : ''}${evaluationProducedCount != null ? ` · Produced: <b>${evaluationProducedCount}</b>` : ''}${evaluationProgressTotal > 0 && !postCloseArtifactsPending ? ` · Progress: <b>${evaluationProgressText}</b>` : ''}${evaluationMessage ? `<br>${postCloseArtifactsPending ? `Waiting for post-close evaluation for ${evaluationTargetLabel || evaluationTargetDate || 'today'}.` : evaluationMessage}` : ''}${evaluationAlarmFiredForTarget ? `<br><span style="color:var(--accent)">Evaluation alarm fired for this session${evaluationAutoStartForTarget ? ` · Auto-start: ${escapeHtml(evaluationAutoStartStatus || 'UNKNOWN')}` : ''}</span>` : ''}${evaluationAutoStartPending ? `<br><span style="color:var(--warn)">Evaluation alarm fired, but no auto-start state was recorded. Treat this as scheduler evidence, not a completed evaluation.</span>` : ''}${evaluationAutoStartFailed ? `<br><span style="color:var(--warn)">Evaluation auto-start failed: ${escapeHtml(evaluationAutoStartError || 'unknown error')}</span>` : ''}${incompleteSession ? `<br><span style="color:var(--warn)">${escapeHtml(evaluationIncompleteMessage)}</span>${evaluationForceAllowed ? `<br><span style="color:var(--accent)">Force evaluation is available for advisory-only analysis. This session is excluded from promotion gates.</span>` : ''}` : ''}${teacherReportPendingNotFailed ? `<br><span style="color:var(--accent)">Teacher research artifact pending until post-close evaluation completes.</span>` : (teacherResearchStatus === 'FAILED' ? `<br><span style="color:var(--warn)">Teacher research artifact failed: ${escapeHtml(teacherResearchError || 'unknown error')}. Retry evaluation to rebuild teacher evidence.</span>` : '')}${evaluationRetryable ? `<br><span style="color:var(--warn)">Recovery is available. Retry will resume from the last completed batch or replay the final save step.</span>` : ''}${incompleteIdentity ? `<br><span style="color:var(--danger)">${escapeHtml(identityCoverage.description)}${identityCoverage.error ? ` ${escapeHtml(identityCoverage.error)}` : ''} Labels are not saved. Retry is available and will preserve the selected session.</span>` : ''}${evaluationDone && researchOnlyEvaluation ? `<br><span style="color:var(--accent)">Research evaluation complete: research outcomes were persisted, but no chosen trade decisions were labelable, so 0 training labels were saved and no model was trained. Green here refers to research persistence only, not training readiness.</span>` : ''}${incompleteH2MarketData ? `<br><span style="color:var(--danger)">Closing-window option marks are incomplete. Labels are not saved, C3 is not started, and no price is fabricated.</span>` : ''}${evaluationDone && evaluationOutcomeCount === 0 && (evaluationProducedCount || 0) > 0 ? `<br><span style="color:var(--warn)">Evaluation produced rows, but none were persisted to Supabase.</span>` : ''}${evaluationDone && (evaluationProducedCount || 0) === 0 && !incompleteSession ? `<br><span style="color:var(--warn)">No evaluable shadow teacher labels were produced from the saved recommendations for this session.</span>` : ''}${labelsSaved && c3Failed ? `<br><span style="color:var(--warn)">Labels saved, but C3 percentile finalization FAILED — evidence preparation is incomplete.</span>` : ''}${labelsSaved && c3Ineligible ? `<br><span style="color:var(--accent)">Labels saved; C3 marked ineligible from original evidence (no fabricated rows). Evidence ready only if every applicable stage is verified or explicitly ineligible. This does not mean the model trained.</span>` : ''}${c3Ineligible && c3Reason ? `<br><span style="color:var(--warn)">C3 ineligible reason: ${escapeHtml(c3ReasonCode ? `${c3ReasonCode}: ${c3Reason}` : c3Reason)}</span>` : ''}${c3Failed && (service.c3FinalizationError || c3Reason) ? `<br><span style="color:var(--danger)">C3 failed: ${escapeHtml(String(service.c3FinalizationError || c3Reason))}</span>` : ''}${c3StaleForTarget ? `<br><span style="color:var(--warn)">C3 status belongs to session ${escapeHtml(c3SessionDate)}, not the selected evaluation target ${escapeHtml(evaluationTargetDate)}. Treating C3 as unavailable for this target.</span>` : ''}${researchNoGradeableTeacherOutcomes ? `<br><span style="color:var(--warn)">Persisted rows exist, but 0 gradeable teacher outcomes passed integrity checks. Expectancy-style summaries are blocked for this session.</span>` : ''}
                     ${researchOnlyEvaluation ? '<br><span style="color:var(--warn)">Research outcomes were verified, but no trade decisions were labelable. No training labels were saved.</span>' : ''}
                     ${evaluationFailureDetails}
                 </div>
@@ -9119,7 +9164,7 @@ function renderML(snapshot = null) {
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Research evaluation can still be complete; this FAIL is not a training or profitability result.</span>` : ''}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${stage2aAuditColor}">
@@ -9232,10 +9277,12 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Paper Training Progress</span>
                 </div>
                 <div class="brain-detail">
-                    Labeled decisions: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate === '--' ? '--' : `${labeledWinRate}%`}</b><br>
-                    Closed wins: <b>${winCount}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
-                    Status: <b>${labeledCount >= targetLabels ? 'READY FOR RETRAIN GATE' : 'COLLECT MORE PAPER OUTCOMES'}</b><br>
-                    Scope: <b>legacy label consumer</b> (canonical_won/outcome_h2 unchanged until switch gate) · Source: <b>${outcomeLaneTotal > 0 ? 'chosen evaluated outcomes' : (attributionBackfillNeeded ? 'persisted outcomes need attribution backfill' : 'recent decision fallback')}</b>
+                    Verified chosen training labels: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate}</b><br>
+                    Verified chosen wins: <b>${trainingProgress.winCountText}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
+                    Status: <b>${trainingProgress.statusText}</b><br>
+                    ${trainingProgress.perIndexHtml}
+                    ${trainingProgress.researchHtml}
+                    Scope: <b>${escapeHtml(trainingProgress.scopeText)}</b> · Source: <b>${escapeHtml(trainingProgress.sourceText)}</b>
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:var(--accent)">

@@ -1,0 +1,52 @@
+{
+  "_provenance": "2 Nov 2026 phone screenshots (16:43, 18:03 IST) + read-only Supabase SELECT of session_date=2026-11-02 (ml_recommendation_outcomes / ml_evaluation_outcomes: 46 NF_intraday secondary [46 labeled, 11 wins], 32 BNF_intraday secondary [25 labeled, 0 wins], 0 primary; ml_rejected_candidate_outcomes: 1800 rejected, read from a separate table so not in the reco-row contract; 78+1800=1878 research outcomes). Shapes are the native getMLEvaluationLaneSummary / getMLServiceStatus JSON.",
+  "state_1643": {
+    "serviceStatus": {
+      "_note": "Exact pre-eval phase/target unconfirmed (no export). Screen showed Retry Eval and a 19053 outcome counter, so post-close-pending was false; 19053 equals 30 Oct persisted rows 18750 reco + 303 rejected (read-only SELECT), i.e. a prior-run counter.", "evaluationTargetDate": "2026-11-02", "evaluationTargetIsToday": false, "evaluationPhase": "",
+      "evaluationDoneForTarget": false, "evaluationRunning": false, "evaluationRetryable": true,
+      "labelsSaved": null, "labelsSavedKnown": false, "lastEvaluationOutcomeCount": 19053,
+      "lastEvaluationProducedCount": 19053, "actualPollsToday": 78, "expectedPollsFullDay": 78
+    },
+    "laneSummary": {
+      "session_date": "2026-11-02", "rowsFetched": 1000, "rowsToday": 0, "attributedRows": 0,
+      "lanes": {
+        "NF_intraday": {"rows": 0, "labeled": 0, "wins": 0}, "NF_swing": {"rows": 0, "labeled": 0, "wins": 0},
+        "BNF_intraday": {"rows": 0, "labeled": 0, "wins": 0}, "BNF_swing": {"rows": 0, "labeled": 0, "wins": 0}
+      }
+    }
+  },
+  "state_1803": {
+    "serviceStatus": {
+      "evaluationTargetDate": "2026-11-02", "evaluationTargetIsToday": true, "evaluationPhase": "RESEARCH_ONLY",
+      "evaluationDoneForTarget": true, "evaluationDoneToday": true, "evaluationDoneDate": "2026-11-02", "evaluationRunning": false,
+      "labelsSaved": false, "labelsSavedKnown": true, "evidenceReady": false, "modelTrained": false, "modelValidated": false, "paperModelActive": false,
+      "c3FinalizationPhase": "INELIGIBLE", "c3FinalizationSessionDate": "2026-11-02",
+      "lastEvaluationOutcomeCount": 1878, "lastEvaluationProducedCount": 1878,
+      "evaluationProgressCurrent": 78, "evaluationProgressTotal": 78, "evaluationAutoStartStatus": "STARTED",
+      "lastEvaluationMessage": "Research outcomes persisted; no trade decisions were labelable; no training labels saved."
+    },
+    "laneSummary": {
+      "session_date": "2026-11-02", "rowsFetched": 78, "rowsToday": 78, "attributedRows": 78, "rejectedResearchRows": 0,
+      "lanes": {
+        "NF_intraday": {"rows": 46, "labeled": 46, "wins": 11}, "NF_swing": {"rows": 0, "labeled": 0, "wins": 0},
+        "BNF_intraday": {"rows": 32, "labeled": 25, "wins": 0}, "BNF_swing": {"rows": 0, "labeled": 0, "wins": 0}
+      },
+      "recommendation_mix_lanes": {
+        "NF_intraday": {"rows": 46, "primaryRows": 0, "secondaryRows": 46}, "NF_swing": {"rows": 0, "primaryRows": 0, "secondaryRows": 0},
+        "BNF_intraday": {"rows": 32, "primaryRows": 0, "secondaryRows": 32}, "BNF_swing": {"rows": 0, "primaryRows": 0, "secondaryRows": 0}
+      },
+      "training_label_progress": {
+        "contract_version": "chosen_primary_training_labels_v1", "session_date": "2026-11-02", "source_scope": "session_attributed",
+        "ledger_phase": "RESEARCH_ONLY", "ledger_labels_saved": false, "eligible": false, "ineligible_reason": "RESEARCH_ONLY",
+        "verified_training_labels": 0, "verified_training_wins": 0, "win_rate_pct": null,
+        "primary_rows": 0, "primary_labeled_unverified": 0, "primary_outcome_unknown": 0,
+        "secondary_research_rows": 78, "secondary_research_labeled": 71, "rejected_research_rows": 0,
+        "attribution_pending_rows": 0, "cross_index_mismatch_rows": 0, "duplicate_rows": 0, "other_session_rows": 0,
+        "index_totals": {
+          "NF": {"verified_training_labels": 0, "verified_training_wins": 0, "win_rate_pct": null, "secondary_research_rows": 46, "primary_outcome_unknown": 0},
+          "BNF": {"verified_training_labels": 0, "verified_training_wins": 0, "win_rate_pct": null, "secondary_research_rows": 32, "primary_outcome_unknown": 0}
+        }
+      }
+    }
+  }
+}
