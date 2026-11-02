@@ -2,9 +2,9 @@
   "_provenance": "2 Nov 2026 phone screenshots (16:43, 18:03 IST) + read-only Supabase SELECT of session_date=2026-11-02 (ml_recommendation_outcomes / ml_evaluation_outcomes: 46 NF_intraday secondary [46 labeled, 11 wins], 32 BNF_intraday secondary [25 labeled, 0 wins], 0 primary; ml_rejected_candidate_outcomes: 1800 rejected, read from a separate table so not in the reco-row contract; 78+1800=1878 research outcomes). Shapes are the native getMLEvaluationLaneSummary / getMLServiceStatus JSON.",
   "state_1643": {
     "serviceStatus": {
-      "_note": "Exact pre-eval phase/target unconfirmed (no export). Screen showed Retry Eval and a 19053 outcome counter, so post-close-pending was false; 19053 equals 30 Oct persisted rows 18750 reco + 303 rejected (read-only SELECT), i.e. a prior-run counter.", "evaluationTargetDate": "2026-11-02", "evaluationTargetIsToday": false, "evaluationPhase": "",
+      "_note": "Exact pre-eval phase/target unconfirmed (no export). Screen showed Retry Eval and a 19053 outcome counter, so post-close-pending was false; 19053 equals 30 Oct persisted rows 18750 reco + 303 rejected (read-only SELECT), i.e. a prior-run counter. evaluationDoneDate=2026-10-30 here is a MODELLED assumption, unconfirmed until the phone export.", "evaluationTargetDate": "2026-11-02", "evaluationTargetIsToday": false, "evaluationPhase": "",
       "evaluationDoneForTarget": false, "evaluationRunning": false, "evaluationRetryable": true,
-      "labelsSaved": null, "labelsSavedKnown": false, "lastEvaluationOutcomeCount": 19053,
+      "labelsSaved": null, "labelsSavedKnown": false, "evaluationDoneDate": "2026-10-30", "lastEvaluationOutcomeCount": 19053,
       "lastEvaluationProducedCount": 19053, "actualPollsToday": 78, "expectedPollsFullDay": 78
     },
     "laneSummary": {
@@ -37,7 +37,7 @@
       },
       "training_label_progress": {
         "contract_version": "chosen_primary_training_labels_v1", "session_date": "2026-11-02", "source_scope": "session_attributed",
-        "ledger_phase": "RESEARCH_ONLY", "ledger_labels_saved": false, "eligible": false, "ineligible_reason": "RESEARCH_ONLY",
+        "ledger_phase": "RESEARCH_ONLY", "ledger_labels_saved": false, "ledger_run_id": null, "ledger_run_session_date": "2026-11-02", "count_scope": "this_session_only", "unverified_identity_rows": 0, "shadow_rows_excluded": 0, "eligible": false, "ineligible_reason": "RESEARCH_ONLY",
         "verified_training_labels": 0, "verified_training_wins": 0, "win_rate_pct": null,
         "primary_rows": 0, "primary_labeled_unverified": 0, "primary_outcome_unknown": 0,
         "secondary_research_rows": 78, "secondary_research_labeled": 71, "rejected_research_rows": 0,

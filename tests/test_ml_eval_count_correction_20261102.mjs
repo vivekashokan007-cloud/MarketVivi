@@ -136,7 +136,8 @@ for (const key of ['state_1643', 'state_1803']) {
     const html = renderWith(NEW, FIX[key]);
     const p = progressText(html);
     if (process.env.ML_EVAL_SNAPSHOT_DIR) fs.writeFileSync(`${process.env.ML_EVAL_SNAPSHOT_DIR}/new_${key}.txt`, p + '\n');
-    assert.match(p, /Verified chosen training labels: 0\/500 \(0%\)/);
+    assert.match(p, /Verified chosen training labels \(this session\): 0 · /);
+    assert.doesNotMatch(p, /\/500|Remaining to target/);
     assert.match(p, /Win rate: UNKNOWN/);
     assert.doesNotMatch(p, /READY FOR RETRAIN GATE/);
     assert.doesNotMatch(p, /0\.0%/);
@@ -162,23 +163,54 @@ test('state_1803 shows research completion wording and secondary rows as researc
 test('state_1643 without contract: no fallback to persisted outcome count', () => {
   const p = progressText(renderWith(NEW, FIX.state_1643));
   assert.match(p, /training label contract unavailable/);
-  assert.match(p, /Persisted outcome rows \(research, not labels\): 19053/);
+  assert.match(p, /persisted-outcome counter \(research, not labels\): 19053 · run date: 2026-10-30 \(may belong to a prior run\)/);
 });
 
-test('verified chosen labels are shown per index with their own win rate; never READY FOR RETRAIN GATE', () => {
+function eligibleFixture() {
   const fixture = JSON.parse(JSON.stringify(FIX.state_1803));
   fixture.serviceStatus.evaluationPhase = 'LABELS_SAVED';
   fixture.serviceStatus.labelsSaved = true;
   Object.assign(fixture.laneSummary.training_label_progress, {
-    eligible: true, ineligible_reason: null, verified_training_labels: 600, verified_training_wins: 300,
+    eligible: true, ineligible_reason: null, ledger_phase: 'LABELS_SAVED', ledger_labels_saved: true, ledger_run_id: 'run-x',
+    verified_training_labels: 600, verified_training_wins: 300,
     index_totals: { NF: { verified_training_labels: 400, verified_training_wins: 100 }, BNF: { verified_training_labels: 200, verified_training_wins: 200 } },
   });
-  const p = progressText(renderWith(NEW, fixture));
-  assert.match(p, /600\/500/);
-  assert.match(p, /Win rate: 50\.0%/);
+  return fixture;
+}
+
+test('verified chosen labels: this session only, per index, no /500, never READY FOR RETRAIN GATE', () => {
+  const p = progressText(renderWith(NEW, eligibleFixture()));
+  assert.match(p, /Verified chosen training labels \(this session\): 600 · Win rate: 50\.0%/);
   assert.match(p, /NF: 400 labels · win rate 25\.0% · BNF: 200 labels · win rate 100\.0%/);
-  assert.match(p, /TARGET COUNT REACHED · retrain gate needs separate validation/);
-  assert.doesNotMatch(p, /READY FOR RETRAIN GATE/);
+  assert.match(p, /THIS SESSION ONLY · not a cumulative retrain count/);
+  assert.match(p, /run run-x/);
+  assert.doesNotMatch(p, /READY FOR RETRAIN GATE|\/500|Remaining to target|TARGET COUNT/);
+});
+
+test('R2: stale cached session count is not shown beside a different displayed session', () => {
+  const f = eligibleFixture();
+  f.laneSummary.training_label_progress.session_date = '2026-10-30'; // cached prior session
+  const p = progressText(renderWith(NEW, f));
+  assert.match(p, /Verified chosen training labels \(this session\): 0 · Win rate: UNKNOWN/);
+  assert.match(p, /CACHED_SESSION_MISMATCH/);
+  assert.doesNotMatch(p, /600/);
+});
+
+test('R2: transition to RESEARCH_ONLY with a cached eligible count shows no eligible count', () => {
+  const f = eligibleFixture();
+  f.serviceStatus.evaluationPhase = 'RESEARCH_ONLY'; // status moved on; cached contract still says eligible
+  f.serviceStatus.labelsSaved = false;
+  const html = renderWith(NEW, f);
+  const p = progressText(html);
+  assert.match(p, /Verified chosen training labels \(this session\): 0 · Win rate: UNKNOWN/);
+  assert.match(p, /RESEARCH ONLY · 0 new training labels/);
+  assert.doesNotMatch(p, /600/);
+  assert.match(strip(html), /RESEARCH EVALUATION COMPLETE · 0 training labels/);
+});
+
+test('R2: same session and LABELS_SAVED shows the count (transition back is honest)', () => {
+  const p = progressText(renderWith(NEW, eligibleFixture()));
+  assert.match(p, /\(this session\): 600/);
 });
 
 test('old main reproduces the false 19053/500 and 71/500 claims', { skip: !OLD_PATH }, () => {

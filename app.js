@@ -8689,17 +8689,23 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
     const c = contract && typeof contract === 'object' ? contract : null;
     const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
     const valid = !!c && c.contract_version === 'chosen_primary_training_labels_v1';
-    const eligible = valid && c.eligible === true;
+    // R2: a cached contract must belong to the displayed evaluation session, and the
+    // displayed status must not be RESEARCH_ONLY; otherwise no eligible count is shown.
+    const displayed = String(ctx.displayedSessionDate || '');
+    const sessionMismatch = valid && (!displayed || String(c.session_date || '') !== displayed);
+    const displayedResearchOnly = String(ctx.evaluationPhaseRaw || '').toUpperCase() === 'RESEARCH_ONLY';
+    const eligible = valid && c.eligible === true && !sessionMismatch && !displayedResearchOnly;
     const labeledCount = eligible ? num(c.verified_training_labels) : 0;
     const winCount = eligible ? num(c.verified_training_wins) : 0;
     const winRateText = labeledCount > 0 ? `${((winCount / labeledCount) * 100).toFixed(1)}%` : 'UNKNOWN (no eligible labels)';
     const reason = !valid ? 'CONTRACT_UNAVAILABLE'
+        : sessionMismatch ? 'CACHED_SESSION_MISMATCH'
+        : displayedResearchOnly ? 'RESEARCH_ONLY'
         : (eligible ? null : String(c.ineligible_reason || (String(ctx.evaluationPhaseRaw || '').toUpperCase() === 'RESEARCH_ONLY' ? 'RESEARCH_ONLY' : 'NOT_ELIGIBLE')));
     let statusText;
     if (reason === 'RESEARCH_ONLY') statusText = 'RESEARCH ONLY · 0 new training labels';
     else if (reason) statusText = `NO VERIFIED TRAINING LABELS · ${reason}`;
-    else if (labeledCount >= 500) statusText = 'TARGET COUNT REACHED · retrain gate needs separate validation';
-    else statusText = 'COLLECT MORE VERIFIED CHOSEN LABELS';
+    else statusText = 'THIS SESSION ONLY · not a cumulative retrain count';
     const idx = valid && c.index_totals && typeof c.index_totals === 'object' ? c.index_totals : {};
     const laneLine = (k) => {
         const v = idx[k] || {};
@@ -8718,11 +8724,11 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
         if (num(c.duplicate_rows) > 0) research.push(`Duplicates excluded: <b>${num(c.duplicate_rows)}</b>`);
         if (num(c.other_session_rows) > 0) research.push(`Other-session rows excluded: <b>${num(c.other_session_rows)}</b>`);
     }
-    if (num(ctx.persistedOutcomeRows) > 0) research.push(`Persisted outcome rows (research, not labels): <b>${num(ctx.persistedOutcomeRows)}</b>`);
+    if (num(ctx.persistedOutcomeRows) > 0) research.push(`Last evaluation persisted-outcome counter (research, not labels): <b>${num(ctx.persistedOutcomeRows)}</b> · run date: <b>${escapeHtml(ctx.persistedOutcomeRunDate || 'UNKNOWN')}</b>${ctx.persistedOutcomeRunDate && ctx.persistedOutcomeRunDate === displayed ? '' : ' (may belong to a prior run)'}`);
     const researchHtml = research.length ? `${research.join(' · ')}<br>` : '';
     const sourceText = !valid
         ? 'training label contract unavailable on this app build · no training progress claimed'
-        : `verified chosen primary labels · session ${c.session_date || '--'} · ${c.source_scope || '--'}${reason ? ` · ${reason}` : ''}`;
+        : `verified chosen primary labels (run-proven identities) · session ${c.session_date || '--'}${c.ledger_run_id ? ` · run ${c.ledger_run_id}` : ''} · ${c.source_scope || '--'}${reason ? ` · ${reason}` : ''}`;
     return {
         valid, eligible, reason, labeledCount, winCount, winRateText,
         winCountText: labeledCount > 0 ? String(winCount) : 'UNKNOWN',
@@ -8920,7 +8926,9 @@ function renderML(snapshot = null) {
     // chosen-primary contract (training_label_progress). Persisted/un-attributed outcome
     // counts and secondary/alternative rows are research quantities and never labels.
     const trainingProgress = mlTrainingLabelProgressView(evaluationLaneSummary?.training_label_progress, {
-        evaluationPhaseRaw, persistedOutcomeRows, summaryRowsToday, summaryAttributedRows
+        evaluationPhaseRaw, persistedOutcomeRows, summaryRowsToday, summaryAttributedRows,
+        displayedSessionDate: evaluationTargetDate,
+        persistedOutcomeRunDate: String(service.evaluationDoneDate || '')
     });
     const labeledCount = trainingProgress.labeledCount;
     const winCount = trainingProgress.winCount;
@@ -9062,8 +9070,6 @@ function renderML(snapshot = null) {
             : ((classAGateStatus === 'PENDING' || classAGateStatus === 'N/A' || classAGateStatus === 'UNAVAILABLE') ? 'var(--accent)' : 'var(--warn)');
     const classAGateBlocked = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
     const classAGateReady = classAGateHasData && classAGateStatus === 'PASS' && classAGateBlocked.length === 0;
-    const targetLabels = 500;
-    const progressPct = Math.min(100, Math.round((labeledCount / targetLabels) * 100));
     const candidateDiagnostics = buildCandidatePipelineDiagnostics(brain, brainSnapshots);
     const evaluatedSessionView = evaluationDone && !evaluationRunning;
     const historicalMlView = Boolean(evaluationTargetDate) && !evaluationTargetIsToday;
@@ -9277,8 +9283,8 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Paper Training Progress</span>
                 </div>
                 <div class="brain-detail">
-                    Verified chosen training labels: <b>${labeledCount}/${targetLabels}</b> (${progressPct}%) · Win rate: <b>${labeledWinRate}</b><br>
-                    Verified chosen wins: <b>${trainingProgress.winCountText}</b> · Remaining to target: <b>${Math.max(0, targetLabels - labeledCount)}</b><br>
+                    Verified chosen training labels (this session): <b>${labeledCount}</b> · Win rate: <b>${labeledWinRate}</b><br>
+                    Verified chosen wins (this session): <b>${trainingProgress.winCountText}</b><br>
                     Status: <b>${trainingProgress.statusText}</b><br>
                     ${trainingProgress.perIndexHtml}
                     ${trainingProgress.researchHtml}
