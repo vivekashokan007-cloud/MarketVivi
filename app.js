@@ -7712,7 +7712,7 @@ function renderWatchlist(snapshot = null) {
     }
 
     if (isIndexAuthorityActive(bd)) {
-        el.innerHTML = renderAuthorityWatchlist(bd);
+        el.innerHTML = renderAuthorityWatchlist(bd) + renderModeActionRow();
         return;
     }
 
