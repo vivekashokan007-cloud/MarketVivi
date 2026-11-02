@@ -925,13 +925,12 @@ function reconcileNativeSessionUi(snapshot = null) {
     const latestPoll = snap?.latestPoll || latestPollData(snap);
     const pollHistory = snap?.pollHistory || readNativeJson('getPollHistory', []);
     const baseline = getTodayNativeBaseline(snap);
-    // sessionActive means today's baseline/data exists even after an explicit
-    // stop. Only the running native service owns a session that should relock
-    // a freshly recreated WebView.
-    const nativeServiceOwnsSession = serviceStatus?.running === true;
-    if (!baseline || !nativeServiceOwnsSession || !todayNativeSessionActive(serviceStatus, latestPoll, pollHistory, baseline)) {
-        return false;
-    }
+    // Acknowledged native inputs remain locked across an APK update even while
+    // Android is restarting the polling service. A fresh service state is not
+    // required to restore the form; only the current-session input authority is.
+    if (!hasLockedMorningForToday(snap)) return false;
+    const watching = serviceStatus?.running === true
+        && todayNativeSessionActive(serviceStatus, latestPoll, pollHistory, baseline);
 
     STATE.morningExpandedAfterLock = false;
     STATE.pollHistory = Array.isArray(pollHistory) ? pollHistory : STATE.pollHistory;
@@ -941,12 +940,14 @@ function reconcileNativeSessionUi(snapshot = null) {
     collapseMorning({ force: true });
     const lockBtn = document.getElementById('btn-lock');
     if (lockBtn) {
-        lockBtn.textContent = 'Watching...';
+        lockBtn.textContent = watching ? 'Watching...' : 'Locked';
         lockBtn.disabled = true;
     }
     document.querySelectorAll('.morning-input').forEach(el => { el.disabled = true; });
     const watchEl = document.getElementById('watch-status');
-    if (watchEl) watchEl.textContent = `🟢 Watching · Poll #${STATE.pollCount}`;
+    if (watchEl) watchEl.textContent = watching
+        ? `🟢 Watching · Poll #${STATE.pollCount}`
+        : '🔒 Morning data locked · waiting for polling';
     updateLockScanUi();
     return true;
 }
@@ -5415,7 +5416,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.89', build: 520, app_js_v: 1384 };
+const M0_PWA_IDENTITY = { version: '2.6.90', build: 521, app_js_v: 1385 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6637,15 +6638,9 @@ function updateLockScanUi(snapshot = null) {
     if (!btnLock && !statusEl) return;
 
     const snap = renderSnapshot(snapshot);
-    const baseline = getTodayNativeBaseline(snap);
-    let localBaseline = null;
-    try {
-        localBaseline = safeParseNB(localStorage.getItem('mr2_morning_baseline'), null);
-    } catch (e) {
-        localBaseline = null;
-    }
-    const lockedToday = !!baseline || isTodayRecord(localBaseline);
-    if (!lockedToday) return;
+    // The acknowledged morning record, not a baseline or a restored draft,
+    // determines whether Lock & Scan can be offered after a restart/update.
+    if (!hasLockedMorningForToday(snap)) return;
 
     const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
     const pollCount = Number.isFinite(serviceStatus.polls)
@@ -6661,7 +6656,7 @@ function updateLockScanUi(snapshot = null) {
     if (statusEl && !statusEl.textContent.startsWith('Lock failed')) {
         statusEl.textContent = isRunning
             ? `✅ Watching market${pollCount ? ` · Poll #${pollCount}` : ''}`
-            : '✅ Morning data locked. Waiting for service...';
+            : '✅ Morning data locked. Use Trade → Rescan to refresh analysis.';
     }
     collapseMorning();
 }
