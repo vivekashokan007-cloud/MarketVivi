@@ -5351,7 +5351,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.87', build: 518, app_js_v: 1382 };
+const M0_PWA_IDENTITY = { version: '2.6.88', build: 519, app_js_v: 1383 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6111,7 +6111,8 @@ function renderBrainInsights() {
     }
 
     // Details — collapsible
-    const sorted = [...risk, ...market.filter(i => i.strength >= 3), ...timing, ...market.filter(i => i.strength < 3)];
+    // Legacy Kelly / combined-direction / win-rate cards do not describe this policy.
+    const sorted = isIndexAuthorityActive(bi) ? [] : [...risk, ...market.filter(i => i.strength >= 3), ...timing, ...market.filter(i => i.strength < 3)];
     const detailsHtml = sorted.length ? `<details style="margin-top:4px"><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">▸ ${sorted.length} signals</summary>${sorted.map(renderBrainCard).join('')}</details>` : '';
 
     return `<div class="brain-section">
@@ -7710,6 +7711,11 @@ function renderWatchlist(snapshot = null) {
         return;
     }
 
+    if (isIndexAuthorityActive(bd)) {
+        el.innerHTML = renderAuthorityWatchlist(bd);
+        return;
+    }
+
     if (!(bd.watchlist || []).length && !(bd.generated_candidates || []).length) {
         if (STATE.brainRefreshPending) {
             const modeLabel = STATE.tradeMode === 'intraday' ? 'intraday' : 'swing';
@@ -7858,7 +7864,54 @@ function experimentalKellyAdvisoryReadout(_cand) {
     return '';
 }
 
+function renderAuthorityWatchlist(bi) {
+    const selected = getIndexSelector();
+    const shown = selected === 'BOTH' ? ['NF', 'BNF'] : [selected];
+    return `<div class="section-note">Per-index policy alternatives · choose explicitly for Paper</div>` + shown.map(ix => {
+        const d = bi.by_index?.[ix] || {};
+        const cs = bi.candidates_by_index?.[ix] || [];
+        return `<section data-index="${iaEsc(ix)}"><h3>${iaEsc(ix)} · ${iaEsc(d.direction?.value || 'UNAVAILABLE')}</h3>
+            <div class="section-note">${iaEsc(d.display || '')}</div>
+            <div class="section-note">Action: ${iaEsc(d.action?.value || 'WAIT')} · ${iaEsc((d.action?.reasons || []).join(', '))}</div>
+            ${cs.length ? cs.map(renderAuthorityCandidateCard).join('') : '<div class="empty-state">No policy candidate for this index</div>'}
+            </section>`;
+    }).join('');
+}
+
+function renderAuthorityCandidateCard(cand) {
+    // Authority candidates deliberately have no legacy LTP, probability, EV or rank.
+    const esc = iaEsc;
+    const money = x => typeof x === 'number' && Number.isFinite(x) ? '₹' + x.toFixed(2) : 'Unavailable';
+    const dec = bd.by_index?.[cand.index] || {};
+    const auth = paperObservationAuthorization(cand);
+    const capacity = paperTradeCapacity(cand.index);
+    const why = cand.entryEligibility?.reasons || [];
+    const lotEvidence = cand.lotEvidence || {};
+    const lot = Number.isInteger(cand.lotSize) && cand.lotSize > 0 ? String(cand.lotSize) : 'Unavailable';
+    const choose = indexStructureChoiceAvailable(cand, dec);
+    const arg = x => esc(JSON.stringify(String(x || '')));
+    const paperButton = !auth.allowed
+        ? `<button class="btn-paper" disabled title="${esc(auth.reason)}">PAPER UNAVAILABLE</button>`
+        : !capacity.available
+        ? `<button class="btn-paper" disabled>PAPER FULL (${capacity.count}/${capacity.limit})</button>`
+        : `<button class="btn-paper" onclick="takeTrade(${arg(cand.id)}, true)">Manual ${auth.analysis_only ? 'Paper analysis' : 'Paper test'} (${capacity.count}/${capacity.limit})</button>`;
+    return `<div class="candidate-card authority-candidate" data-index="${esc(cand.index)}">
+        <h3>${esc(cand.index)} · ${esc(friendlyType(cand.type))}</h3>
+        <div class="section-note">${esc(cand.expiry)} · Policy alternative, not ranked</div>
+        <div class="legs">${(cand.legs || []).map(l => `<div>${esc(l.action)} ${esc(l.strike)} ${esc(l.option_type)} · bid ${money(l.bid)} / ask ${money(l.ask)}</div>`).join('')}</div>
+        <div>Lot: ${esc(lot)} · ${lotEvidence.status === 'VERIFIED' ? 'broker contract + dated NSE table verified' : 'contract verification unavailable'}</div>
+        ${(lotEvidence.reasons || []).length ? `<div class="section-note">Lot evidence: ${esc(lotEvidence.reasons.join(', '))}</div>` : ''}
+        <div>Max profit: ${money(cand.maxProfit)} · Max loss: ${money(cand.maxLoss)}</div>
+        <div>Estimated costs: ${cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable'} · Broker margin: unavailable in this candidate</div>
+        <div class="section-note">Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
+        <div>${cand.entryEligible === true ? 'Construction checks passed; admission still requires current checks and your choice.' : 'Entry blocked: ' + esc(why.join(', ') || cand.constructionReason || 'checks unavailable')}</div>
+        ${choose ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>` : ''}
+        ${paperButton}
+    </div>`;
+}
+
 function renderCandidateCard(cand, atm, rank) {
+    if (cand.authorityPolicyVersion === 'index_direction_v1') return renderAuthorityCandidateCard(cand);
     const forces = cand.forces || { f1: 0, f2: 0, f3: 0, aligned: 0 };
     const dots = alignmentDots(forces.aligned);
     const backendBlocked = cand.directionSafe === false || cand.entryAction === 'BLOCKED' || cand.blocked === true;

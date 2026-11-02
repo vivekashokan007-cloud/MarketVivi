@@ -1,0 +1,87 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+const src = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+function fn(name) {
+  const start = src.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, name);
+  return src.slice(start, src.indexOf('\n}\n', start) + 3);
+}
+function harness({ allowed = true, full = false, choice = false } = {}) {
+  const c = { String, Number, JSON, Object, Array, Math, Date, calls: [],
+    bd: { by_index: { NF: { decision_id: 'idx1_nf' } } },
+    getIndexSelector: () => 'BOTH', friendlyType: x => x,
+    paperObservationAuthorization: () => ({ allowed, reason: 'IDENTITY_UNAVAILABLE', analysis_only: true }),
+    paperTradeCapacity: () => ({ available: !full, count: full ? 2 : 0, limit: 2 }),
+    indexStructureChoiceAvailable: () => choice,
+  };
+  vm.createContext(c);
+  vm.runInContext(['iaEsc', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].map(fn).join('\n'), c);
+  return c;
+}
+const missing = { authorityPolicyVersion: 'index_direction_v1', index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR',
+  expiry: '2026-11-03', lotSize: null, maxProfit: null, maxLoss: null, frictionCost: null,
+  frictionCostStatus: 'LOT_SIZE_UNKNOWN', entryEligible: false,
+  entryEligibility: { reasons: ['lot_unavailable', 'friction_unavailable'] },
+  lotEvidence: { status: 'UNAVAILABLE', reasons: ['CONTRACT_METADATA_UNAVAILABLE'] },
+  legs: [{ action: 'SELL', strike: 23350, option_type: 'CE', bid: 92.5, ask: 93.5 }],
+  // Old fields may be present in a mixed payload but must not be interpreted here.
+  probProfit: 1, ev: 99999, forces: { aligned: 3 },
+};
+
+test('real renderer handles the phone-shaped missing data without invented probability, margin or ranking', () => {
+  const html = harness().renderCandidateCard(missing, 23350, 1);
+  assert.match(html, /bid ₹92.50 \/ ask ₹93.50/);
+  assert.match(html, /Lot: Unavailable/);
+  assert.match(html, /CONTRACT_METADATA_UNAVAILABLE/);
+  assert.match(html, /lot_unavailable, friction_unavailable/);
+  assert.match(html, /Broker margin: unavailable/);
+  assert.match(html, /Manual Paper analysis/);
+  assert.doesNotMatch(html, /undefined|NaN|100%|TRACK RECORD|Kelly|EV\/|#1|₹0(?:\D|$)/);
+});
+
+test('verified candidate shows bounded costs and keeps explicit structure choice', () => {
+  const html = harness({ choice: true }).renderCandidateCard({ ...missing, entryEligible: true,
+    lotSize: 65, maxProfit: 5000, maxLoss: 4750, frictionCost: 258.48, frictionCostStatus: 'OK',
+    lotEvidence: { status: 'VERIFIED', reasons: [] } }, 23350, 1);
+  assert.match(html, /dated NSE table verified/);
+  assert.match(html, /Max loss: ₹4750.00/);
+  assert.match(html, /Estimated costs: ₹258.48/);
+  assert.match(html, /Choose for Paper/);
+  assert.match(html, /chooseIndexStructureForPaper\(&quot;NF&quot;,&quot;idx1_nf&quot;,&quot;NF_IC&quot;\)/);
+});
+
+test('manual Paper preserves unavailable and capacity gates; no real entry button added', () => {
+  assert.match(harness({ allowed: false }).renderAuthorityCandidateCard(missing), /disabled title="IDENTITY_UNAVAILABLE"/);
+  assert.match(harness({ full: true }).renderAuthorityCandidateCard(missing), /PAPER FULL \(2\/2\)/);
+  assert.doesNotMatch(harness().renderAuthorityCandidateCard(missing), /takeTrade\([^)]*, false\)|REAL TRADE/);
+});
+
+test('NF and BNF keep separate action/reasons and no combined legacy banner', () => {
+  const c = harness();
+  const html = c.renderAuthorityWatchlist({ by_index: {
+    NF: { direction: { value: 'BULL' }, action: { value: 'CANDIDATES', reasons: [] } },
+    BNF: { direction: { value: 'NEUTRAL' }, action: { value: 'NO_TRADE', reasons: ['lot_unavailable'] } },
+  }, candidates_by_index: { NF: [missing], BNF: [] } });
+  assert.match(html, /NF · BULL/);
+  assert.match(html, /BNF · NEUTRAL/);
+  assert.match(html, /NO_TRADE · lot_unavailable/);
+  assert.doesNotMatch(html, /Context bias|Morning:|by current menu rank/);
+  assert.match(fn('renderWatchlist'), /isIndexAuthorityActive\(bd\)[\s\S]*renderAuthorityWatchlist\(bd\)/);
+});
+
+test('active authority does not append retired Kelly and combined-direction insight cards', () => {
+  const c = { bd: { direction_authority: { active: 'index_direction_v1' },
+    risk: [{ title: 'Kelly 16%' }], market: [{ title: 'Direction (F1) is your edge' }] },
+    STATE: { brainReady: true, brainLastRun: 0 }, Date, Math,
+    isLiveRecommendationWindow: () => true, brainFreshnessStatus: () => ({ fresh: true }),
+    isIndexAuthorityActive: () => true, renderIndexAuthorityPanels: () => 'NF PANEL · BNF PANEL',
+    renderBrainCard: () => { throw Error('retired insight renderer must not run'); },
+  };
+  vm.createContext(c);
+  vm.runInContext(fn('renderBrainInsights'), c);
+  assert.match(c.renderBrainInsights(), /NF PANEL · BNF PANEL/);
+  assert.doesNotMatch(c.renderBrainInsights(), /Kelly|F1|signals/);
+});
