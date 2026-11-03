@@ -19,7 +19,7 @@ function ctx(nb) {
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, renders: 0 };
   c.window = { NativeBridge: nb };
   vm.createContext(c);
-  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.90', build: 521, app_js_v: 1385 }; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; function renderAll(){ renders++; }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.91', build: 522, app_js_v: 1386 }; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; function renderAll(){ renders++; }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 
@@ -39,7 +39,7 @@ test('new APK: the button calls the bridge with the IST date and the visible PWA
   c.exportSessionEvidence();
   assert.equal(calls.length, 1);
   assert.match(calls[0][0], /^\d{4}-\d{2}-\d{2}$/);
-  assert.equal(calls[0][1], '2.6.90/b521/v1385');
+  assert.equal(calls[0][1], '2.6.91/b522/v1386');
   const line = c.renderSessionEvidenceLine();
   assert.match(line, /mr_session_evidence_2026-11-02\.json · 12345 bytes · sha256 abcdef012345 · session 2026-11-02/);
   assert.doesNotMatch(line, /abcdef0123456789/);
