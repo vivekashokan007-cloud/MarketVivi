@@ -6219,6 +6219,26 @@ function indexStructureChoiceAvailable(candidate, dec) {
 }
 function chooseIndexStructureForPaper(ix, decisionId, candidateId) {
     let out = null;
+    // Recheck Paper authorization and capacity BEFORE recording a native choice, so a choice
+    // cannot be recorded for an entry that takeTrade would refuse. Gates are unchanged.
+    const src = typeof findCandidateById === 'function' ? findCandidateById(candidateId) : null;
+    if (!src) {
+        out = { status: 'REJECTED', reason: 'CANDIDATE_NOT_FOUND' };
+        alert(`Choice not accepted: ${out.reason}`);
+        return out;
+    }
+    const auth = paperObservationAuthorization(src);
+    if (!auth?.allowed) {
+        out = { status: 'REJECTED', reason: `PAPER_UNAVAILABLE: ${auth?.reason || 'not authorized'}` };
+        alert(`Choice not accepted: ${out.reason}`);
+        return out;
+    }
+    const cap = paperTradeCapacity(src.index || ix);
+    if (!cap?.available) {
+        out = { status: 'REJECTED', reason: `PAPER_FULL (${cap?.count}/${cap?.limit})` };
+        alert(`Choice not accepted: ${out.reason}`);
+        return out;
+    }
     try {
         if (typeof window.NativeBridge?.indexAuthorityChoose !== 'function') {
             out = { status: 'REJECTED', reason: 'BRIDGE_UNAVAILABLE' };
@@ -7961,12 +7981,17 @@ function renderAuthorityCandidateCard(cand) {
     const managedGate = bd.managed_policy?.[cand.index]?.gates?.find(g => g.candidate_id === cand.id);
     const lot = Number.isInteger(cand.lotSize) && cand.lotSize > 0 ? String(cand.lotSize) : 'Unavailable';
     const choose = indexStructureChoiceAvailable(cand, dec);
+    const paperOpen = auth.allowed && capacity.available;
     const arg = x => esc(JSON.stringify(String(x || '')));
     const paperButton = !auth.allowed
         ? `<button class="btn-paper" disabled title="${esc(auth.reason)}">PAPER UNAVAILABLE</button>`
         : !capacity.available
         ? `<button class="btn-paper" disabled>PAPER FULL (${capacity.count}/${capacity.limit})</button>`
-        : `<button class="btn-paper" onclick="takeTrade(${arg(cand.id)}, true)">Manual ${auth.analysis_only ? 'Paper analysis' : 'Paper test'} (${capacity.count}/${capacity.limit})</button>`;
+        : `<button class="btn-paper" onclick="takeTrade(${arg(cand.id)}, true)">Manual Paper <span class="ia-btn-count">${capacity.count}/${capacity.limit}</span></button>`;
+    const chooseButton = !choose ? ''
+        : paperOpen
+        ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>`
+        : `<button class="ia-choose" disabled title="${esc(!auth.allowed ? auth.reason : 'Paper slots full')}">Choose unavailable</button>`;
     return `<div class="candidate-card authority-candidate" data-index="${esc(cand.index)}">
         <div class="ia-card-head">
             <div><span class="ia-index">${esc(cand.index)}</span><h3>${esc(friendlyType(cand.type))}</h3></div>
@@ -7990,9 +8015,11 @@ function renderAuthorityCandidateCard(cand) {
         ${managedGate && !managedGate.admit ? `<div class="ia-warning">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
         ${!auth.allowed ? `<div class="ia-warning">Manual Paper unavailable: ${esc(auth.reason)}</div>` : ''}
         <div class="ia-card-actions">
-            ${choose ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>` : ''}
+            ${chooseButton}
             ${paperButton}
         </div>
+        ${choose && !paperOpen ? `<div class="ia-action-reason">Choose for Paper disabled: ${!auth.allowed ? 'Paper unavailable (' + esc(auth.reason) + ')' : `Paper slots full (${capacity.count}/${capacity.limit})`}</div>` : ''}
+        ${auth.allowed ? `<div class="ia-action-note">Manual Paper ${auth.analysis_only ? 'analysis' : 'test'} · ${capacity.count}/${capacity.limit} open</div>` : ''}
         <details class="ia-card-details"><summary>Quote and Paper details</summary>
             <div>Broker margin: unavailable in this candidate</div>
             <div>Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>

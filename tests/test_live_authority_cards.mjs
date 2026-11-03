@@ -110,3 +110,48 @@ test('active authority does not append retired Kelly and combined-direction insi
   assert.match(c.renderBrainInsights(), /NF PANEL · BNF PANEL/);
   assert.doesNotMatch(c.renderBrainInsights(), /Kelly|F1|signals/);
 });
+
+// R2 (Codex review of PR #26): the Choose action must follow Paper authorization and capacity.
+function clickHarness({ allowed = true, full = false } = {}) {
+  const calls = { choose: 0, take: 0, alerts: [] };
+  const four = { index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR', entryEligible: true };
+  const c = { String, Number, JSON, Object, Array, Math, Date, calls,
+    window: { NativeBridge: { indexAuthorityChoose: () => { calls.choose++; return JSON.stringify({ status: 'CHOSEN', choice: { id: 'x' } }); } } },
+    alert: m => calls.alerts.push(m), takeTrade: () => { calls.take++; },
+    findCandidateById: id => (id === four.id ? four : null),
+    paperObservationAuthorization: () => ({ allowed, reason: 'IDENTITY_UNAVAILABLE', analysis_only: true }),
+    paperTradeCapacity: () => ({ available: !full, count: full ? 2 : 0, limit: 2 }),
+  };
+  vm.createContext(c);
+  vm.runInContext('let PENDING_STRUCTURE_CHOICE = null;\n' + fn('chooseIndexStructureForPaper'), c);
+  return c;
+}
+const avail4 = { ...missing, entryEligible: true, lotSize: 65, lotEvidence: { status: 'VERIFIED', reasons: [] },
+  maxProfit: 5000, maxLoss: 4750, frictionCost: 258.48, frictionCostStatus: 'OK' };
+
+test('available: Choose for Paper and Manual Paper are both enabled; click records choice then enters', () => {
+  const html = harness({ choice: true }).renderAuthorityCandidateCard(avail4);
+  assert.match(html, /<button class="ia-choose" onclick="chooseIndexStructureForPaper/);
+  assert.match(html, /<button class="btn-paper" onclick="takeTrade/);
+  assert.doesNotMatch(html, /disabled/);
+  const c = clickHarness();
+  assert.equal(c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF_IC').status, 'CHOSEN');
+  assert.equal(c.calls.choose, 1); assert.equal(c.calls.take, 1);
+});
+
+for (const [name, opts, re] of [['unavailable', { allowed: false }, /Paper unavailable \(IDENTITY_UNAVAILABLE\)/], ['full', { full: true }, /Paper slots full \(2\/2\)/]]) {
+  test(`${name}: Choose is disabled with a visible reason and tapping cannot reach the bridge or Paper entry`, () => {
+    const html = harness({ choice: true, ...opts }).renderAuthorityCandidateCard(avail4);
+    assert.doesNotMatch(html, /onclick="chooseIndexStructureForPaper/);
+    assert.doesNotMatch(html, /onclick="takeTrade/);
+    assert.match(html, /<button class="ia-choose" disabled/);
+    assert.match(html, /<button class="btn-paper" disabled/);
+    assert.match(html, re);
+    // Even a stale/forced tap on the handler must not call indexAuthorityChoose or takeTrade.
+    const c = clickHarness(opts);
+    const out = c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF_IC');
+    assert.equal(out.status, 'REJECTED');
+    assert.equal(c.calls.choose, 0); assert.equal(c.calls.take, 0);
+    assert.equal(c.calls.alerts.length, 1);
+  });
+}

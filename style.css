@@ -594,10 +594,15 @@ main {
 .ia-warning, .ia-admission-blocked { color: var(--warn); background: var(--bg-deep); }
 .ia-admission-ok { color: var(--green); background: var(--bg-deep); }
 .ia-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.ia-card-actions button { flex: 1 1 150px; min-height: 38px; padding: 7px 9px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; }
+/* 140px basis: two buttons share a row at >=~300px card width, otherwise they stack full-width. */
+.ia-card-actions button { flex: 1 1 140px; min-height: 40px; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ia-card-actions .ia-choose { background: var(--accent); color: #fff; border: 1px solid var(--accent); }
-.ia-card-actions .btn-paper { margin: 0; }
-.ia-card-actions button:disabled { opacity: .65; cursor: not-allowed; }
+.ia-card-actions .btn-paper { margin: 0; background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); }
+.ia-btn-count { margin-left: 4px; padding: 0 5px; border-radius: 8px; background: var(--accent-dim); font-size: 11px; font-feature-settings: 'tnum'; }
+/* Disabled: no opacity fade; readable text + dashed border, clearly non-interactive. */
+.ia-card-actions button:disabled, .ia-card-actions .ia-choose:disabled, .ia-card-actions .btn-paper:disabled { opacity: 1; cursor: not-allowed; background: var(--bg-deep); color: var(--text-secondary); border: 1px dashed var(--border-accent); box-shadow: none; }
+.ia-action-reason { margin-top: 6px; color: var(--warn); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.ia-action-note { margin-top: 6px; color: var(--text-muted); font-size: 11px; }
 .ia-card-details { margin-top: 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .ia-card-details summary { cursor: pointer; }
 .ia-card-details div { margin-top: 5px; }
