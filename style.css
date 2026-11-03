@@ -567,6 +567,46 @@ main {
 
 .candidate-card:active { transform: scale(0.99); }
 
+/* Per-index policy alternatives: structured cards without legacy rank or EV claims. */
+.ia-index-section { margin: 12px 0 18px; }
+.ia-index-section > h3 { margin: 0 0 5px; font-size: 16px; }
+.authority-candidate { border-left: 3px solid var(--accent); }
+.ia-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.ia-card-head > div { min-width: 0; }
+.ia-card-head h3 { display: inline; margin: 0; font-size: 16px; line-height: 1.3; }
+.ia-index { display: inline-block; margin-right: 7px; padding: 2px 6px; border-radius: 4px; color: var(--accent); background: var(--bg-deep); font-size: 11px; font-weight: 700; }
+.ia-alternative { flex: 0 0 auto; max-width: 115px; color: var(--text-muted); font-size: 10px; line-height: 1.3; text-align: right; }
+.ia-expiry { margin: 4px 0 10px; color: var(--text-secondary); font-size: 12px; }
+.ia-legs { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.ia-leg { display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 3px; padding: 8px; background: var(--bg-deep); font-size: 13px; }
+.ia-leg + .ia-leg { border-top: 1px solid var(--border); }
+.ia-leg-action { min-width: 36px; font-size: 10px; font-weight: 700; }
+.ia-sell { color: var(--danger); }
+.ia-buy { color: var(--green); }
+.ia-quote { flex-basis: 100%; padding-left: 44px; color: var(--text-secondary); font-size: 11px; font-feature-settings: 'tnum'; }
+.ia-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 9px 0; }
+.ia-metric { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 7px 8px; background: var(--bg-deep); border-radius: var(--radius-sm); font-size: 11px; color: var(--text-muted); }
+.ia-metric strong { color: var(--text-primary); font-size: 14px; font-feature-settings: 'tnum'; overflow-wrap: anywhere; }
+.ia-profit strong { color: var(--green); }
+.ia-loss strong { color: var(--danger); }
+.ia-evidence { color: var(--text-secondary); font-size: 11px; }
+.ia-warning, .ia-admission { margin-top: 7px; padding: 7px 8px; border-radius: var(--radius-sm); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.ia-warning, .ia-admission-blocked { color: var(--warn); background: var(--bg-deep); }
+.ia-admission-ok { color: var(--green); background: var(--bg-deep); }
+.ia-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+/* 140px basis: two buttons share a row at >=~300px card width, otherwise they stack full-width. */
+.ia-card-actions button { flex: 1 1 140px; min-height: 40px; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ia-card-actions .ia-choose { background: var(--accent); color: #fff; border: 1px solid var(--accent); }
+.ia-card-actions .btn-paper { margin: 0; background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); }
+.ia-btn-count { margin-left: 4px; padding: 0 5px; border-radius: 8px; background: var(--accent-dim); font-size: 11px; font-feature-settings: 'tnum'; }
+/* Disabled: no opacity fade; readable text + dashed border, clearly non-interactive. */
+.ia-card-actions button:disabled, .ia-card-actions .ia-choose:disabled, .ia-card-actions .btn-paper:disabled { opacity: 1; cursor: not-allowed; background: var(--bg-deep); color: var(--text-secondary); border: 1px dashed var(--border-accent); box-shadow: none; }
+.ia-action-reason { margin-top: 6px; color: var(--warn); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.ia-action-note { margin-top: 6px; color: var(--text-muted); font-size: 11px; }
+.ia-card-details { margin-top: 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.ia-card-details summary { cursor: pointer; }
+.ia-card-details div { margin-top: 5px; }
+
 .strat-section-title {
     font-size: 14px;
     font-weight: 600;

@@ -34,7 +34,7 @@ const missing = { authorityPolicyVersion: 'index_direction_v1', index: 'NF', id:
 test('real renderer handles the phone-shaped missing data without invented probability, margin or ranking', () => {
   const html = harness().renderCandidateCard(missing, 23350, 1);
   assert.match(html, /bid ₹92.50 \/ ask ₹93.50/);
-  assert.match(html, /Lot: Unavailable/);
+  assert.match(html, /Lot:<\/span><strong>Unavailable<\/strong>/);
   assert.match(html, /CONTRACT_METADATA_UNAVAILABLE/);
   assert.match(html, /lot_unavailable, friction_unavailable/);
   assert.match(html, /Broker margin: unavailable/);
@@ -47,10 +47,35 @@ test('verified candidate shows bounded costs and keeps explicit structure choice
     lotSize: 65, maxProfit: 5000, maxLoss: 4750, frictionCost: 258.48, frictionCostStatus: 'OK',
     lotEvidence: { status: 'VERIFIED', reasons: [] } }, 23350, 1);
   assert.match(html, /dated NSE table verified/);
-  assert.match(html, /Max loss: ₹4750.00/);
-  assert.match(html, /Estimated costs: ₹258.48/);
+  assert.match(html, /Max loss:<\/span><strong>₹4750.00<\/strong>/);
+  assert.match(html, /Estimated costs:<\/span><strong>₹258.48<\/strong>/);
   assert.match(html, /Choose for Paper/);
   assert.match(html, /chooseIndexStructureForPaper\(&quot;NF&quot;,&quot;idx1_nf&quot;,&quot;NF_IC&quot;\)/);
+});
+
+test('authority strategy is a scannable card with separate legs, risk, warnings and Paper actions', () => {
+  const c = harness({ choice: true });
+  const x = { ...missing, entryEligible: true, lotSize: 65, lotEvidence: { status: 'VERIFIED', reasons: [] },
+    maxProfit: 5235.75, maxLoss: 4514.25, frictionCost: 212.15, frictionCostStatus: 'OK',
+    legs: [
+      { action: 'SELL', strike: 23250, option_type: 'CE', bid: 59.7, ask: 59.8 },
+      { action: 'SELL', strike: 23150, option_type: 'PE', bid: 72.75, ask: 72.95 },
+      { action: 'BUY', strike: 23400, option_type: 'CE', bid: 21.85, ask: 21.95 },
+      { action: 'BUY', strike: 23000, option_type: 'PE', bid: 29.8, ask: 29.95 },
+    ] };
+  const before = JSON.stringify(x);
+  const html = c.renderAuthorityCandidateCard(x);
+  assert.match(html, /ia-card-head[\s\S]*ia-legs[\s\S]*ia-metrics[\s\S]*ia-card-actions/);
+  assert.equal((html.match(/class="ia-leg"/g) || []).length, 4);
+  assert.equal((html.match(/ia-leg-action ia-sell/g) || []).length, 2);
+  assert.equal((html.match(/ia-leg-action ia-buy/g) || []).length, 2);
+  assert.match(html, /₹5235.75/);
+  assert.match(html, /₹4514.25/);
+  assert.match(html, /Policy alternative, not ranked/);
+  assert.match(html, /Choose for Paper/);
+  assert.match(html, /Manual Paper analysis/);
+  assert.doesNotMatch(html, /TRACK RECORD|Kelly|EV\/|REAL TRADE/);
+  assert.equal(JSON.stringify(x), before);
 });
 
 test('manual Paper preserves unavailable and capacity gates; no real entry button added', () => {
@@ -85,3 +110,48 @@ test('active authority does not append retired Kelly and combined-direction insi
   assert.match(c.renderBrainInsights(), /NF PANEL · BNF PANEL/);
   assert.doesNotMatch(c.renderBrainInsights(), /Kelly|F1|signals/);
 });
+
+// R2 (Codex review of PR #26): the Choose action must follow Paper authorization and capacity.
+function clickHarness({ allowed = true, full = false } = {}) {
+  const calls = { choose: 0, take: 0, alerts: [] };
+  const four = { index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR', entryEligible: true };
+  const c = { String, Number, JSON, Object, Array, Math, Date, calls,
+    window: { NativeBridge: { indexAuthorityChoose: () => { calls.choose++; return JSON.stringify({ status: 'CHOSEN', choice: { id: 'x' } }); } } },
+    alert: m => calls.alerts.push(m), takeTrade: () => { calls.take++; },
+    findCandidateById: id => (id === four.id ? four : null),
+    paperObservationAuthorization: () => ({ allowed, reason: 'IDENTITY_UNAVAILABLE', analysis_only: true }),
+    paperTradeCapacity: () => ({ available: !full, count: full ? 2 : 0, limit: 2 }),
+  };
+  vm.createContext(c);
+  vm.runInContext('let PENDING_STRUCTURE_CHOICE = null;\n' + fn('chooseIndexStructureForPaper'), c);
+  return c;
+}
+const avail4 = { ...missing, entryEligible: true, lotSize: 65, lotEvidence: { status: 'VERIFIED', reasons: [] },
+  maxProfit: 5000, maxLoss: 4750, frictionCost: 258.48, frictionCostStatus: 'OK' };
+
+test('available: Choose for Paper and Manual Paper are both enabled; click records choice then enters', () => {
+  const html = harness({ choice: true }).renderAuthorityCandidateCard(avail4);
+  assert.match(html, /<button class="ia-choose" onclick="chooseIndexStructureForPaper/);
+  assert.match(html, /<button class="btn-paper" onclick="takeTrade/);
+  assert.doesNotMatch(html, /disabled/);
+  const c = clickHarness();
+  assert.equal(c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF_IC').status, 'CHOSEN');
+  assert.equal(c.calls.choose, 1); assert.equal(c.calls.take, 1);
+});
+
+for (const [name, opts, re] of [['unavailable', { allowed: false }, /Paper unavailable \(IDENTITY_UNAVAILABLE\)/], ['full', { full: true }, /Paper slots full \(2\/2\)/]]) {
+  test(`${name}: Choose is disabled with a visible reason and tapping cannot reach the bridge or Paper entry`, () => {
+    const html = harness({ choice: true, ...opts }).renderAuthorityCandidateCard(avail4);
+    assert.doesNotMatch(html, /onclick="chooseIndexStructureForPaper/);
+    assert.doesNotMatch(html, /onclick="takeTrade/);
+    assert.match(html, /<button class="ia-choose" disabled/);
+    assert.match(html, /<button class="btn-paper" disabled/);
+    assert.match(html, re);
+    // Even a stale/forced tap on the handler must not call indexAuthorityChoose or takeTrade.
+    const c = clickHarness(opts);
+    const out = c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF_IC');
+    assert.equal(out.status, 'REJECTED');
+    assert.equal(c.calls.choose, 0); assert.equal(c.calls.take, 0);
+    assert.equal(c.calls.alerts.length, 1);
+  });
+}

@@ -6219,6 +6219,26 @@ function indexStructureChoiceAvailable(candidate, dec) {
 }
 function chooseIndexStructureForPaper(ix, decisionId, candidateId) {
     let out = null;
+    // Recheck Paper authorization and capacity BEFORE recording a native choice, so a choice
+    // cannot be recorded for an entry that takeTrade would refuse. Gates are unchanged.
+    const src = typeof findCandidateById === 'function' ? findCandidateById(candidateId) : null;
+    if (!src) {
+        out = { status: 'REJECTED', reason: 'CANDIDATE_NOT_FOUND' };
+        alert(`Choice not accepted: ${out.reason}`);
+        return out;
+    }
+    const auth = paperObservationAuthorization(src);
+    if (!auth?.allowed) {
+        out = { status: 'REJECTED', reason: `PAPER_UNAVAILABLE: ${auth?.reason || 'not authorized'}` };
+        alert(`Choice not accepted: ${out.reason}`);
+        return out;
+    }
+    const cap = paperTradeCapacity(src.index || ix);
+    if (!cap?.available) {
+        out = { status: 'REJECTED', reason: `PAPER_FULL (${cap?.count}/${cap?.limit})` };
+        alert(`Choice not accepted: ${out.reason}`);
+        return out;
+    }
     try {
         if (typeof window.NativeBridge?.indexAuthorityChoose !== 'function') {
             out = { status: 'REJECTED', reason: 'BRIDGE_UNAVAILABLE' };
@@ -7941,7 +7961,7 @@ function renderAuthorityWatchlist(bi) {
     return `<div class="section-note">Per-index policy alternatives · choose explicitly for Paper</div>` + shown.map(ix => {
         const d = bi.by_index?.[ix] || {};
         const cs = bi.candidates_by_index?.[ix] || [];
-        return `<section data-index="${iaEsc(ix)}"><h3>${iaEsc(ix)} · ${iaEsc(d.direction?.value || 'UNAVAILABLE')}</h3>
+        return `<section class="ia-index-section" data-index="${iaEsc(ix)}"><h3>${iaEsc(ix)} · ${iaEsc(d.direction?.value || 'UNAVAILABLE')}</h3>
             <div class="section-note">${iaEsc(d.display || '')}</div>
             <div class="section-note">Action: ${iaEsc(d.action?.value || 'WAIT')} · ${iaEsc((d.action?.reasons || []).join(', '))}</div>
             ${cs.length ? cs.map(renderAuthorityCandidateCard).join('') : '<div class="empty-state">No policy candidate for this index</div>'}
@@ -7961,26 +7981,50 @@ function renderAuthorityCandidateCard(cand) {
     const managedGate = bd.managed_policy?.[cand.index]?.gates?.find(g => g.candidate_id === cand.id);
     const lot = Number.isInteger(cand.lotSize) && cand.lotSize > 0 ? String(cand.lotSize) : 'Unavailable';
     const choose = indexStructureChoiceAvailable(cand, dec);
+    const paperOpen = auth.allowed && capacity.available;
     const arg = x => esc(JSON.stringify(String(x || '')));
     const paperButton = !auth.allowed
         ? `<button class="btn-paper" disabled title="${esc(auth.reason)}">PAPER UNAVAILABLE</button>`
         : !capacity.available
         ? `<button class="btn-paper" disabled>PAPER FULL (${capacity.count}/${capacity.limit})</button>`
-        : `<button class="btn-paper" onclick="takeTrade(${arg(cand.id)}, true)">Manual ${auth.analysis_only ? 'Paper analysis' : 'Paper test'} (${capacity.count}/${capacity.limit})</button>`;
+        : `<button class="btn-paper" onclick="takeTrade(${arg(cand.id)}, true)">Manual Paper <span class="ia-btn-count">${capacity.count}/${capacity.limit}</span></button>`;
+    const chooseButton = !choose ? ''
+        : paperOpen
+        ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>`
+        : `<button class="ia-choose" disabled title="${esc(!auth.allowed ? auth.reason : 'Paper slots full')}">Choose unavailable</button>`;
     return `<div class="candidate-card authority-candidate" data-index="${esc(cand.index)}">
-        <h3>${esc(cand.index)} · ${esc(friendlyType(cand.type))}</h3>
-        <div class="section-note">${esc(cand.expiry)} · Policy alternative, not ranked</div>
-        <div class="legs">${(cand.legs || []).map(l => `<div>${esc(l.action)} ${esc(l.strike)} ${esc(l.option_type)} · bid ${money(l.bid)} / ask ${money(l.ask)}</div>`).join('')}</div>
-        <div>Lot: ${esc(lot)} · ${lotEvidence.status === 'VERIFIED' ? 'broker contract + dated NSE table verified' : 'contract verification unavailable'}</div>
-        ${(lotEvidence.reasons || []).length ? `<div class="section-note">Lot evidence: ${esc(lotEvidence.reasons.join(', '))}</div>` : ''}
-        <div>Max profit: ${money(cand.maxProfit)} · Max loss: ${money(cand.maxLoss)}</div>
-        <div>Estimated costs: ${cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable'} · Broker margin: unavailable in this candidate</div>
-        <div class="section-note">Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
-        <div>${cand.entryEligible === true ? 'Construction checks passed; admission still requires current checks and your choice.' : 'Entry blocked: ' + esc(why.join(', ') || cand.constructionReason || 'checks unavailable')}</div>
-        ${managedGate && !managedGate.admit ? `<div class="section-note">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
-        ${!auth.allowed ? `<div class="section-note">Manual Paper unavailable: ${esc(auth.reason)}</div>` : '<div class="section-note">Manual Paper records simulated bid/ask entry prices; it does not authorize managed or broker execution.</div>'}
-        ${choose ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>` : ''}
-        ${paperButton}
+        <div class="ia-card-head">
+            <div><span class="ia-index">${esc(cand.index)}</span><h3>${esc(friendlyType(cand.type))}</h3></div>
+            <span class="ia-alternative">Policy alternative, not ranked</span>
+        </div>
+        <div class="ia-expiry">Expiry ${esc(cand.expiry)}</div>
+        <div class="ia-legs" aria-label="Option legs">${(cand.legs || []).map(l => `<div class="ia-leg">
+            <span class="ia-leg-action ${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(l.action)}</span>
+            <strong>${esc(l.strike)} ${esc(l.option_type)}</strong>
+            <span class="ia-quote">bid ${money(l.bid)} / ask ${money(l.ask)}</span>
+        </div>`).join('')}</div>
+        <div class="ia-metrics">
+            <div class="ia-metric ia-profit"><span>Max profit:</span><strong>${money(cand.maxProfit)}</strong></div>
+            <div class="ia-metric ia-loss"><span>Max loss:</span><strong>${money(cand.maxLoss)}</strong></div>
+            <div class="ia-metric"><span>Lot:</span><strong>${esc(lot)}</strong></div>
+            <div class="ia-metric"><span>Estimated costs:</span><strong>${cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable'}</strong></div>
+        </div>
+        <div class="ia-evidence">${lotEvidence.status === 'VERIFIED' ? 'broker contract + dated NSE table verified' : 'contract verification unavailable'}</div>
+        ${(lotEvidence.reasons || []).length ? `<div class="ia-warning">Lot evidence: ${esc(lotEvidence.reasons.join(', '))}</div>` : ''}
+        <div class="ia-admission ${cand.entryEligible === true ? 'ia-admission-ok' : 'ia-admission-blocked'}">${cand.entryEligible === true ? 'Construction checks passed; admission still requires current checks and your choice.' : 'Entry blocked: ' + esc(why.join(', ') || cand.constructionReason || 'checks unavailable')}</div>
+        ${managedGate && !managedGate.admit ? `<div class="ia-warning">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
+        ${!auth.allowed ? `<div class="ia-warning">Manual Paper unavailable: ${esc(auth.reason)}</div>` : ''}
+        <div class="ia-card-actions">
+            ${chooseButton}
+            ${paperButton}
+        </div>
+        ${choose && !paperOpen ? `<div class="ia-action-reason">Choose for Paper disabled: ${!auth.allowed ? 'Paper unavailable (' + esc(auth.reason) + ')' : `Paper slots full (${capacity.count}/${capacity.limit})`}</div>` : ''}
+        ${auth.allowed ? `<div class="ia-action-note">Manual Paper ${auth.analysis_only ? 'analysis' : 'test'} · ${capacity.count}/${capacity.limit} open</div>` : ''}
+        <details class="ia-card-details"><summary>Quote and Paper details</summary>
+            <div>Broker margin: unavailable in this candidate</div>
+            <div>Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
+            ${auth.allowed ? '<div>Manual Paper records simulated bid/ask entry prices; it does not authorize managed or broker execution.</div>' : ''}
+        </details>
     </div>`;
 }
 
