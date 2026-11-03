@@ -8694,13 +8694,16 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
     const displayed = String(ctx.displayedSessionDate || '');
     const sessionMismatch = valid && (!displayed || String(c.session_date || '') !== displayed);
     const displayedResearchOnly = String(ctx.evaluationPhaseRaw || '').toUpperCase() === 'RESEARCH_ONLY';
-    const eligible = valid && c.eligible === true && !sessionMismatch && !displayedResearchOnly;
+    // R3: the displayed status itself must report labelsSaved === true.
+    const displayedLabelsNotSaved = valid && ctx.displayedLabelsSaved !== true;
+    const eligible = valid && c.eligible === true && !sessionMismatch && !displayedResearchOnly && !displayedLabelsNotSaved;
     const labeledCount = eligible ? num(c.verified_training_labels) : 0;
     const winCount = eligible ? num(c.verified_training_wins) : 0;
     const winRateText = labeledCount > 0 ? `${((winCount / labeledCount) * 100).toFixed(1)}%` : 'UNKNOWN (no eligible labels)';
     const reason = !valid ? 'CONTRACT_UNAVAILABLE'
         : sessionMismatch ? 'CACHED_SESSION_MISMATCH'
         : displayedResearchOnly ? 'RESEARCH_ONLY'
+        : displayedLabelsNotSaved ? 'DISPLAYED_STATUS_LABELS_NOT_SAVED'
         : (eligible ? null : String(c.ineligible_reason || (String(ctx.evaluationPhaseRaw || '').toUpperCase() === 'RESEARCH_ONLY' ? 'RESEARCH_ONLY' : 'NOT_ELIGIBLE')));
     let statusText;
     if (reason === 'RESEARCH_ONLY') statusText = 'RESEARCH ONLY · 0 new training labels';
@@ -8928,6 +8931,7 @@ function renderML(snapshot = null) {
     const trainingProgress = mlTrainingLabelProgressView(evaluationLaneSummary?.training_label_progress, {
         evaluationPhaseRaw, persistedOutcomeRows, summaryRowsToday, summaryAttributedRows,
         displayedSessionDate: evaluationTargetDate,
+        displayedLabelsSaved: labelsSaved,
         persistedOutcomeRunDate: String(service.evaluationDoneDate || '')
     });
     const labeledCount = trainingProgress.labeledCount;

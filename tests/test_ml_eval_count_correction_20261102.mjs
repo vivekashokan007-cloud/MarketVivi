@@ -213,6 +213,24 @@ test('R2: same session and LABELS_SAVED shows the count (transition back is hone
   assert.match(p, /\(this session\): 600/);
 });
 
+test('R3: same-session failure status with labelsSaved false shows no cached count', () => {
+  const f = eligibleFixture();
+  f.serviceStatus.evaluationPhase = 'FAILED_IDENTITY_COVERAGE'; // same session, not RESEARCH_ONLY
+  f.serviceStatus.labelsSaved = false;
+  const p = progressText(renderWith(NEW, f));
+  assert.match(p, /Verified chosen training labels \(this session\): 0 · Win rate: UNKNOWN/);
+  assert.match(p, /DISPLAYED_STATUS_LABELS_NOT_SAVED/);
+  assert.doesNotMatch(p, /600|\/500/);
+});
+
+test('R3: labelsSaved missing (unknown) on displayed status also shows no cached count', () => {
+  const f = eligibleFixture();
+  delete f.serviceStatus.labelsSaved;
+  const p = progressText(renderWith(NEW, f));
+  assert.match(p, /\(this session\): 0/);
+  assert.doesNotMatch(p, /600/);
+});
+
 test('old main reproduces the false 19053/500 and 71/500 claims', { skip: !OLD_PATH }, () => {
   const OLD = makeRenderer(fs.readFileSync(OLD_PATH, 'utf8'));
   const a = progressText(renderWith(OLD, FIX.state_1643));
