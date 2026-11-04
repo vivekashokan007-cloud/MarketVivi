@@ -106,13 +106,17 @@ const report = (gate, integrity = { counts: { OK: 71 }, gradeable_teacher_rows: 
 });
 const NO_PRIMARY_GATE = { status: 'FAIL', blocked_reasons: ['no_primary_teacher_rows_were_available'], primary_snapshot_count: 0, primary_outcome_count: 0, outcome_count: 1878 };
 
-function render(r, { status = FIX.state_1803.serviceStatus, snaps = AUTH_SNAPS, rep = report(NO_PRIMARY_GATE), model = { ok: true, version: 'v-old' } } = {}) {
+// R1: current-run persistence proof as exported by NativeBridge (evaluationStages / evaluationRunId).
+const VERIFIED_STATUS = { ...FIX.state_1803.serviceStatus, evaluationRunId: 'run-20261102-a',
+  evaluationStages: { outcome_persistence: { state: 'verified', reason_code: '', expected_count: 1878, written_count: 1878, verified_count: 1878 } } };
+const withStage = (st) => ({ ...VERIFIED_STATUS, evaluationStages: { outcome_persistence: st } });
+function render(r, { status = VERIFIED_STATUS, brain = {}, snaps = AUTH_SNAPS, rep = report(NO_PRIMARY_GATE), model = { ok: true, version: 'v-old' } } = {}) {
   r.mlEl.innerHTML = '';
   r.base.getMLEvaluationLaneSummaryCached = () => FIX.state_1803.laneSummary;
   r.base.getMLBrainSnapshotsCached = () => snaps;
   r.base.getMLTeacherResearchReportCached = () => rep;
   r.base.getMLModelStatusCached = () => model;
-  r.sandbox.renderML({ serviceStatus: { ...status, marketReason: 'CLOSED' }, brainResult: {}, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '' });
+  r.sandbox.renderML({ serviceStatus: { ...status, marketReason: 'CLOSED' }, brainResult: brain, executionInfraStatus: {}, pollHistory: [], signalStats: {}, orderProxyUrl: '' });
   return r.mlEl.innerHTML;
 }
 const strip = (h) => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ');
@@ -124,7 +128,9 @@ test('closed market: authority menu by index separate from legacy evidence-only 
   const d = section(t, 'Candidate Pipeline Diagnostics', 'Teacher v1 Shadow Review');
   assert.match(d, /Index authority menu \(decides admission\) · latest: NF 0 · BNF 0 · day \(3 loaded saved snapshots\): NF 4 · BNF 2 \(NF and BNF separate, not pooled\)/);
   assert.match(d, /New entries stop after 15:15 IST/);
-  assert.match(d, /Legacy generator · evidence only \(retired; it neither builds nor blocks the authority menu\): Watchlist 0 · Rejected 24/);
+  assert.match(d, /Authority watchlist \(the constructed authority candidates, not legacy\): 0/);
+  assert.match(d, /Legacy generator · evidence only \(retired; it neither builds nor blocks the authority menu\): retained rejection stats 24/);
+  assert.doesNotMatch(d, /Legacy[^·]*Watchlist/);
   assert.match(d, /Legacy rejection stages \(evidence only\): capital 14 · ev_floor 10/);
   assert.doesNotMatch(d, /none survived the gate waterfall/);
 });
@@ -149,13 +155,89 @@ test('Class A: genuine integrity failure keeps FAIL', () => {
   assert.match(c, /25 outcome rows failed integrity/);
 });
 
-test('Class A: unverified outcome readback keeps FAIL; other blocked reasons keep FAIL; PASS unchanged', () => {
-  const noReadback = { ...FIX.state_1803.serviceStatus, lastEvaluationOutcomeCount: 0 };
-  assert.match(section(strip(render(R, { status: noReadback })), 'Class A Correctness Gate', 'Stage 2A'), /Status: FAIL.*outcome readback is not verified/);
+test('Class A: missing persistence proof -> UNVERIFIED wording (no readback assurance); other blocked reasons keep FAIL; PASS unchanged', () => {
+  const noProof = { ...FIX.state_1803.serviceStatus };
+  const c = section(strip(render(R, { status: noProof })), 'Class A Correctness Gate', 'Stage 2A');
+  assert.match(c, /Status: NO_BASELINE · readback UNVERIFIED/);
+  assert.match(c, /current-run outcome persistence proof unavailable/);
+  assert.doesNotMatch(c, /Outcome readback and integrity checks passed/);
   const other = { ...NO_PRIMARY_GATE, blocked_reasons: ['no_primary_teacher_rows_were_available', 'rejected_menu_missing_on_1_primary_snapshots'] };
   assert.match(section(strip(render(R, { rep: report(other) })), 'Class A Correctness Gate', 'Stage 2A'), /Status: FAIL/);
   const pass = { status: 'PASS', blocked_reasons: [], primary_snapshot_count: 3, primary_outcome_count: 3, outcome_count: 900 };
   assert.match(section(strip(render(R, { rep: report(pass) })), 'Class A Correctness Gate', 'Stage 2A'), /Status: PASS/);
+});
+
+// ---- R1 (Codex 4 Nov): NO_BASELINE bound to verified session/run evidence ----
+const classA = (opts) => section(strip(render(R, opts)), 'Class A Correctness Gate', 'Stage 2A');
+test('R1: valid verified case -> NO_BASELINE with assurance bound to session + run; scopes reconciled, not equated', () => {
+  const rep = { ...report(NO_PRIMARY_GATE), outcome_count: 1800, rejected_research_outcome_count: 78, evaluation_run_id: 'run-20261102-a' };
+  const c = classA({ rep });
+  assert.match(c, /Status: NO_BASELINE · comparison unavailable/);
+  assert.match(c, /Outcome readback and integrity checks passed for session 2026-11-02 · run run-20261102-a\./);
+  assert.match(c, /Scopes differ: report teacher rows 1800 \(chosen \+ menu\) \+ 78 rejected-research rows; persisted outcome counter 1878/);
+  // legacy report without run identity: still bound by session + verified current-run persistence, and says so
+  assert.match(classA({}), /report carries no run identity; bound by session date and verified current-run persistence/);
+});
+test('R1: mismatched report date (eval 2 Nov, report 30 Oct) -> no assurance', () => {
+  const c = classA({ rep: { ...report(NO_PRIMARY_GATE), session_date: '2026-10-30' } });
+  assert.doesNotMatch(c, /Outcome readback and integrity checks passed/);
+  assert.doesNotMatch(c, /comparison unavailable/);
+  assert.match(c, /readback UNVERIFIED/);
+  assert.match(c, /report session 2026-10-30 is not the selected session 2026-11-02/);
+});
+test('R1: failed persistence stage keeps FAIL; running / zero-verified stage is UNVERIFIED', () => {
+  const failed = classA({ status: withStage({ state: 'failed', reason_code: 'READBACK_FAILED', verified_count: 0 }) });
+  assert.match(failed, /Status: FAIL/);
+  assert.match(failed, /current-run outcome persistence FAILED \(READBACK_FAILED\)/);
+  assert.doesNotMatch(failed, /checks passed/);
+  const running = classA({ status: withStage({ state: 'running', verified_count: 0 }) });
+  assert.match(running, /readback UNVERIFIED/);
+  assert.match(running, /outcome persistence is running, not verified/);
+  assert.match(classA({ status: withStage({ state: 'verified', verified_count: 0 }) }), /verified 0 rows/);
+});
+test('R1: conflicting run identity keeps FAIL', () => {
+  const c = classA({ rep: { ...report(NO_PRIMARY_GATE), evaluation_run_id: 'run-20261030-z' } });
+  assert.match(c, /Status: FAIL/);
+  assert.match(c, /report run run-20261030-z conflicts with current run run-20261102-a/);
+  assert.doesNotMatch(c, /checks passed/);
+});
+
+// ---- R2 (Codex 4 Nov): authority watchlist is not legacy; one source per display ----
+const ctor = (ix, type) => ({ ...cand(ix, type), legs: [] });
+test('R2: live authority menu with nonempty watchlist (NF=2) never shows "Legacy ... Watchlist 2"', () => {
+  const nf = [ctor('NF', 'BEAR_PUT'), ctor('NF', 'BEAR_CALL')];
+  const brain = { direction_authority: { active: 'index_direction_v1' }, candidates_by_index: { NF: nf, BNF: [] }, watchlist: nf, generated_candidates: nf };
+  const live = R.sandbox.buildCandidatePipelineDiagnostics(brain, []);
+  assert.equal(live.source, 'live_brain_result');
+  assert.equal(live.authorityActive, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(live.authorityLatest)), { NF: 2, BNF: 0 });
+  assert.equal(live.watchlistCount, 2);
+  assert.equal(live.legacyEvidence.rejected, 0);
+  // Same shape as a saved authority snapshot (snapshot_watchlist = the constructed list): rendered labels
+  const s1 = [snap('13:20', nf, '2.6.92', { snapshot_watchlist: nf, snapshot_index_authority_primary: AUTH_REC })];
+  const d = section(strip(render(R, { snaps: s1 })), 'Candidate Pipeline Diagnostics', 'Teacher v1 Shadow Review');
+  assert.match(d, /latest: NF 2 · BNF 0/);
+  assert.match(d, /Authority watchlist \(the constructed authority candidates, not legacy\): 2/);
+  assert.match(d, /retained rejection stats 24/);
+  assert.doesNotMatch(d, /Legacy[^<]*Watchlist 2/);
+  assert.doesNotMatch(d, /Legacy generator[^·]*· evidence only[^:]*: Watchlist/);
+});
+test('R2: historical legacy-only snapshot + current authority live brain: saved source drives status and counters; live kept separate', () => {
+  const nf = [ctor('NF', 'BEAR_PUT'), ctor('NF', 'BEAR_CALL')];
+  const brain = { direction_authority: { active: 'index_direction_v1' }, candidates_by_index: { NF: nf, BNF: [] }, watchlist: nf, generated_candidates: nf };
+  const diag = R.sandbox.buildCandidatePipelineDiagnostics(brain, LEGACY_SNAPS);
+  assert.equal(diag.source, 'latest_saved_snapshot');
+  assert.equal(diag.authorityActive, false);
+  assert.equal(diag.watchlistCount, 0);
+  assert.equal(diag.generatedCount, 0);
+  assert.equal(diag.rejectedCount, 24);
+  assert.deepEqual(JSON.parse(JSON.stringify(diag.liveDiagnostics)), { authorityActive: true, menu: { NF: 2, BNF: 0 }, watchlistCount: 2, generatedCount: 2 });
+  // closed-market evaluated view: saved legacy wording, live hidden (not blended)
+  const d = section(strip(render(R, { snaps: LEGACY_SNAPS, brain })), 'Candidate Pipeline Diagnostics', 'Teacher v1 Shadow Review');
+  assert.match(d, /Source: latest_saved_snapshot/);
+  assert.doesNotMatch(d, /Index authority menu/);
+  assert.match(d, /Watchlist: 0/);
+  assert.doesNotMatch(d, /Watchlist: 2/);
 });
 
 test('READY badge names the existing model when not trained this run; no readiness implied', () => {

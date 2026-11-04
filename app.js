@@ -2583,14 +2583,17 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
     const latestPoll = safeParseNB(ctx?.snapshot_latest_poll, ctx?.snapshot_latest_poll || {});
     const byIndex = safeParseNB(trace?.by_index, trace?.by_index || {});
 
-    const generatedCount = Array.isArray(brain?.generated_candidates) && brain.generated_candidates.length > 0
-        ? brain.generated_candidates.length
-        : snapshotGenerated.length;
-    const watchlistCount = Array.isArray(brain?.watchlist) && brain.watchlist.length > 0
-        ? brain.watchlist.length
-        : snapshotWatchlist.length;
-    const rejectedCount = Number.isFinite(liveStats?.rejected) ? Number(liveStats.rejected) : Number(rejectedStats?.total || 0);
-    const acceptedTrace = Number.isFinite(trace?.accepted_count) ? Number(trace.accepted_count) : Number(liveStats?.total || 0);
+    // G3/R2: one source per display. When a saved snapshot is loaded, every counter below comes from that
+    // snapshot's own evidence; live brain values are reported separately (liveDiagnostics), never blended in.
+    const fromSnapshot = Boolean(latestSnapshot);
+    const liveGenerated = Array.isArray(brain?.generated_candidates) ? brain.generated_candidates.length : 0;
+    const liveWatchlist = Array.isArray(brain?.watchlist) ? brain.watchlist.length : 0;
+    const generatedCount = fromSnapshot ? snapshotGenerated.length : liveGenerated;
+    const watchlistCount = fromSnapshot ? snapshotWatchlist.length : liveWatchlist;
+    const rejectedCount = fromSnapshot
+        ? Number(rejectedStats?.total || 0)
+        : (Number.isFinite(liveStats?.rejected) ? Number(liveStats.rejected) : 0);
+    const acceptedTrace = Number.isFinite(trace?.accepted_count) ? Number(trace.accepted_count) : (fromSnapshot ? 0 : Number(liveStats?.total || 0));
     const rejectedTrace = Number.isFinite(trace?.rejected_count) ? Number(trace.rejected_count) : rejectedCount;
 
     const stageEntries = topCounterEntries(rejectedStats?.by_stage, 4);
@@ -2624,10 +2627,10 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
     const authorityRecord = safeParseNB(ctx?.snapshot_index_authority_primary, ctx?.snapshot_index_authority_primary || {});
     const liveAuthority = String(brain?.direction_authority?.active || '') === 'index_direction_v1';
     const liveMenu = { NF: 0, BNF: 0 };
-    if (!latestSnapshot && brain?.candidates_by_index && typeof brain.candidates_by_index === 'object') {
+    if (brain?.candidates_by_index && typeof brain.candidates_by_index === 'object') {
         ['NF', 'BNF'].forEach(ix => { liveMenu[ix] = (brain.candidates_by_index[ix] || []).length; });
     }
-    const authorityLatest = latestSnapshot ? countByIndex(snapshotGenerated) : liveMenu;
+    const authorityLatest = fromSnapshot ? countByIndex(snapshotGenerated) : liveMenu;
     const authorityDay = { NF: 0, BNF: 0 };
     let authoritySnapshotCount = 0;
     (Array.isArray(snapshots) ? snapshots : []).forEach(row => {
@@ -2637,8 +2640,24 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
         if (n.NF + n.BNF > 0 || rec?.record_schema) authoritySnapshotCount += 1;
         authorityDay.NF += n.NF; authorityDay.BNF += n.BNF;
     });
-    const authorityActive = liveAuthority || Boolean(authorityRecord?.record_schema) || authoritySnapshotCount > 0
-        || authorityLatest.NF + authorityLatest.BNF > 0;
+    const liveAuthorityActive = liveAuthority || liveMenu.NF + liveMenu.BNF > 0;
+    // Authority status comes from the SAME source as the counters it labels.
+    const authorityActive = fromSnapshot
+        ? (Boolean(authorityRecord?.record_schema) || authoritySnapshotCount > 0 || authorityLatest.NF + authorityLatest.BNF > 0)
+        : liveAuthorityActive;
+    const liveHasData = liveAuthorityActive || liveGenerated > 0 || liveWatchlist > 0;
+    const liveDiagnostics = fromSnapshot && liveHasData
+        ? { authorityActive: liveAuthorityActive, menu: liveMenu, watchlistCount: liveWatchlist, generatedCount: liveGenerated }
+        : null;
+    // In authority mode the watchlist IS the authority construction list (result.watchlist is replaced by the
+    // constructed candidates), so it is never presented as a legacy counter. Legacy evidence = the retained
+    // legacy rejection stats / generation trace only.
+    const legacyEvidence = {
+        rejected: rejectedCount,
+        traceAccepted: acceptedTrace,
+        traceRejected: rejectedTrace,
+        present: rejectedCount > 0 || acceptedTrace > 0 || rejectedTrace > 0 || stageEntries.length > 0
+    };
 
     return {
         source: latestSnapshot ? 'latest_saved_snapshot' : 'live_brain_result',
@@ -2646,6 +2665,8 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
         authorityLatest,
         authorityDay,
         authoritySnapshotCount,
+        liveDiagnostics,
+        legacyEvidence,
         loadedSnapshotCount: Array.isArray(snapshots) ? snapshots.length : 0,
         generatedCount,
         watchlistCount,
@@ -8822,6 +8843,40 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
     };
 }
 
+// G3/R1: proof that the research report's no-baseline assurance belongs to the selected session and the
+// current evaluation run. Returns VERIFIED / UNVERIFIED (proof missing) / FAILED (evidence contradicts).
+function mlClassANoBaselineProof(service = {}, report = {}) {
+    const reasons = [];
+    let failed = false;
+    const target = String(service?.evaluationTargetDate || '').slice(0, 10);
+    const reportDate = String(report?.session_date || '').slice(0, 10);
+    if (!target) reasons.push('selected evaluation session unknown');
+    else if (!reportDate) reasons.push('report has no session date');
+    else if (reportDate !== target) reasons.push(`report session ${reportDate} is not the selected session ${target}`);
+    const stages = safeParseNB(service?.evaluationStages, service?.evaluationStages || {});
+    const persistence = stages && typeof stages === 'object' ? (stages.outcome_persistence || null) : null;
+    const pState = String(persistence?.state || '').toLowerCase();
+    const verifiedCount = Number(persistence?.verified_count || 0);
+    if (!persistence || !pState) reasons.push('current-run outcome persistence proof unavailable');
+    else if (pState === 'failed') { failed = true; reasons.push(`current-run outcome persistence FAILED${persistence.reason_code ? ` (${persistence.reason_code})` : ''}`); }
+    else if (pState !== 'verified') reasons.push(`current-run outcome persistence is ${pState}, not verified`);
+    else if (!(verifiedCount > 0)) reasons.push('current-run outcome persistence verified 0 rows');
+    const serviceRun = String(service?.evaluationRunId || '').trim();
+    const reportRun = String(report?.evaluation_run_id || report?.run_id || report?.ledger_run_id || '').trim();
+    const runTied = Boolean(serviceRun && reportRun);
+    if (runTied && serviceRun !== reportRun) { failed = true; reasons.push(`report run ${reportRun} conflicts with current run ${serviceRun}`); }
+    // Scope reconciliation only (never a gate): report rows = primary+menu teacher rows; the persisted counter
+    // (and persistence verified_count) also include rejected-research outcomes.
+    const menuRows = Number(report?.outcome_count || 0);
+    const rejectedRows = Number(report?.rejected_research_outcome_count || 0);
+    const counter = Number.isFinite(Number(service?.lastEvaluationOutcomeCount)) ? Number(service.lastEvaluationOutcomeCount) : null;
+    const scopeNote = (menuRows > 0 && counter != null && counter !== menuRows)
+        ? `Scopes differ: report teacher rows ${menuRows} (chosen + menu)${rejectedRows ? ` + ${rejectedRows} rejected-research rows` : ''}; persisted outcome counter ${counter} also counts rejected-research outcomes.`
+        : '';
+    const state = failed ? 'FAILED' : (reasons.length ? 'UNVERIFIED' : 'VERIFIED');
+    return { state, reasons, sessionDate: target, runId: serviceRun, runTied, scopeNote, verifiedCount };
+}
+
 function renderML(snapshot = null) {
     const el = document.getElementById('ml-content');
     if (!el) return;
@@ -9150,18 +9205,26 @@ function renderML(snapshot = null) {
     const classAGateStatus = String(
         postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : (incompleteSession ? 'N/A' : (researchArtifactMissing ? 'UNAVAILABLE' : (evaluationEmptySession ? 'N/A' : 'FAIL'))))
     ).toUpperCase();
-    // G3: zero chosen primaries with passing readback + integrity is "no baseline", a COMPARISON status (not
-    // profitability or training success). Any genuine integrity / readback failure keeps FAIL.
+    // G3/R1: zero chosen primaries is "no baseline", a COMPARISON status (not profitability or training
+    // success). The readback/integrity assurance is shown only when it is bound to verified evidence:
+    // (a) the research report's session equals the selected evaluation session, (b) the CURRENT run's
+    // outcome_persistence stage is verified (a positive counter alone is not readback proof), and (c) when
+    // both the report and the service carry a run identity, they agree. Missing proof -> UNVERIFIED wording;
+    // a real failure (integrity FAIL rows, failed persistence stage, conflicting run identity) keeps FAIL.
+    // Scopes differ on purpose: report outcome_count covers primary+menu teacher rows; the persisted counter
+    // also includes rejected-research outcomes. They are reconciled for display, never required to be equal.
     const classAGateBlockedRaw = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
-    const classANoBaseline = classAGateHasData && classAGateStatus === 'FAIL'
+    const classAProof = mlClassANoBaselineProof(service, teacherResearchReport);
+    const classANoPrimaryShape = classAGateHasData && classAGateStatus === 'FAIL'
         && classAGateBlockedRaw.length === 1 && classAGateBlockedRaw[0] === 'no_primary_teacher_rows_were_available'
         && Number(classAGate?.primary_snapshot_count || 0) === 0 && Number(classAGate?.primary_outcome_count || 0) === 0
         && Number(classAGate?.outcome_count || 0) > 0
         && evaluationDone && !evaluationRunning && !incompleteSession && !incompleteIdentity && !incompleteH2MarketData
-        && researchOk && !researchNoGradeableTeacherOutcomes && researchFailIntegrityRows === 0
-        && Number(evaluationOutcomeCount || 0) > 0;
-    const classAGateDisplay = classANoBaseline ? 'NO_BASELINE · comparison unavailable' : classAGateStatus;
-    const classAGateColor = classANoBaseline ? 'var(--accent)' :
+        && researchOk && !researchNoGradeableTeacherOutcomes && researchFailIntegrityRows === 0;
+    const classANoBaseline = classANoPrimaryShape && classAProof.state === 'VERIFIED';
+    const classANoBaselineUnverified = classANoPrimaryShape && classAProof.state === 'UNVERIFIED';
+    const classAGateDisplay = classANoBaseline ? 'NO_BASELINE · comparison unavailable' : (classANoBaselineUnverified ? 'NO_BASELINE · readback UNVERIFIED' : classAGateStatus);
+    const classAGateColor = classANoBaseline ? 'var(--accent)' : classANoBaselineUnverified ? 'var(--warn)' :
         classAGateStatus === 'PASS'
             ? 'var(--green)'
             : ((classAGateStatus === 'PENDING' || classAGateStatus === 'N/A' || classAGateStatus === 'UNAVAILABLE') ? 'var(--accent)' : 'var(--warn)');
@@ -9268,7 +9331,7 @@ function renderML(snapshot = null) {
                     Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateDisplay}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classANoBaseline ? `<br><span style="color:var(--accent)">No chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Outcome readback and integrity checks passed. This is a comparison status only: not a profitability result and not a training success.</span>` : (String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session${researchFailIntegrityRows > 0 ? `, and ${researchFailIntegrityRows} outcome rows failed integrity` : ''}${(!researchOk || Number(evaluationOutcomeCount || 0) === 0) ? ', and outcome readback is not verified' : ''}. FAIL is kept; this is not a training or profitability result.</span>` : '')}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classANoBaseline ? `<br><span style="color:var(--accent)">No chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Outcome readback and integrity checks passed for session ${escapeHtml(classAProof.sessionDate)}${classAProof.runId ? ` · run ${escapeHtml(classAProof.runId)}` : ''}${classAProof.runTied ? '' : ' (report carries no run identity; bound by session date and verified current-run persistence)'}. This is a comparison status only: not a profitability result and not a training success.</span>${classAProof.scopeNote ? `<br><span style="color:var(--text)">${escapeHtml(classAProof.scopeNote)}</span>` : ''}` : (classANoBaselineUnverified ? `<br><span style="color:var(--warn)">No chosen (primary) recommendation existed in this session, so there is no chosen baseline. Outcome readback is UNVERIFIED for this report: ${escapeHtml(classAProof.reasons.join('; '))}. No readback assurance is claimed; this is not a profitability or training result.</span>` : (String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session${researchFailIntegrityRows > 0 ? `, and ${researchFailIntegrityRows} outcome rows failed integrity` : ''}${(!researchOk || Number(evaluationOutcomeCount || 0) === 0) ? ', and outcome readback is not verified' : ''}${classAProof.state === 'FAILED' ? `, and ${escapeHtml(classAProof.reasons.join('; '))}` : ''}. FAIL is kept; this is not a training or profitability result.</span>` : ''))}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${stage2aAuditColor}">
@@ -9304,11 +9367,13 @@ function renderML(snapshot = null) {
                         Saved snapshot diagnostics were not available for this evaluated session.<br>
                         Current live candidate diagnostics are hidden here to avoid mixing closed-market live state with evaluated-session evidence.
                     ` : `
-                        Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
+                        Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''} (all counters below are from this source)<br>
+                        ${candidateDiagnostics.liveDiagnostics && (historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Current live brain diagnostics exist but are hidden here so they are not mixed with this saved-session evidence.</span><br>` : ''}${candidateDiagnostics.liveDiagnostics && !(historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Live brain now (separate, not part of the saved snapshot): authority ${candidateDiagnostics.liveDiagnostics.authorityActive ? 'ACTIVE' : 'inactive'} · NF <b>${candidateDiagnostics.liveDiagnostics.menu.NF}</b> · BNF <b>${candidateDiagnostics.liveDiagnostics.menu.BNF}</b> · watchlist <b>${candidateDiagnostics.liveDiagnostics.watchlistCount}</b></span><br>` : ''}
                         ${candidateDiagnostics.authorityActive ? `
                         Index authority menu (decides admission) · latest: NF <b>${candidateDiagnostics.authorityLatest.NF}</b> · BNF <b>${candidateDiagnostics.authorityLatest.BNF}</b> · day (${candidateDiagnostics.loadedSnapshotCount} loaded saved snapshot${candidateDiagnostics.loadedSnapshotCount === 1 ? '' : 's'}): NF <b>${candidateDiagnostics.authorityDay.NF}</b> · BNF <b>${candidateDiagnostics.authorityDay.BNF}</b> (NF and BNF separate, not pooled)<br>
                         <span style="color:var(--accent)">New entries stop after 15:15 IST: a snapshot taken after the cutoff shows 0 authority candidates by design, not a day-wide result.</span><br>
-                        Legacy generator · <b>evidence only</b> (retired; it neither builds nor blocks the authority menu): Watchlist <b>${candidateDiagnostics.watchlistCount}</b> · Rejected <b>${candidateDiagnostics.rejectedCount}</b><br>
+                        Authority watchlist (the constructed authority candidates, not legacy): <b>${candidateDiagnostics.watchlistCount}</b><br>
+                        Legacy generator · <b>evidence only</b> (retired; it neither builds nor blocks the authority menu): retained rejection stats <b>${candidateDiagnostics.legacyEvidence.rejected}</b><br>
                         Legacy trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Legacy trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
                         ${candidateDiagnostics.skipReason ? `Legacy skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
                         Legacy by index: <b>${diagnosticIndexText}</b><br>
