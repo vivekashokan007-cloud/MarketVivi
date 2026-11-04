@@ -6541,32 +6541,106 @@ function exportDailyReview() {
 }
 // PM1-5: session evidence export (native, allow-listed, bounded).  Feature-detected: on an APK without the
 // bridge method (<= 2.6.85 / b516) the card says an app update is needed instead of calling an absent method.
+// G0: the export lives in its own "Session evidence (local)" section on the Trade tab (#session-evidence), rendered
+// by renderAll independently of market hours, polling and brain freshness (it used to sit inside the live authority
+// branch only).  The user picks the IST session date; a fallback to another day is shown as a failure.
 let SESSION_EVIDENCE_RESULT = null;
+let SESSION_EVIDENCE_DATE = null;
 function sessionEvidenceSupported() {
     return !!(window.NativeBridge && typeof window.NativeBridge.exportSessionEvidence === 'function');
 }
-function exportSessionEvidence() {
+function sessionEvidenceDateValid(d) {
+    if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+    const t = new Date(d + 'T00:00:00Z');
+    return !isNaN(t) && t.toISOString().slice(0, 10) === d && d <= iaTodayIst();
+}
+// Recent IST weekday sessions (today first); the native side reports whether each is actually retained.
+function sessionEvidenceRecentDates(n = 6) {
+    const out = [];
+    const t = new Date(iaTodayIst() + 'T00:00:00Z');
+    for (let i = 0; out.length < n && i < 14; i++) {
+        const d = new Date(t.getTime() - i * 86400000);
+        if (i === 0 || (d.getUTCDay() !== 0 && d.getUTCDay() !== 6)) out.push(d.toISOString().slice(0, 10));
+    }
+    return out;
+}
+function setSessionEvidenceDate(d) {
+    if (!sessionEvidenceDateValid(d)) { SESSION_EVIDENCE_RESULT = { status: 'INPUT_INVALID', session_date_requested: String(d || '') }; }
+    else { SESSION_EVIDENCE_DATE = d; SESSION_EVIDENCE_RESULT = null; }
+    if (typeof renderAll === 'function') renderAll();
+}
+function exportSessionEvidence(sessionDate) {
+    const requested = sessionDate || SESSION_EVIDENCE_DATE || iaTodayIst();
     if (!sessionEvidenceSupported()) {
         SESSION_EVIDENCE_RESULT = { status: 'APP_UPDATE_NEEDED' };
+    } else if (!sessionEvidenceDateValid(requested)) {
+        SESSION_EVIDENCE_RESULT = { status: 'INPUT_INVALID', session_date_requested: String(requested) };
     } else {
-        SESSION_EVIDENCE_RESULT = { status: 'EXPORTING' };
+        SESSION_EVIDENCE_RESULT = { status: 'EXPORTING', session_date_requested: requested };
         if (typeof renderAll === 'function') renderAll();
         try {
             const v = `${M0_PWA_IDENTITY.version}/b${M0_PWA_IDENTITY.build}/v${M0_PWA_IDENTITY.app_js_v}`;
-            SESSION_EVIDENCE_RESULT = JSON.parse(window.NativeBridge.exportSessionEvidence(iaTodayIst(), v) || '{}');
+            const r = JSON.parse(window.NativeBridge.exportSessionEvidence(requested, v) || '{}');
+            r.session_date_requested = requested;
+            // G0: never present another day's evidence as the requested session (older APKs fell back silently).
+            if (r.session_date_used && r.session_date_used !== requested) {
+                r.ok = false;
+                if (!String(r.status || '').startsWith('SESSION_DATE_')) { r.status = 'SESSION_DATE_MISMATCH'; r.legacy_fallback_saved = !!r.fileName; }
+            }
+            SESSION_EVIDENCE_RESULT = r;
         } catch (e) {
-            SESSION_EVIDENCE_RESULT = { status: 'EXPORT_ERROR' };
+            SESSION_EVIDENCE_RESULT = { status: 'EXPORT_ERROR', session_date_requested: requested };
         }
     }
     if (typeof renderAll === 'function') renderAll();
 }
+function renderSessionEvidenceParts(parts) {
+    if (!parts || typeof parts !== 'object' || !Object.keys(parts).length) {
+        return '<div class="se-parts" style="font-size:10px;color:var(--text-muted)">Part statuses: not returned by this app build — read manifest.parts in the saved file.</div>';
+    }
+    const key = ['authority_doc', 'learning_ledger', 'logs'];
+    const names = [...key, ...Object.keys(parts).filter(k => !key.includes(k)).sort()];
+    return '<div class="se-parts" style="font-size:10px">' + names.map(k => {
+        const st = parts[k]?.status || 'MISSING';
+        const col = st === 'PRESENT' ? 'var(--green)' : 'var(--warn)';
+        return `<span class="se-part" data-part="${iaEsc(k)}" style="margin-right:6px;${key.includes(k) ? 'font-weight:700;' : ''}">${iaEsc(k)}: <span style="color:${col}">${iaEsc(st)}</span></span>`;
+    }).join('') + '</div>';
+}
 function renderSessionEvidenceLine() {
     const r = SESSION_EVIDENCE_RESULT;
-    if (!r) return sessionEvidenceSupported() ? '' : '<div style="font-size:10px;color:var(--text-muted)">Session evidence export: app update needed (2.6.86 · b517)</div>';
-    if (r.status === 'APP_UPDATE_NEEDED') return '<div style="font-size:10px;color:var(--warn)">Session evidence export: app update needed (2.6.86 · b517)</div>';
-    if (r.status === 'EXPORTING') return '<div style="font-size:10px">Exporting…</div>';
-    if (r.ok) return `<div style="font-size:10px">Saved ${iaEsc(r.fileName || '')} · ${iaEsc(r.bytes)} bytes · sha256 ${iaEsc(String(r.sha256 || '').slice(0, 12))} · session ${iaEsc(r.session_date_used || '')}</div>`;
-    return `<div style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status || 'UNKNOWN')}${r.bytes ? ' · ' + iaEsc(r.bytes) + ' bytes' : ''}</div>`;
+    if (!r) return sessionEvidenceSupported() ? '' : '<div class="se-result" style="font-size:10px;color:var(--text-muted)">Session evidence export: app update needed (2.6.86 · b517)</div>';
+    if (r.status === 'APP_UPDATE_NEEDED') return '<div class="se-result" style="font-size:10px;color:var(--warn)">Session evidence export: app update needed (2.6.86 · b517)</div>';
+    if (r.status === 'EXPORTING') return `<div class="se-result" style="font-size:10px">Exporting ${iaEsc(r.session_date_requested || '')}…</div>`;
+    const dates = `requested ${iaEsc(r.session_date_requested || '—')} · actual ${iaEsc(r.session_date_used || 'none')}`;
+    if (r.ok) return `<div class="se-result" style="font-size:10px">Saved ${iaEsc(r.fileName || '')} · ${iaEsc(r.bytes)} bytes · sha256 ${iaEsc(String(r.sha256 || '').slice(0, 12))} · session ${iaEsc(r.session_date_used || '')}<br>${dates}</div>${renderSessionEvidenceParts(r.parts)}`;
+    if (r.status === 'SESSION_DATE_MISSING' || r.status === 'SESSION_DATE_MISMATCH') {
+        return `<div class="se-result" style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status)} · ${dates}<br>No evidence retained on this phone for the requested IST session; another day is never exported in its place.${r.legacy_fallback_saved ? ` This app build already saved ${iaEsc(r.fileName)} — that file is the ${iaEsc(r.session_date_used)} session, not ${iaEsc(r.session_date_requested)}.` : ''}</div>`;
+    }
+    return `<div class="se-result" style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status || 'UNKNOWN')}${r.bytes ? ' · ' + iaEsc(r.bytes) + ' bytes' : ''}${r.session_date_requested ? ' · ' + dates : ''}</div>`;
+}
+// G0: stable section (Trade tab), independent of the live verdict branch, market hours and brain freshness.
+function renderSessionEvidenceCard() {
+    const today = iaTodayIst();
+    const sel = SESSION_EVIDENCE_DATE || today;
+    const chips = sessionEvidenceRecentDates().map(d => `<button class="se-chip" style="font-size:11px;margin:2px 4px 2px 0;${d === sel ? 'font-weight:700;border:1px solid var(--accent)' : ''}" onclick="setSessionEvidenceDate('${d}')">${d === today ? 'Today ' : ''}${d.slice(8)} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(d.slice(5, 7)) - 1]}</button>`).join('');
+    return `<section class="section brain-card se-card" id="session-evidence-card" style="padding:8px 12px">
+        <div style="font-size:13px;font-weight:700">📦 Session evidence (local)</div>
+        <div style="font-size:10px;color:var(--text-muted)">Exports this phone's retained evidence for one IST session (authority records, archive, review, single-leg, filtered logs) as mr_session_evidence_YYYY-MM-DD.json via Downloads. Separate from "Export research evidence (read-only)" in the full-day collector. Read-only: no scan, lock or upload.</div>
+        <div style="margin-top:4px;font-size:11px">IST session: ${chips}
+            <input type="date" class="se-date" value="${iaEsc(sel)}" max="${iaEsc(today)}" onchange="setSessionEvidenceDate(this.value)" style="font-size:11px"></div>
+        <div style="margin-top:4px"><button class="se-export" style="font-size:11px" onclick="exportSessionEvidence()">Export session evidence for ${iaEsc(sel)}</button></div>
+        ${renderSessionEvidenceLine()}
+    </section>`;
+}
+function renderSessionEvidence() {
+    const el = typeof document !== 'undefined' && document.getElementById('session-evidence');
+    if (el) el.innerHTML = renderSessionEvidenceCard();
+    const sc = typeof document !== 'undefined' && document.getElementById('session-evidence-shortcut');
+    if (sc) sc.innerHTML = renderSessionEvidenceShortcut();
+}
+// G0: the user looked on the Market tab after close; this shortcut points to the one export section.
+function renderSessionEvidenceShortcut() {
+    return `<div class="se-shortcut" style="font-size:11px;margin:4px 0">📦 Session evidence (local): <button style="font-size:11px" onclick="switchTab('strategies');setTimeout(()=>document.getElementById('session-evidence')?.scrollIntoView(),50)">open export on Trade tab</button></div>`;
 }
 // PM1-2: which manual-trade input the review used (older reports carry no provenance; said so literally).
 function renderReviewInputs(latest) {
@@ -6616,9 +6690,8 @@ function renderDailyReviewCard() {
         ${body}
         <div style="margin-top:4px"><button style="font-size:11px" onclick="loadDailyReview(false)">Load</button>
         <button style="font-size:11px" onclick="loadDailyReview(true)">Build now</button>
-        <button style="font-size:11px" onclick="exportDailyReview()">Export</button>
-        <button style="font-size:11px" onclick="exportSessionEvidence()">Export session evidence</button></div>
-        ${renderSessionEvidenceLine()}
+        <button style="font-size:11px" onclick="exportDailyReview()">Export</button></div>
+        <div style="font-size:10px;color:var(--text-muted)">Session evidence export: see "Session evidence (local)" on the Trade tab.</div>
     </details>`;
 }
 
@@ -6754,6 +6827,7 @@ function renderAll(snapshot = null) {
         try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
         try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
+        try { renderSessionEvidence(); } catch (e) { console.warn('[G0] session evidence render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
