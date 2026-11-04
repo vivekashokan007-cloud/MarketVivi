@@ -2583,14 +2583,17 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
     const latestPoll = safeParseNB(ctx?.snapshot_latest_poll, ctx?.snapshot_latest_poll || {});
     const byIndex = safeParseNB(trace?.by_index, trace?.by_index || {});
 
-    const generatedCount = Array.isArray(brain?.generated_candidates) && brain.generated_candidates.length > 0
-        ? brain.generated_candidates.length
-        : snapshotGenerated.length;
-    const watchlistCount = Array.isArray(brain?.watchlist) && brain.watchlist.length > 0
-        ? brain.watchlist.length
-        : snapshotWatchlist.length;
-    const rejectedCount = Number.isFinite(liveStats?.rejected) ? Number(liveStats.rejected) : Number(rejectedStats?.total || 0);
-    const acceptedTrace = Number.isFinite(trace?.accepted_count) ? Number(trace.accepted_count) : Number(liveStats?.total || 0);
+    // G3/R2: one source per display. When a saved snapshot is loaded, every counter below comes from that
+    // snapshot's own evidence; live brain values are reported separately (liveDiagnostics), never blended in.
+    const fromSnapshot = Boolean(latestSnapshot);
+    const liveGenerated = Array.isArray(brain?.generated_candidates) ? brain.generated_candidates.length : 0;
+    const liveWatchlist = Array.isArray(brain?.watchlist) ? brain.watchlist.length : 0;
+    const generatedCount = fromSnapshot ? snapshotGenerated.length : liveGenerated;
+    const watchlistCount = fromSnapshot ? snapshotWatchlist.length : liveWatchlist;
+    const rejectedCount = fromSnapshot
+        ? Number(rejectedStats?.total || 0)
+        : (Number.isFinite(liveStats?.rejected) ? Number(liveStats.rejected) : 0);
+    const acceptedTrace = Number.isFinite(trace?.accepted_count) ? Number(trace.accepted_count) : (fromSnapshot ? 0 : Number(liveStats?.total || 0));
     const rejectedTrace = Number.isFinite(trace?.rejected_count) ? Number(trace.rejected_count) : rejectedCount;
 
     const stageEntries = topCounterEntries(rejectedStats?.by_stage, 4);
@@ -2607,8 +2610,64 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
         };
     }).filter(Boolean);
 
+    // G3: per-index authority menu (index_direction_v1) is separate from the retired legacy generator, whose
+    // rejection waterfall is still recorded as evidence only. Counted by construction identity, which survives
+    // even older compacted snapshots (id suffix) as well as the G1 lineage field.
+    const isAuthorityCandidate = (c) => !!c && (c.constructionVersion === 'index_construction_v1'
+        || /_index_construction_v1$/.test(String(c.id || c.candidate_id || '')));
+    const countByIndex = (rows) => {
+        const out = { NF: 0, BNF: 0 };
+        (Array.isArray(rows) ? rows : []).forEach(c => {
+            if (!isAuthorityCandidate(c)) return;
+            const ix = String(c.index || c.index_key || '').toUpperCase();
+            if (ix === 'NF' || ix === 'BNF') out[ix] += 1;
+        });
+        return out;
+    };
+    const authorityRecord = safeParseNB(ctx?.snapshot_index_authority_primary, ctx?.snapshot_index_authority_primary || {});
+    const liveAuthority = String(brain?.direction_authority?.active || '') === 'index_direction_v1';
+    const liveMenu = { NF: 0, BNF: 0 };
+    if (brain?.candidates_by_index && typeof brain.candidates_by_index === 'object') {
+        ['NF', 'BNF'].forEach(ix => { liveMenu[ix] = (brain.candidates_by_index[ix] || []).length; });
+    }
+    const authorityLatest = fromSnapshot ? countByIndex(snapshotGenerated) : liveMenu;
+    const authorityDay = { NF: 0, BNF: 0 };
+    let authoritySnapshotCount = 0;
+    (Array.isArray(snapshots) ? snapshots : []).forEach(row => {
+        const c = safeParseNB(row?.context_json, {});
+        const n = countByIndex(Array.isArray(c?.snapshot_generated_candidates) ? c.snapshot_generated_candidates : []);
+        const rec = safeParseNB(c?.snapshot_index_authority_primary, c?.snapshot_index_authority_primary || {});
+        if (n.NF + n.BNF > 0 || rec?.record_schema) authoritySnapshotCount += 1;
+        authorityDay.NF += n.NF; authorityDay.BNF += n.BNF;
+    });
+    const liveAuthorityActive = liveAuthority || liveMenu.NF + liveMenu.BNF > 0;
+    // Authority status comes from the SAME source as the counters it labels.
+    const authorityActive = fromSnapshot
+        ? (Boolean(authorityRecord?.record_schema) || authoritySnapshotCount > 0 || authorityLatest.NF + authorityLatest.BNF > 0)
+        : liveAuthorityActive;
+    const liveHasData = liveAuthorityActive || liveGenerated > 0 || liveWatchlist > 0;
+    const liveDiagnostics = fromSnapshot && liveHasData
+        ? { authorityActive: liveAuthorityActive, menu: liveMenu, watchlistCount: liveWatchlist, generatedCount: liveGenerated }
+        : null;
+    // In authority mode the watchlist IS the authority construction list (result.watchlist is replaced by the
+    // constructed candidates), so it is never presented as a legacy counter. Legacy evidence = the retained
+    // legacy rejection stats / generation trace only.
+    const legacyEvidence = {
+        rejected: rejectedCount,
+        traceAccepted: acceptedTrace,
+        traceRejected: rejectedTrace,
+        present: rejectedCount > 0 || acceptedTrace > 0 || rejectedTrace > 0 || stageEntries.length > 0
+    };
+
     return {
         source: latestSnapshot ? 'latest_saved_snapshot' : 'live_brain_result',
+        authorityActive,
+        authorityLatest,
+        authorityDay,
+        authoritySnapshotCount,
+        liveDiagnostics,
+        legacyEvidence,
+        loadedSnapshotCount: Array.isArray(snapshots) ? snapshots.length : 0,
         generatedCount,
         watchlistCount,
         rejectedCount,
@@ -5416,7 +5475,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.92', build: 523, app_js_v: 1387 };
+const M0_PWA_IDENTITY = { version: '2.6.93', build: 524, app_js_v: 1388 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6482,32 +6541,106 @@ function exportDailyReview() {
 }
 // PM1-5: session evidence export (native, allow-listed, bounded).  Feature-detected: on an APK without the
 // bridge method (<= 2.6.85 / b516) the card says an app update is needed instead of calling an absent method.
+// G0: the export lives in its own "Session evidence (local)" section on the Trade tab (#session-evidence), rendered
+// by renderAll independently of market hours, polling and brain freshness (it used to sit inside the live authority
+// branch only).  The user picks the IST session date; a fallback to another day is shown as a failure.
 let SESSION_EVIDENCE_RESULT = null;
+let SESSION_EVIDENCE_DATE = null;
 function sessionEvidenceSupported() {
     return !!(window.NativeBridge && typeof window.NativeBridge.exportSessionEvidence === 'function');
 }
-function exportSessionEvidence() {
+function sessionEvidenceDateValid(d) {
+    if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+    const t = new Date(d + 'T00:00:00Z');
+    return !isNaN(t) && t.toISOString().slice(0, 10) === d && d <= iaTodayIst();
+}
+// Recent IST weekday sessions (today first); the native side reports whether each is actually retained.
+function sessionEvidenceRecentDates(n = 6) {
+    const out = [];
+    const t = new Date(iaTodayIst() + 'T00:00:00Z');
+    for (let i = 0; out.length < n && i < 14; i++) {
+        const d = new Date(t.getTime() - i * 86400000);
+        if (i === 0 || (d.getUTCDay() !== 0 && d.getUTCDay() !== 6)) out.push(d.toISOString().slice(0, 10));
+    }
+    return out;
+}
+function setSessionEvidenceDate(d) {
+    if (!sessionEvidenceDateValid(d)) { SESSION_EVIDENCE_RESULT = { status: 'INPUT_INVALID', session_date_requested: String(d || '') }; }
+    else { SESSION_EVIDENCE_DATE = d; SESSION_EVIDENCE_RESULT = null; }
+    if (typeof renderAll === 'function') renderAll();
+}
+function exportSessionEvidence(sessionDate) {
+    const requested = sessionDate || SESSION_EVIDENCE_DATE || iaTodayIst();
     if (!sessionEvidenceSupported()) {
         SESSION_EVIDENCE_RESULT = { status: 'APP_UPDATE_NEEDED' };
+    } else if (!sessionEvidenceDateValid(requested)) {
+        SESSION_EVIDENCE_RESULT = { status: 'INPUT_INVALID', session_date_requested: String(requested) };
     } else {
-        SESSION_EVIDENCE_RESULT = { status: 'EXPORTING' };
+        SESSION_EVIDENCE_RESULT = { status: 'EXPORTING', session_date_requested: requested };
         if (typeof renderAll === 'function') renderAll();
         try {
             const v = `${M0_PWA_IDENTITY.version}/b${M0_PWA_IDENTITY.build}/v${M0_PWA_IDENTITY.app_js_v}`;
-            SESSION_EVIDENCE_RESULT = JSON.parse(window.NativeBridge.exportSessionEvidence(iaTodayIst(), v) || '{}');
+            const r = JSON.parse(window.NativeBridge.exportSessionEvidence(requested, v) || '{}');
+            r.session_date_requested = requested;
+            // G0: never present another day's evidence as the requested session (older APKs fell back silently).
+            if (r.session_date_used && r.session_date_used !== requested) {
+                r.ok = false;
+                if (!String(r.status || '').startsWith('SESSION_DATE_')) { r.status = 'SESSION_DATE_MISMATCH'; r.legacy_fallback_saved = !!r.fileName; }
+            }
+            SESSION_EVIDENCE_RESULT = r;
         } catch (e) {
-            SESSION_EVIDENCE_RESULT = { status: 'EXPORT_ERROR' };
+            SESSION_EVIDENCE_RESULT = { status: 'EXPORT_ERROR', session_date_requested: requested };
         }
     }
     if (typeof renderAll === 'function') renderAll();
 }
+function renderSessionEvidenceParts(parts) {
+    if (!parts || typeof parts !== 'object' || !Object.keys(parts).length) {
+        return '<div class="se-parts" style="font-size:10px;color:var(--text-muted)">Part statuses: not returned by this app build — read manifest.parts in the saved file.</div>';
+    }
+    const key = ['authority_doc', 'learning_ledger', 'logs'];
+    const names = [...key, ...Object.keys(parts).filter(k => !key.includes(k)).sort()];
+    return '<div class="se-parts" style="font-size:10px">' + names.map(k => {
+        const st = parts[k]?.status || 'MISSING';
+        const col = st === 'PRESENT' ? 'var(--green)' : 'var(--warn)';
+        return `<span class="se-part" data-part="${iaEsc(k)}" style="margin-right:6px;${key.includes(k) ? 'font-weight:700;' : ''}">${iaEsc(k)}: <span style="color:${col}">${iaEsc(st)}</span></span>`;
+    }).join('') + '</div>';
+}
 function renderSessionEvidenceLine() {
     const r = SESSION_EVIDENCE_RESULT;
-    if (!r) return sessionEvidenceSupported() ? '' : '<div style="font-size:10px;color:var(--text-muted)">Session evidence export: app update needed (2.6.86 · b517)</div>';
-    if (r.status === 'APP_UPDATE_NEEDED') return '<div style="font-size:10px;color:var(--warn)">Session evidence export: app update needed (2.6.86 · b517)</div>';
-    if (r.status === 'EXPORTING') return '<div style="font-size:10px">Exporting…</div>';
-    if (r.ok) return `<div style="font-size:10px">Saved ${iaEsc(r.fileName || '')} · ${iaEsc(r.bytes)} bytes · sha256 ${iaEsc(String(r.sha256 || '').slice(0, 12))} · session ${iaEsc(r.session_date_used || '')}</div>`;
-    return `<div style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status || 'UNKNOWN')}${r.bytes ? ' · ' + iaEsc(r.bytes) + ' bytes' : ''}</div>`;
+    if (!r) return sessionEvidenceSupported() ? '' : '<div class="se-result" style="font-size:10px;color:var(--text-muted)">Session evidence export: app update needed (2.6.86 · b517)</div>';
+    if (r.status === 'APP_UPDATE_NEEDED') return '<div class="se-result" style="font-size:10px;color:var(--warn)">Session evidence export: app update needed (2.6.86 · b517)</div>';
+    if (r.status === 'EXPORTING') return `<div class="se-result" style="font-size:10px">Exporting ${iaEsc(r.session_date_requested || '')}…</div>`;
+    const dates = `requested ${iaEsc(r.session_date_requested || '—')} · actual ${iaEsc(r.session_date_used || 'none')}`;
+    if (r.ok) return `<div class="se-result" style="font-size:10px">Saved ${iaEsc(r.fileName || '')} · ${iaEsc(r.bytes)} bytes · sha256 ${iaEsc(String(r.sha256 || '').slice(0, 12))} · session ${iaEsc(r.session_date_used || '')}<br>${dates}</div>${renderSessionEvidenceParts(r.parts)}`;
+    if (r.status === 'SESSION_DATE_MISSING' || r.status === 'SESSION_DATE_MISMATCH') {
+        return `<div class="se-result" style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status)} · ${dates}<br>No evidence retained on this phone for the requested IST session; another day is never exported in its place.${r.legacy_fallback_saved ? ` This app build already saved ${iaEsc(r.fileName)} — that file is the ${iaEsc(r.session_date_used)} session, not ${iaEsc(r.session_date_requested)}.` : ''}</div>`;
+    }
+    return `<div class="se-result" style="font-size:10px;color:var(--warn)">Session evidence export failed: ${iaEsc(r.status || 'UNKNOWN')}${r.bytes ? ' · ' + iaEsc(r.bytes) + ' bytes' : ''}${r.session_date_requested ? ' · ' + dates : ''}</div>`;
+}
+// G0: stable section (Trade tab), independent of the live verdict branch, market hours and brain freshness.
+function renderSessionEvidenceCard() {
+    const today = iaTodayIst();
+    const sel = SESSION_EVIDENCE_DATE || today;
+    const chips = sessionEvidenceRecentDates().map(d => `<button class="se-chip" style="font-size:11px;margin:2px 4px 2px 0;${d === sel ? 'font-weight:700;border:1px solid var(--accent)' : ''}" onclick="setSessionEvidenceDate('${d}')">${d === today ? 'Today ' : ''}${d.slice(8)} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(d.slice(5, 7)) - 1]}</button>`).join('');
+    return `<section class="section brain-card se-card" id="session-evidence-card" style="padding:8px 12px">
+        <div style="font-size:13px;font-weight:700">📦 Session evidence (local)</div>
+        <div style="font-size:10px;color:var(--text-muted)">Exports this phone's retained evidence for one IST session (authority records, archive, review, single-leg, filtered logs) as mr_session_evidence_YYYY-MM-DD.json via Downloads. Separate from "Export research evidence (read-only)" in the full-day collector. Read-only: no scan, lock or upload.</div>
+        <div style="margin-top:4px;font-size:11px">IST session: ${chips}
+            <input type="date" class="se-date" value="${iaEsc(sel)}" max="${iaEsc(today)}" onchange="setSessionEvidenceDate(this.value)" style="font-size:11px"></div>
+        <div style="margin-top:4px"><button class="se-export" style="font-size:11px" onclick="exportSessionEvidence()">Export session evidence for ${iaEsc(sel)}</button></div>
+        ${renderSessionEvidenceLine()}
+    </section>`;
+}
+function renderSessionEvidence() {
+    const el = typeof document !== 'undefined' && document.getElementById('session-evidence');
+    if (el) el.innerHTML = renderSessionEvidenceCard();
+    const sc = typeof document !== 'undefined' && document.getElementById('session-evidence-shortcut');
+    if (sc) sc.innerHTML = renderSessionEvidenceShortcut();
+}
+// G0: the user looked on the Market tab after close; this shortcut points to the one export section.
+function renderSessionEvidenceShortcut() {
+    return `<div class="se-shortcut" style="font-size:11px;margin:4px 0">📦 Session evidence (local): <button style="font-size:11px" onclick="switchTab('strategies');setTimeout(()=>document.getElementById('session-evidence')?.scrollIntoView(),50)">open export on Trade tab</button></div>`;
 }
 // PM1-2: which manual-trade input the review used (older reports carry no provenance; said so literally).
 function renderReviewInputs(latest) {
@@ -6557,9 +6690,8 @@ function renderDailyReviewCard() {
         ${body}
         <div style="margin-top:4px"><button style="font-size:11px" onclick="loadDailyReview(false)">Load</button>
         <button style="font-size:11px" onclick="loadDailyReview(true)">Build now</button>
-        <button style="font-size:11px" onclick="exportDailyReview()">Export</button>
-        <button style="font-size:11px" onclick="exportSessionEvidence()">Export session evidence</button></div>
-        ${renderSessionEvidenceLine()}
+        <button style="font-size:11px" onclick="exportDailyReview()">Export</button></div>
+        <div style="font-size:10px;color:var(--text-muted)">Session evidence export: see "Session evidence (local)" on the Trade tab.</div>
     </details>`;
 }
 
@@ -6695,6 +6827,7 @@ function renderAll(snapshot = null) {
         try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
         try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
+        try { renderSessionEvidence(); } catch (e) { console.warn('[G0] session evidence render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
@@ -7992,13 +8125,50 @@ function renderAuthorityCandidateCard(cand) {
         : paperOpen
         ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>`
         : `<button class="ia-choose" disabled title="${esc(!auth.allowed ? auth.reason : 'Paper slots full')}">Choose unavailable</button>`;
-    return `<div class="candidate-card authority-candidate" data-index="${esc(cand.index)}">
-        <div class="ia-card-head">
-            <div><span class="ia-index">${esc(cand.index)}</span><h3>${esc(friendlyType(cand.type))}</h3></div>
-            <span class="ia-alternative">Policy alternative, not ranked</span>
+    // Compact card (Vivek, 4 Nov): summary row + compact grid + actions always visible; full legs/quotes,
+    // evidence and notes behind an accessible tap-to-expand. Presentation only: same data, same gates.
+    const legs = Array.isArray(cand.legs) ? cand.legs : [];
+    const sells = legs.filter(l => String(l.action).toUpperCase() === 'SELL').length;
+    const buys = legs.filter(l => String(l.action).toUpperCase() === 'BUY').length;
+    const side = legs.length === 1 ? String(legs[0].action).toUpperCase()
+        : `${legs.length}-leg · SELL ${sells} / BUY ${buys}`;
+    const cost = cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable';
+    const verdict = cand.entryEligible === true ? 'Eligible' : 'Blocked';
+    const miniV = (v, cls = '') => { const na = v === 'Unavailable'; const k = [cls, na ? 'ia-na' : ''].filter(Boolean).join(' '); return `<strong${k ? ` class="${k}"` : ''}>${v}</strong>`; };
+    const detId = 'ia-det-' + String(cand.index || '') + '-' + String(cand.id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+    const expanded = typeof iaExpandedCards !== 'undefined' && iaExpandedCards.has(detId);
+    const paperReason = !auth.allowed ? `Paper unavailable (${esc(auth.reason)})`
+        : !capacity.available ? `Paper slots full (${capacity.count}/${capacity.limit})` : '';
+    const typeName = friendlyType(cand.type);
+    const name = legs.length === 1
+        ? `${cand.index} ${legs[0].strike} ${legs[0].option_type} ${String(legs[0].action).toUpperCase()}`
+        : `${cand.index} ${typeName}`;
+    const legText = legs.length === 1 ? `Single leg ${String(legs[0].action).toUpperCase()}` : `SELL ${sells} / BUY ${buys}`;
+    const expShort = (() => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(cand.expiry || '')); return m ? `${Number(m[3])} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1] || m[2]}` : String(cand.expiry || ''); })();
+    const lotsText = Number.isInteger(cand.lots) && cand.lots > 0 ? ` · ${cand.lots} lot${cand.lots === 1 ? '' : 's'}` : '';
+    const ev = typeof cand.ev === 'number' && Number.isFinite(cand.ev) && cand.authorityPolicyVersion !== 'index_direction_v1' ? cand.ev : null;
+    const rightVal = ev != null ? `EV ${money(ev)}` : verdict;
+    const rightCls = ev != null ? (ev >= 0 ? 'ia-pos' : 'ia-neg') : (verdict === 'Eligible' ? 'ia-pos' : 'ia-amber');
+    const pop = typeof cand.pop === 'number' && Number.isFinite(cand.pop) ? cand.pop : null;
+    const primaryButton = choose ? chooseButton : paperButton;
+    return `<div class="candidate-card authority-candidate ia-compact ia-v2" data-index="${esc(cand.index)}">
+        <div class="ia-card-head ia-r1"><h3 class="ia-name"><span class="ia-index">${esc(cand.index)}</span> ${esc(name.slice(String(cand.index).length + 1))}</h3><span class="ia-verdict ${rightCls}">${esc(rightVal)}</span></div>
+        <div class="ia-r2"><span class="ia-side">${esc(legText)} · Exp ${esc(expShort)}${esc(lotsText)}</span><span class="ia-r2v">Cost ${cost}</span></div>
+        <div class="ia-mini-grid ia-r3">
+            <div><span>Max profit</span>${miniV(money(cand.maxProfit), 'ia-profit-v')}</div>
+            <div><span>Max loss</span>${miniV(money(cand.maxLoss), 'ia-loss-v')}</div>
+            ${pop != null ? `<div><span>POP</span>${miniV(esc((pop * (pop <= 1 ? 100 : 1)).toFixed(0) + '%'))}</div>` : `<div><span>Lot</span>${miniV(esc(lot))}</div>`}
         </div>
+        <div class="ia-card-actions ia-ctl">
+            ${primaryButton}
+            <button type="button" class="ia-toggle" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${esc(detId)}" aria-label="${expanded ? 'Hide details' : 'Show details'}" onclick="toggleIaCardDetails(this)">${expanded ? '⌃' : '⌄'}</button>
+        </div>
+        ${paperReason ? `<div class="ia-action-reason" title="${choose ? 'Choose for Paper disabled: ' : ''}${paperReason}">${choose ? 'Choose for Paper disabled: ' : ''}${paperReason}</div>` : ''}
+        <div class="ia-details" id="${esc(detId)}"${expanded ? '' : ' hidden'}>
+        <div class="ia-sum-sub"><span class="ia-alternative">Policy alternative, not ranked</span></div>
+        <div class="ia-leg-strip" aria-label="Option legs summary">${legs.map(l => `<span class="${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(String(l.action).toUpperCase())} ${esc(l.strike)}${esc(l.option_type)}</span>`).join(' ')}</div>
         <div class="ia-expiry">Expiry ${esc(cand.expiry)}</div>
-        <div class="ia-legs" aria-label="Option legs">${(cand.legs || []).map(l => `<div class="ia-leg">
+        <div class="ia-legs" aria-label="Option legs">${legs.map(l => `<div class="ia-leg">
             <span class="ia-leg-action ${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(l.action)}</span>
             <strong>${esc(l.strike)} ${esc(l.option_type)}</strong>
             <span class="ia-quote">bid ${money(l.bid)} / ask ${money(l.ask)}</span>
@@ -8007,25 +8177,36 @@ function renderAuthorityCandidateCard(cand) {
             <div class="ia-metric ia-profit"><span>Max profit:</span><strong>${money(cand.maxProfit)}</strong></div>
             <div class="ia-metric ia-loss"><span>Max loss:</span><strong>${money(cand.maxLoss)}</strong></div>
             <div class="ia-metric"><span>Lot:</span><strong>${esc(lot)}</strong></div>
-            <div class="ia-metric"><span>Estimated costs:</span><strong>${cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable'}</strong></div>
+            <div class="ia-metric"><span>Estimated costs:</span><strong>${cost}</strong></div>
         </div>
         <div class="ia-evidence">${lotEvidence.status === 'VERIFIED' ? 'broker contract + dated NSE table verified' : 'contract verification unavailable'}</div>
         ${(lotEvidence.reasons || []).length ? `<div class="ia-warning">Lot evidence: ${esc(lotEvidence.reasons.join(', '))}</div>` : ''}
         <div class="ia-admission ${cand.entryEligible === true ? 'ia-admission-ok' : 'ia-admission-blocked'}">${cand.entryEligible === true ? 'Construction checks passed; admission still requires current checks and your choice.' : 'Entry blocked: ' + esc(why.join(', ') || cand.constructionReason || 'checks unavailable')}</div>
         ${managedGate && !managedGate.admit ? `<div class="ia-warning">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
         ${!auth.allowed ? `<div class="ia-warning">Manual Paper unavailable: ${esc(auth.reason)}</div>` : ''}
-        <div class="ia-card-actions">
-            ${chooseButton}
-            ${paperButton}
-        </div>
-        ${choose && !paperOpen ? `<div class="ia-action-reason">Choose for Paper disabled: ${!auth.allowed ? 'Paper unavailable (' + esc(auth.reason) + ')' : `Paper slots full (${capacity.count}/${capacity.limit})`}</div>` : ''}
         ${auth.allowed ? `<div class="ia-action-note">Manual Paper ${auth.analysis_only ? 'analysis' : 'test'} · ${capacity.count}/${capacity.limit} open</div>` : ''}
-        <details class="ia-card-details"><summary>Quote and Paper details</summary>
+        ${choose ? `<div class="ia-card-actions ia-details-actions">${paperButton}</div>` : ''}
+        <div class="ia-card-details">
             <div>Broker margin: unavailable in this candidate</div>
             <div>Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
             ${auth.allowed ? '<div>Manual Paper records simulated bid/ask entry prices; it does not authorize managed or broker execution.</div>' : ''}
-        </details>
+        </div>
+        </div>
     </div>`;
+}
+
+/** Compact authority card expand state (presentation only; survives re-render within the session). */
+const iaExpandedCards = new Set();
+function toggleIaCardDetails(btn) {
+    const id = btn?.getAttribute?.('aria-controls');
+    const panel = id ? document.getElementById(id) : null;
+    if (!panel) return false;
+    const open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { panel.removeAttribute('hidden'); iaExpandedCards.add(id); } else { panel.setAttribute('hidden', ''); iaExpandedCards.delete(id); }
+    btn.textContent = open ? '⌃' : '⌄';
+    btn.setAttribute('aria-label', open ? 'Hide details' : 'Show details');
+    return open;
 }
 
 function renderCandidateCard(cand, atm, rank) {
@@ -8764,7 +8945,7 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
     const research = [];
     if (valid) {
         research.push(`Secondary/alternative research rows: <b>${num(c.secondary_research_rows)}</b> (${num(c.secondary_research_labeled)} with outcomes; not training labels)`);
-        research.push(`Rejected research rows: <b>${num(c.rejected_research_rows)}</b>`);
+        research.push(`Rejected-role rows in recommendation/evaluation outcome tables: <b>${num(c.rejected_research_rows)}</b> (narrow scope: legacy rejected research lives in ml_rejected_candidate_outcomes, which this count does not read)`);
         if (num(c.primary_labeled_unverified) > 0) research.push(`Primary rows with outcomes not verified: <b>${num(c.primary_labeled_unverified)}</b>`);
         if (num(c.primary_outcome_unknown) > 0) research.push(`Primary outcome unknown: <b>${num(c.primary_outcome_unknown)}</b>`);
         research.push(`Attribution pending: <b>${num(c.attribution_pending_rows)}</b>`);
@@ -8782,6 +8963,40 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
         statusText, perIndexHtml, researchHtml, sourceText,
         scopeText: 'chosen_primary_training_labels_v1 (canonical_won/outcome_h2 unchanged)'
     };
+}
+
+// G3/R1: proof that the research report's no-baseline assurance belongs to the selected session and the
+// current evaluation run. Returns VERIFIED / UNVERIFIED (proof missing) / FAILED (evidence contradicts).
+function mlClassANoBaselineProof(service = {}, report = {}) {
+    const reasons = [];
+    let failed = false;
+    const target = String(service?.evaluationTargetDate || '').slice(0, 10);
+    const reportDate = String(report?.session_date || '').slice(0, 10);
+    if (!target) reasons.push('selected evaluation session unknown');
+    else if (!reportDate) reasons.push('report has no session date');
+    else if (reportDate !== target) reasons.push(`report session ${reportDate} is not the selected session ${target}`);
+    const stages = safeParseNB(service?.evaluationStages, service?.evaluationStages || {});
+    const persistence = stages && typeof stages === 'object' ? (stages.outcome_persistence || null) : null;
+    const pState = String(persistence?.state || '').toLowerCase();
+    const verifiedCount = Number(persistence?.verified_count || 0);
+    if (!persistence || !pState) reasons.push('current-run outcome persistence proof unavailable');
+    else if (pState === 'failed') { failed = true; reasons.push(`current-run outcome persistence FAILED${persistence.reason_code ? ` (${persistence.reason_code})` : ''}`); }
+    else if (pState !== 'verified') reasons.push(`current-run outcome persistence is ${pState}, not verified`);
+    else if (!(verifiedCount > 0)) reasons.push('current-run outcome persistence verified 0 rows');
+    const serviceRun = String(service?.evaluationRunId || '').trim();
+    const reportRun = String(report?.evaluation_run_id || report?.run_id || report?.ledger_run_id || '').trim();
+    const runTied = Boolean(serviceRun && reportRun);
+    if (runTied && serviceRun !== reportRun) { failed = true; reasons.push(`report run ${reportRun} conflicts with current run ${serviceRun}`); }
+    // Scope reconciliation only (never a gate): report rows = primary+menu teacher rows; the persisted counter
+    // (and persistence verified_count) also include rejected-research outcomes.
+    const menuRows = Number(report?.outcome_count || 0);
+    const rejectedRows = Number(report?.rejected_research_outcome_count || 0);
+    const counter = Number.isFinite(Number(service?.lastEvaluationOutcomeCount)) ? Number(service.lastEvaluationOutcomeCount) : null;
+    const scopeNote = (menuRows > 0 && counter != null && counter !== menuRows)
+        ? `Scopes differ: report teacher rows ${menuRows} (chosen + menu)${rejectedRows ? ` + ${rejectedRows} rejected-research rows` : ''}; persisted outcome counter ${counter} also counts rejected-research outcomes.`
+        : '';
+    const state = failed ? 'FAILED' : (reasons.length ? 'UNVERIFIED' : 'VERIFIED');
+    return { state, reasons, sessionDate: target, runId: serviceRun, runTied, scopeNote, verifiedCount };
 }
 
 function renderML(snapshot = null) {
@@ -9112,7 +9327,26 @@ function renderML(snapshot = null) {
     const classAGateStatus = String(
         postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : (incompleteSession ? 'N/A' : (researchArtifactMissing ? 'UNAVAILABLE' : (evaluationEmptySession ? 'N/A' : 'FAIL'))))
     ).toUpperCase();
-    const classAGateColor =
+    // G3/R1: zero chosen primaries is "no baseline", a COMPARISON status (not profitability or training
+    // success). The readback/integrity assurance is shown only when it is bound to verified evidence:
+    // (a) the research report's session equals the selected evaluation session, (b) the CURRENT run's
+    // outcome_persistence stage is verified (a positive counter alone is not readback proof), and (c) when
+    // both the report and the service carry a run identity, they agree. Missing proof -> UNVERIFIED wording;
+    // a real failure (integrity FAIL rows, failed persistence stage, conflicting run identity) keeps FAIL.
+    // Scopes differ on purpose: report outcome_count covers primary+menu teacher rows; the persisted counter
+    // also includes rejected-research outcomes. They are reconciled for display, never required to be equal.
+    const classAGateBlockedRaw = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
+    const classAProof = mlClassANoBaselineProof(service, teacherResearchReport);
+    const classANoPrimaryShape = classAGateHasData && classAGateStatus === 'FAIL'
+        && classAGateBlockedRaw.length === 1 && classAGateBlockedRaw[0] === 'no_primary_teacher_rows_were_available'
+        && Number(classAGate?.primary_snapshot_count || 0) === 0 && Number(classAGate?.primary_outcome_count || 0) === 0
+        && Number(classAGate?.outcome_count || 0) > 0
+        && evaluationDone && !evaluationRunning && !incompleteSession && !incompleteIdentity && !incompleteH2MarketData
+        && researchOk && !researchNoGradeableTeacherOutcomes && researchFailIntegrityRows === 0;
+    const classANoBaseline = classANoPrimaryShape && classAProof.state === 'VERIFIED';
+    const classANoBaselineUnverified = classANoPrimaryShape && classAProof.state === 'UNVERIFIED';
+    const classAGateDisplay = classANoBaseline ? 'NO_BASELINE · comparison unavailable' : (classANoBaselineUnverified ? 'NO_BASELINE · readback UNVERIFIED' : classAGateStatus);
+    const classAGateColor = classANoBaseline ? 'var(--accent)' : classANoBaselineUnverified ? 'var(--warn)' :
         classAGateStatus === 'PASS'
             ? 'var(--green)'
             : ((classAGateStatus === 'PENDING' || classAGateStatus === 'N/A' || classAGateStatus === 'UNAVAILABLE') ? 'var(--accent)' : 'var(--warn)');
@@ -9144,12 +9378,13 @@ function renderML(snapshot = null) {
             <div class="brain-card" style="border-left-color:${status.ok ? 'var(--green)' : 'var(--warn)'}">
                 <div class="brain-card-header">
                     <span class="brain-icon">●</span>
-                    <span class="brain-label">${status.ok ? 'Model READY' : 'Model NOT READY'}</span>
+                    <span class="brain-label">${status.ok ? (modelTrained ? 'Model READY' : 'Existing model READY') : 'Model NOT READY'}</span>
                     <span class="brain-strength" style="color:${status.ok ? 'var(--green)' : 'var(--warn)'}">${status.version || 'unknown'}</span>
                 </div>
                 <div class="brain-detail">
                     Train rows: <b>${status.nTrain || 0}</b> · Thresholds: <b>${((status.thrTake || 0) * 100).toFixed(0)} / ${((status.thrWatch || 0) * 100).toFixed(0)}</b><br>
                     Base win rate: <b>${((status.baseWr || 0) * 100).toFixed(1)}%</b> · Sample probability: <b>${((status.sampleP || 0) * 100).toFixed(1)}%</b>
+                    ${status.ok && !modelTrained ? `<br><span style="color:var(--accent)">READY refers to the existing model already on the device. Model trained this run: NO. It does not mean new labels were saved, C3 is ready, or a new model was trained.</span>` : ''}
                     ${status.error ? `<br><span style="color:var(--danger)">Error: ${status.error}</span>` : ''}
                 </div>
             </div>
@@ -9215,10 +9450,10 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Class A Correctness Gate</span>
                 </div>
                 <div class="brain-detail">
-                    Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
+                    Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateDisplay}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Research evaluation can still be complete; this FAIL is not a training or profitability result.</span>` : ''}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classANoBaseline ? `<br><span style="color:var(--accent)">No chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Outcome readback and integrity checks passed for session ${escapeHtml(classAProof.sessionDate)}${classAProof.runId ? ` · run ${escapeHtml(classAProof.runId)}` : ''}${classAProof.runTied ? '' : ' (report carries no run identity; bound by session date and verified current-run persistence)'}. This is a comparison status only: not a profitability result and not a training success.</span>${classAProof.scopeNote ? `<br><span style="color:var(--text)">${escapeHtml(classAProof.scopeNote)}</span>` : ''}` : (classANoBaselineUnverified ? `<br><span style="color:var(--warn)">No chosen (primary) recommendation existed in this session, so there is no chosen baseline. Outcome readback is UNVERIFIED for this report: ${escapeHtml(classAProof.reasons.join('; '))}. No readback assurance is claimed; this is not a profitability or training result.</span>` : (String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session${researchFailIntegrityRows > 0 ? `, and ${researchFailIntegrityRows} outcome rows failed integrity` : ''}${(!researchOk || Number(evaluationOutcomeCount || 0) === 0) ? ', and outcome readback is not verified' : ''}${classAProof.state === 'FAILED' ? `, and ${escapeHtml(classAProof.reasons.join('; '))}` : ''}. FAIL is kept; this is not a training or profitability result.</span>` : ''))}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${stage2aAuditColor}">
@@ -9254,7 +9489,19 @@ function renderML(snapshot = null) {
                         Saved snapshot diagnostics were not available for this evaluated session.<br>
                         Current live candidate diagnostics are hidden here to avoid mixing closed-market live state with evaluated-session evidence.
                     ` : `
-                        Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
+                        Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''} (all counters below are from this source)<br>
+                        ${candidateDiagnostics.liveDiagnostics && (historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Current live brain diagnostics exist but are hidden here so they are not mixed with this saved-session evidence.</span><br>` : ''}${candidateDiagnostics.liveDiagnostics && !(historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Live brain now (separate, not part of the saved snapshot): authority ${candidateDiagnostics.liveDiagnostics.authorityActive ? 'ACTIVE' : 'inactive'} · NF <b>${candidateDiagnostics.liveDiagnostics.menu.NF}</b> · BNF <b>${candidateDiagnostics.liveDiagnostics.menu.BNF}</b> · watchlist <b>${candidateDiagnostics.liveDiagnostics.watchlistCount}</b></span><br>` : ''}
+                        ${candidateDiagnostics.authorityActive ? `
+                        Index authority menu (decides admission) · latest: NF <b>${candidateDiagnostics.authorityLatest.NF}</b> · BNF <b>${candidateDiagnostics.authorityLatest.BNF}</b> · day (${candidateDiagnostics.loadedSnapshotCount} loaded saved snapshot${candidateDiagnostics.loadedSnapshotCount === 1 ? '' : 's'}): NF <b>${candidateDiagnostics.authorityDay.NF}</b> · BNF <b>${candidateDiagnostics.authorityDay.BNF}</b> (NF and BNF separate, not pooled)<br>
+                        <span style="color:var(--accent)">New entries stop after 15:15 IST: a snapshot taken after the cutoff shows 0 authority candidates by design, not a day-wide result.</span><br>
+                        Authority watchlist (the constructed authority candidates, not legacy): <b>${candidateDiagnostics.watchlistCount}</b><br>
+                        Legacy generator · <b>evidence only</b> (retired; it neither builds nor blocks the authority menu): retained rejection stats <b>${candidateDiagnostics.legacyEvidence.rejected}</b><br>
+                        Legacy trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Legacy trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
+                        ${candidateDiagnostics.skipReason ? `Legacy skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
+                        Legacy by index: <b>${diagnosticIndexText}</b><br>
+                        Legacy rejection stages (evidence only): <b>${diagnosticStageText}</b><br>
+                        Legacy rejection reasons (evidence only): <b>${diagnosticReasonText}</b>
+                        ` : `
                         Generated: <b>${candidateDiagnostics.generatedCount}</b> · Watchlist: <b>${candidateDiagnostics.watchlistCount}</b> · Rejected: <b>${candidateDiagnostics.rejectedCount}</b><br>
                         Trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
                         ${candidateDiagnostics.skipReason ? `Skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
@@ -9263,6 +9510,7 @@ function renderML(snapshot = null) {
                         Top rejection reasons: <b>${diagnosticReasonText}</b>
                         ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount > 0 ? `<br><span style="color:var(--warn)">The brain saw candidate attempts, but none survived the gate waterfall into generated/watchlist payloads.</span>` : ''}
                         ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount === 0 && candidateDiagnostics.skipReason ? `<br><span style="color:var(--warn)">Generation was skipped before the gate waterfall. Fix the upstream contract named in the skip reason.</span>` : ''}
+                        `}
                     `}
                 </div>
             </div>

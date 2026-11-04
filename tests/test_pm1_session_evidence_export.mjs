@@ -14,20 +14,22 @@ function fn(name) {
   return src.slice(m.index, src.indexOf('\n}\n', m.index) + 3);
 }
 const FNS = ['iaEsc', 'iaTodayIst', 'reviewNet', 'renderReviewGroups', 'renderDailyReviewCard', 'sessionEvidenceSupported',
-  'exportSessionEvidence', 'renderSessionEvidenceLine', 'renderReviewInputs'];
+  'exportSessionEvidence', 'renderSessionEvidenceLine', 'renderReviewInputs', 'sessionEvidenceDateValid',
+  'sessionEvidenceRecentDates', 'setSessionEvidenceDate', 'renderSessionEvidenceParts', 'renderSessionEvidenceCard'];
 function ctx(nb) {
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, renders: 0 };
   c.window = { NativeBridge: nb };
   vm.createContext(c);
-  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.92', build: 523, app_js_v: 1387 }; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; function renderAll(){ renders++; }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.93', build: 524, app_js_v: 1388 }; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let SESSION_EVIDENCE_DATE=null; function renderAll(){ renders++; }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 
 test('old APK (no exportSessionEvidence): button shows app update needed and never calls an absent method', () => {
   const c = ctx({ dailyReviewLatest: () => '{}' });
   assert.equal(c.sessionEvidenceSupported(), false);
-  assert.match(c.renderDailyReviewCard(), /Export session evidence/);
-  assert.match(c.renderDailyReviewCard(), /app update needed \(2\.6\.86 · b517\)/);
+  assert.match(c.renderSessionEvidenceCard(), /Export session evidence/);
+  assert.match(c.renderSessionEvidenceCard(), /app update needed \(2\.6\.86 · b517\)/);
+  assert.doesNotMatch(c.renderDailyReviewCard(), /onclick="exportSessionEvidence/);   // G0: one export section only
   c.exportSessionEvidence();
   assert.match(c.renderSessionEvidenceLine(), /app update needed/);
 });
@@ -36,10 +38,10 @@ test('new APK: the button calls the bridge with the IST date and the visible PWA
   const calls = [];
   const c = ctx({ exportSessionEvidence: (d, v) => { calls.push([d, v]); return JSON.stringify({ ok: true, status: 'OK', bytes: 12345,
     sha256: 'abcdef0123456789ff', session_date_used: '2026-11-02', fileName: 'mr_session_evidence_2026-11-02.json' }); } });
-  c.exportSessionEvidence();
+  c.exportSessionEvidence('2026-11-02');
   assert.equal(calls.length, 1);
-  assert.match(calls[0][0], /^\d{4}-\d{2}-\d{2}$/);
-  assert.equal(calls[0][1], '2.6.92/b523/v1387');
+  assert.equal(calls[0][0], '2026-11-02');
+  assert.equal(calls[0][1], '2.6.93/b524/v1388');
   const line = c.renderSessionEvidenceLine();
   assert.match(line, /mr_session_evidence_2026-11-02\.json · 12345 bytes · sha256 abcdef012345 · session 2026-11-02/);
   assert.doesNotMatch(line, /abcdef0123456789/);

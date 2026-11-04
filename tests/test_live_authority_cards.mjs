@@ -65,7 +65,8 @@ test('authority strategy is a scannable card with separate legs, risk, warnings 
     ] };
   const before = JSON.stringify(x);
   const html = c.renderAuthorityCandidateCard(x);
-  assert.match(html, /ia-card-head[\s\S]*ia-legs[\s\S]*ia-metrics[\s\S]*ia-card-actions/);
+  // compact: summary + mini grid + actions visible, full legs/metrics inside the collapsed details panel
+  assert.match(html, /ia-card-head[\s\S]*ia-mini-grid[\s\S]*ia-card-actions[\s\S]*ia-toggle[\s\S]*class="ia-details"[^>]* hidden[\s\S]*ia-legs[\s\S]*ia-metrics/);
   assert.equal((html.match(/class="ia-leg"/g) || []).length, 4);
   assert.equal((html.match(/ia-leg-action ia-sell/g) || []).length, 2);
   assert.equal((html.match(/ia-leg-action ia-buy/g) || []).length, 2);
@@ -155,3 +156,68 @@ for (const [name, opts, re] of [['unavailable', { allowed: false }, /Paper unava
     assert.equal(c.calls.alerts.length, 1);
   });
 }
+
+// ---- Compact strategy cards v2 (Vivek, 4 Nov; Upstox list-row pattern) ----
+const four4 = { ...avail4, legs: [
+  { action: 'SELL', strike: 23250, option_type: 'CE', bid: 59.7, ask: 59.8 },
+  { action: 'SELL', strike: 23150, option_type: 'PE', bid: 72.75, ask: 72.95 },
+  { action: 'BUY', strike: 23400, option_type: 'CE', bid: 21.85, ask: 21.95 },
+  { action: 'BUY', strike: 23000, option_type: 'PE', bid: 29.8, ask: 29.95 } ] };
+const summaryOf = (html) => html.slice(0, html.indexOf('class="ia-details"'));
+const detailsOf = (html) => html.slice(html.indexOf('class="ia-details"'));
+
+test('v2 collapsed: line1 name + verdict, line2 legs/expiry + cost, line3 three columns, one control row', () => {
+  const html = harness({ choice: true }).renderAuthorityCandidateCard(four4);
+  const sum = summaryOf(html);
+  assert.match(sum, /class="ia-name"><span class="ia-index">NF<\/span> IRON_CONDOR<\/h3><span class="ia-verdict ia-pos">Eligible</);
+  assert.match(sum, /class="ia-side">SELL 2 \/ BUY 2 · Exp 3 Nov<\/span><span class="ia-r2v">Cost ₹258.48</);
+  assert.match(sum, /<span>Max profit<\/span><strong class="ia-profit-v">₹5000.00[\s\S]*<span>Max loss<\/span><strong class="ia-loss-v">₹4750.00[\s\S]*<span>Lot<\/span><strong>65</);
+  assert.match(sum, /<button class="ia-choose" onclick="chooseIndexStructureForPaper/);
+  assert.match(sum, /<button type="button" class="ia-toggle" aria-expanded="false" aria-controls="ia-det-NF-NF_IC" aria-label="Show details"/);
+  assert.doesNotMatch(sum, /ia-leg-strip|class="ia-leg"|btn-paper/);          // legs + Manual Paper moved to details
+  assert.match(html, /<div class="ia-details" id="ia-det-NF-NF_IC" hidden>/);
+  const det = detailsOf(html);
+  assert.equal((det.match(/class="ia-sell">SELL /g) || []).length, 2);
+  assert.equal((det.match(/class="ia-buy">BUY /g) || []).length, 2);
+  assert.match(det, /<button class="btn-paper" onclick="takeTrade/);          // Manual Paper still reachable
+});
+
+test('v2: toggle expands/collapses (aria-expanded, aria-label, hidden) and state survives re-render', () => {
+  const c = harness({ choice: true });
+  vm.runInContext(src.slice(src.indexOf('const iaExpandedCards'), src.indexOf('\n}\n', src.indexOf('function toggleIaCardDetails(')) + 3), c);
+  const attrs = { 'aria-expanded': 'false', 'aria-controls': 'ia-det-NF-NF_IC' };
+  const btn = { textContent: '', getAttribute: k => attrs[k], setAttribute: (k, v) => { attrs[k] = v; } };
+  const pAttrs = { hidden: '' };
+  const panel = { removeAttribute: k => { delete pAttrs[k]; }, setAttribute: (k, v) => { pAttrs[k] = v; } };
+  c.document = { getElementById: id => (id === 'ia-det-NF-NF_IC' ? panel : null) };
+  assert.equal(c.toggleIaCardDetails(btn), true);
+  assert.equal(attrs['aria-expanded'], 'true'); assert.equal(attrs['aria-label'], 'Hide details'); assert.ok(!('hidden' in pAttrs));
+  assert.match(c.renderAuthorityCandidateCard(four4), /aria-expanded="true"[^>]*aria-label="Hide details"[\s\S]*id="ia-det-NF-NF_IC">/);
+  assert.equal(c.toggleIaCardDetails(btn), false);
+  assert.equal(attrs['aria-expanded'], 'false'); assert.ok('hidden' in pAttrs);
+  assert.match(c.renderAuthorityCandidateCard(four4), /id="ia-det-NF-NF_IC" hidden>/);
+});
+
+test('v2: Paper unavailable / full keep Choose disabled with one-line visible reason; Manual Paper disabled in details', () => {
+  for (const [opts, re] of [[{ allowed: false }, /Choose for Paper disabled: Paper unavailable \(IDENTITY_UNAVAILABLE\)/], [{ full: true }, /Choose for Paper disabled: Paper slots full \(2\/2\)/]]) {
+    const html = harness({ choice: true, ...opts }).renderAuthorityCandidateCard(four4);
+    assert.match(summaryOf(html), /<button class="ia-choose" disabled/);
+    assert.match(summaryOf(html), re);
+    assert.match(detailsOf(html), /<button class="btn-paper" disabled/);
+    assert.doesNotMatch(html, /onclick="takeTrade|onclick="chooseIndexStructureForPaper/);
+  }
+  // Choose not offered: the compact row carries Manual Paper itself, with its reason visible
+  const sum = summaryOf(harness({ allowed: false }).renderAuthorityCandidateCard(four4));
+  assert.match(sum, /<button class="btn-paper" disabled title="IDENTITY_UNAVAILABLE">PAPER UNAVAILABLE/);
+  assert.match(sum, /ia-action-reason[^>]*>Paper unavailable \(IDENTITY_UNAVAILABLE\)/);
+});
+
+test('v2: single-leg BUY name, BNF separate, lot/cost unavailable, Blocked amber; legacy EV not invented for authority', () => {
+  const one = { ...missing, index: 'BNF', id: 'BNF_C', type: 'LONG_CALL', legs: [{ action: 'BUY', strike: 55500, option_type: 'CE', bid: 300, ask: 301 }] };
+  const sum = summaryOf(harness().renderAuthorityCandidateCard(one));
+  assert.match(sum, /<span class="ia-index">BNF<\/span> 55500 CE BUY<\/h3><span class="ia-verdict ia-amber">Blocked</);
+  assert.match(sum, /Single leg BUY · Exp 3 Nov/);
+  assert.match(sum, /Cost <strong class="ia-na">Unavailable|Cost Unavailable/);
+  assert.match(sum, /<span>Lot<\/span><strong class="ia-na">Unavailable<\/strong>/);
+  assert.doesNotMatch(sum, /EV |99999|undefined|NaN/);                         // missing.ev=99999 is legacy, ignored
+});
