@@ -157,7 +157,7 @@ test('state_1803 shows research completion wording and secondary rows as researc
   const p = progressText(html);
   assert.match(p, /RESEARCH ONLY · 0 new training labels/);
   assert.match(p, /Secondary\/alternative research rows: 78 \(71 with outcomes; not training labels\)/);
-  assert.match(p, /Rejected research rows: 0/);
+  assert.match(p, /Rejected-role rows in recommendation\/evaluation outcome tables: 0 \(narrow scope: legacy rejected research lives in ml_rejected_candidate_outcomes, which this count does not read\)/);
 });
 
 test('state_1643 without contract: no fallback to persisted outcome count', () => {

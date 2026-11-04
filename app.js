@@ -2607,8 +2607,46 @@ function buildCandidatePipelineDiagnostics(brain = {}, snapshots = []) {
         };
     }).filter(Boolean);
 
+    // G3: per-index authority menu (index_direction_v1) is separate from the retired legacy generator, whose
+    // rejection waterfall is still recorded as evidence only. Counted by construction identity, which survives
+    // even older compacted snapshots (id suffix) as well as the G1 lineage field.
+    const isAuthorityCandidate = (c) => !!c && (c.constructionVersion === 'index_construction_v1'
+        || /_index_construction_v1$/.test(String(c.id || c.candidate_id || '')));
+    const countByIndex = (rows) => {
+        const out = { NF: 0, BNF: 0 };
+        (Array.isArray(rows) ? rows : []).forEach(c => {
+            if (!isAuthorityCandidate(c)) return;
+            const ix = String(c.index || c.index_key || '').toUpperCase();
+            if (ix === 'NF' || ix === 'BNF') out[ix] += 1;
+        });
+        return out;
+    };
+    const authorityRecord = safeParseNB(ctx?.snapshot_index_authority_primary, ctx?.snapshot_index_authority_primary || {});
+    const liveAuthority = String(brain?.direction_authority?.active || '') === 'index_direction_v1';
+    const liveMenu = { NF: 0, BNF: 0 };
+    if (!latestSnapshot && brain?.candidates_by_index && typeof brain.candidates_by_index === 'object') {
+        ['NF', 'BNF'].forEach(ix => { liveMenu[ix] = (brain.candidates_by_index[ix] || []).length; });
+    }
+    const authorityLatest = latestSnapshot ? countByIndex(snapshotGenerated) : liveMenu;
+    const authorityDay = { NF: 0, BNF: 0 };
+    let authoritySnapshotCount = 0;
+    (Array.isArray(snapshots) ? snapshots : []).forEach(row => {
+        const c = safeParseNB(row?.context_json, {});
+        const n = countByIndex(Array.isArray(c?.snapshot_generated_candidates) ? c.snapshot_generated_candidates : []);
+        const rec = safeParseNB(c?.snapshot_index_authority_primary, c?.snapshot_index_authority_primary || {});
+        if (n.NF + n.BNF > 0 || rec?.record_schema) authoritySnapshotCount += 1;
+        authorityDay.NF += n.NF; authorityDay.BNF += n.BNF;
+    });
+    const authorityActive = liveAuthority || Boolean(authorityRecord?.record_schema) || authoritySnapshotCount > 0
+        || authorityLatest.NF + authorityLatest.BNF > 0;
+
     return {
         source: latestSnapshot ? 'latest_saved_snapshot' : 'live_brain_result',
+        authorityActive,
+        authorityLatest,
+        authorityDay,
+        authoritySnapshotCount,
+        loadedSnapshotCount: Array.isArray(snapshots) ? snapshots.length : 0,
         generatedCount,
         watchlistCount,
         rejectedCount,
@@ -8764,7 +8802,7 @@ function mlTrainingLabelProgressView(contract, ctx = {}) {
     const research = [];
     if (valid) {
         research.push(`Secondary/alternative research rows: <b>${num(c.secondary_research_rows)}</b> (${num(c.secondary_research_labeled)} with outcomes; not training labels)`);
-        research.push(`Rejected research rows: <b>${num(c.rejected_research_rows)}</b>`);
+        research.push(`Rejected-role rows in recommendation/evaluation outcome tables: <b>${num(c.rejected_research_rows)}</b> (narrow scope: legacy rejected research lives in ml_rejected_candidate_outcomes, which this count does not read)`);
         if (num(c.primary_labeled_unverified) > 0) research.push(`Primary rows with outcomes not verified: <b>${num(c.primary_labeled_unverified)}</b>`);
         if (num(c.primary_outcome_unknown) > 0) research.push(`Primary outcome unknown: <b>${num(c.primary_outcome_unknown)}</b>`);
         research.push(`Attribution pending: <b>${num(c.attribution_pending_rows)}</b>`);
@@ -9112,7 +9150,18 @@ function renderML(snapshot = null) {
     const classAGateStatus = String(
         postCloseArtifactsPending ? 'PENDING' : (classAGateHasData ? classAGate.status : (incompleteSession ? 'N/A' : (researchArtifactMissing ? 'UNAVAILABLE' : (evaluationEmptySession ? 'N/A' : 'FAIL'))))
     ).toUpperCase();
-    const classAGateColor =
+    // G3: zero chosen primaries with passing readback + integrity is "no baseline", a COMPARISON status (not
+    // profitability or training success). Any genuine integrity / readback failure keeps FAIL.
+    const classAGateBlockedRaw = Array.isArray(classAGate?.blocked_reasons) ? classAGate.blocked_reasons : [];
+    const classANoBaseline = classAGateHasData && classAGateStatus === 'FAIL'
+        && classAGateBlockedRaw.length === 1 && classAGateBlockedRaw[0] === 'no_primary_teacher_rows_were_available'
+        && Number(classAGate?.primary_snapshot_count || 0) === 0 && Number(classAGate?.primary_outcome_count || 0) === 0
+        && Number(classAGate?.outcome_count || 0) > 0
+        && evaluationDone && !evaluationRunning && !incompleteSession && !incompleteIdentity && !incompleteH2MarketData
+        && researchOk && !researchNoGradeableTeacherOutcomes && researchFailIntegrityRows === 0
+        && Number(evaluationOutcomeCount || 0) > 0;
+    const classAGateDisplay = classANoBaseline ? 'NO_BASELINE · comparison unavailable' : classAGateStatus;
+    const classAGateColor = classANoBaseline ? 'var(--accent)' :
         classAGateStatus === 'PASS'
             ? 'var(--green)'
             : ((classAGateStatus === 'PENDING' || classAGateStatus === 'N/A' || classAGateStatus === 'UNAVAILABLE') ? 'var(--accent)' : 'var(--warn)');
@@ -9144,12 +9193,13 @@ function renderML(snapshot = null) {
             <div class="brain-card" style="border-left-color:${status.ok ? 'var(--green)' : 'var(--warn)'}">
                 <div class="brain-card-header">
                     <span class="brain-icon">●</span>
-                    <span class="brain-label">${status.ok ? 'Model READY' : 'Model NOT READY'}</span>
+                    <span class="brain-label">${status.ok ? (modelTrained ? 'Model READY' : 'Existing model READY') : 'Model NOT READY'}</span>
                     <span class="brain-strength" style="color:${status.ok ? 'var(--green)' : 'var(--warn)'}">${status.version || 'unknown'}</span>
                 </div>
                 <div class="brain-detail">
                     Train rows: <b>${status.nTrain || 0}</b> · Thresholds: <b>${((status.thrTake || 0) * 100).toFixed(0)} / ${((status.thrWatch || 0) * 100).toFixed(0)}</b><br>
                     Base win rate: <b>${((status.baseWr || 0) * 100).toFixed(1)}%</b> · Sample probability: <b>${((status.sampleP || 0) * 100).toFixed(1)}%</b>
+                    ${status.ok && !modelTrained ? `<br><span style="color:var(--accent)">READY refers to the existing model already on the device. Model trained this run: NO. It does not mean new labels were saved, C3 is ready, or a new model was trained.</span>` : ''}
                     ${status.error ? `<br><span style="color:var(--danger)">Error: ${status.error}</span>` : ''}
                 </div>
             </div>
@@ -9215,10 +9265,10 @@ function renderML(snapshot = null) {
                     <span class="brain-label">Class A Correctness Gate</span>
                 </div>
                 <div class="brain-detail">
-                    Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateStatus}</b><br>
+                    Session: <b>${teacherResearchReport?.session_date || evaluationTargetLabel || evaluationTargetDate || '--'}</b> · Status: <b style="color:${classAGateColor}">${classAGateDisplay}</b><br>
                     Chosen snapshots: <b>${Number(classAGate?.primary_snapshot_count || 0)}</b> · Generated-ready: <b>${Number(classAGate?.generated_menu_ready_count || 0)}</b> · Rejected-ready: <b>${Number(classAGate?.rejected_menu_ready_count || 0)}</b><br>
                     Context-ready: <b>${Number(classAGate?.context_ready_count || 0)}</b> · Comparison-ready: <b>${Number(classAGate?.comparison_ready_count || 0)}</b><br>
-                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Research evaluation can still be complete; this FAIL is not a training or profitability result.</span>` : ''}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
+                    Outcome rows: <b>${Number(classAGate?.outcome_count || 0)}</b> · Chosen rows: <b>${Number(classAGate?.primary_outcome_count || 0)}</b>${classANoBaseline ? `<br><span style="color:var(--accent)">No chosen (primary) recommendation existed in this session, so there is no chosen baseline to compare against the menu. Outcome readback and integrity checks passed. This is a comparison status only: not a profitability result and not a training success.</span>` : (String(classAGateStatus || '').toUpperCase() === 'FAIL' && Number(classAGate?.primary_outcome_count || 0) === 0 && Number(classAGate?.outcome_count || 0) > 0 ? `<br><span style="color:var(--warn)">Comparison blocked: no chosen (primary) recommendation existed in this session${researchFailIntegrityRows > 0 ? `, and ${researchFailIntegrityRows} outcome rows failed integrity` : ''}${(!researchOk || Number(evaluationOutcomeCount || 0) === 0) ? ', and outcome readback is not verified' : ''}. FAIL is kept; this is not a training or profitability result.</span>` : '')}${postCloseArtifactsPending ? `<br><span style="color:var(--accent)">This gate is evaluated only after post-close teacher research is generated for today's session.</span>` : ''}${incompleteSession ? `<br><span style="color:var(--accent)">No class-A comparison applies because this session failed integrity checks before normal evaluation.</span>` : ''}${evaluationEmptySession || classAGate?.no_class_a_session ? `<br><span style="color:var(--accent)">No class-A comparison applies for this session because the brain produced no evaluable candidate legs.</span>` : ''}${classAGateHasData && classAGateStatus !== 'N/A' ? `<br><span style="color:${classAGateReady ? 'var(--green)' : 'var(--warn)'}">${classAGateReady ? 'Baseline is complete enough for tomorrow comparison.' : 'Baseline is not complete for tomorrow comparison yet.'}</span>` : ''}${classAGateBlocked.length > 0 ? `<br><span style="color:var(--warn)">Blocked: ${classAGateBlocked.join(' · ')}</span>` : ''}
                 </div>
             </div>
             <div class="brain-card" style="border-left-color:${stage2aAuditColor}">
@@ -9255,6 +9305,16 @@ function renderML(snapshot = null) {
                         Current live candidate diagnostics are hidden here to avoid mixing closed-market live state with evaluated-session evidence.
                     ` : `
                         Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''}<br>
+                        ${candidateDiagnostics.authorityActive ? `
+                        Index authority menu (decides admission) · latest: NF <b>${candidateDiagnostics.authorityLatest.NF}</b> · BNF <b>${candidateDiagnostics.authorityLatest.BNF}</b> · day (${candidateDiagnostics.loadedSnapshotCount} loaded saved snapshot${candidateDiagnostics.loadedSnapshotCount === 1 ? '' : 's'}): NF <b>${candidateDiagnostics.authorityDay.NF}</b> · BNF <b>${candidateDiagnostics.authorityDay.BNF}</b> (NF and BNF separate, not pooled)<br>
+                        <span style="color:var(--accent)">New entries stop after 15:15 IST: a snapshot taken after the cutoff shows 0 authority candidates by design, not a day-wide result.</span><br>
+                        Legacy generator · <b>evidence only</b> (retired; it neither builds nor blocks the authority menu): Watchlist <b>${candidateDiagnostics.watchlistCount}</b> · Rejected <b>${candidateDiagnostics.rejectedCount}</b><br>
+                        Legacy trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Legacy trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
+                        ${candidateDiagnostics.skipReason ? `Legacy skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
+                        Legacy by index: <b>${diagnosticIndexText}</b><br>
+                        Legacy rejection stages (evidence only): <b>${diagnosticStageText}</b><br>
+                        Legacy rejection reasons (evidence only): <b>${diagnosticReasonText}</b>
+                        ` : `
                         Generated: <b>${candidateDiagnostics.generatedCount}</b> · Watchlist: <b>${candidateDiagnostics.watchlistCount}</b> · Rejected: <b>${candidateDiagnostics.rejectedCount}</b><br>
                         Trace accepted: <b>${candidateDiagnostics.acceptedTrace}</b> · Trace rejected: <b>${candidateDiagnostics.rejectedTrace}</b><br>
                         ${candidateDiagnostics.skipReason ? `Skip reason: <b>${candidateDiagnostics.skipReason}</b>${candidateDiagnostics.skipReasonCode ? ` (${candidateDiagnostics.skipReasonCode})` : ''}<br>` : ''}
@@ -9263,6 +9323,7 @@ function renderML(snapshot = null) {
                         Top rejection reasons: <b>${diagnosticReasonText}</b>
                         ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount > 0 ? `<br><span style="color:var(--warn)">The brain saw candidate attempts, but none survived the gate waterfall into generated/watchlist payloads.</span>` : ''}
                         ${candidateDiagnostics.generatedCount === 0 && candidateDiagnostics.rejectedCount === 0 && candidateDiagnostics.skipReason ? `<br><span style="color:var(--warn)">Generation was skipped before the gate waterfall. Fix the upstream contract named in the skip reason.</span>` : ''}
+                        `}
                     `}
                 </div>
             </div>
