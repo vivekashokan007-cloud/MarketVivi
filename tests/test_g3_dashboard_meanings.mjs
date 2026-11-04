@@ -273,6 +273,10 @@ if (process.env.G3_DUMP_DIR) {
     no_baseline_closed: render(R),
     integrity_fail: render(R, { rep: report(NO_PRIMARY_GATE, { counts: { OK: 46, FAIL: 25 }, gradeable_teacher_rows: 46, gradeable_primary_rows: 0 }) }),
     legacy_only: render(R, { snaps: LEGACY_SNAPS }),
+    r1_verified_no_baseline: render(R, { rep: { ...report(NO_PRIMARY_GATE), outcome_count: 1800, rejected_research_outcome_count: 78, evaluation_run_id: 'run-20261102-a' } }),
+    r1_report_date_mismatch: render(R, { rep: { ...report(NO_PRIMARY_GATE), session_date: '2026-10-30' } }),
+    r1_persistence_failed: render(R, { status: withStage({ state: 'failed', reason_code: 'READBACK_FAILED', verified_count: 0 }) }),
+    r1_proof_missing: render(R, { status: { ...FIX.state_1803.serviceStatus } }),
   };
   for (const [k, html] of Object.entries(states)) fs.writeFileSync(`${process.env.G3_DUMP_DIR}/${k}.html`, html);
 }
