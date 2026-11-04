@@ -8125,13 +8125,42 @@ function renderAuthorityCandidateCard(cand) {
         : paperOpen
         ? `<button class="ia-choose" onclick="chooseIndexStructureForPaper(${arg(cand.index)},${arg(dec.decision_id)},${arg(cand.id)})">Choose for Paper</button>`
         : `<button class="ia-choose" disabled title="${esc(!auth.allowed ? auth.reason : 'Paper slots full')}">Choose unavailable</button>`;
-    return `<div class="candidate-card authority-candidate" data-index="${esc(cand.index)}">
-        <div class="ia-card-head">
-            <div><span class="ia-index">${esc(cand.index)}</span><h3>${esc(friendlyType(cand.type))}</h3></div>
-            <span class="ia-alternative">Policy alternative, not ranked</span>
+    // Compact card (Vivek, 4 Nov): summary row + compact grid + actions always visible; full legs/quotes,
+    // evidence and notes behind an accessible tap-to-expand. Presentation only: same data, same gates.
+    const legs = Array.isArray(cand.legs) ? cand.legs : [];
+    const sells = legs.filter(l => String(l.action).toUpperCase() === 'SELL').length;
+    const buys = legs.filter(l => String(l.action).toUpperCase() === 'BUY').length;
+    const side = legs.length === 1 ? String(legs[0].action).toUpperCase()
+        : `${legs.length}-leg · SELL ${sells} / BUY ${buys}`;
+    const cost = cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable';
+    const verdict = cand.entryEligible === true ? 'Eligible' : 'Blocked';
+    const miniV = (v, cls = '') => { const na = v === 'Unavailable'; const k = [cls, na ? 'ia-na' : ''].filter(Boolean).join(' '); return `<strong${k ? ` class="${k}"` : ''}>${v}</strong>`; };
+    const detId = 'ia-det-' + String(cand.index || '') + '-' + String(cand.id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+    const expanded = typeof iaExpandedCards !== 'undefined' && iaExpandedCards.has(detId);
+    const paperReason = !auth.allowed ? `Paper unavailable (${esc(auth.reason)})`
+        : !capacity.available ? `Paper slots full (${capacity.count}/${capacity.limit})` : '';
+    return `<div class="candidate-card authority-candidate ia-compact" data-index="${esc(cand.index)}">
+        <div class="ia-card-head ia-sum">
+            <div class="ia-sum-title"><span class="ia-index">${esc(cand.index)}</span><h3>${esc(friendlyType(cand.type))}</h3><span class="ia-side">${esc(side)}</span></div>
+            <span class="ia-verdict ${verdict === 'Eligible' ? 'ia-verdict-ok' : 'ia-verdict-blocked'}">${verdict}</span>
         </div>
+        <div class="ia-sum-sub">Exp ${esc(cand.expiry)} · <span class="ia-alternative">Policy alternative, not ranked</span></div>
+        <div class="ia-leg-strip" aria-label="Option legs summary">${legs.map(l => `<span class="${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(String(l.action).toUpperCase())} ${esc(l.strike)}${esc(l.option_type)}</span>`).join(' ')}</div>
+        <div class="ia-mini-grid">
+            <div><span>Max P</span>${miniV(money(cand.maxProfit), 'ia-profit-v')}</div>
+            <div><span>Max L</span>${miniV(money(cand.maxLoss), 'ia-loss-v')}</div>
+            <div><span>Lot</span>${miniV(esc(lot), '')}</div>
+            <div><span>Cost</span>${miniV(cost, '')}</div>
+        </div>
+        <div class="ia-card-actions">
+            ${chooseButton}
+            ${paperButton}
+        </div>
+        ${paperReason ? `<div class="ia-action-reason">${choose ? 'Choose for Paper disabled: ' : ''}${paperReason}</div>` : ''}
+        <button type="button" class="ia-toggle" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${esc(detId)}" onclick="toggleIaCardDetails(this)">${expanded ? 'Hide details ▾' : 'Details ▸'}</button>
+        <div class="ia-details" id="${esc(detId)}"${expanded ? '' : ' hidden'}>
         <div class="ia-expiry">Expiry ${esc(cand.expiry)}</div>
-        <div class="ia-legs" aria-label="Option legs">${(cand.legs || []).map(l => `<div class="ia-leg">
+        <div class="ia-legs" aria-label="Option legs">${legs.map(l => `<div class="ia-leg">
             <span class="ia-leg-action ${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(l.action)}</span>
             <strong>${esc(l.strike)} ${esc(l.option_type)}</strong>
             <span class="ia-quote">bid ${money(l.bid)} / ask ${money(l.ask)}</span>
@@ -8140,25 +8169,34 @@ function renderAuthorityCandidateCard(cand) {
             <div class="ia-metric ia-profit"><span>Max profit:</span><strong>${money(cand.maxProfit)}</strong></div>
             <div class="ia-metric ia-loss"><span>Max loss:</span><strong>${money(cand.maxLoss)}</strong></div>
             <div class="ia-metric"><span>Lot:</span><strong>${esc(lot)}</strong></div>
-            <div class="ia-metric"><span>Estimated costs:</span><strong>${cand.frictionCostStatus === 'OK' ? money(cand.frictionCost) : 'Unavailable'}</strong></div>
+            <div class="ia-metric"><span>Estimated costs:</span><strong>${cost}</strong></div>
         </div>
         <div class="ia-evidence">${lotEvidence.status === 'VERIFIED' ? 'broker contract + dated NSE table verified' : 'contract verification unavailable'}</div>
         ${(lotEvidence.reasons || []).length ? `<div class="ia-warning">Lot evidence: ${esc(lotEvidence.reasons.join(', '))}</div>` : ''}
         <div class="ia-admission ${cand.entryEligible === true ? 'ia-admission-ok' : 'ia-admission-blocked'}">${cand.entryEligible === true ? 'Construction checks passed; admission still requires current checks and your choice.' : 'Entry blocked: ' + esc(why.join(', ') || cand.constructionReason || 'checks unavailable')}</div>
         ${managedGate && !managedGate.admit ? `<div class="ia-warning">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
         ${!auth.allowed ? `<div class="ia-warning">Manual Paper unavailable: ${esc(auth.reason)}</div>` : ''}
-        <div class="ia-card-actions">
-            ${chooseButton}
-            ${paperButton}
-        </div>
-        ${choose && !paperOpen ? `<div class="ia-action-reason">Choose for Paper disabled: ${!auth.allowed ? 'Paper unavailable (' + esc(auth.reason) + ')' : `Paper slots full (${capacity.count}/${capacity.limit})`}</div>` : ''}
         ${auth.allowed ? `<div class="ia-action-note">Manual Paper ${auth.analysis_only ? 'analysis' : 'test'} · ${capacity.count}/${capacity.limit} open</div>` : ''}
-        <details class="ia-card-details"><summary>Quote and Paper details</summary>
+        <div class="ia-card-details">
             <div>Broker margin: unavailable in this candidate</div>
             <div>Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
             ${auth.allowed ? '<div>Manual Paper records simulated bid/ask entry prices; it does not authorize managed or broker execution.</div>' : ''}
-        </details>
+        </div>
+        </div>
     </div>`;
+}
+
+/** Compact authority card expand state (presentation only; survives re-render within the session). */
+const iaExpandedCards = new Set();
+function toggleIaCardDetails(btn) {
+    const id = btn?.getAttribute?.('aria-controls');
+    const panel = id ? document.getElementById(id) : null;
+    if (!panel) return false;
+    const open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { panel.removeAttribute('hidden'); iaExpandedCards.add(id); } else { panel.setAttribute('hidden', ''); iaExpandedCards.delete(id); }
+    btn.textContent = open ? 'Hide details ▾' : 'Details ▸';
+    return open;
 }
 
 function renderCandidateCard(cand, atm, rank) {
