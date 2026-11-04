@@ -8139,26 +8139,34 @@ function renderAuthorityCandidateCard(cand) {
     const expanded = typeof iaExpandedCards !== 'undefined' && iaExpandedCards.has(detId);
     const paperReason = !auth.allowed ? `Paper unavailable (${esc(auth.reason)})`
         : !capacity.available ? `Paper slots full (${capacity.count}/${capacity.limit})` : '';
-    return `<div class="candidate-card authority-candidate ia-compact" data-index="${esc(cand.index)}">
-        <div class="ia-card-head ia-sum">
-            <div class="ia-sum-title"><span class="ia-index">${esc(cand.index)}</span><h3>${esc(friendlyType(cand.type))}</h3><span class="ia-side">${esc(side)}</span></div>
-            <span class="ia-verdict ${verdict === 'Eligible' ? 'ia-verdict-ok' : 'ia-verdict-blocked'}">${verdict}</span>
+    const typeName = friendlyType(cand.type);
+    const name = legs.length === 1
+        ? `${cand.index} ${legs[0].strike} ${legs[0].option_type} ${String(legs[0].action).toUpperCase()}`
+        : `${cand.index} ${typeName}`;
+    const legText = legs.length === 1 ? `Single leg ${String(legs[0].action).toUpperCase()}` : `SELL ${sells} / BUY ${buys}`;
+    const expShort = (() => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(cand.expiry || '')); return m ? `${Number(m[3])} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1] || m[2]}` : String(cand.expiry || ''); })();
+    const lotsText = Number.isInteger(cand.lots) && cand.lots > 0 ? ` · ${cand.lots} lot${cand.lots === 1 ? '' : 's'}` : '';
+    const ev = typeof cand.ev === 'number' && Number.isFinite(cand.ev) && cand.authorityPolicyVersion !== 'index_direction_v1' ? cand.ev : null;
+    const rightVal = ev != null ? `EV ${money(ev)}` : verdict;
+    const rightCls = ev != null ? (ev >= 0 ? 'ia-pos' : 'ia-neg') : (verdict === 'Eligible' ? 'ia-pos' : 'ia-amber');
+    const pop = typeof cand.pop === 'number' && Number.isFinite(cand.pop) ? cand.pop : null;
+    const primaryButton = choose ? chooseButton : paperButton;
+    return `<div class="candidate-card authority-candidate ia-compact ia-v2" data-index="${esc(cand.index)}">
+        <div class="ia-card-head ia-r1"><h3 class="ia-name"><span class="ia-index">${esc(cand.index)}</span> ${esc(name.slice(String(cand.index).length + 1))}</h3><span class="ia-verdict ${rightCls}">${esc(rightVal)}</span></div>
+        <div class="ia-r2"><span class="ia-side">${esc(legText)} · Exp ${esc(expShort)}${esc(lotsText)}</span><span class="ia-r2v">Cost ${cost}</span></div>
+        <div class="ia-mini-grid ia-r3">
+            <div><span>Max profit</span>${miniV(money(cand.maxProfit), 'ia-profit-v')}</div>
+            <div><span>Max loss</span>${miniV(money(cand.maxLoss), 'ia-loss-v')}</div>
+            ${pop != null ? `<div><span>POP</span>${miniV(esc((pop * (pop <= 1 ? 100 : 1)).toFixed(0) + '%'))}</div>` : `<div><span>Lot</span>${miniV(esc(lot))}</div>`}
         </div>
-        <div class="ia-sum-sub">Exp ${esc(cand.expiry)} · <span class="ia-alternative">Policy alternative, not ranked</span></div>
-        <div class="ia-leg-strip" aria-label="Option legs summary">${legs.map(l => `<span class="${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(String(l.action).toUpperCase())} ${esc(l.strike)}${esc(l.option_type)}</span>`).join(' ')}</div>
-        <div class="ia-mini-grid">
-            <div><span>Max P</span>${miniV(money(cand.maxProfit), 'ia-profit-v')}</div>
-            <div><span>Max L</span>${miniV(money(cand.maxLoss), 'ia-loss-v')}</div>
-            <div><span>Lot</span>${miniV(esc(lot), '')}</div>
-            <div><span>Cost</span>${miniV(cost, '')}</div>
+        <div class="ia-card-actions ia-ctl">
+            ${primaryButton}
+            <button type="button" class="ia-toggle" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${esc(detId)}" aria-label="${expanded ? 'Hide details' : 'Show details'}" onclick="toggleIaCardDetails(this)">${expanded ? '⌃' : '⌄'}</button>
         </div>
-        <div class="ia-card-actions">
-            ${chooseButton}
-            ${paperButton}
-        </div>
-        ${paperReason ? `<div class="ia-action-reason">${choose ? 'Choose for Paper disabled: ' : ''}${paperReason}</div>` : ''}
-        <button type="button" class="ia-toggle" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${esc(detId)}" onclick="toggleIaCardDetails(this)">${expanded ? 'Hide details ▾' : 'Details ▸'}</button>
+        ${paperReason ? `<div class="ia-action-reason" title="${choose ? 'Choose for Paper disabled: ' : ''}${paperReason}">${choose ? 'Choose for Paper disabled: ' : ''}${paperReason}</div>` : ''}
         <div class="ia-details" id="${esc(detId)}"${expanded ? '' : ' hidden'}>
+        <div class="ia-sum-sub"><span class="ia-alternative">Policy alternative, not ranked</span></div>
+        <div class="ia-leg-strip" aria-label="Option legs summary">${legs.map(l => `<span class="${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(String(l.action).toUpperCase())} ${esc(l.strike)}${esc(l.option_type)}</span>`).join(' ')}</div>
         <div class="ia-expiry">Expiry ${esc(cand.expiry)}</div>
         <div class="ia-legs" aria-label="Option legs">${legs.map(l => `<div class="ia-leg">
             <span class="ia-leg-action ${String(l.action).toUpperCase() === 'SELL' ? 'ia-sell' : 'ia-buy'}">${esc(l.action)}</span>
@@ -8177,6 +8185,7 @@ function renderAuthorityCandidateCard(cand) {
         ${managedGate && !managedGate.admit ? `<div class="ia-warning">Managed admission blocked: ${esc((managedGate.reasons || []).join(', ') || 'current checks not passed')}</div>` : ''}
         ${!auth.allowed ? `<div class="ia-warning">Manual Paper unavailable: ${esc(auth.reason)}</div>` : ''}
         ${auth.allowed ? `<div class="ia-action-note">Manual Paper ${auth.analysis_only ? 'analysis' : 'test'} · ${capacity.count}/${capacity.limit} open</div>` : ''}
+        ${choose ? `<div class="ia-card-actions ia-details-actions">${paperButton}</div>` : ''}
         <div class="ia-card-details">
             <div>Broker margin: unavailable in this candidate</div>
             <div>Bid/ask snapshot for analysis. Costs are estimates; fills and profit are not guaranteed.</div>
@@ -8195,7 +8204,8 @@ function toggleIaCardDetails(btn) {
     const open = btn.getAttribute('aria-expanded') !== 'true';
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) { panel.removeAttribute('hidden'); iaExpandedCards.add(id); } else { panel.setAttribute('hidden', ''); iaExpandedCards.delete(id); }
-    btn.textContent = open ? 'Hide details ▾' : 'Details ▸';
+    btn.textContent = open ? '⌃' : '⌄';
+    btn.setAttribute('aria-label', open ? 'Hide details' : 'Show details');
     return open;
 }
 
