@@ -5366,6 +5366,71 @@ function renderEvControl() {
     </div>`;
 }
 
+// ── C1 capture pilot (CANDIDATE builds only; research evidence only; default OFF) ──────────────────────────
+// The switch is shown ONLY when the native bridge reports a candidate build. It calls nothing but the C1 pilot
+// bridge methods: manual Paper, single-leg admission, ranking, Real and EV controls are not touched or read here.
+/** Parsed native pilot status, or {available:false, reason}. Never throws. */
+function c1PilotStatus() {
+    if (typeof NativeBridge === 'undefined') return { available: false, reason: 'NO_NATIVE_BRIDGE' };
+    if (typeof NativeBridge.getC1CapturePilotStatus !== 'function') return { available: false, reason: 'NATIVE_METHOD_ABSENT' };
+    try {
+        const st = JSON.parse(NativeBridge.getC1CapturePilotStatus() || 'null');
+        if (!st || typeof st !== 'object' || st.available === false) return { available: false, reason: (st && st.reason) || 'MALFORMED' };
+        if (typeof st.candidate_build !== 'boolean' || typeof st.enabled !== 'boolean') return { available: false, reason: 'MALFORMED' };
+        return Object.assign({}, st, { available: true });
+    } catch (_) { return { available: false, reason: 'STATUS_ERROR' }; }
+}
+
+const C1_GATE_TEXT = {
+    PILOT_DISABLED: 'Off — nothing is captured.',
+    NOT_PAPER_MODE: 'On, waiting — Paper mode is not active, so nothing is captured.',
+    NOT_CANDIDATE_BUILD: 'Unavailable on this build.',
+};
+
+let c1LastToggle = null;
+/** Pure view. Empty string (hidden) unless the native bridge reports a candidate build. */
+function c1PilotView(st) {
+    if (!st || st.available !== true || st.candidate_build !== true) return '';
+    const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const on = st.enabled === true;
+    const active = on && st.gate == null;
+    const line = active ? 'On — capturing exact-contract quote evidence for Paper proposals.'
+        : (C1_GATE_TEXT[st.gate] || (on ? 'On — status ' + e(st.gate) : C1_GATE_TEXT.PILOT_DISABLED));
+    const colour = active ? '#22c55e' : on ? '#f59e0b' : '#94a3b8';
+    const t = c1LastToggle;
+    const said = (v) => v === true ? 'on' : v === false ? 'off' : 'unknown';
+    const rb = t ? `<div class="c1-toggle-readback" style="font-size:11px;color:${t.readback === t.requested ? 'var(--text-muted)' : '#f59e0b'}">Requested ${said(t.requested)} · app reads back ${said(t.readback)}${t.readback === t.requested ? '' : ' — NOT applied'}</div>` : '';
+    return `<div class="card c1-capture" style="border:1px dashed #a855f7;padding:10px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#a855f7">Paper capture (C1 research) — ${on ? 'ON' : 'OFF'} · candidate build</div>
+        <div class="c1-status" style="font-size:12px;color:${colour}">${line}</div>
+        <div style="margin-top:6px"><button class="c1-toggle" onclick="c1SetPilotEnabled(${on ? 'false' : 'true'})" style="padding:4px 12px;font-size:12px;border:1px solid #a855f7;background:transparent;color:#a855f7;border-radius:6px">${on ? 'Turn Paper capture off' : 'Turn Paper capture on'}</button></div>
+        ${rb}
+        <div style="font-size:11px;color:var(--text-muted)">Research evidence only, off by default. It does not change manual Paper, admission, ranking, exits or Real (Real stays disabled). Counts appear in the session export.</div>
+    </div>`;
+}
+
+function renderC1Pilot() {
+    const el = typeof document !== 'undefined' ? document.getElementById('c1-capture') : null;
+    if (!el) return;
+    el.innerHTML = c1PilotView(c1PilotStatus());
+}
+
+function c1SetPilotEnabled(on) {
+    let readback;
+    try {
+        if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.setC1CapturePilotEnabled === 'function') NativeBridge.setC1CapturePilotEnabled(on === true);
+    } catch (_) { /* the status read below reports the real state */ }
+    try {
+        if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.getC1CapturePilotEnabled === 'function') {
+            const v = NativeBridge.getC1CapturePilotEnabled();
+            if (typeof v === 'boolean') readback = v;
+        }
+    } catch (_) { /* unknown */ }
+    c1LastToggle = { requested: on === true, readback };
+    renderC1Pilot();
+}
+// ── end C1 capture pilot ──────────────────────────────────────────────────────────────────────────────────
+
 // ── M0 full-day research collector (collection only; no conclusions) ──────────────────────────────────────
 /** Parsed native collector status, or {available:false, reason}. Never throws. */
 function m0ResearchStatus() {
@@ -5475,7 +5540,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.96', build: 527, app_js_v: 1391 };
+const M0_PWA_IDENTITY = { version: '2.6.97', build: 528, app_js_v: 1392 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6827,6 +6892,7 @@ function renderAll(snapshot = null) {
         try { renderEvExperiment(); applyRuleBFills(); } catch (e) { console.warn('[EV12] render failed:', e?.message || e); }
         try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
         try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
+        try { renderC1Pilot(); } catch (e) { console.warn('[C1] pilot render failed:', e?.message || e); }
         try { renderSessionEvidence(); } catch (e) { console.warn('[G0] session evidence render failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
@@ -11023,6 +11089,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { reconcileNativeSessionUi(); } catch (e) { console.warn('[boot] early native session restore failed:', e.message); }
     try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
     try { renderResearchCollector(); } catch (e) { console.warn('[boot] M0 research render failed:', e.message); }   // read-only
+    try { renderC1Pilot(); } catch (e) { console.warn('[boot] C1 pilot render failed:', e.message); }   // read-only
 
     // b515: navigation state (tab now, scroll once content exists) is restored BEFORE any network await, so a
     // re-created WebView does not sit on the default screen while Supabase/native reads run. Persistence is bound
