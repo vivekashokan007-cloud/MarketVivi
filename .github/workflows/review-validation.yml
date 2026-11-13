@@ -67,8 +67,13 @@ jobs:
           ref="${{ github.head_ref || github.ref_name }}"
           if git ls-remote --exit-code --heads https://github.com/vivekashokan007-cloud/Marketapp.git "$ref" >/dev/null; then
             echo "ref=$ref" >> "$GITHUB_OUTPUT"
+            # a same-name branch IS the pair, so the one-version release invariant is enforced
+            echo "resolved=paired" >> "$GITHUB_OUTPUT"
           else
             echo "ref=main" >> "$GITHUB_OUTPUT"
+            # fell back to Marketapp main: not a pair, so the version comparison is reported
+            # rather than failed. On main both sides resolve to main and this reads `paired`.
+            echo "resolved=fallback" >> "$GITHUB_OUTPUT"
           fi
       - name: Checkout paired Marketapp (read-only, for the real bridge facade)
         uses: actions/checkout@v4
@@ -83,6 +88,8 @@ jobs:
             app/src/main/java/com/marketradar/app/MainActivity.kt
             app/src/main/java/com/marketradar/app/NativeBridge.kt
             app/src/main/java/com/marketradar/app/BackgroundResume.kt
+            app/build.gradle.kts
+            app/src/main/python/brain.py
           sparse-checkout-cone-mode: false
 
       - name: Validate app syntax
@@ -96,7 +103,9 @@ jobs:
           for f in tests/test_ev_v12_pwa.mjs tests/test_ev_v12_review_r2.mjs tests/test_ev_v12_review_r3.mjs tests/test_ev_v12_review_r4.mjs tests/test_ev_v12_review_r5.mjs tests/test_b507_version.mjs tests/test_b507_overnight_chain.mjs tests/test_b507_r1_authority.mjs tests/test_ev_v12_control_b505.mjs tests/test_ev_v12_bridge_chain_b506.mjs; do
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
-          MARKETAPP_DIR="$PWD/_marketapp" node --test "${files[@]}"
+          MARKETAPP_DIR="$PWD/_marketapp" \
+            MARKETAPP_PAIR_RESOLVED="${{ steps.pair.outputs.resolved }}" \
+            node --test "${files[@]}"
           MARKETAPP_DIR="$PWD/_marketapp" node --test tests/test_ev_v12_bridge_chain_b506.mjs | tee /tmp/chain.log
           grep -q '^# pass 5' /tmp/chain.log
           # b507 real overnight chain: Kotlin SessionInputs golden -> Python brain golden -> real facade -> real app.js
