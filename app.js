@@ -6478,11 +6478,62 @@ function resumeSingleLegPending() {
         if (!SINGLE_LEG_POLLING[p.request_id]) { SINGLE_LEG_POLLING[p.request_id] = true; setTimeout(() => pollSingleLegAdmit(ix, p.request_id, 0), 400); }
     }
 }
-function admitSingleLeg(ix) {
+// Codex review 17 Nov 2026 (A2/A3): the ONE shared check both recommendation cards (Copilot single-leg card and
+// the Trade screen status) apply before offering a Paper admission.  Identity: a present plan decision id equal to
+// the index decision's id; the plan, its contract and (when present) the decision all name the slot's index; one
+// instrument key across plan, contract and quote_needed; option type agrees with the action.  Action: outright
+// buys only - SELL_* is an uncovered short and is never offered (UNCOVERED_SHORT_NOT_OFFERED); anything else is
+// ACTION_NOT_ALLOWED.  It does not touch research capture, existing positions or their exits, or Manual Paper.
+const SL_OUTRIGHT_BUY_ACTION = /^BUY_(CE|PE)$/;
+function singleLegAdmissionCheck(ix, bi) {
+    const p = (bi?.single_leg_by_index || {})[ix];
+    const d = bi?.by_index?.[ix];
+    const id = x => (typeof x === 'string' && x.trim()) ? x.trim() : null;
+    const out = (ok, state, reasons) => ({ ok, state, reasons, decision_id: ok ? id(p.decision_id) : null,
+        instrument_key: ok ? id(p.instrument_key) : null, action: p?.action ?? null });
+    if (!p || typeof p !== 'object') return out(false, 'RESULT_UNAVAILABLE', ['PLAN_NOT_COMPUTED']);
+    const bad = [];
+    const pdid = id(p.decision_id), ddid = id(d?.decision_id);
+    if (!pdid) bad.push('PLAN_DECISION_ID_MISSING');
+    if (!ddid) bad.push('DECISION_ID_MISSING');
+    if (pdid && ddid && pdid !== ddid) bad.push('PLAN_DECISION_MISMATCH');
+    if (String(p.index ?? '') !== ix) bad.push('PLAN_INDEX_MISMATCH');
+    if (d && d.index != null && String(d.index) !== ix) bad.push('DECISION_INDEX_MISMATCH');
+    const c = p.contract && typeof p.contract === 'object' ? p.contract : null;
+    if (!c || String(c.index ?? '') !== ix) bad.push('CONTRACT_INDEX_MISMATCH');
+    const key = id(p.instrument_key);
+    if (!key) bad.push('INSTRUMENT_KEY_MISSING');
+    else {
+        if (!c || id(c.instrument_key) !== key) bad.push('CONTRACT_INSTRUMENT_MISMATCH');
+        const qn = Array.isArray(p.quote_needed) ? p.quote_needed : [];
+        if (qn.length && (qn.length !== 1 || qn[0] !== key)) bad.push('QUOTE_INSTRUMENT_MISMATCH');
+    }
+    if (bad.length) return out(false, 'RESULT_UNAVAILABLE', bad);
+    const a = String(p.action ?? '');
+    if (/^SELL/.test(a)) return out(false, 'BLOCKED', ['UNCOVERED_SHORT_NOT_OFFERED']);
+    if (!SL_OUTRIGHT_BUY_ACTION.test(a)) return out(false, 'BLOCKED', ['ACTION_NOT_ALLOWED:' + (a || 'MISSING')]);
+    if (p.option_type != null && String(p.option_type) !== a.slice(-2)) return out(false, 'RESULT_UNAVAILABLE', ['OPTION_TYPE_MISMATCH']);
+    return out(true, null, []);
+}
+function singleLegAdmitButton(ix, chk) {
+    return `<button class="sl-admit" style="font-size:11px;margin-left:4px" data-index="${iaEsc(ix)}" data-decision-id="${iaEsc(chk.decision_id)}" data-instrument-key="${iaEsc(chk.instrument_key)}" onclick="admitSingleLegFromButton(this)">Paper: fetch quote &amp; admit</button>`;
+}
+function admitSingleLegFromButton(el) {
+    const g = k => (el && typeof el.getAttribute === 'function') ? el.getAttribute(k) : null;
+    return admitSingleLeg(g('data-index'), g('data-decision-id'), g('data-instrument-key'));
+}
+// A1: the tap carries the decision id and instrument key the card DISPLAYED; native requires its first read to
+// match both (DISPLAYED_PROPOSAL_CHANGED otherwise).  No identity -> nothing is sent.  A native build without the
+// bound entry point is refused here rather than falling back to the index-only call.
+function admitSingleLeg(ix, decisionId, instrumentKey) {
     let out = null;
+    const did = typeof decisionId === 'string' ? decisionId.trim() : '';
+    const key = typeof instrumentKey === 'string' ? instrumentKey.trim() : '';
     try {
-        out = typeof window.NativeBridge?.singleLegAdmit === 'function'
-            ? JSON.parse(window.NativeBridge.singleLegAdmit(ix) || '{}') : { status: 'REJECTED', reason: 'BRIDGE_UNAVAILABLE' };
+        out = !did || !key ? { status: 'REJECTED', reason: 'DISPLAYED_IDENTITY_REQUIRED' }
+            : typeof window.NativeBridge?.singleLegAdmitDisplayed === 'function'
+            ? JSON.parse(window.NativeBridge.singleLegAdmitDisplayed(ix, did, key) || '{}')
+            : { status: 'REJECTED', reason: typeof window.NativeBridge?.singleLegAdmit === 'function' ? 'NATIVE_IDENTITY_BINDING_UNAVAILABLE' : 'BRIDGE_UNAVAILABLE' };
     } catch (e) { out = { status: 'ERROR' }; }
     if (out?.status === 'PENDING' && out.request_id) {
         SINGLE_LEG_PENDING[ix] = { request_id: out.request_id, phase: 'QUEUED' };
@@ -6516,7 +6567,10 @@ function finishSingleLegAdmit(ix, out) {
     delete SINGLE_LEG_PENDING[ix];
     saveSingleLegPending();
     if (out?.status !== 'ADMITTED' && out?.status !== 'DUPLICATE_IGNORED') {
-        alert(`Single-leg Paper not admitted: ${out?.reason || out?.status || 'unknown'}${(out?.reasons || []).length ? ' (' + out.reasons.join(', ') + ')' : ''}`);
+        const changed = /^DISPLAYED_PROPOSAL_CHANGED:/.test(String(out?.reason || ''));
+        alert(changed
+            ? `Single-leg Paper not admitted: the proposal changed after you tapped (${String(out.reason).split(':')[1]}). Nothing was admitted - review the current proposal and tap again. [${out.reason}]`
+            : `Single-leg Paper not admitted: ${out?.reason || out?.status || 'unknown'}${(out?.reasons || []).length ? ' (' + out.reasons.join(', ') + ')' : ''}`);
     }
     loadSingleLegStore();
     if (typeof renderAll === 'function') renderAll();
@@ -6549,11 +6603,15 @@ function renderSingleLegCard(bi) {
         const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? p.contract?.lot_size ?? 'n/a')} · ${required}` : 'no action';
         // R7: a proposal waiting only for the broker snapshot is admissible-on-tap: native fetches the exact
         // instrument's dedicated quote and re-checks every gate at the actual time; otherwise every reason shows.
-        const tappable = p.status === 'ADMISSIBLE' || p.status === 'ELIGIBLE_PENDING_SNAPSHOT';
+        // A2/A3: the shared identity + outright-buy check runs first; it blocks (with its reason) regardless of
+        // the plan status, so an uncovered short or a mismatched identity is never offered from this card either.
+        const chk = p.action ? singleLegAdmissionCheck(ix, bi) : { ok: false, state: 'BLOCKED', reasons: [] };
+        const tappable = chk.ok && (p.status === 'ADMISSIBLE' || p.status === 'ELIGIBLE_PENDING_SNAPSHOT');
         const pend = SINGLE_LEG_PENDING[ix];
         const btn = pend ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase)})…</span>` : on && tappable
-            ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: fetch quote &amp; admit</button>` : '';
-        const state = p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
+            ? singleLegAdmitButton(ix, chk) : '';
+        const state = !chk.ok ? (chk.state === 'BLOCKED' ? 'blocked: ' : 'unavailable: ') + iaEsc(chk.reasons.concat(why ? [why] : []).join(', '))
+            : p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
         return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}</div>`;
     }).join('');
     const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
@@ -8157,8 +8215,10 @@ function experimentalKellyAdvisoryReadout(_cand) {
 // Trade screen single-leg Paper status (Codex review 17 Nov 2026). One status per index, shown beside that
 // index's spread candidates, derived only from the published result plus the existing checks:
 //   OFF | RESULT_UNAVAILABLE | NO_DIRECTIONAL_PROPOSAL | BLOCKED | AWAITING_BROKER_SNAPSHOT | ELIGIBLE.
-// The entry action is the existing admitSingleLeg (native re-validates every gate against the CURRENT result).
-// Short single-leg proposals (SELL_*) are uncovered shorts and are never offered here: they show as BLOCKED.
+// The entry action is admitSingleLeg bound to the DISPLAYED decision id + instrument key (native requires its first
+// read to match, then re-validates every gate).  Identity and the outright-buy rule come from the shared
+// singleLegAdmissionCheck: SELL_* (uncovered short) shows BLOCKED and is never offered; identity failures show
+// RESULT_UNAVAILABLE with the reason.
 // No combined NF+BNF status, no ranking between indices, no real-order path.
 const SL_TRADE_STATE_LABEL = {
     OFF: 'Paper single-leg off',
@@ -8172,7 +8232,8 @@ function singleLegTradeState(ix, bi, env) {
     const e = env || {};
     const plan = (bi?.single_leg_by_index || {})[ix];
     const p = plan && typeof plan === 'object' ? plan : null;
-    const out = (state, reasons) => ({ index: ix, state, reasons: (reasons || []).map(String), plan: p });
+    const out = (state, reasons, chk) => ({ index: ix, state, reasons: (reasons || []).map(String), plan: p,
+        identity: chk && chk.ok ? { decision_id: chk.decision_id, instrument_key: chk.instrument_key } : null });
     if (e.enabled !== true) return out('OFF', []);
     if (e.fresh !== true) return out('RESULT_UNAVAILABLE', [e.freshReason || 'RESULT_NOT_CURRENT']);
     const d = bi?.by_index?.[ix];
@@ -8184,15 +8245,17 @@ function singleLegTradeState(ix, bi, env) {
     const permits = (d.structure_policy?.allowed || []).some(a => /^(BUY|SELL)_(CE|PE)$/.test(String(a)));
     if (!p) return permits ? out('RESULT_UNAVAILABLE', ['PLAN_NOT_COMPUTED'])
         : out('NO_DIRECTIONAL_PROPOSAL', ['DIRECTION_' + dv]);
-    if (p.decision_id && d.decision_id && p.decision_id !== d.decision_id) return out('RESULT_UNAVAILABLE', ['PLAN_DECISION_MISMATCH']);
     const rs = (p.reasons || []).map(String);
     if (!p.action) {
+        if (p.decision_id && d.decision_id && p.decision_id !== d.decision_id) return out('RESULT_UNAVAILABLE', ['PLAN_DECISION_MISMATCH']);
         return rs.some(r => r.startsWith('NO_ENTRY_DIRECTION')) ? out('NO_DIRECTIONAL_PROPOSAL', rs)
             : out('BLOCKED', rs.length ? rs : ['NO_ACTION']);
     }
-    if (String(p.action).startsWith('SELL')) return out('BLOCKED', ['UNCOVERED_SHORT_NOT_OFFERED'].concat(rs));
-    if (p.status === 'ADMISSIBLE') return out('ELIGIBLE', []);
-    if (p.status === 'ELIGIBLE_PENDING_SNAPSHOT') return out('AWAITING_BROKER_SNAPSHOT', rs);
+    // A2/A3: identity and the outright-buy rule (shared with the Copilot card) gate every proposal with an action.
+    const chk = singleLegAdmissionCheck(ix, bi);
+    if (!chk.ok) return out(chk.state, chk.state === 'BLOCKED' ? chk.reasons.concat(rs) : chk.reasons);
+    if (p.status === 'ADMISSIBLE') return out('ELIGIBLE', [], chk);
+    if (p.status === 'ELIGIBLE_PENDING_SNAPSHOT') return out('AWAITING_BROKER_SNAPSHOT', rs, chk);
     return out('BLOCKED', rs.length ? rs : ['PLAN_STATUS_' + String(p.status || 'MISSING')]);
 }
 function renderSingleLegTradeStatus(ix, bi) {
@@ -8204,10 +8267,10 @@ function renderSingleLegTradeStatus(ix, bi) {
         ? `<div class="sl-ts-ident" style="font-size:11px">${iaEsc(p.action)} ${iaEsc(p.strike ?? 'strike n/a')}${iaEsc(p.option_type || '')} · ${p.instrument_key ? iaEsc(p.instrument_key) : 'instrument unavailable'}${p.contract?.expiry ? ' · exp ' + iaEsc(p.contract.expiry) : ''} · lot ${iaEsc(p.contract?.lot_size ?? 'n/a')}</div>` : '';
     const why = s.reasons.length ? ` · ${iaEsc(s.reasons.join(', '))}` : '';
     const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
-    const tappable = s.state === 'ELIGIBLE' || s.state === 'AWAITING_BROKER_SNAPSHOT';
+    const tappable = (s.state === 'ELIGIBLE' || s.state === 'AWAITING_BROKER_SNAPSHOT') && !!s.identity;
     const act = pend
         ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase)})…</span>`
-        : tappable ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: fetch quote &amp; admit</button>`
+        : tappable ? singleLegAdmitButton(ix, s.identity)
         : s.state === 'OFF' ? `<button class="sl-toggle" style="font-size:11px;margin-left:4px" onclick="setSingleLegEnabled(true)">Turn on</button>` : '';
     const col = s.state === 'ELIGIBLE' ? 'var(--accent)' : (s.state === 'BLOCKED' || s.state === 'RESULT_UNAVAILABLE') ? 'var(--warn)' : 'var(--text-muted)';
     return `<div class="sl-trade-status" data-index="${iaEsc(ix)}" data-sl-state="${s.state}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">

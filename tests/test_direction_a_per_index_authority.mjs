@@ -14,13 +14,18 @@ const FNS = ['isIndexAuthorityActive', 'getIndexSelector', 'iaEsc', 'indexAuthor
   'renderIndexAuthorityPanel', 'renderIndexAuthorityPanels', 'renderDailyReviewCard', 'iaTodayIst',
   'indexStructureChoiceAvailable', 'renderIndexAlerts', 'chooseIndexStructureForPaper', 'setIndexSelector',
   'singleLegEnabled', 'setSingleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'renderSingleLegCard',
-  'pollSingleLegAdmit', 'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups',
+  'singleLegAdmissionCheck', 'singleLegAdmitButton', 'admitSingleLegFromButton', 'pollSingleLegAdmit', 'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'setSingleLegCapitalPrompt', 'reviewNet', 'renderReviewGroups',
   'sessionEvidenceSupported', 'renderSessionEvidenceLine', 'renderReviewInputs'];
+const BUY_RE = (src.match(/^const SL_OUTRIGHT_BUY_ACTION = .*$/m) || [''])[0];
+// 17 Nov (Codex A1/A2): an offered single-leg proposal carries a full identity; the tap sends it to native.
+const ID = ix => ({ index: ix, decision_id: 'd_' + ix.toLowerCase(), instrument_key: 'K|' + ix, quote_needed: ['K|' + ix],
+  contract: { index: ix, instrument_key: 'K|' + ix } });
+const BTN = ix => new RegExp(`data-index="${ix}" data-decision-id="d_${ix.toLowerCase()}" data-instrument-key="K\\|${ix}"`);
 function ctx(sel = 'BOTH') {
   const store = { mr_index_selector_v1: sel };
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, calls: [], alerts: [], timers: [], window: {}, setTimeout: f => c.timers.push(f), prompt: () => c.promptValue, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
   vm.createContext(c);
-  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\nfunction findCandidateById(id){ return { id, index: 'NF' }; }\nfunction paperObservationAuthorization(){ return { allowed: true, analysis_only: true }; }\nfunction paperTradeCapacity(){ return { available: true, count: 0, limit: 2 }; }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\nfunction findCandidateById(id){ return { id, index: 'NF' }; }\nfunction paperObservationAuthorization(){ return { allowed: true, analysis_only: true }; }\nfunction paperTradeCapacity(){ return { available: true, count: 0, limit: 2 }; }\n${BUY_RE}\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
 const cand = { id: 'NF-BULL_CALL-1', index: 'NF', type: 'BULL_CALL', entryEligible: true, legs: [] };
@@ -28,9 +33,9 @@ function bi({ action = 'CANDIDATES', selected = null } = {}) {
   return {
     direction_authority: { active: 'index_direction_v1' },
     by_index: {
-      NF: { direction: { value: 'BULL', strength: 'STRONG' }, display: 'Nifty up', regime: { value: 'TREND_UP' },
+      NF: { decision_id: 'd_nf', direction: { value: 'BULL', strength: 'STRONG' }, display: 'Nifty up', regime: { value: 'TREND_UP' },
         structure_policy: { allowed: ['BULL_CALL', 'BULL_PUT'] }, action: { value: action, candidate_ids: [cand.id], reasons: [] } },
-      BNF: { direction: { value: 'UNAVAILABLE' }, reason_codes: ['ANCHOR_MISSING'], action: { value: 'WAIT', reasons: ['DIRECTION_UNAVAILABLE'] } },
+      BNF: { decision_id: 'd_bnf', direction: { value: 'UNAVAILABLE' }, reason_codes: ['ANCHOR_MISSING'], action: { value: 'WAIT', reasons: ['DIRECTION_UNAVAILABLE'] } },
     },
     candidates_by_index: { NF: [cand], BNF: [] },
     managed_policy: { NF: { selected, reason: selected ? null : 'STRUCTURE_CHOICE_RULE_UNSPECIFIED', gates: [] } },
@@ -117,24 +122,24 @@ test('single-leg card: off by default, shows every block reason, admit only when
   assert.doesNotMatch(off, /sl-admit/);
   const calls = [];
   c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => JSON.stringify({ positions: [{ index: 'NF', action: 'BUY_CE', instrument_key: 'SYNTH_FO|1', status: 'OPEN' }] }),
-    singleLegAdmit: ix => { calls.push(ix); return JSON.stringify({ status: 'ADMITTED', position_id: 'p1' }); } };
+    singleLegAdmitDisplayed: (ix, d, k) => { calls.push([ix, d, k]); return JSON.stringify({ status: 'ADMITTED', position_id: 'p1' }); } };
   vm.runInContext('SINGLE_LEG_STORE=null', c);
-  b.single_leg_by_index.NF = { admit: true, status: 'ADMISSIBLE', action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
+  b.single_leg_by_index.NF = { ...ID('NF'), admit: true, status: 'ADMISSIBLE', action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
   const on = c.renderSingleLegCard(b);
-  assert.match(on, /admitSingleLeg\('NF'\)/);
-  assert.doesNotMatch(on, /admitSingleLeg\('BNF'\)/);
+  assert.match(on, BTN('NF'));
+  assert.doesNotMatch(on, /data-index="BNF" data-decision-id/);
   assert.match(on, /SYNTH_FO\|1 · OPEN/);
   assert.match(on, /Paper fill estimate from broker snapshot; exchange quote age unavailable\./);
-  assert.equal(c.admitSingleLeg('NF').status, 'ADMITTED');
-  assert.deepEqual(calls, ['NF']);
+  assert.equal(c.admitSingleLeg('NF', 'd_nf', 'K|NF').status, 'ADMITTED');
+  assert.deepEqual(calls, [['NF', 'd_nf', 'K|NF']]);
   assert.equal(c.alerts.length, 0);
 });
 test('single-leg admit: native rejection is surfaced with its reasons, never silently accepted', () => {
   const c = ctx();
-  c.window.NativeBridge = { singleLegAdmit: () => JSON.stringify({ status: 'REJECTED', reason: 'PROPOSAL_NOT_ADMISSIBLE', reasons: ['MARGIN_EVIDENCE_STALE'] }), singleLegRead: () => '{}' };
-  assert.equal(c.admitSingleLeg('NF').status, 'REJECTED');
+  c.window.NativeBridge = { singleLegAdmitDisplayed: () => JSON.stringify({ status: 'REJECTED', reason: 'PROPOSAL_NOT_ADMISSIBLE', reasons: ['MARGIN_EVIDENCE_STALE'] }), singleLegRead: () => '{}' };
+  assert.equal(c.admitSingleLeg('NF', 'd_nf', 'K|NF').status, 'REJECTED');
   assert.match(c.alerts[0], /PROPOSAL_NOT_ADMISSIBLE \(MARGIN_EVIDENCE_STALE\)/);
-  const none = ctx(); none.admitSingleLeg('NF');
+  const none = ctx(); none.admitSingleLeg('NF', 'd_nf', 'K|NF');
   assert.match(none.alerts[0], /BRIDGE_UNAVAILABLE/);
 });
 
@@ -142,12 +147,12 @@ test('R7: proposal waiting only for a broker snapshot is tappable (non-circular)
   const c = ctx();
   c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}' };
   const b = bi();
-  b.single_leg_by_index = { NF: { admit: false, status: 'ELIGIBLE_PENDING_SNAPSHOT', action: 'BUY_CE', strike: 24100, reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] },
+  b.single_leg_by_index = { NF: { ...ID('NF'), admit: false, status: 'ELIGIBLE_PENDING_SNAPSHOT', action: 'BUY_CE', strike: 24100, reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] },
     BNF: { admit: false, status: 'BLOCKED', action: 'SELL_PE', reasons: ['MARGIN_UNAVAILABLE', 'QUANTITY_SHORTFALL'] } };
   const html = c.renderSingleLegCard(b);
   assert.match(html, /needs a fresh broker snapshot at tap/);
-  assert.match(html, /admitSingleLeg\('NF'\)/);
-  assert.doesNotMatch(html, /admitSingleLeg\('BNF'\)/);
+  assert.match(html, BTN('NF'));
+  assert.doesNotMatch(html, /data-index="BNF" data-decision-id/);
   assert.match(html, /MARGIN_UNAVAILABLE, QUANTITY_SHORTFALL/);
   assert.match(html, /required margin: pending broker check/);
   assert.match(html, /required capital: pending quote check/);
@@ -159,10 +164,10 @@ test('R8: admission is non-blocking - PENDING with request id, page polls status
   const c = ctx();
   let n = 0;
   c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}',
-    singleLegAdmit: () => JSON.stringify({ status: 'PENDING', request_id: 'rq1' }),
+    singleLegAdmitDisplayed: () => JSON.stringify({ status: 'PENDING', request_id: 'rq1' }),
     singleLegAdmitStatus: id => { n++; return JSON.stringify(n < 2 ? { status: 'PENDING', phase: 'FETCHING', request_id: id }
       : { status: 'REJECTED', reason: 'STATE_CHANGED_DURING_FETCH:selector', completed: true, request_id: id }); } };
-  assert.equal(c.admitSingleLeg('NF').status, 'PENDING');
+  assert.equal(c.admitSingleLeg('NF', 'd_nf', 'K|NF').status, 'PENDING');
   assert.equal(c.alerts.length, 0);
   const b = bi(); b.single_leg_by_index = { NF: { status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
   assert.match(c.renderSingleLegCard(b), /admission pending \(QUEUED\)/);
@@ -214,10 +219,10 @@ test('R9: outcome after the normal polling period is still shown; reload resumes
   const c = ctx();
   let n = 0;
   c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}',
-    singleLegAdmit: () => JSON.stringify({ status: 'PENDING', request_id: 'rq9' }),
+    singleLegAdmitDisplayed: () => JSON.stringify({ status: 'PENDING', request_id: 'rq9' }),
     singleLegAdmitStatus: id => { n++; return JSON.stringify(n < 160 ? { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', request_id: id }
       : { status: 'ADMITTED', position_id: 'sl1_x', completed: true, reconciled: true, request_id: id }); } };
-  c.admitSingleLeg('NF');
+  c.admitSingleLeg('NF', 'd_nf', 'K|NF');
   for (let i = 0; i < 155; i++) c.timers.shift()();
   assert.equal(c.alerts.length, 0);                                  // no NOT_ADMITTED / poll-limit verdict
   const b = bi(); b.single_leg_by_index = { NF: { status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };

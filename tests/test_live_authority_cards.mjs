@@ -21,7 +21,8 @@ function harness({ allowed = true, full = false, choice = false } = {}) {
   };
   vm.createContext(c);
   const labels = src.slice(src.indexOf('const SL_TRADE_STATE_LABEL'), src.indexOf('};', src.indexOf('const SL_TRADE_STATE_LABEL')) + 2);
-  vm.runInContext(labels + '\n' + ['iaEsc', 'singleLegTradeState', 'renderSingleLegTradeStatus', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].map(fn).join('\n'), c);
+  const buyRe = (src.match(/^const SL_OUTRIGHT_BUY_ACTION = .*$/m) || [''])[0];
+  vm.runInContext(labels + '\n' + buyRe + '\n' + ['iaEsc', 'singleLegAdmissionCheck', 'singleLegAdmitButton', 'singleLegTradeState', 'renderSingleLegTradeStatus', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].map(fn).join('\n'), c);
   return c;
 }
 const missing = { authorityPolicyVersion: 'index_direction_v1', index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR',

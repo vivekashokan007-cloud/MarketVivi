@@ -11,11 +11,14 @@ const k = (ix, strike, ot) => `FIXTURE|${ix}|2026-11-2x|${strike}${ot}`;
 export function plan(ix, over = {}) {
   const strike = ix === 'NF' ? 26000 : 58500;
   const option_type = over.option_type || 'CE';
+  const key = k(ix, strike, option_type);
+  const { side, ...rest } = over;
   return { policy_id: 'index_single_leg_v1', schema: 'mr.single_leg_plan.v2', index: ix, admit: false,
-    decision_id: `fx_${ix.toLowerCase()}_17`, action: (over.side === 'SELL' ? 'SELL_' : 'BUY_') + option_type,
-    strike, option_type, instrument_key: k(ix, strike, option_type),
-    contract: { lot_size: ix === 'NF' ? 65 : 30, expiry: ix === 'NF' ? '2026-11-24' : '2026-11-25', reasons: [] },
-    status: 'ADMISSIBLE', reasons: [], ...over };
+    decision_id: `fx_${ix.toLowerCase()}_17`, action: (side === 'SELL' ? 'SELL_' : 'BUY_') + option_type,
+    strike, option_type, instrument_key: key, quote_needed: [key],
+    // contract identity as index_single_leg_v1.contract_identity publishes it (index + instrument_key included)
+    contract: { index: ix, instrument_key: key, lot_size: ix === 'NF' ? 65 : 30, expiry: ix === 'NF' ? '2026-11-24' : '2026-11-25', reasons: [] },
+    status: 'ADMISSIBLE', reasons: [], ...rest };
 }
 export function decision(ix, over = {}) {
   return { decision_id: `fx_${ix.toLowerCase()}_17`, availability: 'AVAILABLE',

@@ -14,6 +14,9 @@ function fn(name) {
 }
 const labelsAt = src.indexOf('const SL_TRADE_STATE_LABEL');
 const LABELS = src.slice(labelsAt, src.indexOf('};', labelsAt) + 2);
+const BUY_RE = (src.match(/^const SL_OUTRIGHT_BUY_ACTION = .*$/m) || [''])[0];
+// the admit button now carries the DISPLAYED identity (A1); match it by index
+const ADMIT = ix => new RegExp(`class="sl-admit"[^>]*data-index="${ix}"[^>]*onclick="admitSingleLegFromButton\\(this\\)">Paper: fetch quote &amp; admit`);
 function harness({ enabled = true, fresh = true, freshReason = '', sel = 'BOTH', pending = {}, bd = {} } = {}) {
   const c = { String, Number, JSON, Object, Array, Math, Date, calls: [], bd,
     getIndexSelector: () => sel, friendlyType: x => x,
@@ -23,7 +26,7 @@ function harness({ enabled = true, fresh = true, freshReason = '', sel = 'BOTH',
     singleLegEnabled: () => enabled, brainFreshnessStatus: () => ({ fresh, reason: freshReason }),
     SINGLE_LEG_PENDING: pending };
   vm.createContext(c);
-  vm.runInContext(LABELS + '\n' + ['iaEsc', 'singleLegTradeState', 'renderSingleLegTradeStatus',
+  vm.runInContext(LABELS + '\n' + BUY_RE + '\n' + ['iaEsc', 'singleLegAdmissionCheck', 'singleLegAdmitButton', 'singleLegTradeState', 'renderSingleLegTradeStatus',
     'renderAuthorityCandidateCard', 'renderAuthorityWatchlist'].map(fn).join('\n'), c);
   return c;
 }
@@ -58,7 +61,7 @@ test('blocked shows the exact reasons; awaiting snapshot and eligible offer the 
   assert.doesNotMatch(section(blocked, 'BNF'), /admitSingleLeg/);
   for (const k of ['AWAITING_BROKER_SNAPSHOT', 'ELIGIBLE']) {
     const html = harness({ bd: S[k][0] }).renderAuthorityWatchlist(S[k][0]);
-    assert.match(section(html, 'BNF'), /onclick="admitSingleLeg\('BNF'\)">Paper: fetch quote &amp; admit/);
+    assert.match(section(html, 'BNF'), ADMIT('BNF'));
   }
   const aw = harness({ bd: S.AWAITING_BROKER_SNAPSHOT[0] }).renderAuthorityWatchlist(S.AWAITING_BROKER_SNAPSHOT[0]);
   assert.match(section(aw, 'BNF'), /Awaiting broker snapshot<\/span> · BROKER_SNAPSHOT_UNAVAILABLE/);
@@ -69,8 +72,8 @@ test('one index with a proposal while the other is blocked: separate sections, n
   const html = harness({ bd: bi }).renderAuthorityWatchlist(bi);
   assert.equal(stateOf(html, 'NF'), 'ELIGIBLE');
   assert.equal(stateOf(html, 'BNF'), 'BLOCKED');
-  assert.match(section(html, 'NF'), /admitSingleLeg\('NF'\)/);
-  assert.doesNotMatch(section(html, 'NF'), /admitSingleLeg\('BNF'\)|ENTRY_WINDOW_CLOSED/);
+  assert.match(section(html, 'NF'), ADMIT('NF'));
+  assert.doesNotMatch(section(html, 'NF'), /data-index="BNF" data-decision-id|ENTRY_WINDOW_CLOSED/);
   assert.doesNotMatch(section(html, 'BNF'), /admitSingleLeg/);
   assert.equal((html.match(/class="sl-trade-status"/g) || []).length, 2);
   assert.doesNotMatch(html, /NF\+BNF|combined|both indices/i);
@@ -144,7 +147,7 @@ test('index selector, contract identity, pending admission and off state', () =>
   const pend = harness({ bd: bi, pending: { BNF: { request_id: 'r1', phase: 'FETCHING' } } }).renderAuthorityWatchlist(bi);
   assert.match(section(pend, 'BNF'), /admission pending \(FETCHING\)/);
   assert.doesNotMatch(section(pend, 'BNF'), /admitSingleLeg/);
-  assert.match(section(pend, 'NF'), /admitSingleLeg\('NF'\)/);
+  assert.match(section(pend, 'NF'), ADMIT('NF'));
   const off = harness({ enabled: false, bd: bi }).renderAuthorityWatchlist(bi);
   for (const ix of ['NF', 'BNF']) {
     assert.match(section(off, ix), /Paper single-leg off[\s\S]*setSingleLegEnabled\(true\)/);
