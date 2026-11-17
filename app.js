@@ -8154,6 +8154,69 @@ function experimentalKellyAdvisoryReadout(_cand) {
     return '';
 }
 
+// Trade screen single-leg Paper status (Codex review 17 Nov 2026). One status per index, shown beside that
+// index's spread candidates, derived only from the published result plus the existing checks:
+//   OFF | RESULT_UNAVAILABLE | NO_DIRECTIONAL_PROPOSAL | BLOCKED | AWAITING_BROKER_SNAPSHOT | ELIGIBLE.
+// The entry action is the existing admitSingleLeg (native re-validates every gate against the CURRENT result).
+// Short single-leg proposals (SELL_*) are uncovered shorts and are never offered here: they show as BLOCKED.
+// No combined NF+BNF status, no ranking between indices, no real-order path.
+const SL_TRADE_STATE_LABEL = {
+    OFF: 'Paper single-leg off',
+    RESULT_UNAVAILABLE: 'Result unavailable',
+    NO_DIRECTIONAL_PROPOSAL: 'No directional proposal',
+    BLOCKED: 'Blocked',
+    AWAITING_BROKER_SNAPSHOT: 'Awaiting broker snapshot',
+    ELIGIBLE: 'Eligible for Paper',
+};
+function singleLegTradeState(ix, bi, env) {
+    const e = env || {};
+    const plan = (bi?.single_leg_by_index || {})[ix];
+    const p = plan && typeof plan === 'object' ? plan : null;
+    const out = (state, reasons) => ({ index: ix, state, reasons: (reasons || []).map(String), plan: p });
+    if (e.enabled !== true) return out('OFF', []);
+    if (e.fresh !== true) return out('RESULT_UNAVAILABLE', [e.freshReason || 'RESULT_NOT_CURRENT']);
+    const d = bi?.by_index?.[ix];
+    if (!d || typeof d !== 'object') return out('RESULT_UNAVAILABLE', ['INDEX_RESULT_MISSING']);
+    const dv = d.direction?.value;
+    if ((d.availability != null && d.availability !== 'AVAILABLE') || !dv || dv === 'UNAVAILABLE') {
+        return out('RESULT_UNAVAILABLE', (d.reason_codes || []).length ? d.reason_codes : ['DIRECTION_UNAVAILABLE']);
+    }
+    const permits = (d.structure_policy?.allowed || []).some(a => /^(BUY|SELL)_(CE|PE)$/.test(String(a)));
+    if (!p) return permits ? out('RESULT_UNAVAILABLE', ['PLAN_NOT_COMPUTED'])
+        : out('NO_DIRECTIONAL_PROPOSAL', ['DIRECTION_' + dv]);
+    if (p.decision_id && d.decision_id && p.decision_id !== d.decision_id) return out('RESULT_UNAVAILABLE', ['PLAN_DECISION_MISMATCH']);
+    const rs = (p.reasons || []).map(String);
+    if (!p.action) {
+        return rs.some(r => r.startsWith('NO_ENTRY_DIRECTION')) ? out('NO_DIRECTIONAL_PROPOSAL', rs)
+            : out('BLOCKED', rs.length ? rs : ['NO_ACTION']);
+    }
+    if (String(p.action).startsWith('SELL')) return out('BLOCKED', ['UNCOVERED_SHORT_NOT_OFFERED'].concat(rs));
+    if (p.status === 'ADMISSIBLE') return out('ELIGIBLE', []);
+    if (p.status === 'ELIGIBLE_PENDING_SNAPSHOT') return out('AWAITING_BROKER_SNAPSHOT', rs);
+    return out('BLOCKED', rs.length ? rs : ['PLAN_STATUS_' + String(p.status || 'MISSING')]);
+}
+function renderSingleLegTradeStatus(ix, bi) {
+    let fr = null;
+    try { fr = brainFreshnessStatus(bi); } catch (e) { fr = { fresh: false, reason: 'FRESHNESS_UNAVAILABLE' }; }
+    const s = singleLegTradeState(ix, bi, { enabled: singleLegEnabled(), fresh: fr?.fresh === true, freshReason: fr?.reason });
+    const p = s.plan;
+    const ident = p && p.action
+        ? `<div class="sl-ts-ident" style="font-size:11px">${iaEsc(p.action)} ${iaEsc(p.strike ?? 'strike n/a')}${iaEsc(p.option_type || '')} · ${p.instrument_key ? iaEsc(p.instrument_key) : 'instrument unavailable'}${p.contract?.expiry ? ' · exp ' + iaEsc(p.contract.expiry) : ''} · lot ${iaEsc(p.contract?.lot_size ?? 'n/a')}</div>` : '';
+    const why = s.reasons.length ? ` · ${iaEsc(s.reasons.join(', '))}` : '';
+    const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
+    const tappable = s.state === 'ELIGIBLE' || s.state === 'AWAITING_BROKER_SNAPSHOT';
+    const act = pend
+        ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase)})…</span>`
+        : tappable ? `<button class="sl-admit" style="font-size:11px;margin-left:4px" onclick="admitSingleLeg('${iaEsc(ix)}')">Paper: fetch quote &amp; admit</button>`
+        : s.state === 'OFF' ? `<button class="sl-toggle" style="font-size:11px;margin-left:4px" onclick="setSingleLegEnabled(true)">Turn on</button>` : '';
+    const col = s.state === 'ELIGIBLE' ? 'var(--accent)' : (s.state === 'BLOCKED' || s.state === 'RESULT_UNAVAILABLE') ? 'var(--warn)' : 'var(--text-muted)';
+    return `<div class="sl-trade-status" data-index="${iaEsc(ix)}" data-sl-state="${s.state}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">
+        <div style="font-size:12px"><b>${iaEsc(ix)} single-leg · Paper only:</b> <span style="color:${col}">${SL_TRADE_STATE_LABEL[s.state]}</span>${why}${act}</div>
+        ${ident}
+        <div style="font-size:10px;color:var(--text-muted)">Separate from the spread alternatives below · admission re-checked natively at tap · simulated Paper fill, no real orders</div>
+    </div>`;
+}
+
 function renderAuthorityWatchlist(bi) {
     const selected = getIndexSelector();
     const shown = selected === 'BOTH' ? ['NF', 'BNF'] : [selected];
@@ -8163,6 +8226,7 @@ function renderAuthorityWatchlist(bi) {
         return `<section class="ia-index-section" data-index="${iaEsc(ix)}"><h3>${iaEsc(ix)} · ${iaEsc(d.direction?.value || 'UNAVAILABLE')}</h3>
             <div class="section-note">${iaEsc(d.display || '')}</div>
             <div class="section-note">Action: ${iaEsc(d.action?.value || 'WAIT')} · ${iaEsc((d.action?.reasons || []).join(', '))}</div>
+            ${renderSingleLegTradeStatus(ix, bi)}
             ${cs.length ? cs.map(renderAuthorityCandidateCard).join('') : '<div class="empty-state">No policy candidate for this index</div>'}
             </section>`;
     }).join('');

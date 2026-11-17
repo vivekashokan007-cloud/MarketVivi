@@ -16,9 +16,12 @@ function harness({ allowed = true, full = false, choice = false } = {}) {
     paperObservationAuthorization: () => ({ allowed, reason: 'IDENTITY_UNAVAILABLE', analysis_only: true }),
     paperTradeCapacity: () => ({ available: !full, count: full ? 2 : 0, limit: 2 }),
     indexStructureChoiceAvailable: () => choice,
+    // 17 Nov: renderAuthorityWatchlist now includes the per-index single-leg Paper status (off by default here).
+    singleLegEnabled: () => false, brainFreshnessStatus: () => ({ fresh: true }), SINGLE_LEG_PENDING: {},
   };
   vm.createContext(c);
-  vm.runInContext(['iaEsc', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].map(fn).join('\n'), c);
+  const labels = src.slice(src.indexOf('const SL_TRADE_STATE_LABEL'), src.indexOf('};', src.indexOf('const SL_TRADE_STATE_LABEL')) + 2);
+  vm.runInContext(labels + '\n' + ['iaEsc', 'singleLegTradeState', 'renderSingleLegTradeStatus', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].map(fn).join('\n'), c);
   return c;
 }
 const missing = { authorityPolicyVersion: 'index_direction_v1', index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR',
