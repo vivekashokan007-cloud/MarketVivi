@@ -8253,7 +8253,9 @@ function singleLegTradeState(ix, bi, env) {
     }
     // A2/A3: identity and the outright-buy rule (shared with the Copilot card) gate every proposal with an action.
     const chk = singleLegAdmissionCheck(ix, bi);
-    if (!chk.ok) return out(chk.state, chk.state === 'BLOCKED' ? chk.reasons.concat(rs) : chk.reasons);
+    // R2 (Codex): an identity failure stays RESULT_UNAVAILABLE (no admit action) but keeps the source plan's own
+    // reasons beside the identity reasons, deduplicated in order (e.g. an expiry-day plan with no instrument key).
+    if (!chk.ok) return out(chk.state, [...new Set(chk.reasons.concat(rs))]);
     if (p.status === 'ADMISSIBLE') return out('ELIGIBLE', [], chk);
     if (p.status === 'ELIGIBLE_PENDING_SNAPSHOT') return out('AWAITING_BROKER_SNAPSHOT', rs, chk);
     return out('BLOCKED', rs.length ? rs : ['PLAN_STATUS_' + String(p.status || 'MISSING')]);

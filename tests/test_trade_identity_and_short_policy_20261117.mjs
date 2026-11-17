@@ -170,3 +170,50 @@ test('the source keeps the outright-buy rule in ONE shared function used by both
   assert.equal((src.match(/onclick="admitSingleLeg\(/g) || []).length, 0);
   assert.equal((src.match(/\? singleLegAdmitButton\(ix, /g) || []).length, 2);
 });
+
+// R2 (Codex reply, 17 Nov 2026): an identity failure kept only the identity reasons, so a genuine blocked
+// expiry-day plan with no instrument key showed only INSTRUMENT_KEY_MISSING and dropped the plan's own
+// EXPIRY_DAY_NO_NEXT_CHAIN and BROKER_SNAPSHOT_UNAVAILABLE.  Shape after index_single_leg_v1.plan_entry on an
+// NF expiry day (contract_identity: instrument_key None, reasons EXPIRY_DAY_NO_NEXT_CHAIN). SYNTHETIC values.
+const nfExpiryDayPlan = (over = {}) => FX.plan('NF', { status: 'BLOCKED', instrument_key: null, quote_needed: [],
+  contract: { index: 'NF', instrument_key: null, lot_size: null, expiry: '2026-11-17', reasons: ['EXPIRY_DAY_NO_NEXT_CHAIN'] },
+  reasons: ['EXPIRY_DAY_NO_NEXT_CHAIN', 'BROKER_SNAPSHOT_UNAVAILABLE'], ...over });
+
+test('R2: NF expiry-day plan without an instrument key shows identity AND source reasons; unavailable, no tap; BNF independent', () => {
+  for (const bnfPlan of [FX.plan('BNF'), FX.plan('BNF', { status: 'ELIGIBLE_PENDING_SNAPSHOT', reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] })]) {
+    const bi = FX.result({ nfPlan: nfExpiryDayPlan(), bnfPlan });
+    const c = harness({ bd: bi });
+    const s = c.singleLegTradeState('NF', bi, { enabled: true, fresh: true });
+    assert.equal(s.state, 'RESULT_UNAVAILABLE');
+    assert.deepEqual([...s.reasons], ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN', 'BROKER_SNAPSHOT_UNAVAILABLE']);
+    assert.equal(s.identity, null);
+    const all = c.renderAuthorityWatchlist(bi), nf = section(all, 'NF');
+    assert.equal(tradeState(all, 'NF'), 'RESULT_UNAVAILABLE');
+    assert.match(nf, /Result unavailable<\/span> · INSTRUMENT_KEY_MISSING, EXPIRY_DAY_NO_NEXT_CHAIN, BROKER_SNAPSHOT_UNAVAILABLE/);
+    assert.match(nf, /instrument unavailable/);
+    assert.doesNotMatch(nf, /sl-admit/);
+    // BNF renders on its own, with its own binding
+    const b = c.singleLegTradeState('BNF', bi, { enabled: true, fresh: true });
+    const want = bnfPlan.status === 'ADMISSIBLE' ? 'ELIGIBLE' : 'AWAITING_BROKER_SNAPSHOT';
+    assert.equal(b.state, want);
+    assert.equal(tradeState(all, 'BNF'), want);
+    const bnf = section(all, 'BNF');
+    assert.match(bnf, /data-decision-id="fx_bnf_17" data-instrument-key="FIXTURE\|BNF\|2026-11-2x\|58500CE"/);
+    assert.doesNotMatch(bnf, /INSTRUMENT_KEY_MISSING|EXPIRY_DAY_NO_NEXT_CHAIN/);
+  }
+});
+
+test('R2: identity and source reasons are deduplicated, identity first, order kept', () => {
+  const bi = FX.result({ nfPlan: nfExpiryDayPlan({ reasons: ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN',
+    'BROKER_SNAPSHOT_UNAVAILABLE', 'EXPIRY_DAY_NO_NEXT_CHAIN'] }) });
+  const c = harness({ bd: bi });
+  const s = c.singleLegTradeState('NF', bi, { enabled: true, fresh: true });
+  assert.equal(s.state, 'RESULT_UNAVAILABLE');
+  assert.deepEqual([...s.reasons], ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN', 'BROKER_SNAPSHOT_UNAVAILABLE']);
+  // a blocked short keeps its plan reasons too, still deduplicated
+  const sh = FX.result({ bnfPlan: FX.plan('BNF', { side: 'SELL', option_type: 'PE', status: 'BLOCKED',
+    reasons: ['UNCOVERED_SHORT_NOT_OFFERED', 'SPREAD_GT_3PCT'] }) });
+  const t = harness({ bd: sh }).singleLegTradeState('BNF', sh, { enabled: true, fresh: true });
+  assert.equal(t.state, 'BLOCKED');
+  assert.deepEqual([...t.reasons], ['UNCOVERED_SHORT_NOT_OFFERED', 'SPREAD_GT_3PCT']);
+});
