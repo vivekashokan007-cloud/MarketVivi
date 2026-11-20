@@ -919,6 +919,8 @@ function todayNativeSessionActive(serviceStatus = null, latestPoll = null, pollH
 }
 
 function reconcileNativeSessionUi(snapshot = null) {
+    // 20 Nov: saved single-leg requests are restored on every native reconcile (bridge may have just become ready)
+    try { if (typeof resumeSingleLegPending === 'function') resumeSingleLegPending('reconcile'); } catch (e) { /* recovery retried later */ }
     if (!nativeBridge()) return false;
     const snap = snapshot || renderSnapshot();
     const serviceStatus = snap?.serviceStatus || readNativeJson('getServiceStatus', {});
@@ -5540,7 +5542,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.100', build: 531, app_js_v: 1395 };
+const M0_PWA_IDENTITY = { version: '2.6.101', build: 532, app_js_v: 1396 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6463,19 +6465,70 @@ function loadSingleLegStore() {
 // R9 (Codex R8): no poll limit - a request stays "pending / outcome unconfirmed" until native reports a definitive
 // (recorded or fenced) outcome; polling backs off and the pending ids survive a page reload, so a late outcome is
 // still shown.
+// Codex reply 20 Nov 2026: recovery no longer depends on the Market Copilot card.  resumeSingleLegPending() runs from
+// the shared startup / lifecycle paths (boot, renderAll, reconcileNativeSessionUi, visibilitychange, bridge-ready)
+// and restores every saved id into SINGLE_LEG_PENDING immediately, whatever the market hours, quote freshness or
+// brain result.  Recovery only POLLS singleLegAdmitStatus(id) - it never resubmits an admission.  While the bridge
+// is not ready the request stays pending (OUTCOME_UNCONFIRMED / BRIDGE_UNAVAILABLE) and the same chain keeps
+// retrying.  At most one poll chain per request id (SINGLE_LEG_POLLING[id]).  The saved id is kept until a
+// definitive outcome (completed or found); that outcome is shown on the Trade tab for the matching index and id.
 const SINGLE_LEG_PENDING_KEY = 'mr_single_leg_pending_v1';
+const SINGLE_LEG_LAST_OUTCOME_KEY = 'mr_single_leg_last_outcome_v1';
 let SINGLE_LEG_PENDING = {};
 let SINGLE_LEG_POLLING = {};
 function saveSingleLegPending() {
     try { localStorage.setItem(SINGLE_LEG_PENDING_KEY, JSON.stringify(SINGLE_LEG_PENDING)); } catch (e) { /* storage optional */ }
 }
-function resumeSingleLegPending() {
+// Last definitive outcome per index (shown on Trade beside the row; persisted for the same IST session only).
+function singleLegLastOutcomes() {
+    const g = globalThis;
+    if (!g.__slLastOutcome) {
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem(SINGLE_LEG_LAST_OUTCOME_KEY) || '{}') || {}; } catch (e) { saved = {}; }
+        let today = '';
+        try { today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()); } catch (e) { today = ''; }
+        g.__slLastOutcome = {};
+        for (const ix of ['NF', 'BNF']) if (saved[ix] && saved[ix].session_date === today) g.__slLastOutcome[ix] = saved[ix];
+    }
+    return g.__slLastOutcome;
+}
+function singleLegRecordOutcome(ix, rid, out, recovered) {
+    const o = singleLegLastOutcomes();
+    let today = '';
+    try { today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()); } catch (e) { today = ''; }
+    o[ix] = { request_id: rid || out?.request_id || null, status: String(out?.status || 'UNKNOWN'), reason: out?.reason ? String(out.reason) : null,
+        reasons: Array.isArray(out?.reasons) ? out.reasons.map(String).slice(0, 6) : [], recovered: recovered === true,
+        quote_requested: typeof out?.quote_requested === 'boolean' ? out.quote_requested : null, at_ms: Date.now(), session_date: today };
+    try { localStorage.setItem(SINGLE_LEG_LAST_OUTCOME_KEY, JSON.stringify(o)); } catch (e) { /* storage optional */ }
+    return o[ix];
+}
+// A chain waiting for the bridge is retried NOW (same chain: the older timer is superseded by the generation).
+function kickSingleLegPoll(rid) {
+    const c = SINGLE_LEG_POLLING[rid];
+    if (!c || typeof c !== 'object' || !c.waitingBridge || typeof window.NativeBridge?.singleLegAdmitStatus !== 'function') return false;
+    c.gen = (c.gen || 1) + 1; c.waitingBridge = false;
+    const g = c.gen;
+    setTimeout(() => pollSingleLegAdmit(c.ix, rid, 0, g), 0);
+    return true;
+}
+function resumeSingleLegPending(origin) {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(SINGLE_LEG_PENDING_KEY) || '{}') || {}; } catch (e) { saved = {}; }
+    const slT = typeof slTrace === 'function' ? slTrace : () => {};
     for (const [ix, p] of Object.entries(saved)) {
         if (!p?.request_id) continue;
-        if (!SINGLE_LEG_PENDING[ix]) SINGLE_LEG_PENDING[ix] = p;
-        if (!SINGLE_LEG_POLLING[p.request_id]) { SINGLE_LEG_POLLING[p.request_id] = true; setTimeout(() => pollSingleLegAdmit(ix, p.request_id, 0), 400); }
+        if (!SINGLE_LEG_PENDING[ix]) {
+            SINGLE_LEG_PENDING[ix] = { ...p, recovered: true };
+            slT('RECOVERY_STARTED', { index: ix, request_id: p.request_id, phase: p.phase || 'PENDING', origin: String(origin || 'resume'),
+                bridge_ready: typeof window.NativeBridge?.singleLegAdmitStatus === 'function' });
+        }
+    }
+    for (const [ix, p] of Object.entries(SINGLE_LEG_PENDING)) {
+        if (!p?.request_id) continue;
+        const rid = p.request_id;
+        // one chain per request id: an existing chain is reused (a bridge-wait chain is only kicked), never doubled
+        if (!SINGLE_LEG_POLLING[rid]) { SINGLE_LEG_POLLING[rid] = { ix, gen: 1 }; setTimeout(() => pollSingleLegAdmit(ix, rid, 0, 1), 400); }
+        else if (typeof kickSingleLegPoll === 'function') kickSingleLegPoll(rid);
     }
 }
 // Codex review 17 Nov 2026 (A2/A3): the ONE shared check both recommendation cards (Copilot single-leg card and
@@ -6525,47 +6578,83 @@ function admitSingleLegFromButton(el) {
 // A1: the tap carries the decision id and instrument key the card DISPLAYED; native requires its first read to
 // match both (DISPLAYED_PROPOSAL_CHANGED otherwise).  No identity -> nothing is sent.  A native build without the
 // bound entry point is refused here rather than falling back to the index-only call.
+// 20 Nov trace: TAP (displayed identity), then REFUSED (no request id: refused in the page / before Python) or
+// SUBMITTED (request id) - the coordinator adds quote-started and the outcome natively.
 function admitSingleLeg(ix, decisionId, instrumentKey) {
     let out = null;
     const did = typeof decisionId === 'string' ? decisionId.trim() : '';
     const key = typeof instrumentKey === 'string' ? instrumentKey.trim() : '';
+    const slT = typeof slTrace === 'function' ? slTrace : () => {};
+    slT('TAP', { index: ix, decision_id: did || null, instrument_key: key || null,
+        trade_visible: typeof slTradeVisible === 'function' ? slTradeVisible() : null });
     try {
         out = !did || !key ? { status: 'REJECTED', reason: 'DISPLAYED_IDENTITY_REQUIRED' }
             : typeof window.NativeBridge?.singleLegAdmitDisplayed === 'function'
             ? JSON.parse(window.NativeBridge.singleLegAdmitDisplayed(ix, did, key) || '{}')
             : { status: 'REJECTED', reason: typeof window.NativeBridge?.singleLegAdmit === 'function' ? 'NATIVE_IDENTITY_BINDING_UNAVAILABLE' : 'BRIDGE_UNAVAILABLE' };
-    } catch (e) { out = { status: 'ERROR' }; }
+    } catch (e) { out = { status: 'ERROR', reason: 'BRIDGE_CALL_FAILED' }; }
     if (out?.status === 'PENDING' && out.request_id) {
+        slT('SUBMITTED', { index: ix, request_id: out.request_id, decision_id: did, instrument_key: key });
         SINGLE_LEG_PENDING[ix] = { request_id: out.request_id, phase: 'QUEUED' };
-        SINGLE_LEG_POLLING[out.request_id] = true;
         saveSingleLegPending();
         if (typeof renderAll === 'function') renderAll();
-        setTimeout(() => pollSingleLegAdmit(ix, out.request_id, 0), 400);
+        const rid = out.request_id;
+        if (!SINGLE_LEG_POLLING[rid]) { SINGLE_LEG_POLLING[rid] = { ix, gen: 1 }; setTimeout(() => pollSingleLegAdmit(ix, rid, 0, 1), 400); }
         return out;
     }
+    slT(out?.request_id ? 'OUTCOME' : 'REFUSED', { index: ix, request_id: out?.request_id || null, decision_id: did || null,
+        instrument_key: key || null, status: out?.status || 'UNKNOWN', reason: out?.reason || null,
+        reasons: Array.isArray(out?.reasons) ? out.reasons : undefined, quote_requested: out?.request_id ? out.quote_requested : false,
+        requires_new_tap: out?.requires_new_tap === true, stage: out?.request_id ? 'NATIVE_IMMEDIATE' : 'BEFORE_REQUEST' });
     return finishSingleLegAdmit(ix, out);
 }
-function pollSingleLegAdmit(ix, rid, n) {
+function pollSingleLegAdmit(ix, rid, n, gen) {
+    const chain = SINGLE_LEG_POLLING[rid];
+    // A completed request removes its chain. Both removed and superseded timers are stale.
+    if (gen !== undefined && (chain?.gen !== gen || SINGLE_LEG_PENDING[ix]?.request_id !== rid)) return null;
     let st = null;
-    if (typeof window.NativeBridge?.singleLegAdmitStatus !== 'function') {
+    const slT = typeof slTrace === 'function' ? slTrace : () => {};
+    const ready = typeof window.NativeBridge?.singleLegAdmitStatus === 'function';
+    if (!ready) {
         st = { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', reason: 'BRIDGE_UNAVAILABLE' };
+        if (chain && typeof chain === 'object' && !chain.waitingBridge) {
+            chain.waitingBridge = true;
+            slT('RECOVERY_BRIDGE_WAIT', { index: ix, request_id: rid, reason: 'BRIDGE_UNAVAILABLE', bridge_ready: false });
+        }
     } else {
+        if (chain && typeof chain === 'object') chain.waitingBridge = false;
         try { st = JSON.parse(window.NativeBridge.singleLegAdmitStatus(rid) || '{}'); }
         catch (e) { st = { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', reason: 'STATUS_READ_ERROR' }; }
     }
     if (!st?.completed && st?.found !== true) {
-        SINGLE_LEG_PENDING[ix] = { request_id: rid, phase: st?.phase || 'PENDING' };
+        const prev = SINGLE_LEG_PENDING[ix];
+        SINGLE_LEG_PENDING[ix] = { request_id: rid, phase: st?.phase || 'PENDING', ...(st?.reason ? { reason: String(st.reason) } : {}),
+            ...(prev?.request_id === rid && prev.recovered ? { recovered: true } : {}) };
         saveSingleLegPending();
         if (typeof renderAll === 'function') renderAll();
-        setTimeout(() => pollSingleLegAdmit(ix, rid, n + 1), n < 150 ? 400 : 5000);
+        setTimeout(() => pollSingleLegAdmit(ix, rid, n + 1, gen), n < 150 ? 400 : 5000);
         return st;
     }
     delete SINGLE_LEG_POLLING[rid];
-    return finishSingleLegAdmit(ix, st);
+    return finishSingleLegAdmit(ix, st, rid);
 }
-function finishSingleLegAdmit(ix, out) {
-    delete SINGLE_LEG_PENDING[ix];
-    saveSingleLegPending();
+function finishSingleLegAdmit(ix, out, rid) {
+    const id = rid || out?.request_id || null;
+    const pend = SINGLE_LEG_PENDING[ix];
+    const recovered = !!(pend && pend.recovered && pend.request_id === id);
+    // only the matching request is cleared: a refusal without a request id never drops another saved request
+    if (!pend || (id && pend.request_id === id) || !pend.request_id) {
+        delete SINGLE_LEG_PENDING[ix];
+        saveSingleLegPending();
+    }
+    if (id) {
+        const slT = typeof slTrace === 'function' ? slTrace : () => {};
+        if (rid) slT(recovered ? 'RECOVERY_OUTCOME' : 'OUTCOME', { index: ix, request_id: id, status: out?.status || 'UNKNOWN',
+            reason: out?.reason || null, reasons: Array.isArray(out?.reasons) ? out.reasons : undefined,
+            quote_requested: typeof out?.quote_requested === 'boolean' ? out.quote_requested : undefined,
+            requires_new_tap: out?.requires_new_tap === true, reconciled: out?.reconciled === true, recovered });
+        if (typeof singleLegRecordOutcome === 'function') singleLegRecordOutcome(ix, id, out, recovered);
+    }
     if (out?.status !== 'ADMITTED' && out?.status !== 'DUPLICATE_IGNORED') {
         const changed = /^DISPLAYED_PROPOSAL_CHANGED:/.test(String(out?.reason || ''));
         alert(changed
@@ -6952,10 +7041,13 @@ function renderAll(snapshot = null) {
         try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
         try { renderC1Pilot(); } catch (e) { console.warn('[C1] pilot render failed:', e?.message || e); }
         try { renderSessionEvidence(); } catch (e) { console.warn('[G0] session evidence render failed:', e?.message || e); }
+        // 20 Nov: restore saved single-leg requests before any card renders, whatever the market/brain state
+        try { if (typeof resumeSingleLegPending === 'function') resumeSingleLegPending('renderAll'); } catch (e) { console.warn('[SL] resume failed:', e?.message || e); }
         renderTicker(snap);
         renderMarket(snap);
         renderOI(snap);
         renderWatchlist(snap);
+        try { if (typeof slTraceObserveTrade === 'function') slTraceObserveTrade('render'); } catch (e) { /* trace optional */ }
         renderPosition(snap);
         renderML(snap);
         renderDebug(snap);
@@ -8055,26 +8147,26 @@ function renderWatchlist(snapshot = null) {
     }
 
     if (nativeBridge() && !getTodayNativeBaseline(snap)) {
-        el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
+        el.innerHTML = renderSingleLegRecoveryBlock('NO_TODAY_BASELINE') + '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
 
     if (isIndexAuthorityActive(bd)) {
-        el.innerHTML = renderAuthorityWatchlist(bd) + renderModeActionRow();
+        el.innerHTML = renderAuthorityWatchlist(bd) + renderSingleLegRecoveryBlock('AUTHORITY') + renderModeActionRow();
         return;
     }
 
     if (!(bd.watchlist || []).length && !(bd.generated_candidates || []).length) {
         if (STATE.brainRefreshPending) {
             const modeLabel = STATE.tradeMode === 'intraday' ? 'intraday' : 'swing';
-            el.innerHTML = `<div class="empty-state">Refreshing ${modeLabel} strategies from native brain...${renderModeActionRow()}</div>`;
+            el.innerHTML = renderSingleLegRecoveryBlock('NO_AUTHORITY_RESULT') + `<div class="empty-state">Refreshing ${modeLabel} strategies from native brain...${renderModeActionRow()}</div>`;
             return;
         }
         if (STATE.brainReady && hasBrainPayload(bd)) {
             const verdict = bd.verdict || {};
             const conflicts = Array.isArray(verdict.conflicts) ? verdict.conflicts.filter(Boolean) : [];
             const reason = bd.candidate_error || verdict.reasoning || bd.decisionReason || bd.decision_reason || '';
-            el.innerHTML = `
+            el.innerHTML = renderSingleLegRecoveryBlock('NO_AUTHORITY_RESULT') + `
                 <div class="empty-state">
                     No ${STATE.tradeMode} strategies ready right now
                     ${reason ? `<div style="margin-top:6px;font-size:12px;color:var(--text-muted)">${reason}</div>` : ''}
@@ -8083,7 +8175,7 @@ function renderWatchlist(snapshot = null) {
                 </div>`;
             return;
         }
-        el.innerHTML = '<div class="empty-state">Lock & Scan to generate strategies</div>';
+        el.innerHTML = renderSingleLegRecoveryBlock('NO_AUTHORITY_RESULT') + '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
 
@@ -8203,7 +8295,7 @@ function renderWatchlist(snapshot = null) {
         html += '</details>';
     }
 
-    el.innerHTML = html;
+    el.innerHTML = renderSingleLegRecoveryBlock('LEGACY') + html;
 }
 
 
@@ -8271,15 +8363,134 @@ function renderSingleLegTradeStatus(ix, bi) {
     const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
     const tappable = (s.state === 'ELIGIBLE' || s.state === 'AWAITING_BROKER_SNAPSHOT') && !!s.identity;
     const act = pend
-        ? `<span class="sl-pending" style="font-size:11px;margin-left:4px">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase)})…</span>`
+        ? `<span class="sl-pending" data-request-id="${iaEsc(pend.request_id || '')}" style="font-size:11px;margin-left:4px">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase)}${pend.reason === 'BRIDGE_UNAVAILABLE' ? ' · waiting for the app bridge' : ''})…${pend.recovered ? ' · recovered after restart' : ''}</span>`
         : tappable ? singleLegAdmitButton(ix, s.identity)
         : s.state === 'OFF' ? `<button class="sl-toggle" style="font-size:11px;margin-left:4px" onclick="setSingleLegEnabled(true)">Turn on</button>` : '';
     const col = s.state === 'ELIGIBLE' ? 'var(--accent)' : (s.state === 'BLOCKED' || s.state === 'RESULT_UNAVAILABLE') ? 'var(--warn)' : 'var(--text-muted)';
-    return `<div class="sl-trade-status" data-index="${iaEsc(ix)}" data-sl-state="${s.state}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">
+    const last = typeof singleLegOutcomeLine === 'function' ? singleLegOutcomeLine(ix) : '';
+    return `<div class="sl-trade-status" data-index="${iaEsc(ix)}" data-sl-state="${s.state}" data-sl-reasons="${iaEsc(s.reasons.slice(0, 6).join(','))}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">
         <div style="font-size:12px"><b>${iaEsc(ix)} single-leg · Paper only:</b> <span style="color:${col}">${SL_TRADE_STATE_LABEL[s.state]}</span>${why}${act}</div>
-        ${ident}
+        ${ident}${last}
         <div style="font-size:10px;color:var(--text-muted)">Separate from the spread alternatives below · admission re-checked natively at tap · simulated Paper fill, no real orders</div>
     </div>`;
+}
+
+// Codex reply 20 Nov 2026: a saved single-leg request (pending or with its recovered outcome) is shown on the Trade
+// tab for its index and request id in EVERY branch of renderWatchlist - market closed / not locked, stale or
+// missing brain result, legacy page - not only when the authority rows render.  Display only: no admit action.
+function singleLegOutcomeLine(ix) {
+    const o = typeof singleLegLastOutcomes === 'function' ? singleLegLastOutcomes()[ix] : null;
+    if (!o || !o.request_id) return '';
+    const good = o.status === 'ADMITTED' || o.status === 'DUPLICATE_IGNORED';
+    const why = [o.reason, ...(o.reasons || [])].filter((x, i, a) => x && a.indexOf(x) === i).join(', ');
+    return `<div class="sl-last-outcome" data-index="${iaEsc(ix)}" data-request-id="${iaEsc(o.request_id)}" data-sl-outcome="${iaEsc(o.status)}" style="font-size:11px;color:${good ? 'var(--accent)' : 'var(--warn)'}">Last Paper request ${iaEsc(String(o.request_id).slice(0, 12))}: ${iaEsc(o.status)}${why ? ' · ' + iaEsc(why) : ''}${o.quote_requested === true ? ' · after quote request' : o.quote_requested === false ? ' · before any quote request' : ''}${o.recovered ? ' · recovered after restart' : ''}</div>`;
+}
+// Every branch of renderWatchlist prepends this block; in the AUTHORITY branch the shown indices already carry the
+// pending state and outcome in their own row, so only an index hidden by the selector is listed here.
+function renderSingleLegRecoveryBlock(branch) {
+    try { if (typeof slTraceState === 'function') slTraceState().branch = String(branch || ''); } catch (e) { /* trace optional */ }
+    let sel = 'BOTH';
+    try { sel = getIndexSelector(); } catch (e) { sel = 'BOTH'; }
+    const shown = new Set(branch === 'AUTHORITY' ? (sel === 'BOTH' ? ['NF', 'BNF'] : [sel]) : []);
+    const rows = ['NF', 'BNF'].filter(ix => !shown.has(ix)).map(ix => {
+        const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
+        if (pend && pend.request_id) {
+            return `<div class="sl-recovery" data-index="${iaEsc(ix)}" data-request-id="${iaEsc(pend.request_id)}" data-sl-recovery="PENDING" style="font-size:12px"><b>${iaEsc(ix)} single-leg Paper request ${iaEsc(String(pend.request_id).slice(0, 12))}:</b> <span class="sl-pending">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase || 'PENDING')}${pend.reason === 'BRIDGE_UNAVAILABLE' ? ' · waiting for the app bridge' : ''})…</span>${pend.recovered ? ' · recovered after restart' : ''}</div>`;
+        }
+        const line = singleLegOutcomeLine(ix);
+        return line ? `<div class="sl-recovery" data-index="${iaEsc(ix)}" data-sl-recovery="OUTCOME"><b style="font-size:12px">${iaEsc(ix)} single-leg Paper</b>${line}</div>` : '';
+    }).filter(Boolean);
+    if (!rows.length) return '';
+    return `<div class="sl-recovery-block" data-sl-branch="${iaEsc(branch || '')}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">${rows.join('')}<div style="font-size:10px;color:var(--text-muted)">Saved Paper request status · checked by request id only, never resubmitted · no real orders</div></div>`;
+}
+// ── Codex reply 20 Nov 2026: compact on-device single-leg Trade trace (page side) ───────────────────────────────
+// Records go to NativeBridge.singleLegTraceAppend (bounded, allow-listed native store exported as the session
+// evidence part `single_leg_trace`).  Before the bridge is ready they wait in a small bounded queue.  RENDER records
+// are deduplicated per index while the displayed identity, state and reasons stay the same.
+// trade_visible is true only while the Trade tab is active AND the page is visible.  No capital amount, credential,
+// account detail or quote body is ever put in a record.
+function slTraceState() {
+    const g = globalThis;
+    if (!g.__slTraceState) g.__slTraceState = { queue: [], lastRender: {}, lastConfig: '', branch: '', queueDropped: 0 };
+    return g.__slTraceState;
+}
+function slTradeVisible() {
+    try { return STATE.activeTab === 'strategies' && document.visibilityState === 'visible'; } catch (e) { return false; }
+}
+function flushSingleLegTrace() {
+    const st = slTraceState();
+    try {
+        const bridge = window.NativeBridge;
+        if (typeof bridge?.singleLegTraceAppend !== 'function') return false;
+        const append = record => JSON.parse(bridge.singleLegTraceAppend(JSON.stringify(record)))?.ok === true;
+        if (st.queueDropped) {
+            if (!append({ kind: 'PAGE_QUEUE_LOSS', source: 'page', t_ms: Date.now(), dropped_count: st.queueDropped })) return false;
+            st.queueDropped = 0;
+        }
+        while (st.queue.length) {
+            if (!append(st.queue[0])) return false;
+            st.queue.shift();
+        }
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+function slTrace(kind, rec) {
+    const st = slTraceState();
+    const r = { kind, t_ms: Date.now(), source: 'page', ...rec };
+    st.queue.push(r);
+    if (st.queue.length > 60) {
+        const render = st.queue.findIndex(record => record.kind === 'RENDER');
+        st.queue.splice(render >= 0 ? render : 0, 1);
+        st.queueDropped++;
+    }
+    return flushSingleLegTrace();
+}
+function slTraceConfig(origin) {
+    let cap = null, enabled = null, sel = null, date = null;
+    try { const c = JSON.parse(window.NativeBridge?.getSingleLegCapital?.() || 'null'); cap = c && c.status ? c.status === 'SET' : null; } catch (e) { cap = null; }
+    try { enabled = typeof singleLegEnabled === 'function' ? singleLegEnabled() : null; } catch (e) { enabled = null; }
+    try { sel = typeof getIndexSelector === 'function' ? getIndexSelector() : null; } catch (e) { sel = null; }
+    try { date = typeof iaTodayIst === 'function' ? iaTodayIst() : null; } catch (e) { date = null; }
+    const pwa = typeof M0_PWA_IDENTITY === 'object' ? `${M0_PWA_IDENTITY.version}/b${M0_PWA_IDENTITY.build}/v${M0_PWA_IDENTITY.app_js_v}` : null;
+    const key = JSON.stringify([pwa, date, enabled, sel, cap]);
+    const st = slTraceState();
+    if (st.lastConfig === key) return false;
+    st.lastConfig = key;
+    return slTrace('CONFIG', { pwa, session_date: date, enabled, index_selector: sel, capital_set: cap, origin: String(origin || '') });
+}
+// Called after the Trade tab is (re)rendered and on display-state changes (tab switch, page visibility).
+function slTraceObserveTrade(origin) {
+    if (typeof document === 'undefined') return 0;
+    try { flushSingleLegTrace(); slTraceConfig(origin); } catch (e) { /* trace optional */ }
+    const st = slTraceState();
+    const visible = slTradeVisible();
+    let sel = 'BOTH';
+    try { sel = getIndexSelector(); } catch (e) { sel = 'BOTH'; }
+    const bi = (typeof bd === 'object' && bd) ? bd : {};
+    let n = 0;
+    for (const ix of ['NF', 'BNF']) {
+        const row = document.querySelector(`#watchlist .sl-trade-status[data-index="${ix}"]`);
+        const btn = row ? row.querySelector('button.sl-admit') : null;
+        const plan = (bi.single_leg_by_index || {})[ix] || null;
+        const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
+        const rec = { index: ix, trade_visible: visible, branch: st.branch || null,
+            decision_id: (btn && btn.getAttribute('data-decision-id')) || plan?.decision_id || null,
+            instrument_key: (btn && btn.getAttribute('data-instrument-key')) || plan?.instrument_key || null,
+            row_state: row ? row.getAttribute('data-sl-state') : (sel !== 'BOTH' && sel !== ix ? 'NOT_SELECTED' : 'ROW_UNAVAILABLE'),
+            action_exposed: !!btn, action: plan?.action || null, index_action: bi.by_index?.[ix]?.action?.value || null,
+            reasons: row ? String(row.getAttribute('data-sl-reasons') || '').split(',').filter(Boolean) : [],
+            pending_request_id: pend?.request_id || null, origin: String(origin || '') };
+        if (!row) rec.reason = sel !== 'BOTH' && sel !== ix ? 'INDEX_NOT_SELECTED' : (st.branch || 'TRADE_ROW_NOT_RENDERED');
+        const key = JSON.stringify([rec.decision_id, rec.instrument_key, rec.trade_visible, rec.row_state, rec.action_exposed,
+            rec.branch, rec.reason, rec.reasons, rec.index_action, rec.pending_request_id]);
+        if (st.lastRender[ix] === key) continue;
+        st.lastRender[ix] = key;
+        slTrace('RENDER', rec);
+        n++;
+    }
+    return n;
 }
 
 function renderAuthorityWatchlist(bi) {
@@ -10673,6 +10884,7 @@ function b512NativeNav(tab) {
     try { valid = Array.from(document.querySelectorAll('.tab-btn')).map(btn => btn.dataset.tab).filter(Boolean); } catch (e) { valid = []; }
     if (valid.length && !valid.includes(tab)) return 'rejected';
     switchTab(tab);
+    try { if (typeof slTraceObserveTrade === 'function') slTraceObserveTrade('tab'); } catch (e) { /* trace optional */ }
     return 'ok';
 }
 
@@ -10680,6 +10892,7 @@ function b512NativeNav(tab) {
 function b512UserNav(tab) {
     if (!b512UiRestoreDone && b512TabNameOk(tab)) b512ExplicitTab = tab;
     switchTab(tab);
+    try { if (typeof slTraceObserveTrade === 'function') slTraceObserveTrade('tab'); } catch (e) { /* trace optional */ }
 }
 
 // Manual scrolling/touch on the restored tab also supersedes the pending restore scroll.
@@ -11199,6 +11412,19 @@ function bindCriticalUiHandlers() {
 }
 
 // ═══ INIT ═══
+// 20 Nov: lifecycle hooks for single-leg pending recovery and the Trade trace.  Visible again -> restore / kick the
+// saved requests' single poll chain; any visibility change -> record the Trade display state (hidden => not visible).
+// mr-native-bridge-ready is dispatched by MainActivity.injectNativeBridge once window.NativeBridge exists.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('mr-native-bridge-ready', () => {
+        try { resumeSingleLegPending('bridge-ready'); } catch (e) { /* retried by the poll chain */ }
+        flushSingleLegTrace();
+    });
+}
+document.addEventListener('visibilitychange', () => {
+    try { if (document.visibilityState === 'visible') resumeSingleLegPending('visible'); } catch (e) { /* retried */ }
+    try { slTraceObserveTrade('visibility'); } catch (e) { /* trace optional */ }
+});
 document.addEventListener('DOMContentLoaded', async () => {
     initStickyLayoutObserver();
     try {
@@ -11216,6 +11442,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // form while asynchronous boot work is still running.
     try { initTheme(null); } catch (e) { console.warn('[boot] early theme restore failed:', e.message); }
     try { reconcileNativeSessionUi(); } catch (e) { console.warn('[boot] early native session restore failed:', e.message); }
+    // 20 Nov: saved single-leg Paper requests are restored at once (no market-hours / freshness / Copilot gate)
+    try { resumeSingleLegPending('boot'); } catch (e) { console.warn('[boot] single-leg resume failed:', e.message); }
     try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
     try { renderResearchCollector(); } catch (e) { console.warn('[boot] M0 research render failed:', e.message); }   // read-only
     try { renderC1Pilot(); } catch (e) { console.warn('[boot] C1 pilot render failed:', e.message); }   // read-only
