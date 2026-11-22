@@ -5433,6 +5433,80 @@ function c1SetPilotEnabled(on) {
 }
 // ── end C1 capture pilot ──────────────────────────────────────────────────────────────────────────────────
 
+// ── close_open_capture opt-in (CANDIDATE builds only; research evidence only; default OFF) ──────────────────
+// Shown ONLY when the native status reports a candidate build. Calls nothing but the three close_open_capture
+// bridge methods. It never reads or changes the intraday premium capture, Paper, admission, ranking, EV or Real.
+/** Parsed native close_open_capture status, or {available:false, reason}. Never throws. */
+function coCaptureStatus() {
+    if (typeof NativeBridge === 'undefined') return { available: false, reason: 'NO_NATIVE_BRIDGE' };
+    if (typeof NativeBridge.getCloseOpenCaptureStatus !== 'function') return { available: false, reason: 'NATIVE_METHOD_ABSENT' };
+    try {
+        const st = JSON.parse(NativeBridge.getCloseOpenCaptureStatus() || 'null');
+        if (!st || typeof st !== 'object' || st.available === false) return { available: false, reason: (st && st.reason) || 'MALFORMED' };
+        if (typeof st.candidate_build !== 'boolean' || typeof st.enabled !== 'boolean') return { available: false, reason: 'MALFORMED' };
+        return Object.assign({}, st, { available: true });
+    } catch (_) { return { available: false, reason: 'STATUS_ERROR' }; }
+}
+
+let coLastToggle = null;
+/** Pure view. Empty string (hidden) unless the native status reports a candidate build. */
+function coCaptureView(st) {
+    if (!st || st.available !== true || st.candidate_build !== true) return '';
+    const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const on = st.enabled === true;
+    const colour = on ? '#22c55e' : '#94a3b8';
+    const line = on ? 'On — records near-close quotes (received 15:10–15:30 IST) and the same contracts at the next session’s open (received 09:15–09:45 IST) from polls the app already makes.'
+        : 'Off — nothing is recorded.';
+    const cal = st.calendar || {};
+    const years = Array.isArray(cal.covered_years) ? cal.covered_years.map(e).join(', ') : '?';
+    const next = cal.next_regular_session ? 'next regular session ' + e(cal.next_regular_session) : 'refused: ' + e(cal.next_reason || 'unknown');
+    const count = (o) => (o && typeof o === 'object') ? Object.keys(o).sort().map((k) => `${e(k)} ${e(o[k])}`).join(', ') : '';
+    const rows = ['NF', 'BNF'].map((ix) => {
+        const b = (st.indices || {})[ix] || {};
+        const ls = b.last_slot ? `last ${e(b.last_slot.slot)} ${e(b.last_slot.result)} · ${e(b.last_slot.quote_receipt)} · write ${e(b.last_slot.durable_write)} · queue ${e(b.last_slot.queue_write)}` : `today ${e(b.today_session_file || 'NOT_WRITTEN')}`;
+        const q = b.queue || {};
+        const ref = count(b.refusals);
+        return `<div class="co-index" style="font-size:11px;color:var(--text-muted)"><b>${ix}</b> — ${ls}; queue ${e(q.entries ?? 0)}${q.by_state && Object.keys(q.by_state).length ? ' (' + count(q.by_state) + ')' : ''}${q.by_reason && Object.keys(q.by_reason).length ? '; reasons ' + count(q.by_reason) : ''}${ref ? '; refusals ' + ref : ''}</div>`;
+    }).join('');
+    const t = coLastToggle;
+    const said = (v) => v === true ? 'on' : v === false ? 'off' : 'unknown';
+    const rb = t ? `<div class="co-toggle-readback" style="font-size:11px;color:${t.readback === t.requested ? 'var(--text-muted)' : '#f59e0b'}">Requested ${said(t.requested)} · app reads back ${said(t.readback)}${t.readback === t.requested ? '' : ' — NOT applied'}${t.refusal ? ' (' + e(t.refusal) + ')' : ''}</div>` : '';
+    return `<div class="card co-capture" style="border:1px dashed #0ea5e9;padding:10px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:#0ea5e9">Close→open capture (research) — ${on ? 'ON' : 'OFF'} · candidate build</div>
+        <div class="co-status" style="font-size:12px;color:${colour}">${line}</div>
+        <div class="co-rule" style="font-size:11px;color:var(--text-muted)">Rule ${e(st.eligibility_rule)}: the receipt minute decides (inclusive); the slot is only intent. Nearest expiry only; refused when the next session is on or after expiry. Calendar ${years}; ${next}. Lot authority: absent — no after-cost use.</div>
+        ${rows}
+        <div style="margin-top:6px"><button class="co-toggle" onclick="coSetCaptureEnabled(${on ? 'false' : 'true'})" style="padding:4px 12px;font-size:12px;border:1px solid #0ea5e9;background:transparent;color:#0ea5e9;border-radius:6px">${on ? 'Turn close→open capture off' : 'Turn close→open capture on'}</button></div>
+        ${rb}
+        <div style="font-size:11px;color:var(--text-muted)">Research evidence only, off by default, no extra requests. It does not change the intraday premium capture or its denominator, Paper, admission, ranking, exits or Real (Real stays disabled). Records appear in the session export under premium_followon.</div>
+    </div>`;
+}
+
+function renderCloseOpenCapture() {
+    const el = typeof document !== 'undefined' ? document.getElementById('close-open-capture') : null;
+    if (!el) return;
+    el.innerHTML = coCaptureView(coCaptureStatus());
+}
+
+function coSetCaptureEnabled(on) {
+    let readback, refusal;
+    try {
+        if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.setCloseOpenCapture === 'function') {
+            const r = JSON.parse(NativeBridge.setCloseOpenCapture(on === true) || 'null');
+            if (r && r.ok === false && r.status) refusal = String(r.status);
+        }
+    } catch (_) { /* the state read below reports the real state */ }
+    try {
+        if (typeof NativeBridge !== 'undefined' && typeof NativeBridge.getCloseOpenCaptureState === 'function') {
+            const s = JSON.parse(NativeBridge.getCloseOpenCaptureState() || 'null');
+            if (s && s.state === 'ON') readback = true; else if (s && (s.state === 'OFF' || s.state === 'UNSET')) readback = false;   // UNSET = never set = default OFF
+        }
+    } catch (_) { /* unknown */ }
+    coLastToggle = { requested: on === true, readback, refusal };
+    renderCloseOpenCapture();
+}
+// ── end close_open_capture opt-in ──────────────────────────────────────────────────────────────────────────
+
 // ── M0 full-day research collector (collection only; no conclusions) ──────────────────────────────────────
 /** Parsed native collector status, or {available:false, reason}. Never throws. */
 function m0ResearchStatus() {
@@ -7040,6 +7114,7 @@ function renderAll(snapshot = null) {
         try { renderEvControl(); } catch (e) { console.warn('[EV12] control render failed:', e?.message || e); }
         try { renderResearchCollector(); } catch (e) { console.warn('[M0] research render failed:', e?.message || e); }
         try { renderC1Pilot(); } catch (e) { console.warn('[C1] pilot render failed:', e?.message || e); }
+        try { renderCloseOpenCapture(); } catch (e) { console.warn('[CO] close-open render failed:', e?.message || e); }
         try { renderSessionEvidence(); } catch (e) { console.warn('[G0] session evidence render failed:', e?.message || e); }
         // 20 Nov: restore saved single-leg requests before any card renders, whatever the market/brain state
         try { if (typeof resumeSingleLegPending === 'function') resumeSingleLegPending('renderAll'); } catch (e) { console.warn('[SL] resume failed:', e?.message || e); }
@@ -11447,6 +11522,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { renderEvControl(); } catch (e) { console.warn('[boot] EV control render failed:', e.message); }   // read-only
     try { renderResearchCollector(); } catch (e) { console.warn('[boot] M0 research render failed:', e.message); }   // read-only
     try { renderC1Pilot(); } catch (e) { console.warn('[boot] C1 pilot render failed:', e.message); }   // read-only
+    try { renderCloseOpenCapture(); } catch (e) { console.warn('[boot] close-open render failed:', e.message); }   // read-only
 
     // b515: navigation state (tab now, scroll once content exists) is restored BEFORE any network await, so a
     // re-created WebView does not sit on the default screen while Supabase/native reads run. Persistence is bound
