@@ -5616,7 +5616,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.103', build: 534, app_js_v: 1398 };
+const M0_PWA_IDENTITY = { version: '2.6.104', build: 535, app_js_v: 1399 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
@@ -6763,7 +6763,7 @@ function renderSingleLegCard(bi) {
         const required = p.capital_required == null
             ? (p.action?.startsWith('SELL') ? 'required margin: pending broker check' : 'required capital: pending quote check')
             : `required capital ₹${Math.round(p.capital_required)} (${iaEsc(p.capital_basis || '')})`;
-        const desc = p.action ? `${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? p.contract?.lot_size ?? 'n/a')} · ${required}` : 'no action';
+        const desc = p.action ? `${p.action.startsWith('SELL') ? 'WAIT · excluded ' : ''}${iaEsc(p.action)} ${iaEsc(p.strike ?? '')} · units ${iaEsc(p.units ?? p.contract?.lot_size ?? 'n/a')} · ${required}` : 'no action';
         // R7: a proposal waiting only for the broker snapshot is admissible-on-tap: native fetches the exact
         // instrument's dedicated quote and re-checks every gate at the actual time; otherwise every reason shows.
         // A2/A3: the shared identity + outright-buy check runs first; it blocks (with its reason) regardless of
@@ -6775,13 +6775,34 @@ function renderSingleLegCard(bi) {
             ? singleLegAdmitButton(ix, chk) : '';
         const state = !chk.ok ? (chk.state === 'BLOCKED' ? 'blocked: ' : 'unavailable: ') + iaEsc(chk.reasons.concat(why ? [why] : []).join(', '))
             : p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
-        return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}</div>`;
+        return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}${typeof singleLegReadinessLine === 'function' ? singleLegReadinessLine(ix, p) : ''}${typeof singleLegHoldLine === 'function' ? singleLegHoldLine(p) : ''}</div>`;
     }).join('');
     const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
-    const overdue = (st?.positions || []).some(x => ['OPEN', 'EXIT_PENDING'].includes(x.status) &&
-        ((x.session_date && x.session_date < iaTodayIst()) || new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(new Date()) >= '15:10'));
+    const now = new Date();
+    const overdue = (st?.positions || []).some(x => {
+        if (x.status === 'EXIT_PENDING') return true;
+        if (x.status !== 'OPEN') return false;
+        if (x.paper_pilot === 'paper_strong_buy_60m_v1') {
+            const deadline = Date.parse(x.holding_plan?.exit_deadline);
+            return Number.isFinite(deadline) && now.getTime() >= deadline;
+        }
+        return (x.session_date && x.session_date < iaTodayIst()) ||
+            new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit',
+                hourCycle: 'h23' }).format(now) >= '15:10';
+    });
     const overdueWarning = overdue ? '<div class="brain-detail sl-overdue" style="color:var(--warn)">Paper position overdue or exit pending — check monitoring and fresh quotes. No exit fill is assumed.</div>' : '';
-    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
+    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${typeof singleLegPositionHoldLine === 'function' ? singleLegPositionHoldLine(x) : ''}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
+    const research = (st?.hold_observations || []).slice(-2).reverse().map(row => {
+        const labels = { same_60: 'Same-day +60', near_close: 'Near close', next_open: 'Next open', next_60: 'Next open +60' };
+        const marks = Object.entries(row.marks || {}).map(([key, value]) => {
+            const status = value.status === 'SCORED' && Number.isFinite(value.net_pnl)
+                ? '₹' + value.net_pnl.toFixed(2) : ({ PENDING: 'pending', MISSING_QUOTE: 'quote unavailable',
+                    FEE_UNAVAILABLE: 'fee unavailable' }[value.status] || 'unavailable');
+            return iaEsc((labels[key] || key) + ' ' + status);
+        }).join(' · ');
+        const refusal = row.next_session_refusal ? ' · next session unavailable: ' + iaEsc(row.next_session_refusal) : '';
+        return `<div class="brain-detail sl-hold-observation"><b>Paper exit comparison</b> · ${iaEsc(row.session_date)} · ${iaEsc(row.index)} ${iaEsc(row.strike)} ${iaEsc(row.action)}<br>${marks}${refusal}</div>`;
+    }).join('');
     const stErr = st && st.status ? `<div class="brain-detail" style="color:var(--warn)">Store: ${iaEsc(st.status)}</div>` : '';
     const cap = singleLegCapital();
     const capRow = `<div class="brain-detail sl-capital">Capital: ${cap.status === 'SET' ? '₹' + Math.round(cap.capital) : '<span style="color:var(--warn)">not set — admission is rejected until set</span>'}
@@ -6792,7 +6813,7 @@ function renderSingleLegCard(bi) {
         ${capRow}
         ${overdueWarning}
         ${rows}
-        ${pos ? `<div style="font-size:11px;margin-top:3px">Local Paper positions:</div>${pos}` : ''}${stErr}
+        ${pos ? `<div style="font-size:11px;margin-top:3px">Local Paper positions:</div>${pos}` : ''}${research}${stErr}
         <div class="sl-disclosure" style="font-size:10px;color:var(--text-muted)">Paper fill estimate from broker snapshot; exchange quote age unavailable. A resolved Paper calculation is still simulated execution. No real orders.</div>
     </div>`;
 }
@@ -8221,13 +8242,13 @@ function renderWatchlist(snapshot = null) {
             </div>`;
     }
 
-    if (nativeBridge() && !getTodayNativeBaseline(snap)) {
-        el.innerHTML = renderSingleLegRecoveryBlock('NO_TODAY_BASELINE') + '<div class="empty-state">Lock & Scan to generate strategies</div>';
+    if (isIndexAuthorityActive(bd)) {
+        el.innerHTML = renderAuthorityWatchlist(bd) + renderSingleLegRecoveryBlock('AUTHORITY') + renderModeActionRow();
         return;
     }
 
-    if (isIndexAuthorityActive(bd)) {
-        el.innerHTML = renderAuthorityWatchlist(bd) + renderSingleLegRecoveryBlock('AUTHORITY') + renderModeActionRow();
+    if (nativeBridge() && !getTodayNativeBaseline(snap)) {
+        el.innerHTML = renderSingleLegRecoveryBlock('NO_TODAY_BASELINE') + '<div class="empty-state">Lock & Scan to generate strategies</div>';
         return;
     }
 
@@ -8391,7 +8412,7 @@ const SL_TRADE_STATE_LABEL = {
     OFF: 'Paper single-leg off',
     RESULT_UNAVAILABLE: 'Result unavailable',
     NO_DIRECTIONAL_PROPOSAL: 'No directional proposal',
-    BLOCKED: 'Blocked',
+    BLOCKED: 'WAIT — proposal blocked',
     AWAITING_BROKER_SNAPSHOT: 'Awaiting broker snapshot',
     ELIGIBLE: 'Eligible for Paper',
 };
@@ -8427,14 +8448,51 @@ function singleLegTradeState(ix, bi, env) {
     if (p.status === 'ELIGIBLE_PENDING_SNAPSHOT') return out('AWAITING_BROKER_SNAPSHOT', rs, chk);
     return out('BLOCKED', rs.length ? rs : ['PLAN_STATUS_' + String(p.status || 'MISSING')]);
 }
+function singleLegHoldLine(plan) {
+    const c = plan?.holding_contract;
+    if (!c) return '';
+    if (c.hold_minutes === 60) {
+        return '<div class="sl-hold" style="font-size:11px">STRONG Paper pilot · one entry per session across both indices · target exit 60 minutes after admission, with earlier exit on the existing premium stop or two confirmed opposite observations.</div>';
+    }
+    return `<div class="sl-hold" style="font-size:11px">Hold from admission until ${iaEsc(c.time_exit || 'unknown')} IST on ${iaEsc(c.deadline_session || 'entry session')}; earlier exit on 30% premium stop or two confirmed opposite observations.</div>`;
+}
+function singleLegPositionHoldLine(position) {
+    const h = position?.holding_plan;
+    if (!h) return '';
+    const anchor = Date.parse(h.anchor_ts);
+    const elapsed = Number.isFinite(anchor) ? Math.max(0, Math.floor((Date.now() - anchor) / 60000)) + ' min elapsed' : 'elapsed unavailable';
+    return ` · ${iaEsc(elapsed)} · exit by ${iaEsc(h.exit_deadline || 'unknown')} · ${iaEsc(h.policy_version || '')}`;
+}
+function singleLegReadinessLine(ix, plan) {
+    if (!plan || !/^BUY_(CE|PE)$/.test(plan.action || '')) return '';
+    let record;
+    try {
+        const store = JSON.parse(window.NativeBridge?.singleLegRead?.() || '{}');
+        record = store.quote_readiness?.by_index?.[ix];
+    } catch (e) { return ''; }
+    if (!record || record.decision_id !== plan.decision_id || record.instrument_key !== plan.instrument_key)
+        return '<div class="sl-readiness" style="font-size:11px">Broker quote not requested</div>';
+    const labels = { QUOTE_NOT_REQUESTED: 'Broker quote not requested', REQUEST_PENDING: 'Checking broker quote', QUOTE_VALIDATED: 'Broker quote checked',
+        REQUEST_FAILED: 'Broker request failed', RESPONSE_REJECTED: 'Broker quote rejected',
+        QUOTE_EXPIRED: 'Broker quote expired', REQUEST_INTERRUPTED: 'Quote check interrupted',
+        SUPERSEDED: 'Proposal changed' };
+    return `<div class="sl-readiness" style="font-size:11px">${iaEsc(labels[record.state] || record.state)}${record.reason ? ' · ' + iaEsc(record.reason) : ''} · fresh admission checks run at your tap</div>`;
+}
+
 function renderSingleLegTradeStatus(ix, bi) {
     let fr = null;
     try { fr = brainFreshnessStatus(bi); } catch (e) { fr = { fresh: false, reason: 'FRESHNESS_UNAVAILABLE' }; }
     const s = singleLegTradeState(ix, bi, { enabled: singleLegEnabled(), fresh: fr?.fresh === true, freshReason: fr?.reason });
     const p = s.plan;
     const ident = p && p.action
-        ? `<div class="sl-ts-ident" style="font-size:11px">${iaEsc(p.action)} ${iaEsc(p.strike ?? 'strike n/a')}${iaEsc(p.option_type || '')} · ${p.instrument_key ? iaEsc(p.instrument_key) : 'instrument unavailable'}${p.contract?.expiry ? ' · exp ' + iaEsc(p.contract.expiry) : ''} · lot ${iaEsc(p.contract?.lot_size ?? 'n/a')}</div>` : '';
-    const why = s.reasons.length ? ` · ${iaEsc(s.reasons.join(', '))}` : '';
+        ? `<div class="sl-ts-ident" style="font-size:11px">${p.action.startsWith('SELL') ? 'WAIT · excluded ' : ''}${iaEsc(p.action)} ${iaEsc(p.strike ?? 'strike n/a')}${iaEsc(p.option_type || '')} · ${p.instrument_key ? iaEsc(p.instrument_key) : 'instrument unavailable'}${p.contract?.expiry ? ' · exp ' + iaEsc(p.contract.expiry) : ''} · lot ${iaEsc(p.contract?.lot_size ?? 'n/a')}</div>` : '';
+    const pilotReasons = {
+        PAPER_PILOT_WAIT_FOR_STRONG: 'Waiting for a STRONG signal',
+        PAPER_PILOT_60M_HOLD_UNAVAILABLE: 'A 60-minute hold cannot be completed within this market session',
+        PAPER_PILOT_SESSION_CAP: 'Today’s managed pilot entry has been used',
+        PAPER_PILOT_BUY_ONLY: 'The current proposal is outside the long-option pilot',
+    };
+    const why = s.reasons.length ? ` · ${iaEsc(s.reasons.map(r => pilotReasons[r] || r).join(', '))}` : '';
     const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
     const tappable = (s.state === 'ELIGIBLE' || s.state === 'AWAITING_BROKER_SNAPSHOT') && !!s.identity;
     const act = pend
@@ -8445,7 +8503,7 @@ function renderSingleLegTradeStatus(ix, bi) {
     const last = typeof singleLegOutcomeLine === 'function' ? singleLegOutcomeLine(ix) : '';
     return `<div class="sl-trade-status" data-index="${iaEsc(ix)}" data-sl-state="${s.state}" data-sl-reasons="${iaEsc(s.reasons.slice(0, 6).join(','))}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">
         <div style="font-size:12px"><b>${iaEsc(ix)} single-leg · Paper only:</b> <span style="color:${col}">${SL_TRADE_STATE_LABEL[s.state]}</span>${why}${act}</div>
-        ${ident}${last}
+        ${ident}${last}${typeof singleLegReadinessLine === 'function' ? singleLegReadinessLine(ix, p) : ''}${typeof singleLegHoldLine === 'function' ? singleLegHoldLine(p) : ''}
         <div style="font-size:10px;color:var(--text-muted)">Separate from the spread alternatives below · admission re-checked natively at tap · simulated Paper fill, no real orders</div>
     </div>`;
 }

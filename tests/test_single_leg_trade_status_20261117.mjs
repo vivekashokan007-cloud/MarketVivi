@@ -57,7 +57,7 @@ for (const ix of ['NF', 'BNF']) {
 test('blocked shows the exact reasons; awaiting snapshot and eligible offer the existing admission only', () => {
   const S = FX.sixStates('BNF');
   const blocked = harness({ bd: S.BLOCKED[0] }).renderAuthorityWatchlist(S.BLOCKED[0]);
-  assert.match(section(blocked, 'BNF'), /Blocked<\/span> · SPREAD_GT_3PCT, REENTRY_GAP_LT_30M/);
+  assert.match(section(blocked, 'BNF'), /WAIT — proposal blocked<\/span> · SPREAD_GT_3PCT, REENTRY_GAP_LT_30M/);
   assert.doesNotMatch(section(blocked, 'BNF'), /admitSingleLeg/);
   for (const k of ['AWAITING_BROKER_SNAPSHOT', 'ELIGIBLE']) {
     const html = harness({ bd: S[k][0] }).renderAuthorityWatchlist(S[k][0]);

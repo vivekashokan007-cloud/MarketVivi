@@ -148,7 +148,7 @@ test('A3: an admissible uncovered short is blocked on BOTH cards with the reason
       const { trade, copilot, c } = both(bi, 'BNF', { positions });
       assert.match(copilot, new RegExp(`SELL_${ot} 58500 .* · blocked: UNCOVERED_SHORT_NOT_OFFERED`));
       assert.doesNotMatch(copilot, /sl-admit/);
-      assert.match(trade, /Blocked<\/span> · UNCOVERED_SHORT_NOT_OFFERED/);
+      assert.match(trade, /WAIT — proposal blocked<\/span> · UNCOVERED_SHORT_NOT_OFFERED/);
       assert.doesNotMatch(trade, /sl-admit/);
       // the plan (research record) is shown as published, not rewritten
       assert.equal(bi.single_leg_by_index.BNF.action, `SELL_${ot}`); assert.equal(bi.single_leg_by_index.BNF.status, status);
