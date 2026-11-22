@@ -23,7 +23,7 @@ function ctx(nb, now) {
   c.window = { NativeBridge: nb };
   c.document = { getElementById: id => els[id] || null };
   vm.createContext(c);
-  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.102', build: 533, app_js_v: 1397 }; let SESSION_EVIDENCE_RESULT=null; let SESSION_EVIDENCE_DATE=null;
+  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.103', build: 534, app_js_v: 1398 }; let SESSION_EVIDENCE_RESULT=null; let SESSION_EVIDENCE_DATE=null;
     function renderAll(){ renders++; renderSessionEvidence(); }\n${FNS.map(fn).join('\n')}`, c);
   return c;
 }
