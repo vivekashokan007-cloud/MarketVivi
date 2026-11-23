@@ -2091,6 +2091,31 @@ function mergeGrossTrough(a, b) {
  * Normalize gross peak/trough for every close destination (server, native ledger, retry).
  * Unknown stays null — never fabricated 0. Present finite 0 is valid.
  */
+// Read validated tick extrema once per snapshot. Raw historical maxima are never promoted.
+function readValidatedExtrema(trades = []) {
+    const bridge = nativeBridge();
+    if (!bridge || typeof bridge.getValidatedPositionExtrema !== 'function') return {};
+    try {
+        return parsedObject(bridge.getValidatedPositionExtrema(trades.map(t => String(t.id))));
+    } catch (_) { return {}; }
+}
+function withValidatedExtrema(trade, row) {
+    const valid = row?.trade_id === String(trade.id) && row.status === 'VALIDATED'
+        && row.basis === 'GROSS_BEFORE_CHARGES'
+        && row.contract === 'a1_trusted_extrema_v1_trusted_marks_only_raw_extrema_unchanged'
+        && row.includes_accepted_close === false;
+    return { ...trade,
+        peak_pnl: valid ? asFiniteNumber(row.trusted_mfe) : null,
+        trough_pnl: valid ? asFiniteNumber(row.trusted_mae) : null,
+        peak_pnl_validity: valid && asFiniteNumber(row.trusted_mfe) !== null ? 'valid' : 'unknown',
+        trough_pnl_validity: valid && asFiniteNumber(row.trusted_mae) !== null ? 'valid' : 'unknown',
+        extrema_basis: 'GROSS_BEFORE_CHARGES', extrema_source: 'validated_position_ticks',
+        extrema_status: valid ? 'VALIDATED' : 'UNKNOWN_NO_VALIDATED_EVIDENCE',
+        extrema_contract_version: row?.contract || 'a1_trusted_extrema_v1_trusted_marks_only_raw_extrema_unchanged',
+        extrema_observed_at: valid ? row.updated_at || null : null,
+        extrema_includes_accepted_close: false };
+}
+
 function buildGrossExtremaCloseFields(tradeLike = {}) {
     const hasPeakKey = Object.prototype.hasOwnProperty.call(tradeLike, 'peak_pnl');
     const hasTroughKey = Object.prototype.hasOwnProperty.call(tradeLike, 'trough_pnl');
@@ -2105,10 +2130,10 @@ function buildGrossExtremaCloseFields(tradeLike = {}) {
         trough_pnl: trough,
         peak_pnl_validity: peakObserved ? 'valid' : 'unknown',
         trough_pnl_validity: troughObserved ? 'valid' : 'unknown',
-        extrema_basis: GROSS_EXTREMA_BASIS,
+        extrema_basis: tradeLike.extrema_basis || GROSS_EXTREMA_BASIS,
         extrema_unit: GROSS_EXTREMA_UNIT,
         extrema_source: tradeLike.extrema_source || 'live_position',
-        extrema_contract_version: GROSS_EXTREMA_CONTRACT_VERSION,
+        extrema_contract_version: tradeLike.extrema_contract_version || GROSS_EXTREMA_CONTRACT_VERSION,
     };
 }
 
@@ -2127,9 +2152,11 @@ function buildNormalizedCloseExtremaPayload(tradeLike = {}, extras = {}) {
             contract_version: extrema.extrema_contract_version,
             peak_pnl_validity: extrema.peak_pnl_validity,
             trough_pnl_validity: extrema.trough_pnl_validity,
+            includes_accepted_close: tradeLike.extrema_includes_accepted_close ?? null,
+            status: tradeLike.extrema_status || null,
             observation_interval: {
                 from: tradeLike.entry_date || null,
-                to: extras.exit_date || null,
+                to: tradeLike.extrema_source === 'validated_position_ticks' ? tradeLike.extrema_observed_at || null : extras.exit_date || null,
             },
         },
     };
@@ -2201,6 +2228,12 @@ function optionLegQuote(chain = {}, strike, optionType) {
 }
 
 function buildCloseLegQuotes(tradeLike = {}) {
+    // Only an explicit request-scoped context selects the accepted close bundle.
+    // Missing evidence is unknown; the periodic cache cannot fill its gaps.
+    if (Object.prototype.hasOwnProperty.call(tradeLike, 'accepted_paper_close_quote')) {
+        const q = tradeLike.accepted_paper_close_quote;
+        return q?.close_bundle_complete === true ? parsedObject(q.close_leg_quotes) : {};
+    }
     const indexKey = String(tradeLike.index_key || tradeLike.indexKey || 'BNF').toUpperCase() === 'NF' ? 'NF' : 'BNF';
     const chain = indexKey === 'NF'
         ? readNativeJson('getNfChain', {})
@@ -2222,6 +2255,15 @@ function estimateTeacherRoundTripCostBreakdown(tradeLike = {}) {
             friction_reason: 'NATIVE_FRICTION_BRIDGE_UNAVAILABLE',
             slippage_basis: 'UNAVAILABLE'
         };
+    }
+    if (Object.prototype.hasOwnProperty.call(tradeLike, 'accepted_paper_close_quote')) {
+        const q = tradeLike.accepted_paper_close_quote;
+        if (String(q?.trade_id) !== String(tradeLike.id)
+            || q?.close_bundle_contract !== 'paper_close_bundle_v1_one_accepted_quote_for_pnl_fees_and_evidence'
+            || q?.close_bundle_complete !== true || !Object.keys(parsedObject(q.close_leg_quotes)).length) {
+            return { friction_cost: null, net_pnl: null, friction_version: 'G2_v1',
+                friction_reason: 'ACCEPTED_CLOSE_BUNDLE_UNAVAILABLE', slippage_basis: 'UNAVAILABLE' };
+        }
     }
     const entrySnapshot = parsedObject(tradeLike.entry_snapshot);
     const payload = {
@@ -3254,6 +3296,7 @@ window.syncFromNative = function(dataJson) {
         // Phase 4: Updated trade P&L from Kotlin
         if (data.openTrades && Array.isArray(data.openTrades)) {
             const openTrades = currentOpenTrades();
+            const validated = readValidatedExtrema(data.openTrades);
             let changed = false;
             for (const nt of data.openTrades) {
                 const idx = openTrades.findIndex(t => String(t.id) === String(nt.id));
@@ -3265,9 +3308,10 @@ window.syncFromNative = function(dataJson) {
                         peak_pnl: mergeGrossPeak(openTrades[idx].peak_pnl, nt.peak_pnl),
                         trough_pnl: mergeGrossTrough(openTrades[idx].trough_pnl, nt.trough_pnl)
                     };
+                    if (openTrades[idx].paper) openTrades[idx] = withValidatedExtrema(openTrades[idx], validated[String(nt.id)]);
                     changed = true;
                 } else {
-                    openTrades.push(nt);
+                    openTrades.push(nt.paper ? withValidatedExtrema(nt, validated[String(nt.id)]) : nt);
                     changed = true;
                 }
             }
@@ -4936,7 +4980,10 @@ async function closeTrade(tradeId, exitReason) {
             return;
         }
     }
-    const paperPnl = isPaper ? buildPaperPnlBreakdown(trade) : null;
+    // A detached request-local value prevents concurrent closes and later polls from
+    // changing which legs supplied fees and persisted evidence.
+    const closeContext = isPaper ? { ...trade, accepted_paper_close_quote: JSON.parse(JSON.stringify(paperCloseQuote)) } : trade;
+    const paperPnl = isPaper ? buildPaperPnlBreakdown(closeContext) : null;
     const netClosePnl = isPaper ? paperPnl.netIfClosedNow : null;
     const displayClosePnl = isPaper && netClosePnl !== null ? netClosePnl : grossClosePnl;
     const confirmMsg = isPaper
@@ -4968,6 +5015,8 @@ async function closeTrade(tradeId, exitReason) {
         const chain = isBNF ? bnfChain : nfChain;
         const minsOpen = typeof API?.minutesSinceOpen === 'function' ? API.minutesSinceOpen() : null;
 
+        const validatedRow = isPaper ? readValidatedExtrema([trade])[String(trade.id)] : null;
+
         // b108: Remove from STATE and re-render IMMEDIATELY — don't wait for Supabase
         // Trade disappears from Position tab right away regardless of network
         removeOpenTradeFromState(tradeId); // push removal to Kotlin now
@@ -4979,7 +5028,8 @@ async function closeTrade(tradeId, exitReason) {
 
         // G3: one normalized close extrema payload for server / native / retry
         // (top-level peak_pnl was previously omitted — trough only).
-        const closeExtrema = buildNormalizedCloseExtremaPayload(trade, { exit_date: exitDateIso });
+        const closeExtrema = buildNormalizedCloseExtremaPayload(
+            isPaper ? withValidatedExtrema(trade, validatedRow) : trade, { exit_date: exitDateIso });
 
         // Now update Supabase in background (non-blocking)
         const closePatch = {
@@ -5027,26 +5077,7 @@ async function closeTrade(tradeId, exitReason) {
                 net_pnl: isPaper ? netClosePnl : null,
                 net_won: isPaper ? netWon : null,
                 exit_premium: isPaper ? currentPremium : (trade.current_premium ?? null),
-                paper_close_quote: isPaper && paperCloseQuote ? {
-                    contract_version: paperCloseQuote.contract_version,
-                    request_id: paperCloseQuote.request_id,
-                    source: paperCloseQuote.source,
-                    quoted_at_ms: paperCloseQuote.quoted_at_ms,
-                    expires_at_ms: paperCloseQuote.expires_at_ms,
-                    valuation_quality: paperCloseQuote.valuation_quality,
-                    mark_basis: paperCloseQuote.mark_basis,
-                    leg_count: paperCloseQuote.leg_count,
-                    expected_leg_count: paperCloseQuote.expected_leg_count,
-                    position_tick_guards_version: paperCloseQuote.position_tick_guards_version,
-                    quote_validity_state: paperCloseQuote.quote_validity_state ?? null,
-                    source_quote_ts: paperCloseQuote.source_quote_ts ?? null,
-                    max_source_age_ms: paperCloseQuote.max_source_age_ms ?? null,
-                    mark_trust_state: paperCloseQuote.mark_trust_state ?? null,
-                    mark_trust_cause: paperCloseQuote.mark_trust_cause ?? null,
-                    close_quote_quality: paperCloseQuote.close_quote_quality ?? null,
-                    close_quote_degraded_reason: paperCloseQuote.close_quote_degraded_reason ?? null,
-                    close_quote_refresh_attempted: paperCloseQuote.close_quote_refresh_attempted ?? null
-                } : null,
+                paper_close_quote: isPaper ? closeContext.accepted_paper_close_quote : null,
                 peak_pnl: closeExtrema.peak_pnl,
                 trough_pnl: closeExtrema.trough_pnl,
                 peak_pnl_validity: closeExtrema.peak_pnl_validity,
@@ -5090,7 +5121,8 @@ async function closeTrade(tradeId, exitReason) {
                 gross_mtm_close: grossClosePnl,
                 estimated_round_trip_cost: isPaper ? paperPnl.estimatedRoundTripCost : null,
                 net_if_closed_now: isPaper ? netClosePnl : null,
-                close_leg_quotes: isPaper ? buildCloseLegQuotes(trade) : null,
+                close_leg_quotes: isPaper ? buildCloseLegQuotes(closeContext) : null,
+                accepted_paper_close_quote: isPaper ? closeContext.accepted_paper_close_quote : null,
                 friction_breakdown: isPaper ? paperPnl.frictionBreakdown : null
             },
             paper_discipline: null,
@@ -5108,6 +5140,7 @@ async function closeTrade(tradeId, exitReason) {
                 peak_pnl_validity: closeExtrema.peak_pnl_validity,
                 trough_pnl_validity: closeExtrema.trough_pnl_validity,
                 extrema_basis: closeExtrema.extrema_basis,
+                close_extrema_meta: closeExtrema.close_extrema_meta,
                 drawdown_from_peak: (closeExtrema.peak_pnl !== null && closeExtrema.trough_pnl !== null && closeExtrema.peak_pnl > 0 && closeExtrema.trough_pnl < closeExtrema.peak_pnl)
                     ? closeExtrema.peak_pnl - closeExtrema.trough_pnl
                     : null,
@@ -6777,7 +6810,7 @@ function renderSingleLegCard(bi) {
             : p.status === 'ADMISSIBLE' ? 'admissible' : p.status === 'ELIGIBLE_PENDING_SNAPSHOT' ? 'needs a fresh broker snapshot at tap' : 'blocked: ' + iaEsc(why || 'unknown');
         return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: ${desc} · ${state}${btn}${typeof singleLegReadinessLine === 'function' ? singleLegReadinessLine(ix, p) : ''}${typeof singleLegHoldLine === 'function' ? singleLegHoldLine(p) : ''}</div>`;
     }).join('');
-    const st = SINGLE_LEG_STORE ?? loadSingleLegStore();
+    const st = loadSingleLegStore();
     const now = new Date();
     const overdue = (st?.positions || []).some(x => {
         if (x.status === 'EXIT_PENDING') return true;
@@ -6791,9 +6824,9 @@ function renderSingleLegCard(bi) {
                 hourCycle: 'h23' }).format(now) >= '15:10';
     });
     const overdueWarning = overdue ? '<div class="brain-detail sl-overdue" style="color:var(--warn)">Paper position overdue or exit pending — check monitoring and fresh quotes. No exit fill is assumed.</div>' : '';
-    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${typeof singleLegPositionHoldLine === 'function' ? singleLegPositionHoldLine(x) : ''}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
+    const pos = (st?.positions || []).map(x => `<div class="brain-detail sl-pos">• ${iaEsc(x.index)} ${iaEsc(x.action)} ${iaEsc(x.strike ?? '')} · expiry ${iaEsc(x.expiry ?? 'unknown')} · ${iaEsc(x.instrument_key)} · ${iaEsc(x.status)}${typeof singleLegPositionHoldLine === 'function' ? singleLegPositionHoldLine(x) : ''}${x.exit_reason ? ' · ' + iaEsc(x.exit_reason) : ''}${x.status === 'CLOSED' ? ' · net ' + moneyOrUnavailable((st.closed || []).find(a => a.position_id === x.position_id)?.net_pnl) : ''}${x.exit_pending_reason ? ' · pending: ' + iaEsc(x.exit_pending_reason) : ''}${x.entry_quote?.basis === 'BROKER_SNAPSHOT' ? ' · simulated fill (broker snapshot)' : ''}</div>`).join('');
     const research = (st?.hold_observations || []).slice(-2).reverse().map(row => {
-        const labels = { same_60: 'Same-day +60', near_close: 'Near close', next_open: 'Next open', next_60: 'Next open +60' };
+        const labels = { same_30: 'Same-day +30', same_120: 'Same-day +120', same_60: 'Same-day +60', near_close: 'Near close', next_open: 'Next open', next_60: 'Next open +60' };
         const marks = Object.entries(row.marks || {}).map(([key, value]) => {
             const status = value.status === 'SCORED' && Number.isFinite(value.net_pnl)
                 ? '₹' + value.net_pnl.toFixed(2) : ({ PENDING: 'pending', MISSING_QUOTE: 'quote unavailable',
@@ -8979,6 +9012,7 @@ function renderCandidateCard(cand, atm, rank) {
 
 // ═══ TRADE CARD — shared renderer for real + paper positions ═══
 function renderTradeCard(t, isPaper) {
+    if (isPaper) t = withValidatedExtrema(t, readValidatedExtrema([t])[String(t.id)]);
     rememberRenderedOpenTrade(t);
     const forces = t.forces || {
         f1: t.force_f1 || 0, f2: t.force_f2 || 0, f3: t.force_f3 || 0,
@@ -9060,7 +9094,7 @@ function renderTradeCard(t, isPaper) {
         <div class="pos-timing">${t.entry_date ? `⏱ ${entryDateShort} ${entryTime} · ${elapsed} ago` : ''}</div>
         <div class="pos-pnl ${pnlClass}">
             ${isPaper ? 'Net If Closed Now' : 'P&L'}: ${moneyOrUnavailable(headlinePnl)}
-            ${asFiniteNumber(t.peak_pnl) > 0 ? `<span class="pos-peak">(peak ₹${localeNumberOrFallback(t.peak_pnl)})</span>` : ''}
+            ${asFiniteNumber(t.peak_pnl) > 0 ? `<span class="pos-peak">(gross peak ₹${localeNumberOrFallback(t.peak_pnl)})</span>` : ''}
         </div>
         ${isPaper
             ? `<div style="font-size:10px;color:var(--text-muted);margin-top:-4px;margin-bottom:4px">Gross MTM: ${moneyOrUnavailable(paperPnl.grossMtm)} <span style="color:var(--text-dimmed)">· Est. round-trip cost: ${moneyOrUnavailable(paperPnl.estimatedRoundTripCost)}</span></div>`
@@ -11555,7 +11589,7 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     });
 }
 document.addEventListener('visibilitychange', () => {
-    try { if (document.visibilityState === 'visible') resumeSingleLegPending('visible'); } catch (e) { /* retried */ }
+    try { if (document.visibilityState === 'visible') { resumeSingleLegPending('visible'); loadSingleLegStore(); renderAll(); } } catch (e) { /* retried */ }
     try { slTraceObserveTrade('visibility'); } catch (e) { /* trace optional */ }
 });
 document.addEventListener('DOMContentLoaded', async () => {
