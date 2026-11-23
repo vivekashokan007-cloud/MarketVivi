@@ -23,7 +23,7 @@ assert.equal(f({ quote_validity_state: 'INVALID', close_quote_quality: 'DEGRADED
   close_quote_degraded_reason: 'quote_invalid_after_one_refresh:leg:NSE_FO|69802:source_stale' }), true);
 assert.equal(f({ quote_validity_state: 'WEIRD', close_quote_quality: 'DEGRADED', close_quote_degraded_reason: 'x' }), false);
 // Persisted + surfaced.
-assert.match(src, /close_quote_quality: paperCloseQuote\.close_quote_quality \?\? null/);
-assert.match(src, /close_quote_degraded_reason: paperCloseQuote\.close_quote_degraded_reason \?\? null/);
+// Full request-scoped quote is persisted unchanged; behavioral close tests verify every field.
+assert.match(src, /paper_close_quote: isPaper \? closeContext\.accepted_paper_close_quote : null/);
 assert.match(src, /DEGRADED close quote \(still invalid after one refresh\)/);
 console.log('decision 9 PWA degraded close checks OK');

@@ -39,6 +39,7 @@ assert.equal(r[0].current_pnl, 5);
 // Manual close contract.
 assert.match(src, /QUOTE_SOURCE_INVALID: '/);
 assert.match(src, /&& paperCloseQuoteValidityAccepted\(row\)/);
-assert.match(src, /quote_validity_state: paperCloseQuote\.quote_validity_state \?\? null/);
+// Full request-scoped quote is persisted unchanged; behavioral close tests verify every field.
+assert.match(src, /paper_close_quote: isPaper \? closeContext\.accepted_paper_close_quote : null/);
 assert.match(src, /MARK UNTRUSTED/);
 console.log('B3 PWA mark trust / close validity checks OK');

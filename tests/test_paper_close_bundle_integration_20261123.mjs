@@ -17,7 +17,7 @@ function setup() {
   const t = { id:'320', paper:true, index_key:'NF', strategy_type:'BEAR_PUT', sell_strike:25450,
     buy_strike:25600, sell_type:'PE', buy_type:'PE', current_pnl:90, current_premium:99,
     entry_date:new Date(Date.now()-3600000).toISOString(), peak_pnl:999999, trough_pnl:-999999 };
-  const quote = {trade_id:'320', request_id:'fresh', gross_close_pnl:1000, executable_close_premium:87.5,
+  const quote = {trade_id:'320', request_id:'fresh', quote_validity_state:'VALID', close_quote_quality:'VALID', close_quote_degraded_reason:null, gross_close_pnl:1000, executable_close_premium:87.5,
     expires_at_ms:Date.now()+60000, close_bundle_complete:true,
     close_bundle_contract:'paper_close_bundle_v1_one_accepted_quote_for_pnl_fees_and_evidence',
     close_leg_quotes:{buy:{bid:110,ask:111,instrument_key:'buy'},sell:{bid:22,ask:22.5,instrument_key:'sell'}},
@@ -78,4 +78,11 @@ test('render rereads durable CLOSED state after a monitor exit without another a
   assert.match(h.c.renderSingleLegCard({}),/OPEN/);
   h.bridge.singleLegRead=()=>JSON.stringify({positions:[{position_id:'sl',index:'BNF',action:'BUY_PE',instrument_key:'key',status:'CLOSED',exit_reason:'TIME_EXIT'}],closed:[{position_id:'sl',net_pnl:3070.09}]});
   const html=h.c.renderSingleLegCard({});assert.match(html,/CLOSED/);assert.match(html,/3,070.09/);assert.doesNotMatch(html,/position overdue/);
+});
+
+test('degraded close metadata survives the actual close unchanged',async()=>{
+  const h=setup();Object.assign(h.quote,{quote_validity_state:'INVALID',close_quote_quality:'DEGRADED',
+    close_quote_degraded_reason:'quote_invalid_after_one_refresh:source_stale',close_quote_refresh_attempted:true});
+  await h.c.closeTrade('320','Manual');assert.deepEqual(h.alerts,[]);
+  for(const patch of [h.saved[0],h.remote[0]]) assert.deepEqual(patch.close_trace_json.paper_close_quote,h.quote);
 });
