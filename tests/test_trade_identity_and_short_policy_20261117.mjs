@@ -31,7 +31,7 @@ function harness({ bridge = {}, positions = [], bd = {} } = {}) {
     + LABELS + '\n' + BUY_RE + '\n' + ['iaEsc', 'singleLegEnabled', 'loadSingleLegStore', 'saveSingleLegPending', 'resumeSingleLegPending',
       'singleLegAdmissionCheck', 'singleLegAdmitButton', 'admitSingleLegFromButton', 'admitSingleLeg', 'pollSingleLegAdmit',
       'finishSingleLegAdmit', 'renderSingleLegCard', 'singleLegTradeState', 'renderSingleLegTradeStatus',
-      'renderAuthorityCandidateCard', 'renderAuthorityWatchlist'].map(fn).join('\n'), c);
+      'renderAuthorityCandidateCard', 'renderAuthorityWatchlist'].concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n'), c);
   return c;
 }
 const section = (html, ix) => { const a = html.indexOf(`<section class="ia-index-section" data-index="${ix}"`); assert.ok(a >= 0); return html.slice(a, html.indexOf('</section>', a)); };
@@ -68,8 +68,7 @@ for (const [name, mk, reasons] of CASES) {
       for (const r of reasons) { assert.match(trade, new RegExp(r)); assert.match(copilot, new RegExp(r)); }
       assert.doesNotMatch(trade, /sl-admit/); assert.doesNotMatch(copilot, /sl-admit/);
       assert.match(copilot, /unavailable: /);
-      // the other index is unaffected
-      assert.equal(c.singleLegTradeState('NF', bi, { enabled: true, fresh: true }).state, 'ELIGIBLE');
+      assert.doesNotMatch(tradeAll, /data-index="NF"/);
     }
   });
 }
@@ -87,7 +86,7 @@ test('action allowlist: unknown or missing-type actions are blocked with the rea
 });
 
 test('happy path: matched identity is ELIGIBLE on both cards and the button carries exactly the displayed ids', () => {
-  for (const ix of ['NF', 'BNF']) {
+  for (const ix of ['BNF']) {
     const bi = FX.result();
     const { c, trade, copilot } = both(bi, ix);
     const s = c.singleLegTradeState(ix, bi, { enabled: true, fresh: true });
@@ -97,8 +96,8 @@ test('happy path: matched identity is ELIGIBLE on both cards and the button carr
     assert.match(copilot, /admissible/);
   }
   // awaiting snapshot is tappable too, with the same binding
-  const aw = FX.result({ nfPlan: FX.plan('NF', { status: 'ELIGIBLE_PENDING_SNAPSHOT', reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] }) });
-  assert.match(both(aw, 'NF').trade, /data-decision-id="fx_nf_17"/);
+  const aw = FX.result({ bnfPlan: FX.plan('BNF', { status: 'ELIGIBLE_PENDING_SNAPSHOT', reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] }) });
+  assert.match(both(aw, 'BNF').trade, /data-decision-id="fx_bnf_17"/);
 });
 
 test('A1: the tap forwards the displayed decision id and instrument key to the bound native entry only', () => {
@@ -118,9 +117,9 @@ test('A1: the tap forwards the displayed decision id and instrument key to the b
 test('A1: no identity, or a native build without the bound entry, sends nothing and says why', () => {
   const legacy = [];
   const c = harness({ bridge: { singleLegAdmit: ix => { legacy.push(ix); return '{"status":"PENDING","request_id":"x"}'; } } });
-  assert.equal(c.admitSingleLeg('NF').reason, 'DISPLAYED_IDENTITY_REQUIRED');
-  assert.equal(c.admitSingleLeg('NF', 'fx_nf_17', '').reason, 'DISPLAYED_IDENTITY_REQUIRED');
-  assert.equal(c.admitSingleLeg('NF', 'fx_nf_17', 'K').reason, 'NATIVE_IDENTITY_BINDING_UNAVAILABLE');
+  assert.equal(c.admitSingleLeg('BNF').reason, 'DISPLAYED_IDENTITY_REQUIRED');
+  assert.equal(c.admitSingleLeg('BNF', 'fx_bnf_17', '').reason, 'DISPLAYED_IDENTITY_REQUIRED');
+  assert.equal(c.admitSingleLeg('BNF', 'fx_bnf_17', 'K').reason, 'NATIVE_IDENTITY_BINDING_UNAVAILABLE');
   assert.deepEqual(legacy, []);
   assert.match(c.alerts.at(-1), /NATIVE_IDENTITY_BINDING_UNAVAILABLE/);
 });
@@ -158,8 +157,7 @@ test('A3: an admissible uncovered short is blocked on BOTH cards with the reason
       const card = c.renderSingleLegCard(bi);
       assert.match(card, /BNF SELL_PE FIXTURE\|BNF\|old · OPEN/);
       assert.match(card, /NF SELL_CE FIXTURE\|NF\|old · EXIT_PENDING · pending: QUOTE_STALE/);
-      // NF beside it is still offered
-      assert.match(copilotRow(card, 'NF'), /sl-admit/);
+      assert.doesNotMatch(card, /class="brain-detail sl-row" data-index="NF"/);
     }
   }
 });
@@ -179,35 +177,18 @@ const nfExpiryDayPlan = (over = {}) => FX.plan('NF', { status: 'BLOCKED', instru
   contract: { index: 'NF', instrument_key: null, lot_size: null, expiry: '2026-11-17', reasons: ['EXPIRY_DAY_NO_NEXT_CHAIN'] },
   reasons: ['EXPIRY_DAY_NO_NEXT_CHAIN', 'BROKER_SNAPSHOT_UNAVAILABLE'], ...over });
 
-test('R2: NF expiry-day plan without an instrument key shows identity AND source reasons; unavailable, no tap; BNF independent', () => {
-  for (const bnfPlan of [FX.plan('BNF'), FX.plan('BNF', { status: 'ELIGIBLE_PENDING_SNAPSHOT', reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] })]) {
-    const bi = FX.result({ nfPlan: nfExpiryDayPlan(), bnfPlan });
-    const c = harness({ bd: bi });
-    const s = c.singleLegTradeState('NF', bi, { enabled: true, fresh: true });
-    assert.equal(s.state, 'RESULT_UNAVAILABLE');
-    assert.deepEqual([...s.reasons], ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN', 'BROKER_SNAPSHOT_UNAVAILABLE']);
-    assert.equal(s.identity, null);
-    const all = c.renderAuthorityWatchlist(bi), nf = section(all, 'NF');
-    assert.equal(tradeState(all, 'NF'), 'RESULT_UNAVAILABLE');
-    assert.match(nf, /Result unavailable<\/span> · INSTRUMENT_KEY_MISSING, EXPIRY_DAY_NO_NEXT_CHAIN, BROKER_SNAPSHOT_UNAVAILABLE/);
-    assert.match(nf, /instrument unavailable/);
-    assert.doesNotMatch(nf, /sl-admit/);
-    // BNF renders on its own, with its own binding
-    const b = c.singleLegTradeState('BNF', bi, { enabled: true, fresh: true });
-    const want = bnfPlan.status === 'ADMISSIBLE' ? 'ELIGIBLE' : 'AWAITING_BROKER_SNAPSHOT';
-    assert.equal(b.state, want);
-    assert.equal(tradeState(all, 'BNF'), want);
-    const bnf = section(all, 'BNF');
-    assert.match(bnf, /data-decision-id="fx_bnf_17" data-instrument-key="FIXTURE\|BNF\|2026-11-2x\|58500CE"/);
-    assert.doesNotMatch(bnf, /INSTRUMENT_KEY_MISSING|EXPIRY_DAY_NO_NEXT_CHAIN/);
-  }
+test('a cached NF expiry-day refusal stays hidden and BNF is still offered', () => {
+  const bi = FX.result({ nfPlan: nfExpiryDayPlan() });
+  const all = harness({ bd: bi }).renderAuthorityWatchlist(bi);
+  assert.doesNotMatch(all, /data-index="NF"|EXPIRY_DAY_NO_NEXT_CHAIN/);
+  assert.equal(tradeState(all, 'BNF'), 'ELIGIBLE');
 });
 
 test('R2: identity and source reasons are deduplicated, identity first, order kept', () => {
-  const bi = FX.result({ nfPlan: nfExpiryDayPlan({ reasons: ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN',
+  const bi = FX.result({ bnfPlan: FX.plan('BNF', { status: 'BLOCKED', instrument_key: null, quote_needed: [], reasons: ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN',
     'BROKER_SNAPSHOT_UNAVAILABLE', 'EXPIRY_DAY_NO_NEXT_CHAIN'] }) });
   const c = harness({ bd: bi });
-  const s = c.singleLegTradeState('NF', bi, { enabled: true, fresh: true });
+  const s = c.singleLegTradeState('BNF', bi, { enabled: true, fresh: true });
   assert.equal(s.state, 'RESULT_UNAVAILABLE');
   assert.deepEqual([...s.reasons], ['INSTRUMENT_KEY_MISSING', 'EXPIRY_DAY_NO_NEXT_CHAIN', 'BROKER_SNAPSHOT_UNAVAILABLE']);
   // a blocked short keeps its plan reasons too, still deduplicated

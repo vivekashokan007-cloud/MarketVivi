@@ -78,9 +78,10 @@ for (const [name, saved] of [['BNF', { BNF: { request_id: 'bnf-rid-1', phase: 'F
 test('authority branch: indices with their own Trade row are not duplicated in the recovery block', () => {
   const c = harness({ saved: { NF: { request_id: 'a', phase: 'QUEUED' }, BNF: { request_id: 'b', phase: 'QUEUED' } }, bridge: () => ({ status: 'PENDING', phase: 'QUEUED' }) });
   c.resumeSingleLegPending('boot');
-  assert.equal(c.renderSingleLegRecoveryBlock('AUTHORITY'), '');
-  c.getIndexSelector = () => 'NF';
-  assert.match(c.renderSingleLegRecoveryBlock('AUTHORITY'), /data-index="BNF" data-request-id="b"/);
+  const block = c.renderSingleLegRecoveryBlock('AUTHORITY');
+  assert.match(block, /data-index="NF" data-request-id="a"/);
+  assert.match(block, /Legacy NF/);
+  assert.doesNotMatch(block, /data-index="BNF"|sl-admit/);
 });
 
 test('delayed bridge: no NativeBridge at boot -> waits on the same chain, no resubmit; readiness kicks it once', () => {

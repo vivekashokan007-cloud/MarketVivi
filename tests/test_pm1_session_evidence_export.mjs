@@ -20,7 +20,7 @@ function ctx(nb) {
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, renders: 0 };
   c.window = { NativeBridge: nb };
   vm.createContext(c);
-  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.103', build: 534, app_js_v: 1398 }; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let SESSION_EVIDENCE_DATE=null; function renderAll(){ renders++; }\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.103', build: 534, app_js_v: 1398 }; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let SESSION_EVIDENCE_DATE=null; function renderAll(){ renders++; }\n${FNS.concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n')}`, c);
   return c;
 }
 

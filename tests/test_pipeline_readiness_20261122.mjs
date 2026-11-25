@@ -10,7 +10,7 @@ function fn(name) {
 function harness(rows) {
  const c={Date, JSON, window:{NativeBridge:{singleLegRead:()=>JSON.stringify({quote_readiness:{by_index:rows}})}}};
  vm.createContext(c);
- vm.runInContext(['iaEsc','singleLegReadinessLine','singleLegHoldLine','singleLegPositionHoldLine'].map(fn).join('\n'),c);
+ vm.runInContext(['iaEsc','singleLegReadinessLine','singleLegHoldLine','singleLegPositionHoldLine'].concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n'),c);
  return c;
 }
 test('quote readiness is bound to displayed index, decision and exact instrument',()=>{

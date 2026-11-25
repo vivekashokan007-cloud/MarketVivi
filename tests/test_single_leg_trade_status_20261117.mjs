@@ -27,7 +27,7 @@ function harness({ enabled = true, fresh = true, freshReason = '', sel = 'BOTH',
     SINGLE_LEG_PENDING: pending };
   vm.createContext(c);
   vm.runInContext(LABELS + '\n' + BUY_RE + '\n' + ['iaEsc', 'singleLegAdmissionCheck', 'singleLegAdmitButton', 'singleLegTradeState', 'renderSingleLegTradeStatus',
-    'renderAuthorityCandidateCard', 'renderAuthorityWatchlist'].map(fn).join('\n'), c);
+    'renderAuthorityCandidateCard', 'renderAuthorityWatchlist'].concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n'), c);
   return c;
 }
 const section = (html, ix) => {
@@ -37,16 +37,14 @@ const section = (html, ix) => {
 };
 const stateOf = (html, ix) => (section(html, ix).match(/data-sl-state="([A-Z_]+)"/) || [])[1];
 
-for (const ix of ['NF', 'BNF']) {
-  test(`${ix}: all six states, independently of the other index`, () => {
-    const other = ix === 'NF' ? 'BNF' : 'NF';
+for (const ix of ['BNF']) {
+  test(`${ix}: all six states with NF retired`, () => {
     for (const [want, [bi, env]] of Object.entries(FX.sixStates(ix))) {
       const c = harness();
       const s = c.singleLegTradeState(ix, bi, env);
       assert.equal(s.state, want, `${ix} ${want}`);
       assert.equal(s.index, ix);
-      // the other index's plan in the same result is untouched by this index's state
-      if (env.enabled && env.fresh) assert.equal(c.singleLegTradeState(other, bi, env).state, 'ELIGIBLE', `${other} beside ${ix} ${want}`);
+      assert.deepEqual([...c.singleLegTradeState('NF', bi, env).reasons], ['INDEX_RETIRED_BNF_ONLY']);
       const html = harness({ enabled: env.enabled, fresh: env.fresh, freshReason: env.freshReason, bd: bi }).renderAuthorityWatchlist(bi);
       assert.equal(stateOf(html, ix), want);
       assert.doesNotMatch(html, /undefined|NaN|\[object Object\]/);
@@ -67,27 +65,18 @@ test('blocked shows the exact reasons; awaiting snapshot and eligible offer the 
   assert.match(section(aw, 'BNF'), /Awaiting broker snapshot<\/span> · BROKER_SNAPSHOT_UNAVAILABLE/);
 });
 
-test('one index with a proposal while the other is blocked: separate sections, no combined status', () => {
+test('an eligible cached NF proposal cannot surface when BNF is blocked', () => {
   const bi = FX.result({ bnfPlan: FX.plan('BNF', { status: 'BLOCKED', reasons: ['ENTRY_WINDOW_CLOSED'] }) });
   const html = harness({ bd: bi }).renderAuthorityWatchlist(bi);
-  assert.equal(stateOf(html, 'NF'), 'ELIGIBLE');
   assert.equal(stateOf(html, 'BNF'), 'BLOCKED');
-  assert.match(section(html, 'NF'), ADMIT('NF'));
-  assert.doesNotMatch(section(html, 'NF'), /data-index="BNF" data-decision-id|ENTRY_WINDOW_CLOSED/);
-  assert.doesNotMatch(section(html, 'BNF'), /admitSingleLeg/);
-  assert.equal((html.match(/class="sl-trade-status"/g) || []).length, 2);
-  assert.doesNotMatch(html, /NF\+BNF|combined|both indices/i);
-  // reversed: BNF proposes, NF blocked
-  const r = FX.result({ nfPlan: FX.plan('NF', { status: 'BLOCKED', reasons: ['MANAGED_POLICY_CAP_ONE_PER_INDEX'] }) });
-  const h2 = harness({ bd: r }).renderAuthorityWatchlist(r);
-  assert.equal(stateOf(h2, 'NF'), 'BLOCKED');
-  assert.equal(stateOf(h2, 'BNF'), 'ELIGIBLE');
+  assert.match(section(html, 'BNF'), /ENTRY_WINDOW_CLOSED/);
+  assert.doesNotMatch(html, /data-index="NF"|admitSingleLeg/);
 });
 
 test('no-spread displays still show the single-leg status beside the empty spread list', () => {
   const bi = FX.result({ nfCands: [], bnfCands: [] });
   const html = harness({ bd: bi }).renderAuthorityWatchlist(bi);
-  for (const ix of ['NF', 'BNF']) {
+  for (const ix of ['BNF']) {
     assert.match(section(html, ix), /sl-trade-status[\s\S]*No policy candidate for this index/);
     assert.equal(stateOf(html, ix), 'ELIGIBLE');
   }
@@ -101,7 +90,7 @@ test('no-spread displays still show the single-leg status beside the empty sprea
 test('stale or missing results never show a proposal as eligible', () => {
   const bi = FX.result();
   const stale = harness({ fresh: false, freshReason: 'Brain result is from another session (historical)', bd: bi }).renderAuthorityWatchlist(bi);
-  for (const ix of ['NF', 'BNF']) {
+  for (const ix of ['BNF']) {
     assert.equal(stateOf(stale, ix), 'RESULT_UNAVAILABLE');
     assert.match(section(stale, ix), /another session \(historical\)/);
     assert.doesNotMatch(section(stale, ix), /admitSingleLeg/);
@@ -109,8 +98,8 @@ test('stale or missing results never show a proposal as eligible', () => {
   const c = harness();
   const env = { enabled: true, fresh: true };
   assert.deepEqual([...c.singleLegTradeState('BNF', FX.result({ drop: ['BNF'] }), env).reasons], ['INDEX_RESULT_MISSING']);
-  assert.equal(c.singleLegTradeState('NF', FX.result({ drop: ['BNF'] }), env).state, 'ELIGIBLE');
-  assert.deepEqual([...c.singleLegTradeState('NF', FX.result({ nfPlan: null }), env).reasons], ['PLAN_NOT_COMPUTED']);
+  assert.equal(c.singleLegTradeState('NF', FX.result({ drop: ['BNF'] }), env).state, 'BLOCKED');
+  assert.deepEqual([...c.singleLegTradeState('BNF', FX.result({ bnfPlan: null }), env).reasons], ['PLAN_NOT_COMPUTED']);
   const un = FX.result({ bnf: { availability: 'UNAVAILABLE', direction: { value: 'UNAVAILABLE' }, reason_codes: ['ANCHOR_MISSING'] } });
   assert.deepEqual([...c.singleLegTradeState('BNF', un, env).reasons], ['ANCHOR_MISSING']);
   const mism = FX.result({ bnfPlan: FX.plan('BNF', { decision_id: 'fx_bnf_16' }) });
@@ -147,9 +136,9 @@ test('index selector, contract identity, pending admission and off state', () =>
   const pend = harness({ bd: bi, pending: { BNF: { request_id: 'r1', phase: 'FETCHING' } } }).renderAuthorityWatchlist(bi);
   assert.match(section(pend, 'BNF'), /admission pending \(FETCHING\)/);
   assert.doesNotMatch(section(pend, 'BNF'), /admitSingleLeg/);
-  assert.match(section(pend, 'NF'), ADMIT('NF'));
+  assert.doesNotMatch(pend, /data-index="NF"/);
   const off = harness({ enabled: false, bd: bi }).renderAuthorityWatchlist(bi);
-  for (const ix of ['NF', 'BNF']) {
+  for (const ix of ['BNF']) {
     assert.match(section(off, ix), /Paper single-leg off[\s\S]*setSingleLegEnabled\(true\)/);
     assert.doesNotMatch(section(off, ix), /admitSingleLeg/);
   }

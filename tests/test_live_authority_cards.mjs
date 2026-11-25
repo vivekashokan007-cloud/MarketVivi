@@ -22,7 +22,7 @@ function harness({ allowed = true, full = false, choice = false } = {}) {
   vm.createContext(c);
   const labels = src.slice(src.indexOf('const SL_TRADE_STATE_LABEL'), src.indexOf('};', src.indexOf('const SL_TRADE_STATE_LABEL')) + 2);
   const buyRe = (src.match(/^const SL_OUTRIGHT_BUY_ACTION = .*$/m) || [''])[0];
-  vm.runInContext(labels + '\n' + buyRe + '\n' + ['iaEsc', 'singleLegAdmissionCheck', 'singleLegAdmitButton', 'singleLegTradeState', 'renderSingleLegTradeStatus', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].map(fn).join('\n'), c);
+  vm.runInContext(labels + '\n' + buyRe + '\n' + ['iaEsc', 'singleLegAdmissionCheck', 'singleLegAdmitButton', 'singleLegTradeState', 'renderSingleLegTradeStatus', 'renderAuthorityCandidateCard', 'renderAuthorityWatchlist', 'renderCandidateCard'].concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n'), c);
   return c;
 }
 const missing = { authorityPolicyVersion: 'index_direction_v1', index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR',
@@ -89,13 +89,13 @@ test('manual Paper preserves unavailable and capacity gates; no real entry butto
   assert.doesNotMatch(harness().renderAuthorityCandidateCard(missing), /takeTrade\([^)]*, false\)|REAL TRADE/);
 });
 
-test('NF and BNF keep separate action/reasons and no combined legacy banner', () => {
+test('BNF action retains its reason and stale NF candidates stay hidden', () => {
   const c = harness();
   const html = c.renderAuthorityWatchlist({ by_index: {
     NF: { direction: { value: 'BULL' }, action: { value: 'CANDIDATES', reasons: [] } },
     BNF: { direction: { value: 'NEUTRAL' }, action: { value: 'NO_TRADE', reasons: ['lot_unavailable'] } },
   }, candidates_by_index: { NF: [missing], BNF: [] } });
-  assert.match(html, /NF · BULL/);
+  assert.doesNotMatch(html, /data-index="NF"/);
   assert.match(html, /BNF · NEUTRAL/);
   assert.match(html, /NO_TRADE · lot_unavailable/);
   assert.doesNotMatch(html, /Context bias|Morning:|by current menu rank/);
@@ -119,7 +119,7 @@ test('active authority does not append retired Kelly and combined-direction insi
 // R2 (Codex review of PR #26): the Choose action must follow Paper authorization and capacity.
 function clickHarness({ allowed = true, full = false } = {}) {
   const calls = { choose: 0, take: 0, alerts: [] };
-  const four = { index: 'NF', id: 'NF_IC', type: 'IRON_CONDOR', entryEligible: true };
+  const four = { index: 'BNF', id: 'BNF_IC', type: 'IRON_CONDOR', entryEligible: true };
   const c = { String, Number, JSON, Object, Array, Math, Date, calls,
     window: { NativeBridge: { indexAuthorityChoose: () => { calls.choose++; return JSON.stringify({ status: 'CHOSEN', choice: { id: 'x' } }); } } },
     alert: m => calls.alerts.push(m), takeTrade: () => { calls.take++; },
@@ -140,7 +140,7 @@ test('available: Choose for Paper and Manual Paper are both enabled; click recor
   assert.match(html, /<button class="btn-paper" onclick="takeTrade/);
   assert.doesNotMatch(html, /disabled/);
   const c = clickHarness();
-  assert.equal(c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF_IC').status, 'CHOSEN');
+  assert.equal(c.chooseIndexStructureForPaper('BNF', 'idx1_bnf', 'BNF_IC').status, 'CHOSEN');
   assert.equal(c.calls.choose, 1); assert.equal(c.calls.take, 1);
 });
 
@@ -154,7 +154,7 @@ for (const [name, opts, re] of [['unavailable', { allowed: false }, /Paper unava
     assert.match(html, re);
     // Even a stale/forced tap on the handler must not call indexAuthorityChoose or takeTrade.
     const c = clickHarness(opts);
-    const out = c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF_IC');
+    const out = c.chooseIndexStructureForPaper('BNF', 'idx1_bnf', 'BNF_IC');
     assert.equal(out.status, 'REJECTED');
     assert.equal(c.calls.choose, 0); assert.equal(c.calls.take, 0);
     assert.equal(c.calls.alerts.length, 1);

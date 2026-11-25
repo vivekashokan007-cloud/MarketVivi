@@ -36,7 +36,7 @@ function app({ state, fields = {}, brainRaw = 'null' }) {
     C: { POLL_INTERVAL_MS: 5 * 60e3 }, API: { todayIST: () => S }, STATE: {}, bd: {} };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(`${staleLine}\n${block}\n${FNS.map(fn).join('\n')}\nvar bd = {};`, ctx);
+  vm.runInContext(`${staleLine}\n${block}\n${FNS.concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n')}\nvar bd = {};`, ctx);
   return ctx;
 }
 function result(rev, extra = {}) {

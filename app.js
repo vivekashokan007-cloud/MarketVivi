@@ -1,10 +1,27 @@
+// Active product scope. Legacy position/history readers remain intact for close-only migration.
+function bnfNewEntryAllowed(value) {
+    return String(value?.index ?? value?.index_key ?? value ?? '').toUpperCase() === 'BNF';
+}
+function bnfAnalysisView(raw) {
+    if (!raw || typeof raw !== 'object') return raw;
+    const out = { ...raw };
+    for (const k of Object.keys(out)) if (k.toLowerCase().startsWith('nf') || k === 'candle_nf') delete out[k];
+    for (const k of ['by_index', 'candidates_by_index', 'managed_policy', 'single_leg_by_index']) {
+        if (raw[k] && typeof raw[k] === 'object') out[k] = raw[k].BNF == null ? {} : { BNF: raw[k].BNF };
+    }
+    for (const k of ['watchlist', 'generated_candidates', 'ranked_candidates_full'])
+        if (Array.isArray(raw[k])) out[k] = raw[k].filter(bnfNewEntryAllowed);
+    out.index_selector = 'BNF';
+    return out;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Market Radar v2.0 — Premium-First Trading Engine
-   
+
    Philosophy: Premium direction is the ONLY thing that matters.
    Three forces on every trade: Intrinsic (Δspot), Theta (Δtime), IV (Δvol)
    Score by force alignment, not market direction.
-   
+
    Single continuous loop. σ-based adaptive noise filtering.
    ═══════════════════════════════════════════════════════════════ */
 
@@ -216,7 +233,7 @@ const STATE = {
 
     // Phase 11: Poll history — every 5-min snapshot for intraday pattern matching
     pollHistory: [],  // [{t, nf, bnf, vix, pcr, nfPcr, callWall, callWallOI, putWall, putWallOI, maxPain, futPrem, breadth}]
-    _chartIndex: 'NF',  // chart toggle: NF or BNF
+    _chartIndex: 'BNF',  // chart toggle: NF or BNF
     rangeDetected: false,  // b68: true when last 3 polls show ±0.3σ range
     rangeSigma: 0,         // b68: actual range in σ (for display)
 
@@ -255,11 +272,11 @@ const STATE = {
 
 try {
     const savedChartIndex = localStorage.getItem('mr2_chart_index');
-    if (savedChartIndex === 'NF' || savedChartIndex === 'BNF') STATE._chartIndex = savedChartIndex;
+    STATE._chartIndex = 'BNF';
 } catch (e) {}
 
 function switchChartIndex(nextIndex) {
-    const idx = nextIndex === 'BNF' ? 'BNF' : 'NF';
+    const idx = 'BNF';
     STATE._chartIndex = idx;
     try { localStorage.setItem('mr2_chart_index', idx); } catch (e) {}
     renderMarket();
@@ -364,13 +381,13 @@ function pullRenderSnapshot() {
             positionMarkStates
         ),
         bnfChain: readNativeJson('getBnfChain', {}),
-        nfChain: readNativeJson('getNfChain', {}),
+        nfChain: {}, // retired; no active NF bridge read
         executionInfraStatus: readNativeJson('getExecutionInfraStatus', {}),
         orderProxyUrl: readNativeValue('getOrderProxyUrl', ''),
         notificationTransportMode: readNativeValue('getNotificationTransportMode', ''),
         stage2aGuardMode: readNativeValue('getStage2AGuardMode', ''),
         bnfBreadth: readNativeJson('getBnfBreadth', {}),
-        nf50Breadth: readNativeJson('getNf50Breadth', {}),
+        nf50Breadth: {}, // retired
         premiumHistory7: readNativeJson('getPremiumHistory', [], 7),
         crashReport: readNativeJson('getLastCrashReport', {})
     };
@@ -1643,7 +1660,8 @@ async function refreshEvaluatorJobStatus(jobId, { allowReschedule = true } = {})
     return STATE.evaluatorJob;
 }
 
-async function triggerGeminiEvaluation(indexScope = ['BNF', 'NF']) {
+async function triggerGeminiEvaluation(indexScope = ['BNF']) {
+    indexScope = ['BNF'];
     if (!window.NativeBridge?.triggerEvaluationJob) {
         alert('Native bridge not available. Use APK version.');
         return;
@@ -1654,7 +1672,7 @@ async function triggerGeminiEvaluation(indexScope = ['BNF', 'NF']) {
         STATE.evaluatorProposals = [];
         renderAll();
         const response = callNativeJson('triggerEvaluationJob', JSON.stringify({
-            index_scope: Array.isArray(indexScope) && indexScope.length ? indexScope : ['BNF', 'NF']
+            index_scope: ['BNF']
         }));
         if (!response.job_id) throw new Error('Oracle did not return job_id');
         STATE.evaluatorJob = {
@@ -1885,7 +1903,7 @@ function adoptBrainResult(nextBrain, { preserveLastGood = true } = {}) {
         return false;
     }
 
-    bd = incoming;
+    bd = bnfAnalysisView(incoming);
     applyBrainRangeSigma(bd);
 
     if (incomingHasPayload) {
@@ -3242,12 +3260,12 @@ window.syncFromNative = function(dataJson) {
         if (Object.prototype.hasOwnProperty.call(data, 'pollCount') && !data.pollHistory) {
             STATE.pollCount = data.pollCount;
         }
-        
+
         // Phase 4: Full brain result from Kotlin
         if (data.brainResult) {
             adoptBrainResult(data.brainResult);
             STATE._nativeBrainAlerts = data.brainResult.alerts || [];
-            
+
             // Effective bias from Kotlin brain
             const eb = data.brainResult.effective_bias;
             if (eb && eb.bias) {
@@ -3264,7 +3282,7 @@ window.syncFromNative = function(dataJson) {
         } catch (e) {
             console.warn('[syncFromNative] watch-status refresh failed:', e.message);
         }
-        
+
         // Phase 3: Use brain-generated candidates if available (b114)
         if (data.brainResult?.generated_candidates?.length > 0) {
             const brainCands = data.brainResult.generated_candidates;
@@ -3282,7 +3300,7 @@ window.syncFromNative = function(dataJson) {
             STATE.watchlist = data.candidates.slice(0, 6);
             STATE._lastCandidateBias = bd.effective_bias?.bias || bd.morningBias?.bias;
         }
-        
+
         // Phase 4: Live spots from Kotlin
         if (data.spots) {
             // Removed dead no-op mutation of parsed latest poll object.
@@ -3292,7 +3310,7 @@ window.syncFromNative = function(dataJson) {
             const nfEl = document.querySelector('.spot-nf, [data-spot="nf"]');
             const vixEl = document.querySelector('.spot-vix, [data-spot="vix"]');
         }
-        
+
         // Phase 4: Updated trade P&L from Kotlin
         if (data.openTrades && Array.isArray(data.openTrades)) {
             const openTrades = currentOpenTrades();
@@ -3319,7 +3337,7 @@ window.syncFromNative = function(dataJson) {
                 STATE.openTrades = openTrades;
             }
         }
-        
+
         reconcileNativeSessionUi();
         renderAll();
     } catch(e) {
@@ -4054,6 +4072,7 @@ async function previewSandboxOrder(candidateId) {
 async function takeTradeImpl(candidateId, isPaper = false) {
     const sourceCandidate = findCandidateById(candidateId);
     if (!sourceCandidate) { console.warn('takeTrade: candidate not found:', candidateId); return; }
+    if (!bnfNewEntryAllowed(sourceCandidate)) { alert('Nifty is retired. New entries are Bank Nifty only.'); return; }
     const projection = isPaper ? paperObservationCandidate(sourceCandidate) : { candidate: sourceCandidate, reasons: [] };
     if (projection.reasons.length) { alert(`Paper analysis unavailable: ${projection.reasons.join(' · ')}`); return; }
     const cand = projection.candidate;
@@ -4629,6 +4648,7 @@ async function takeTrade(candidateId, isPaper = false) {
 async function logManualTrade() {
     const type = document.getElementById('mt-type').value;
     const indexKey = document.getElementById('mt-index').value;
+    if (!bnfNewEntryAllowed(indexKey)) { alert('New entries are Bank Nifty only.'); return; }
     const sellStrike = parseFloat(document.getElementById('mt-sell').value);
     const buyStrike = parseFloat(document.getElementById('mt-buy').value);
     const sellLTP = parseFloat(document.getElementById('mt-sell-ltp').value);
@@ -5572,7 +5592,7 @@ function m0ResearchView(st) {
     const title = M0_LABELS[st.label] || 'Full-day research — status unknown';
     const rows = [];
     for (const s of (Array.isArray(st.sessions) ? st.sessions : [])) {
-        for (const ix of ['NF', 'BNF']) {
+        for (const ix of ['BNF']) {
             const c = s && s[ix];
             if (!c) continue;
             if (c.available === false) { rows.push(`<tr><td>${e(s.session_date)}</td><td>${ix}</td><td colspan="7">coverage unknown (${e(c.reason)})</td></tr>`); continue; }
@@ -6428,12 +6448,10 @@ function isIndexAuthorityActive(bi) {
     return bi?.direction_authority?.active === 'index_direction_v1' && bi?.by_index && typeof bi.by_index === 'object';
 }
 function getIndexSelector() {
-    try {
-        const v = String(localStorage.getItem(INDEX_SELECTOR_KEY) || 'BOTH').toUpperCase();
-        return (v === 'NF' || v === 'BNF' || v === 'BOTH') ? v : 'BOTH';
-    } catch (e) { return 'BOTH'; }
+    return 'BNF';
 }
 function setIndexSelector(v) {
+    v = 'BNF';
     try { localStorage.setItem(INDEX_SELECTOR_KEY, v); } catch (e) { /* display preference */ }
     // R5 s2: the selector also gates NEW managed admission natively (read into the analysis context)
     try { window.NativeBridge?.setIndexSelector?.(v); } catch (e) { /* native unavailable: display only */ }
@@ -6451,6 +6469,9 @@ function indexStructureChoiceAvailable(candidate, dec) {
         && (dec?.structure_policy?.allowed || []).includes(candidate?.type);
 }
 function chooseIndexStructureForPaper(ix, decisionId, candidateId) {
+    if (String(ix).toUpperCase() !== 'BNF') {
+        return { status: 'REJECTED', reason: 'INDEX_RETIRED_BNF_ONLY' };
+    }
     let out = null;
     // Recheck Paper authorization and capacity BEFORE recording a native choice, so a choice
     // cannot be recorded for an entry that takeTrade would refuse. Gates are unchanged.
@@ -6492,8 +6513,7 @@ function iaEsc(x) {
 }
 function indexAuthorityEntryAuthorization(candidate, bi) {
     const ix = String(candidate?.index || candidate?.index_key || '').toUpperCase();
-    const sel = getIndexSelector();
-    if (sel !== 'BOTH' && sel !== ix) return { allowed: false, reason: `Index selector is ${sel}; ${ix || 'this index'} is display-only` };
+    if (ix !== 'BNF') return { allowed: false, reason: 'INDEX_RETIRED_BNF_ONLY' };
     const dec = bi?.by_index?.[ix];
     if (!dec) return { allowed: false, reason: 'No per-index decision for this candidate' };
     const act = dec.action || {};
@@ -6537,15 +6557,12 @@ function renderIndexAuthorityPanel(ix, dec, cands, managed) {
     </div>`;
 }
 function renderIndexAuthorityPanels(bi) {
-    const sel = getIndexSelector();
-    const shown = sel === 'BOTH' ? ['NF', 'BNF'] : [sel];
-    const btn = v => `<button class="ia-sel" onclick="setIndexSelector('${v}')" style="font-size:11px;padding:2px 8px;margin-right:4px;${sel === v ? 'font-weight:700;border:1px solid var(--accent)' : ''}">${v === 'BOTH' ? 'Both' : v}</button>`;
     const da = bi.direction_authority || {};
     return `<div class="ia-wrap">
-        <div style="margin:4px 0">${btn('NF')}${btn('BNF')}${btn('BOTH')}
-            <span style="font-size:10px;color:var(--text-muted)">selector controls display and new entries; positions on both indices stay monitored</span></div>
-        ${shown.map(ix => renderIndexAuthorityPanel(ix, bi.by_index[ix], (bi.candidates_by_index || {})[ix], (bi.managed_policy || {})[ix])).join('')}
-        <div style="font-size:10px;color:var(--text-muted)">Policy ${iaEsc(da.active)} · ${iaEsc(da.structure_policy)} · ${iaEsc(da.construction)} · combined NF+BNF direction retired · Real orders unchanged (manual)</div>
+        <div style="margin:4px 0"><b>Bank Nifty</b>
+            <span style="font-size:10px;color:var(--text-muted)">BNF only · existing legacy positions retain close handling</span></div>
+        ${renderIndexAuthorityPanel('BNF', bi.by_index?.BNF, bi.candidates_by_index?.BNF, bi.managed_policy?.BNF)}
+        <div style="font-size:10px;color:var(--text-muted)">Policy ${iaEsc(da.active)} · ${iaEsc(da.structure_policy)} · ${iaEsc(da.construction)} · BNF-only direction · Real orders unchanged (manual)</div>
         ${renderSingleLegCard(bi)}
         ${renderDailyReviewCard()}
     </div>`;
@@ -6646,6 +6663,7 @@ function resumeSingleLegPending(origin) {
 // ACTION_NOT_ALLOWED.  It does not touch research capture, existing positions or their exits, or Manual Paper.
 const SL_OUTRIGHT_BUY_ACTION = /^BUY_(CE|PE)$/;
 function singleLegAdmissionCheck(ix, bi) {
+    if (String(ix).toUpperCase() !== 'BNF') return { ok: false, state: 'BLOCKED', reasons: ['INDEX_RETIRED_BNF_ONLY'] };
     const p = (bi?.single_leg_by_index || {})[ix];
     const d = bi?.by_index?.[ix];
     const id = x => (typeof x === 'string' && x.trim()) ? x.trim() : null;
@@ -6688,6 +6706,7 @@ function admitSingleLegFromButton(el) {
 // 20 Nov trace: TAP (displayed identity), then REFUSED (no request id: refused in the page / before Python) or
 // SUBMITTED (request id) - the coordinator adds quote-started and the outcome natively.
 function admitSingleLeg(ix, decisionId, instrumentKey) {
+    if (String(ix).toUpperCase() !== 'BNF') return { status: 'REJECTED', reason: 'INDEX_RETIRED_BNF_ONLY' };
     let out = null;
     const did = typeof decisionId === 'string' ? decisionId.trim() : '';
     const key = typeof instrumentKey === 'string' ? instrumentKey.trim() : '';
@@ -6789,7 +6808,7 @@ function renderSingleLegCard(bi) {
     const on = singleLegEnabled();
     const plans = bi?.single_leg_by_index || {};
     const sel = getIndexSelector();
-    const rows = ['NF', 'BNF'].filter(ix => sel === 'BOTH' || sel === ix).map(ix => {
+    const rows = ['BNF'].map(ix => {
         const p = plans[ix];
         if (!p) return `<div class="brain-detail sl-row" data-index="${ix}">${ix}: no single-leg proposal${on ? '' : ' (Paper single-leg is off)'}</div>`;
         const why = (p.reasons || []).join(', ');
@@ -7574,7 +7593,8 @@ function renderDebug(snapshot = null) {
 }
 
 // ═══ INTRADAY CHART — SVG spot + VIX from poll history (b68) ═══
-function renderIntradayChart(index = 'NF', snapshot = null) {
+function renderIntradayChart(index = 'BNF', snapshot = null) {
+    index = 'BNF';
     const snap = renderSnapshot(snapshot);
     const polls = Array.isArray(snap?.pollHistory) ? snap.pollHistory : (STATE.pollHistory || []);
     if (!polls || polls.length < 2) return '<div style="text-align:center;font-size:11px;color:var(--text-muted);padding:8px">Chart appears after 2+ polls</div>';
@@ -7706,7 +7726,6 @@ function renderIntradayChart(index = 'NF', snapshot = null) {
         <div style="display:flex;justify-content:space-between;align-items:center;padding:0 2px 4px">
             <span style="font-size:11px;font-weight:600;color:var(--text-primary)">${index} ${spots[spots.length - 1].toFixed(0)} <span style="color:${spotChange >= 0 ? 'var(--green)' : 'var(--danger)'}">${spotChange >= 0 ? '+' : ''}${spotChange.toFixed(0)} (${spotChangePct}%)</span></span>
             <span style="font-size:10px;color:orange">VIX ${vixNow} (${vixChange >= 0 ? '+' : ''}${vixChange})</span>
-            <button onclick="switchChartIndex('${otherIdx}')" style="font-size:9px;padding:2px 6px;border:1px solid var(--border);border-radius:3px;background:var(--bg-input);color:var(--text-muted);cursor:pointer">View ${otherIdx}</button>
         </div>
         <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-height:130px">
             ${rangeIndicator}
@@ -7812,9 +7831,7 @@ function renderMarket(snapshot = null) {
     if (!Object.keys(l).length) return;
     const b = snap?.baseline || readNativeJson('getBaseline', {});
     const bnfChain = snap?.bnfChain || readNativeJson('getBnfChain', {});
-    const nfChain = snap?.nfChain || readNativeJson('getNfChain', {});
     const bnfCand = firstCandidateFor('BNF');
-    const nfCand = firstCandidateFor('NF');
     const dteFromExpiry = (expiry) => {
         if (!expiry || typeof expiry !== 'string') return null;
         const todayStr = (typeof API?.todayIST === 'function') ? API.todayIST() : new Date().toISOString().slice(0, 10);
@@ -7824,15 +7841,10 @@ function renderMarket(snapshot = null) {
         return Math.max(0, Math.ceil((exp - today) / 86400000));
     };
     const bnfExpiry = validDateOrBlank(bnfChain.expiry || bnfCand.expiry || '');
-    const nfExpiry = validDateOrBlank(nfChain.expiry || nfCand.expiry || '');
     const bnfDte = bnfCand.tDTE ?? dteFromExpiry(bnfExpiry);
-    const nfDte = nfCand.tDTE ?? dteFromExpiry(nfExpiry);
     const bnfAtm = bnfChain.atm || bd.bnfProfile?.atm || 0;
-    const nfAtm = nfChain.atm || bd.nfProfile?.atm || 0;
     const bnfAtmIv = bnfChain.atmIv || l.bnfAtmIv || b.bnfAtmIv || 0;
-    const nfAtmIv = nfChain.atmIv || l.nfAtmIv || b.nfAtmIv || 0;
     const bnfTheta = bd.bnfProfile?.avgTheta ?? b.bnfAtmTheta ?? 0;
-    const nfTheta = bd.nfProfile?.avgTheta ?? b.nfAtmTheta ?? 0;
     const bias = l.bias;
 
     if (!b) {
@@ -7841,12 +7853,10 @@ function renderMarket(snapshot = null) {
     }
 
     const daily1s = b.dailySigmaBnf || Math.round(((l.bnfSpot || 0) * ((l.vix || 0) / 100)) / Math.sqrt(252));
-    const daily1sNf = b.dailySigmaNf || Math.round(((l.nfSpot || 0) * ((l.vix || 0) / 100)) / Math.sqrt(252));
     const trade1s = b.tradeSigmaBnf || (bnfDte != null ? Math.round(daily1s * Math.sqrt(Math.max(1, bnfDte))) : 0);
-    const trade1sNf = b.tradeSigmaNf || (nfDte != null ? Math.round(daily1sNf * Math.sqrt(Math.max(1, nfDte))) : 0);
-    const chosenSpot = Number(STATE._chartIndex === 'BNF' ? l.bnfSpot : l.nfSpot);
-    const chosenBaseSpot = Number(STATE._chartIndex === 'BNF' ? b.bnfSpot : b.nfSpot);
-    const chosenDailySigma = STATE._chartIndex === 'BNF' ? daily1s : daily1sNf;
+    const chosenSpot = Number(l.bnfSpot);
+    const chosenBaseSpot = Number(b.bnfSpot);
+    const chosenDailySigma = daily1s;
     const derivedSpotSigma = (Number.isFinite(chosenSpot) && Number.isFinite(chosenBaseSpot) && Number.isFinite(chosenDailySigma) && chosenDailySigma > 0)
         ? +(((chosenSpot - chosenBaseSpot) / chosenDailySigma).toFixed(1))
         : null;
@@ -7891,7 +7901,7 @@ function renderMarket(snapshot = null) {
         <div class="section-timestamp">Scanned: ${scanTime}${STATE.pollCount > 0 ? ` · Poll #${STATE.pollCount}` : ''}</div>
 
         <!-- INTRADAY CHART — spot + VIX from poll history (b68) -->
-        ${renderIntradayChart(STATE._chartIndex || 'NF', snap)}
+        ${renderIntradayChart('BNF', snap)}
 
         <!-- VERDICT -->
         <div class="env-verdict ${verdictClass}">${verdict}</div>
@@ -7920,14 +7930,6 @@ function renderMarket(snapshot = null) {
             </span>
         </div>
         ` : ''}
-        ${bd.nfGapInfo && bd.nfGapInfo.type !== 'UNKNOWN' ? `
-        <div class="env-row" style="padding: 6px 0;">
-            <span class="env-row-label">NF Gap</span>
-            <span class="env-row-value" style="color: ${bd.nfGapInfo.gap > 0 ? 'var(--green)' : bd.nfGapInfo.gap < 0 ? 'var(--danger)' : 'var(--text-muted)'}">
-                ${bd.nfGapInfo.gap > 0 ? '+' : ''}${bd.nfGapInfo.gap} pts (${bd.nfGapInfo.pct}%, ${bd.nfGapInfo.sigma}σ) — ${bd.nfGapInfo.type.replace('_', ' ')}
-            </span>
-        </div>
-        ` : ''}
 
         <!-- OVERNIGHT DELTA — b507: computed for the acknowledged input revision, else named pending/unavailable -->
         ${b507RenderOvernightCard(b507OvernightCardModel(bd, b507ReadNativeInputState(typeof NativeBridge !== 'undefined' ? NativeBridge : null)))}
@@ -7944,11 +7946,6 @@ function renderMarket(snapshot = null) {
                 <div class="env-value">${l.bnfSpot?.toFixed(0) || '--'}</div>
                 <div class="env-sub">ATM: ${bnfAtm || '--'} · IV: ${fmtIv(bnfAtmIv)}</div>
             </div>
-            <div class="env-item">
-                <div class="env-label">NF</div>
-                <div class="env-value">${l.nfSpot?.toFixed(0) || '--'}</div>
-                <div class="env-sub">ATM: ${nfAtm || '--'} · IV: ${fmtIv(nfAtmIv)}</div>
-            </div>
         </div>
 
         <!-- FORCE 3: IV / VOLATILITY — collapsible -->
@@ -7959,27 +7956,23 @@ function renderMarket(snapshot = null) {
             <span class="env-row-value">${vixVsYday || 'No history yet'}</span>
         </div>
         <table class="oi-table">
-            <thead><tr><th></th><th class="oi-th">BNF</th><th class="oi-th">NF</th></tr></thead>
+            <thead><tr><th></th><th class="oi-th">BNF</th></tr></thead>
             <tbody>
 	                <tr>
 	                    <td class="oi-td-label">ATM IV</td>
 	                    <td class="oi-td-val">${fmtIv(bnfAtmIv)}</td>
-	                    <td class="oi-td-val">${fmtIv(nfAtmIv)}</td>
 	                </tr>
 	                <tr>
 	                    <td class="oi-td-label">Θ ₹/day</td>
 	                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(bnfTheta || 0)}</td>
-	                    <td class="oi-td-val" style="color:var(--green)">₹${Math.abs(nfTheta || 0)}</td>
 	                </tr>
 	                <tr>
 	                    <td class="oi-td-label">DTE</td>
 	                    <td class="oi-td-val">${bnfDte ?? '--'}T</td>
-	                    <td class="oi-td-val">${nfDte ?? '--'}T</td>
 	                </tr>
 	                <tr>
 	                    <td class="oi-td-label">Expiry</td>
 	                    <td class="oi-td-val">${bnfExpiry || '--'}</td>
-	                    <td class="oi-td-val">${nfExpiry || '--'}</td>
 	                </tr>
             </tbody>
         </table>
@@ -8005,22 +7998,19 @@ function renderMarket(snapshot = null) {
         <details>
             <summary class="env-section-title" style="cursor:pointer;user-select:none;">Range Budget — σ Framework ▸</summary>
         <table class="oi-table">
-            <thead><tr><th></th><th class="oi-th">BNF</th><th class="oi-th">NF</th></tr></thead>
+            <thead><tr><th></th><th class="oi-th">BNF</th></tr></thead>
             <tbody>
 	                <tr>
 	                    <td class="oi-td-label">Daily 1σ</td>
 	                    <td class="oi-td-val">±${daily1s}</td>
-	                    <td class="oi-td-val">±${daily1sNf || 0}</td>
 	                </tr>
 	                <tr>
 	                    <td class="oi-td-label">Daily 2σ</td>
 	                    <td class="oi-td-val">±${daily1s * 2}</td>
-	                    <td class="oi-td-val">±${(daily1sNf || 0) * 2}</td>
 	                </tr>
 	                <tr>
 	                    <td class="oi-td-label">Trade 1σ</td>
 	                    <td class="oi-td-val" style="color:var(--accent)">±${trade1s} (${bnfDte ?? '--'}T)</td>
-	                    <td class="oi-td-val" style="color:var(--accent)">±${trade1sNf || 0} (${nfDte ?? '--'}T)</td>
 	                </tr>
             </tbody>
         </table>
@@ -8052,7 +8042,6 @@ function renderOI(snapshot = null) {
 
     const b = snap?.baseline || readNativeJson('getBaseline', {});
     const bnfChain = snap?.bnfChain || readNativeJson('getBnfChain', {});
-    const nfc = snap?.nfChain || readNativeJson('getNfChain', {});
     if (!b) {
         el.innerHTML = '<div class="empty-state">Scan to see OI structure & institutional positioning</div>';
         return;
@@ -8088,21 +8077,6 @@ function renderOI(snapshot = null) {
     const bnfCPct = bnfTotal > 0 ? Math.round(bnfCallOI / bnfTotal * 100) : 50;
     const bnfFP = l.futuresPremBnf ?? l.fp;
 
-    // NF
-    const nfPCR = nfc.nearAtmPCR || nfc.pcr;
-    const nfMP = nfc.maxPain || b.maxPainNf;
-    const nfSpotNum = toFiniteNum(l.nfSpot);
-    const nfMPNum = toFiniteNum(nfMP);
-    const nfMPDist = (nfSpotNum != null && nfMPNum != null) ? Math.round(nfSpotNum - nfMPNum) : null;
-    const nfCW = nfc.callWallStrike;
-    const nfCWOI = nfc.callWallOI;
-    const nfPW = nfc.putWallStrike;
-    const nfPWOI = nfc.putWallOI;
-    const nfCallOI = nfc.nearTotalCallOI || nfc.totalCallOI || 0;
-    const nfPutOI = nfc.nearTotalPutOI || nfc.totalPutOI || 0;
-    const nfTotal = nfCallOI + nfPutOI;
-    const nfCPct = nfTotal > 0 ? Math.round(nfCallOI / nfTotal * 100) : 50;
-    const nfFP = l.futuresPremNf ?? nfc.futuresPremium;
 
     const pc = (v) => !v ? 'var(--text-muted)' : v > 1.2 ? 'var(--green)' : v < 0.9 ? 'var(--danger)' : 'var(--text-primary)';
     const pl = (v) => !v ? '--' : v > 1.2 ? 'Bull' : v < 0.9 ? 'Bear' : 'Neut';
@@ -8118,47 +8092,38 @@ function renderOI(snapshot = null) {
         <!-- COMPARISON TABLE -->
         <table class="oi-table">
             <thead>
-                <tr><th></th><th class="oi-th">Bank Nifty</th><th class="oi-th">Nifty 50</th></tr>
+                <tr><th></th><th class="oi-th">Bank Nifty</th></tr>
             </thead>
             <tbody>
                 <tr class="oi-pcr-row">
                     <td class="oi-td-label">PCR</td>
                     <td class="oi-td-val" style="color:${pc(bnfPCR)}"><span class="oi-big">${bnfPCR?.toFixed(2) || '--'}</span><br><span class="oi-sub">${pl(bnfPCR)} · F:${l.pcr?.toFixed(2) || '--'}</span></td>
-                    <td class="oi-td-val" style="color:${pc(nfPCR)}"><span class="oi-big">${nfPCR?.toFixed(2) || '--'}</span><br><span class="oi-sub">${pl(nfPCR)} · F:${nfc?.pcr?.toFixed(2) || '--'}</span></td>
                 </tr>
                 <tr>
                     <td class="oi-td-label">Max Pain</td>
                     <td class="oi-td-val">${bnfMP || '--'}<br><span class="oi-sub">${md(bnfMPDist)}</span></td>
-                    <td class="oi-td-val">${nfMP || '--'}<br><span class="oi-sub">${md(nfMPDist)}</span></td>
                 </tr>
                 <tr>
                     <td class="oi-td-label">Call Wall</td>
                     <td class="oi-td-val" style="color:var(--danger)">${bnfCW || '--'}<br><span class="oi-sub">${fmtOI(bnfCWOI)}</span></td>
-                    <td class="oi-td-val" style="color:var(--danger)">${nfCW || '--'}<br><span class="oi-sub">${fmtOI(nfCWOI)}</span></td>
                 </tr>
                 <tr>
                     <td class="oi-td-label">Put Wall</td>
                     <td class="oi-td-val" style="color:var(--green)">${bnfPW || '--'}<br><span class="oi-sub">${fmtOI(bnfPWOI)}</span></td>
-                    <td class="oi-td-val" style="color:var(--green)">${nfPW || '--'}<br><span class="oi-sub">${fmtOI(nfPWOI)}</span></td>
                 </tr>
                 <tr>
                     <td class="oi-td-label">OI Split</td>
                     <td class="oi-td-val">CE ${bnfCPct}% / PE ${100-bnfCPct}%
                         <div class="oi-bar-mini"><div class="oi-bar-fill call" style="width:${bnfCPct}%"></div><div class="oi-bar-fill put" style="width:${100-bnfCPct}%"></div></div>
                     </td>
-                    <td class="oi-td-val">CE ${nfCPct}% / PE ${100-nfCPct}%
-                        <div class="oi-bar-mini"><div class="oi-bar-fill call" style="width:${nfCPct}%"></div><div class="oi-bar-fill put" style="width:${100-nfCPct}%"></div></div>
-                    </td>
                 </tr>
                 <tr>
                     <td class="oi-td-label">Fut Prem</td>
                     <td class="oi-td-val" style="color:${fpC(bnfFP)}">${bnfFP?.toFixed(3) || '--'}%</td>
-                    <td class="oi-td-val" style="color:${fpC(nfFP)}">${nfFP?.toFixed(3) || '--'}%</td>
                 </tr>
                 <tr>
                     <td class="oi-td-label">Spot</td>
                     <td class="oi-td-val">${l.bnfSpot?.toFixed(0) || '--'}</td>
-                    <td class="oi-td-val">${l.nfSpot?.toFixed(0) || '--'}</td>
                 </tr>
             </tbody>
         </table>
@@ -8178,22 +8143,6 @@ function renderOI(snapshot = null) {
         <div class="env-signals">${(breadth.results || []).map(r =>
             `<span class="signal-chip signal-${r.change > 0 ? 'bull' : r.change < 0 ? 'bear' : 'neutral'}">${r.name}: ${r.pctChange > 0 ? '+' : ''}${r.pctChange}%</span>`
         ).join('')}</div>
-        `;
-        })()}
-        ${(() => {
-            const nf50 = snap?.nf50Breadth || readNativeJson('getNf50Breadth', {});
-            if (typeof nf50.scaled !== 'number') return '';
-            const adv = Number.isFinite(nf50.advancing) ? nf50.advancing : 0;
-            const total = Number.isFinite(nf50.total) && nf50.total > 0 ? nf50.total : 50;
-            const considered = Number.isFinite(nf50.considered) && nf50.considered > 0 ? nf50.considered : total;
-            const pct = Number.isFinite(nf50.advPct) ? nf50.advPct : (Number.isFinite(nf50.pct) ? nf50.pct : null);
-            const missingCount = Number.isFinite(nf50.missingCount) ? nf50.missingCount : Math.max(0, total - considered);
-            const coverageNote = considered < total ? ` · coverage ${considered}/${total}${missingCount > 0 ? ` · missing ${missingCount}` : ''}` : '';
-            return `
-        <div class="env-row">
-            <span class="env-row-label">NF50 Breadth</span>
-            <span class="env-row-value">${adv}/${total} advancing${pct !== null ? ` · ${pct}%` : ''}${coverageNote}</span>
-        </div>
         `;
         })()}
 
@@ -8385,20 +8334,9 @@ function renderWatchlist(snapshot = null) {
 
     // Position-for-tomorrow planning removed from Trade tab.
 
-    const nfCands = brainWatchlist.filter(c => c.index === 'NF');
     const bnfCands = brainWatchlist.filter(c => c.index === 'BNF');
-    const nfTop = nfCands.slice(0, 5);
     const bnfTop = bnfCands.slice(0, 5);
     const nfTotal = (bd.generated_candidates || []).filter(c => c.index === 'NF').length;
-    if (nfTop.length) {
-        html += `<div class="section-note" style="font-size:11px;color:var(--text-muted);margin:4px 0 8px 0;">NF: top ${nfTop.length} by current menu rank${nfCands.length > nfTop.length ? ` of ${nfCands.length} watchlist` : ''}</div>`;
-        nfTop.forEach((c, i) => { html += renderCandidateCard(c, nfAtm, i + 1); });
-    } else if (nfTotal > 0) {
-        html += `<div class="empty-state">NF: ${nfTotal} generated — brain returned no NF watchlist candidate.</div>`;
-    } else {
-        html += '<div class="empty-state">No NF candidates</div>';
-    }
-
     // ═══ BANK NIFTY — collapsed by default ═══
     const bnfTotal = (bd.generated_candidates || []).filter(c => c.index === 'BNF').length;
     if (bnfTop.length) {
@@ -8450,6 +8388,7 @@ const SL_TRADE_STATE_LABEL = {
     ELIGIBLE: 'Eligible for Paper',
 };
 function singleLegTradeState(ix, bi, env) {
+    if (String(ix).toUpperCase() !== 'BNF') return { index: ix, state: 'BLOCKED', reasons: ['INDEX_RETIRED_BNF_ONLY'], plan: null, identity: null };
     const e = env || {};
     const plan = (bi?.single_leg_by_index || {})[ix];
     const p = plan && typeof plan === 'object' ? plan : null;
@@ -8551,20 +8490,17 @@ function singleLegOutcomeLine(ix) {
     const why = [o.reason, ...(o.reasons || [])].filter((x, i, a) => x && a.indexOf(x) === i).join(', ');
     return `<div class="sl-last-outcome" data-index="${iaEsc(ix)}" data-request-id="${iaEsc(o.request_id)}" data-sl-outcome="${iaEsc(o.status)}" style="font-size:11px;color:${good ? 'var(--accent)' : 'var(--warn)'}">Last Paper request ${iaEsc(String(o.request_id).slice(0, 12))}: ${iaEsc(o.status)}${why ? ' · ' + iaEsc(why) : ''}${o.quote_requested === true ? ' · after quote request' : o.quote_requested === false ? ' · before any quote request' : ''}${o.recovered ? ' · recovered after restart' : ''}</div>`;
 }
-// Every branch of renderWatchlist prepends this block; in the AUTHORITY branch the shown indices already carry the
-// pending state and outcome in their own row, so only an index hidden by the selector is listed here.
+// Legacy requests can still be checked by ID. The active BNF row already shows its own status.
 function renderSingleLegRecoveryBlock(branch) {
     try { if (typeof slTraceState === 'function') slTraceState().branch = String(branch || ''); } catch (e) { /* trace optional */ }
-    let sel = 'BOTH';
-    try { sel = getIndexSelector(); } catch (e) { sel = 'BOTH'; }
-    const shown = new Set(branch === 'AUTHORITY' ? (sel === 'BOTH' ? ['NF', 'BNF'] : [sel]) : []);
-    const rows = ['NF', 'BNF'].filter(ix => !shown.has(ix)).map(ix => {
+    const indices = branch === 'AUTHORITY' ? ['NF'] : ['NF', 'BNF'];
+    const rows = indices.map(ix => {
         const pend = (typeof SINGLE_LEG_PENDING === 'object' && SINGLE_LEG_PENDING) ? SINGLE_LEG_PENDING[ix] : null;
         if (pend && pend.request_id) {
-            return `<div class="sl-recovery" data-index="${iaEsc(ix)}" data-request-id="${iaEsc(pend.request_id)}" data-sl-recovery="PENDING" style="font-size:12px"><b>${iaEsc(ix)} single-leg Paper request ${iaEsc(String(pend.request_id).slice(0, 12))}:</b> <span class="sl-pending">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase || 'PENDING')}${pend.reason === 'BRIDGE_UNAVAILABLE' ? ' · waiting for the app bridge' : ''})…</span>${pend.recovered ? ' · recovered after restart' : ''}</div>`;
+            return `<div class="sl-recovery" data-index="${iaEsc(ix)}" data-request-id="${iaEsc(pend.request_id)}" data-sl-recovery="PENDING" style="font-size:12px"><b>${ix === 'NF' ? 'Legacy NF' : 'BNF'} single-leg Paper request ${iaEsc(String(pend.request_id).slice(0, 12))}:</b> <span class="sl-pending">${pend.phase === 'OUTCOME_UNCONFIRMED' ? 'outcome not yet confirmed — still checking' : 'admission pending'} (${iaEsc(pend.phase || 'PENDING')}${pend.reason === 'BRIDGE_UNAVAILABLE' ? ' · waiting for the app bridge' : ''})…</span>${pend.recovered ? ' · recovered after restart' : ''}</div>`;
         }
         const line = singleLegOutcomeLine(ix);
-        return line ? `<div class="sl-recovery" data-index="${iaEsc(ix)}" data-sl-recovery="OUTCOME"><b style="font-size:12px">${iaEsc(ix)} single-leg Paper</b>${line}</div>` : '';
+        return line ? `<div class="sl-recovery" data-index="${iaEsc(ix)}" data-sl-recovery="OUTCOME"><b style="font-size:12px">${ix === 'NF' ? 'Legacy NF' : 'BNF'} single-leg Paper</b>${line}</div>` : '';
     }).filter(Boolean);
     if (!rows.length) return '';
     return `<div class="sl-recovery-block" data-sl-branch="${iaEsc(branch || '')}" style="border:1px dashed var(--border);border-radius:6px;padding:6px 8px;margin:4px 0">${rows.join('')}<div style="font-size:10px;color:var(--text-muted)">Saved Paper request status · checked by request id only, never resubmitted · no real orders</div></div>`;
@@ -8636,7 +8572,7 @@ function slTraceObserveTrade(origin) {
     try { sel = getIndexSelector(); } catch (e) { sel = 'BOTH'; }
     const bi = (typeof bd === 'object' && bd) ? bd : {};
     let n = 0;
-    for (const ix of ['NF', 'BNF']) {
+    for (const ix of ['BNF']) {
         const row = document.querySelector(`#watchlist .sl-trade-status[data-index="${ix}"]`);
         const btn = row ? row.querySelector('button.sl-admit') : null;
         const plan = (bi.single_leg_by_index || {})[ix] || null;
@@ -8660,8 +8596,7 @@ function slTraceObserveTrade(origin) {
 }
 
 function renderAuthorityWatchlist(bi) {
-    const selected = getIndexSelector();
-    const shown = selected === 'BOTH' ? ['NF', 'BNF'] : [selected];
+    const shown = ['BNF'];
     return `<div class="section-note">Per-index policy alternatives · choose explicitly for Paper</div>` + shown.map(ix => {
         const d = bi.by_index?.[ix] || {};
         const cs = bi.candidates_by_index?.[ix] || [];
@@ -9264,7 +9199,7 @@ function renderPosition(snapshot = null) {
         const paperClass = netPaperPnL === null ? '' : (netPaperPnL >= 0 ? 'pnl-pos' : 'pnl-neg');
         const nfPapers = paperTrades.filter(t => t.index_key === 'NF').length;
         const bnfPapers = paperTrades.filter(t => t.index_key === 'BNF').length;
-        html += `<div class="paper-header">📋 Paper Trades (${nfPapers} NF · ${bnfPapers} BNF)</div>`;
+        html += `<div class="paper-header">📋 BNF Paper Trades (${bnfPapers})${nfPapers ? ` · Legacy NF close-only (${nfPapers})` : ''}</div>`;
         html += `<div class="total-pnl-bar paper-pnl ${paperClass}">Paper Net If Closed Now: ${moneyOrUnavailable(netPaperPnL)}</div>`;
         html += `<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:-8px 0 8px">Gross MTM: ₹${localeNumberOrFallback(paperPnL, '0')} (${paper.valued}/${paperTrades.length} valued${pnlSummarySuffix(paper)}) · Est. round-trip costs: ${costUnavailable ? 'unavailable' : `₹${localeNumberOrFallback(totalEstCost, '0')}`}</div>`;
 
@@ -9317,7 +9252,7 @@ function renderPosition(snapshot = null) {
                 <label>Index</label>
                 <select id="mt-index" class="input-field">
                     <option value="BNF">Bank Nifty</option>
-                    <option value="NF">Nifty 50</option>
+
                 </select>
             </div>
             <div class="input-group">
@@ -9429,7 +9364,7 @@ function b510X1StatusModel(status) {
     const code = typeof s.status === 'string' && s.status ? s.status : 'UNAVAILABLE';
     const target = b510X1Count(s.target_resolved_per_index) || 60;
     const counts = s.counts && typeof s.counts === 'object' ? s.counts : {};
-    const indices = ['NF', 'BNF'].map(ix => {
+    const indices = ['BNF'].map(ix => {
         const c = counts[ix] && typeof counts[ix] === 'object' ? counts[ix] : {};
         const delayed = c.delayed && typeof c.delayed === 'object' ? c.delayed : {};
         return {
@@ -10004,7 +9939,7 @@ function renderML(snapshot = null) {
                 <div class="brain-detail">
                     ${researchOk ? `
                         Session: <b>${formatSessionDateLabel(teacherResearchReport.session_date) || teacherResearchReport.session_date || '--'}</b> · Snapshots: <b>${Number(teacherResearchReport.snapshot_count || 0)}</b> · Outcomes: <b>${Number(teacherResearchReport.outcome_count || 0)}</b><br>
-                        Market: VIX <b>${researchFmt(researchVix.avg, 2)}</b> (${researchFmt(researchVix.min, 2)}-${researchFmt(researchVix.max, 2)}) · BNF Δ <b>${researchFmt(researchBnf.change, 1)}</b> · NF Δ <b>${researchFmt(researchNf.change, 1)}</b><br>
+                        Market: VIX <b>${researchFmt(researchVix.avg, 2)}</b> (${researchFmt(researchVix.min, 2)}-${researchFmt(researchVix.max, 2)}) · BNF Δ <b>${researchFmt(researchBnf.change, 1)}</b> <br>
                         Chosen: <b>${researchCountPairs(researchPrimaryCounts)}</b> · Full menu: <b>${researchCountPairs(researchGeneratedCounts)}</b><br>
                         Chosen teacher: <b>${Number(researchPrimary.rows || 0)}</b> rows · <b>${researchFmt(researchPrimary.avg_r, 2, 'R')}</b> avg · Teacher target hit <b>${researchFmt(researchPrimary.success_rate_pct, 1, '%')}</b><br>
                         Best available: chosen best <b>${Number(researchPvb.primary_was_best || 0)}/${Number(researchPvb.snapshots_compared || 0)}</b> · Better candidate <b>${Number(researchPvb.better_candidate_available || 0)}</b> · Uplift <b>${researchFmt(researchPvb.avg_best_minus_primary_r, 3, 'R')}</b><br>
@@ -10063,9 +9998,9 @@ function renderML(snapshot = null) {
                         Current live candidate diagnostics are hidden here to avoid mixing closed-market live state with evaluated-session evidence.
                     ` : `
                         Source: <b>${candidateDiagnostics.source}</b>${candidateDiagnostics.latestPollTime ? ` · Snapshot ${candidateDiagnostics.latestPollTime}` : ''} (all counters below are from this source)<br>
-                        ${candidateDiagnostics.liveDiagnostics && (historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Current live brain diagnostics exist but are hidden here so they are not mixed with this saved-session evidence.</span><br>` : ''}${candidateDiagnostics.liveDiagnostics && !(historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Live brain now (separate, not part of the saved snapshot): authority ${candidateDiagnostics.liveDiagnostics.authorityActive ? 'ACTIVE' : 'inactive'} · NF <b>${candidateDiagnostics.liveDiagnostics.menu.NF}</b> · BNF <b>${candidateDiagnostics.liveDiagnostics.menu.BNF}</b> · watchlist <b>${candidateDiagnostics.liveDiagnostics.watchlistCount}</b></span><br>` : ''}
+                        ${candidateDiagnostics.liveDiagnostics && (historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Current live brain diagnostics exist but are hidden here so they are not mixed with this saved-session evidence.</span><br>` : ''}${candidateDiagnostics.liveDiagnostics && !(historicalMlView || evaluatedSessionView) ? `<span style="color:var(--accent)">Live brain now (separate, not part of the saved snapshot): authority ${candidateDiagnostics.liveDiagnostics.authorityActive ? 'ACTIVE' : 'inactive'} · BNF <b>${candidateDiagnostics.liveDiagnostics.menu.BNF}</b> · watchlist <b>${candidateDiagnostics.liveDiagnostics.watchlistCount}</b></span><br>` : ''}
                         ${candidateDiagnostics.authorityActive ? `
-                        Index authority menu (decides admission) · latest: NF <b>${candidateDiagnostics.authorityLatest.NF}</b> · BNF <b>${candidateDiagnostics.authorityLatest.BNF}</b> · day (${candidateDiagnostics.loadedSnapshotCount} loaded saved snapshot${candidateDiagnostics.loadedSnapshotCount === 1 ? '' : 's'}): NF <b>${candidateDiagnostics.authorityDay.NF}</b> · BNF <b>${candidateDiagnostics.authorityDay.BNF}</b> (NF and BNF separate, not pooled)<br>
+                        Index authority menu (decides admission) · latest: BNF <b>${candidateDiagnostics.authorityLatest.BNF}</b> · day (${candidateDiagnostics.loadedSnapshotCount} loaded saved snapshot${candidateDiagnostics.loadedSnapshotCount === 1 ? '' : 's'}): BNF <b>${candidateDiagnostics.authorityDay.BNF}</b> (BNF only)<br>
                         <span style="color:var(--accent)">New entries stop after 15:15 IST: a snapshot taken after the cutoff shows 0 authority candidates by design, not a day-wide result.</span><br>
                         Authority watchlist (the constructed authority candidates, not legacy): <b>${candidateDiagnostics.watchlistCount}</b><br>
                         Legacy generator · <b>evidence only</b> (retired; it neither builds nor blocks the authority menu): retained rejection stats <b>${candidateDiagnostics.legacyEvidence.rejected}</b><br>
@@ -10122,8 +10057,6 @@ function renderML(snapshot = null) {
                         </thead>
                         <tbody>
                             ${[
-                                ['NF_intraday', 'NF intraday'],
-                                ['NF_swing', 'NF swing'],
                                 ['BNF_intraday', 'BNF intraday'],
                                 ['BNF_swing', 'BNF swing']
                             ].map(([key, label]) => {
@@ -10183,8 +10116,6 @@ function renderML(snapshot = null) {
                         </thead>
                         <tbody>
                             ${[
-                                ['NF_intraday', 'NF intraday'],
-                                ['NF_swing', 'NF swing'],
                                 ['BNF_intraday', 'BNF intraday'],
                                 ['BNF_swing', 'BNF swing']
                             ].map(([key, label]) => {
@@ -10230,8 +10161,6 @@ function renderML(snapshot = null) {
                         </thead>
                         <tbody>
                             ${[
-                                ['NF_intraday', 'NF intraday'],
-                                ['NF_swing', 'NF swing'],
                                 ['BNF_intraday', 'BNF intraday'],
                                 ['BNF_swing', 'BNF swing']
                             ].map(([key, label]) => {
@@ -10353,7 +10282,7 @@ function renderML(snapshot = null) {
                 </div>
             </div>
             <div class="v1-trade-btns" style="margin-top:8px">
-                <button onclick="triggerGeminiEvaluation(['BNF','NF'])" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px;${STATE.evaluatorBusy ? 'opacity:.55;pointer-events:none' : ''}" ${STATE.evaluatorBusy ? 'disabled' : ''}>🚀 Run 30D Review</button>
+                <button onclick="triggerGeminiEvaluation(['BNF'])" class="btn-primary" style="flex:1;padding:8px 10px;font-size:12px;${STATE.evaluatorBusy ? 'opacity:.55;pointer-events:none' : ''}" ${STATE.evaluatorBusy ? 'disabled' : ''}>🚀 Run 30D Review</button>
                 <button onclick="STATE.evaluatorJob?.job_id && refreshEvaluatorJobStatus(STATE.evaluatorJob.job_id)" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px;${evaluatorJob?.job_id ? '' : 'opacity:.55;pointer-events:none'}" ${evaluatorJob?.job_id ? '' : 'disabled'}>🔄 Refresh Oracle</button>
                 <button onclick="loadApprovedBranchProposals(true).then(() => renderAll())" class="btn-paper" style="flex:1;padding:8px 10px;font-size:12px">📥 Reload Approved</button>
             </div>

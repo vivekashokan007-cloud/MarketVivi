@@ -24,7 +24,7 @@ function ctx(nb, now) {
   c.document = { getElementById: id => els[id] || null };
   vm.createContext(c);
   vm.runInContext(`const M0_PWA_IDENTITY = { version: '2.6.103', build: 534, app_js_v: 1398 }; let SESSION_EVIDENCE_RESULT=null; let SESSION_EVIDENCE_DATE=null;
-    function renderAll(){ renders++; renderSessionEvidence(); }\n${FNS.map(fn).join('\n')}`, c);
+    function renderAll(){ renders++; renderSessionEvidence(); }\n${FNS.concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n')}`, c);
   return c;
 }
 const okBridge = (calls, used = d => d, extra = {}) => ({ exportSessionEvidence: (d, v) => { calls.push([d, v]); const u = used(d);

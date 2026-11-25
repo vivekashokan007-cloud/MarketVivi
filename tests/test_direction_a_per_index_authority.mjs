@@ -25,20 +25,20 @@ function ctx(sel = 'BOTH') {
   const store = { mr_index_selector_v1: sel };
   const c = { JSON, String, Object, Array, Math, Intl, Date, Number, calls: [], alerts: [], timers: [], window: {}, setTimeout: f => c.timers.push(f), prompt: () => c.promptValue, alert: m => c.alerts.push(m), localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } } };
   vm.createContext(c);
-  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\nfunction findCandidateById(id){ return { id, index: 'NF' }; }\nfunction paperObservationAuthorization(){ return { allowed: true, analysis_only: true }; }\nfunction paperTradeCapacity(){ return { available: true, count: 0, limit: 2 }; }\n${BUY_RE}\n${FNS.map(fn).join('\n')}`, c);
+  vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SESSION_EVIDENCE_RESULT=null; let PENDING_STRUCTURE_CHOICE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; var bd={};\nfunction takeTrade(id, p){ calls.push(['takeTrade', id, p, PENDING_STRUCTURE_CHOICE]); }\nfunction findCandidateById(id){ return { id, index: 'BNF' }; }\nfunction paperObservationAuthorization(){ return { allowed: true, analysis_only: true }; }\nfunction paperTradeCapacity(){ return { available: true, count: 0, limit: 2 }; }\n${BUY_RE}\n${FNS.concat(['bnfNewEntryAllowed', 'bnfAnalysisView']).map(fn).join('\n')}`, c);
   return c;
 }
-const cand = { id: 'NF-BULL_CALL-1', index: 'NF', type: 'BULL_CALL', entryEligible: true, legs: [] };
+const cand = { id: 'BNF-BULL_CALL-1', index: 'BNF', type: 'BULL_CALL', entryEligible: true, legs: [] };
 function bi({ action = 'CANDIDATES', selected = null } = {}) {
   return {
     direction_authority: { active: 'index_direction_v1' },
     by_index: {
-      NF: { decision_id: 'd_nf', direction: { value: 'BULL', strength: 'STRONG' }, display: 'Nifty up', regime: { value: 'TREND_UP' },
+      BNF: { decision_id: 'd_bnf', direction: { value: 'BULL', strength: 'STRONG' }, display: 'Bank Nifty up', regime: { value: 'TREND_UP' },
         structure_policy: { allowed: ['BULL_CALL', 'BULL_PUT'] }, action: { value: action, candidate_ids: [cand.id], reasons: [] } },
-      BNF: { decision_id: 'd_bnf', direction: { value: 'UNAVAILABLE' }, reason_codes: ['ANCHOR_MISSING'], action: { value: 'WAIT', reasons: ['DIRECTION_UNAVAILABLE'] } },
+      NF: { decision_id: 'd_nf', direction: { value: 'UNAVAILABLE' }, reason_codes: ['ANCHOR_MISSING'], action: { value: 'WAIT', reasons: ['DIRECTION_UNAVAILABLE'] } },
     },
-    candidates_by_index: { NF: [cand], BNF: [] },
-    managed_policy: { NF: { selected, reason: selected ? null : 'STRUCTURE_CHOICE_RULE_UNSPECIFIED', gates: [] } },
+    candidates_by_index: { BNF: [cand], NF: [] },
+    managed_policy: { BNF: { selected, reason: selected ? null : 'STRUCTURE_CHOICE_RULE_UNSPECIFIED', gates: [] } },
   };
 }
 test('per-index authority: entry only for the managed-selected candidate of its own index', () => {
@@ -48,21 +48,21 @@ test('per-index authority: entry only for the managed-selected candidate of its 
   assert.match(c.indexAuthorityEntryAuthorization(cand, bi()).reason, /STRUCTURE_CHOICE_RULE_UNSPECIFIED/);
   assert.equal(c.indexAuthorityEntryAuthorization(cand, bi({ selected: { candidate_id: cand.id } })).allowed, true);
   assert.equal(c.indexAuthorityEntryAuthorization(cand, bi({ action: 'WAIT', selected: { candidate_id: cand.id } })).allowed, false);
-  assert.equal(c.indexAuthorityEntryAuthorization({ ...cand, index: 'BNF' }, bi({ selected: { candidate_id: cand.id } })).allowed, false);
+  assert.equal(c.indexAuthorityEntryAuthorization({ ...cand, index: 'NF' }, bi({ selected: { candidate_id: cand.id } })).allowed, false);
 });
-test('index selector blocks entries on the other index', () => {
-  const c = ctx('BNF');
-  assert.equal(c.indexAuthorityEntryAuthorization(cand, bi({ selected: { candidate_id: cand.id } })).allowed, false);
+test('a saved NF selector cannot block a valid BNF entry', () => {
+  const c = ctx('NF');
+  assert.equal(c.indexAuthorityEntryAuthorization(cand, bi({ selected: { candidate_id: cand.id } })).allowed, true);
 });
-test('panels: every view labelled by index; no combined direction; unavailable shows reason', () => {
-  const html = ctx().renderIndexAuthorityPanels(bi());
-  assert.match(html, /NF · BULL/);
-  assert.match(html, /BNF · UNAVAILABLE/);
-  assert.match(html, /ANCHOR_MISSING/);
-  assert.match(html, /combined NF\+BNF direction retired/);
+test('panels show only BNF even with an old NF selector', () => {
+  const c = ctx('NF');
+  const html = c.renderIndexAuthorityPanels(bi());
+  assert.match(html, /BNF · BULL/);
+  assert.doesNotMatch(html, /data-index="NF"|ANCHOR_MISSING/);
   assert.match(html, /Daily review/);
-  const only = ctx('NF').renderIndexAuthorityPanels(bi());
-  assert.doesNotMatch(only, /data-index="BNF"/);
+  const missing = bi();
+  missing.by_index.BNF = { direction: { value: 'UNAVAILABLE' }, reason_codes: ['ANCHOR_MISSING'] };
+  assert.match(c.renderIndexAuthorityPanels(missing), /ANCHOR_MISSING/);
 });
 test('legacy payload is not treated as the new authority', () => {
   assert.equal(ctx().isIndexAuthorityActive({ verdict: { action: 'ENTER' } }), false);
@@ -71,36 +71,36 @@ test('legacy payload is not treated as the new authority', () => {
 test('R5: explicit structure choice - each allowed alternative selectable, validated natively, no default', () => {
   const c = ctx();
   const b = bi();
-  b.by_index.NF.decision_id = 'idx1_nf';
-  b.candidates_by_index.NF.push({ id: 'NF-BULL_PUT-1', index: 'NF', type: 'BULL_PUT', entryEligible: true, legs: [] });
-  const html = c.renderIndexAuthorityPanel('NF', b.by_index.NF, b.candidates_by_index.NF, b.managed_policy.NF);
+  b.by_index.BNF.decision_id = 'idx1_bnf';
+  b.candidates_by_index.BNF.push({ id: 'BNF-BULL_PUT-1', index: 'BNF', type: 'BULL_PUT', entryEligible: true, legs: [] });
+  const html = c.renderIndexAuthorityPanel('BNF', b.by_index.BNF, b.candidates_by_index.BNF, b.managed_policy.BNF);
   assert.equal((html.match(/Choose for Paper/g) || []).length, 2);
-  assert.match(html, /chooseIndexStructureForPaper\('NF','idx1_nf','NF-BULL_PUT-1'\)/);
+  assert.match(html, /chooseIndexStructureForPaper\('BNF','idx1_bnf','BNF-BULL_PUT-1'\)/);
   const seen = [];
   c.window.NativeBridge = { indexAuthorityChoose: (i, d, id) => { seen.push([i, d, id]); return JSON.stringify({ status: 'CHOSEN', choice: { candidate_id: id, selection_basis: 'USER_EXPLICIT' } }); } };
-  c.chooseIndexStructureForPaper('NF', 'idx1_nf', 'NF-BULL_PUT-1');
-  assert.deepEqual(seen, [['NF', 'idx1_nf', 'NF-BULL_PUT-1']]);
-  assert.equal(c.calls[0][1], 'NF-BULL_PUT-1');
+  c.chooseIndexStructureForPaper('BNF', 'idx1_bnf', 'BNF-BULL_PUT-1');
+  assert.deepEqual(seen, [['BNF', 'idx1_bnf', 'BNF-BULL_PUT-1']]);
+  assert.equal(c.calls[0][1], 'BNF-BULL_PUT-1');
   assert.equal(c.calls[0][3].selection_basis, 'USER_EXPLICIT');
   c.window.NativeBridge = { indexAuthorityChoose: () => JSON.stringify({ status: 'REJECTED', reason: 'DECISION_NOT_CURRENT' }) };
-  c.chooseIndexStructureForPaper('NF', 'idx1_old', 'NF-BULL_CALL-1');
+  c.chooseIndexStructureForPaper('BNF', 'idx1_old', 'BNF-BULL_CALL-1');
   assert.equal(c.calls.length, 1);
   assert.match(c.alerts[0], /DECISION_NOT_CURRENT/);
-  const ineligible = { ...b.candidates_by_index.NF[0], entryEligible: false };
-  assert.equal(c.indexStructureChoiceAvailable(ineligible, b.by_index.NF), false);
-  const c2 = ctx('BNF');
-  assert.equal(c2.indexStructureChoiceAvailable(b.candidates_by_index.NF[0], b.by_index.NF), false);
+  const ineligible = { ...b.candidates_by_index.BNF[0], entryEligible: false };
+  assert.equal(c.indexStructureChoiceAvailable(ineligible, b.by_index.BNF), false);
+  const c2 = ctx('NF');
+  assert.equal(c2.indexStructureChoiceAvailable(b.candidates_by_index.BNF[0], b.by_index.BNF), true);
 });
 
 test('R5: selector is sent to native; INDEX alerts shown per index', () => {
   const c = ctx();
   const sent = [];
   c.window.NativeBridge = { setIndexSelector: v => sent.push(v) };
-  c.setIndexSelector('BNF');
+  c.setIndexSelector('NF');
   assert.deepEqual(sent, ['BNF']);
-  vm.runInContext(`bd = { alerts: [{ category: 'INDEX', index: 'NF', title: 'NF: alternatives available (your choice)' }, { category: 'INDEX', index: 'BNF', title: 'BNF x' }] };`, c);
-  assert.match(c.renderIndexAlerts('NF'), /alternatives available/);
-  assert.doesNotMatch(c.renderIndexAlerts('NF'), /BNF x/);
+  vm.runInContext(`bd = { alerts: [{ category: 'INDEX', index: 'BNF', title: 'BNF: alternatives available (your choice)' }, { category: 'INDEX', index: 'NF', title: 'NF x' }] };`, c);
+  assert.match(c.renderIndexAlerts('BNF'), /alternatives available/);
+  assert.doesNotMatch(c.renderIndexAlerts('BNF'), /NF x/);
 });
 
 test('R5: authority candidates carry no rank into the Paper entry snapshot', () => {
@@ -113,33 +113,33 @@ test('R5: authority candidates carry no rank into the Paper entry snapshot', () 
 test('single-leg card: off by default, shows every block reason, admit only when on and admissible', () => {
   const c = ctx();
   const b = bi();
-  b.single_leg_by_index = { NF: { admit: false, action: 'BUY_CE', strike: 24100, reasons: ['CONTRACT_METADATA_UNAVAILABLE', 'QUOTE_FRESHNESS_UNVERIFIED'] },
-    BNF: { admit: false, reasons: ['DIRECTION_UNAVAILABLE'] } };
+  b.single_leg_by_index = { BNF: { admit: false, action: 'BUY_CE', strike: 24100, reasons: ['CONTRACT_METADATA_UNAVAILABLE', 'QUOTE_FRESHNESS_UNVERIFIED'] },
+    NF: { admit: false, reasons: ['DIRECTION_UNAVAILABLE'] } };
   const off = c.renderSingleLegCard(b);
   assert.match(off, /CONTRACT_METADATA_UNAVAILABLE, QUOTE_FRESHNESS_UNVERIFIED/);
-  assert.match(off, /DIRECTION_UNAVAILABLE/);
+  assert.doesNotMatch(off, /DIRECTION_UNAVAILABLE|data-index="NF"/);
   assert.match(off, /Turn on/);
   assert.doesNotMatch(off, /sl-admit/);
   const calls = [];
-  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => JSON.stringify({ positions: [{ index: 'NF', action: 'BUY_CE', instrument_key: 'SYNTH_FO|1', status: 'OPEN' }] }),
+  c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => JSON.stringify({ positions: [{ index: 'BNF', action: 'BUY_CE', instrument_key: 'SYNTH_FO|1', status: 'OPEN' }] }),
     singleLegAdmitDisplayed: (ix, d, k) => { calls.push([ix, d, k]); return JSON.stringify({ status: 'ADMITTED', position_id: 'p1' }); } };
   vm.runInContext('SINGLE_LEG_STORE=null', c);
-  b.single_leg_by_index.NF = { ...ID('NF'), admit: true, status: 'ADMISSIBLE', action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
+  b.single_leg_by_index.BNF = { ...ID('BNF'), admit: true, status: 'ADMISSIBLE', action: 'BUY_CE', strike: 24100, units: 65, capital_required: 12938.41, capital_basis: 'LONG_PREMIUM_PLUS_FEE', reasons: [] };
   const on = c.renderSingleLegCard(b);
-  assert.match(on, BTN('NF'));
-  assert.doesNotMatch(on, /data-index="BNF" data-decision-id/);
+  assert.match(on, BTN('BNF'));
+  assert.doesNotMatch(on, /data-index="NF" data-decision-id/);
   assert.match(on, /SYNTH_FO\|1 · OPEN/);
   assert.match(on, /Paper fill estimate from broker snapshot; exchange quote age unavailable\./);
-  assert.equal(c.admitSingleLeg('NF', 'd_nf', 'K|NF').status, 'ADMITTED');
-  assert.deepEqual(calls, [['NF', 'd_nf', 'K|NF']]);
+  assert.equal(c.admitSingleLeg('BNF', 'd_bnf', 'K|BNF').status, 'ADMITTED');
+  assert.deepEqual(calls, [['BNF', 'd_bnf', 'K|BNF']]);
   assert.equal(c.alerts.length, 0);
 });
 test('single-leg admit: native rejection is surfaced with its reasons, never silently accepted', () => {
   const c = ctx();
   c.window.NativeBridge = { singleLegAdmitDisplayed: () => JSON.stringify({ status: 'REJECTED', reason: 'PROPOSAL_NOT_ADMISSIBLE', reasons: ['MARGIN_EVIDENCE_STALE'] }), singleLegRead: () => '{}' };
-  assert.equal(c.admitSingleLeg('NF', 'd_nf', 'K|NF').status, 'REJECTED');
+  assert.equal(c.admitSingleLeg('BNF', 'd_bnf', 'K|BNF').status, 'REJECTED');
   assert.match(c.alerts[0], /PROPOSAL_NOT_ADMISSIBLE \(MARGIN_EVIDENCE_STALE\)/);
-  const none = ctx(); none.admitSingleLeg('NF', 'd_nf', 'K|NF');
+  const none = ctx(); none.admitSingleLeg('BNF', 'd_bnf', 'K|BNF');
   assert.match(none.alerts[0], /BRIDGE_UNAVAILABLE/);
 });
 
@@ -147,14 +147,14 @@ test('R7: proposal waiting only for a broker snapshot is tappable (non-circular)
   const c = ctx();
   c.window.NativeBridge = { getSingleLegPaperEnabled: () => true, singleLegRead: () => '{}' };
   const b = bi();
-  b.single_leg_by_index = { NF: { ...ID('NF'), admit: false, status: 'ELIGIBLE_PENDING_SNAPSHOT', action: 'BUY_CE', strike: 24100, reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] },
-    BNF: { admit: false, status: 'BLOCKED', action: 'SELL_PE', reasons: ['MARGIN_UNAVAILABLE', 'QUANTITY_SHORTFALL'] } };
+  b.single_leg_by_index = { BNF: { ...ID('BNF'), admit: false, status: 'ELIGIBLE_PENDING_SNAPSHOT', action: 'BUY_CE', strike: 24100, reasons: ['BROKER_SNAPSHOT_UNAVAILABLE'] },
+    NF: { admit: false, status: 'BLOCKED', action: 'SELL_PE', reasons: ['MARGIN_UNAVAILABLE', 'QUANTITY_SHORTFALL'] } };
   const html = c.renderSingleLegCard(b);
   assert.match(html, /needs a fresh broker snapshot at tap/);
-  assert.match(html, BTN('NF'));
-  assert.doesNotMatch(html, /data-index="BNF" data-decision-id/);
-  assert.match(html, /MARGIN_UNAVAILABLE, QUANTITY_SHORTFALL/);
-  assert.match(html, /required margin: pending broker check/);
+  assert.match(html, BTN('BNF'));
+  assert.doesNotMatch(html, /data-index="NF" data-decision-id/);
+  assert.doesNotMatch(html, /MARGIN_UNAVAILABLE|QUANTITY_SHORTFALL|data-index="NF"/);
+  assert.match(html, /required capital: pending quote check/);
   assert.match(html, /required capital: pending quote check/);
   assert.doesNotMatch(html, /capital n\/a \(\)/);
   assert.doesNotMatch(html, /FRESHNESS_VERIFIED/);
@@ -167,9 +167,9 @@ test('R8: admission is non-blocking - PENDING with request id, page polls status
     singleLegAdmitDisplayed: () => JSON.stringify({ status: 'PENDING', request_id: 'rq1' }),
     singleLegAdmitStatus: id => { n++; return JSON.stringify(n < 2 ? { status: 'PENDING', phase: 'FETCHING', request_id: id }
       : { status: 'REJECTED', reason: 'STATE_CHANGED_DURING_FETCH:selector', completed: true, request_id: id }); } };
-  assert.equal(c.admitSingleLeg('NF', 'd_nf', 'K|NF').status, 'PENDING');
+  assert.equal(c.admitSingleLeg('BNF', 'd_bnf', 'K|BNF').status, 'PENDING');
   assert.equal(c.alerts.length, 0);
-  const b = bi(); b.single_leg_by_index = { NF: { status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
+  const b = bi(); b.single_leg_by_index = { BNF: { ...ID('BNF'), status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
   assert.match(c.renderSingleLegCard(b), /admission pending \(QUEUED\)/);
   c.timers.shift()();                                   // first poll: still fetching
   assert.match(c.renderSingleLegCard(b), /admission pending \(FETCHING\)/);
@@ -204,7 +204,7 @@ test('R8: daily review shows single-leg BUY/SELL, multi-leg by strategy, unknown
     'HYPOTHETICAL|index_managed_v1': { source: 'HYPOTHETICAL', policy_version: 'index_managed_v1', groups: {
       'MULTI_LEG:IRON_CONDOR': { entries: 1, exits: 1, resolved: 1, unresolved: 0, fees_total: 80, net_pnl_after_costs: -30, net_status: 'KNOWN', exit_reasons: {}, denominators: {} } } } };
   c.DAILY_REVIEW_CACHE = null;
-  vm.runInContext(`DAILY_REVIEW_CACHE = ${JSON.stringify({ latest: { by_index: { NF: { coverage: {}, paper_outcome_groups: seg }, BNF: { coverage: {} } } } })};`, c);
+  vm.runInContext(`DAILY_REVIEW_CACHE = ${JSON.stringify({ latest: { by_index: { BNF: { coverage: {}, paper_outcome_groups: seg }, NF: { coverage: {} } } } })};`, c);
   const html = c.renderDailyReviewCard();
   assert.match(html, /SINGLE_LEG_BUY: entries 2 .*net unknown \(1 unknown, 1 unresolved\)/s);
   assert.match(html, /BUY_PE: 0 · 0 observations/);
@@ -222,10 +222,10 @@ test('R9: outcome after the normal polling period is still shown; reload resumes
     singleLegAdmitDisplayed: () => JSON.stringify({ status: 'PENDING', request_id: 'rq9' }),
     singleLegAdmitStatus: id => { n++; return JSON.stringify(n < 160 ? { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', request_id: id }
       : { status: 'ADMITTED', position_id: 'sl1_x', completed: true, reconciled: true, request_id: id }); } };
-  c.admitSingleLeg('NF', 'd_nf', 'K|NF');
+  c.admitSingleLeg('BNF', 'd_bnf', 'K|BNF');
   for (let i = 0; i < 155; i++) c.timers.shift()();
   assert.equal(c.alerts.length, 0);                                  // no NOT_ADMITTED / poll-limit verdict
-  const b = bi(); b.single_leg_by_index = { NF: { status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
+  const b = bi(); b.single_leg_by_index = { BNF: { ...ID('BNF'), status: 'ADMISSIBLE', action: 'BUY_CE', reasons: [] } };
   assert.match(c.renderSingleLegCard(b), /outcome not yet confirmed/);
   // page reload: a fresh context sharing the same localStorage resumes polling the persisted id
   const saved = c.localStorage.getItem('mr_single_leg_pending_v1');
