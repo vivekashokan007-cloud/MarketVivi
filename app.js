@@ -8424,7 +8424,7 @@ function singleLegHoldLine(plan) {
     const c = plan?.holding_contract;
     if (!c) return '';
     if (c.hold_minutes === 60) {
-        return '<div class="sl-hold" style="font-size:11px">STRONG Paper pilot · one entry per session across both indices · target exit 60 minutes after admission, with earlier exit on the existing premium stop or two confirmed opposite observations.</div>';
+        return '<div class="sl-hold" style="font-size:11px">STRONG Paper pilot · one BNF entry per session · target exit 60 minutes after admission, with earlier exit on the existing premium stop or two confirmed opposite observations.</div>';
     }
     return `<div class="sl-hold" style="font-size:11px">Hold from admission until ${iaEsc(c.time_exit || 'unknown')} IST on ${iaEsc(c.deadline_session || 'entry session')}; earlier exit on 30% premium stop or two confirmed opposite observations.</div>`;
 }
