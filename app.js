@@ -5669,7 +5669,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.108', build: 539, app_js_v: 1403 };
+const M0_PWA_IDENTITY = { version: '2.6.109', build: 540, app_js_v: 1404 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
