@@ -24,7 +24,7 @@ test('card shows simulation-only label, collection session, per-index progress',
   const h = html(status);
   assert.match(h, /Quote simulation only; no trade recommendation\./);
   assert.match(h, /Collection session: 2026-10-19 · Status: Collecting/);
-  assert.match(h, /<b>NF<\/b> primary resolved 12\/60 · unresolved 2 · skipped 5 · open 1 · delayed control resolved 10/);
+  assert.doesNotMatch(h, /<b>NF<\/b> primary resolved/);
   assert.match(h, /<b>BNF<\/b> primary resolved 9\/60 · unresolved 0 · skipped 8 · delayed/);
   assert.match(h, /NF primary OPEN CE 24550/);
 });

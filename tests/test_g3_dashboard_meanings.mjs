@@ -126,7 +126,7 @@ const R = makeRenderer();
 test('closed market: authority menu by index separate from legacy evidence-only waterfall; 15:15 stated', () => {
   const t = strip(render(R));
   const d = section(t, 'Candidate Pipeline Diagnostics', 'Teacher v1 Shadow Review');
-  assert.match(d, /Index authority menu \(decides admission\) · latest: NF 0 · BNF 0 · day \(3 loaded saved snapshots\): NF 4 · BNF 2 \(NF and BNF separate, not pooled\)/);
+  assert.match(d, /Index authority menu \(decides admission\) · latest: BNF 0 · day \(3 loaded saved snapshots\): BNF 2 \(BNF only\)/);
   assert.match(d, /New entries stop after 15:15 IST/);
   assert.match(d, /Authority watchlist \(the constructed authority candidates, not legacy\): 0/);
   assert.match(d, /Legacy generator · evidence only \(retired; it neither builds nor blocks the authority menu\): retained rejection stats 24/);
@@ -216,7 +216,7 @@ test('R2: live authority menu with nonempty watchlist (NF=2) never shows "Legacy
   // Same shape as a saved authority snapshot (snapshot_watchlist = the constructed list): rendered labels
   const s1 = [snap('13:20', nf, '2.6.92', { snapshot_watchlist: nf, snapshot_index_authority_primary: AUTH_REC })];
   const d = section(strip(render(R, { snaps: s1 })), 'Candidate Pipeline Diagnostics', 'Teacher v1 Shadow Review');
-  assert.match(d, /latest: NF 2 · BNF 0/);
+  assert.match(d, /latest: BNF 0/);
   assert.match(d, /Authority watchlist \(the constructed authority candidates, not legacy\): 2/);
   assert.match(d, /retained rejection stats 24/);
   assert.doesNotMatch(d, /Legacy[^<]*Watchlist 2/);

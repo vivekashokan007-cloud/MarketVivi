@@ -259,7 +259,7 @@ mlEl.innerHTML = '';
 sandbox.getMLEvaluationLaneSummaryCached = () => ({
   rowsToday: 30,
   attributedRows: 30,
-  lanes: { NF_intraday: { rows: 30, labeled: 30, wins: 30 } },
+  lanes: { BNF_intraday: { rows: 30, labeled: 30, wins: 30 } },
   teacher_summary: {
     rows: 30,
     successes: 30,
@@ -275,7 +275,7 @@ sandbox.getMLEvaluationLaneSummaryCached = () => ({
     netProfitableRatePct: 100,
   },
   teacher_lanes: {
-    NF_intraday: {
+    BNF_intraday: {
       rows: 30,
       successes: 30,
       successRatePct: 100,

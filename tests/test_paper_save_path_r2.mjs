@@ -67,7 +67,7 @@ execSync('python3 tests/_extract_paper_fns.py', {
 });
 let extracted = fs.readFileSync(extractOut, 'utf8');
 // Append takeTradeImpl and minimal deps that extractor may not include.
-for (const n of ['finiteNumberOrNull','readValidatedMorningFiiDii','computeFiiDerivNet','readVixPreviousCloseAttribution','takeTradeImpl']) {
+for (const n of ['finiteNumberOrNull','readValidatedMorningFiiDii','computeFiiDerivNet','readVixPreviousCloseAttribution','bnfNewEntryAllowed','takeTradeImpl']) {
   try {
     const body = extractFunction(appSrc, n);
     if (!extracted.includes(`function ${n}`) && !extracted.includes(`async function ${n}`)) {
@@ -85,15 +85,15 @@ let realAction = false;
 
 const candidates = {
   c_analysis: {
-    ...JSON.parse(JSON.stringify(fixtureById.fixture_nf_1)),
-    id: 'fixture_nf_1', width: 100, isCredit: true,
+    ...JSON.parse(JSON.stringify(fixtureById.fixture_bnf_1)),
+    id: 'fixture_bnf_1', width: 100, isCredit: true,
     forces: { f1: 1, f2: 1, f3: 1, aligned: 3 },
     entryEligible: false, directionSafe: false, entryAction: 'BLOCKED', blocked: true,
     executionReadiness: { ready: false, mode: 'paper', reasons: ['blocked'] },
     estCost: 12,
   },
 };
-candidates.fixture_nf_1 = candidates.c_analysis;
+candidates.fixture_bnf_1 = candidates.c_analysis;
 
 const sandbox = {
   console, Date, Math, Number, String, Array, Object, JSON, Set, Map, Promise,
@@ -190,7 +190,7 @@ vm.runInNewContext(
 assert(typeof sandbox.takeTradeImpl === 'function', 'takeTradeImpl extracted');
 assert(typeof sandbox.sanitizeTradeForInsert === 'function', 'sanitize present');
 
-await sandbox.takeTradeImpl('fixture_nf_1', true);
+await sandbox.takeTradeImpl('fixture_bnf_1', true);
 
 assert(confirms.length >= 1, 'confirmation invoked');
 assert(/PAPER ANALYSIS/i.test(confirms[0]), 'paper analysis confirm');
@@ -201,9 +201,9 @@ assert(row.paper_test === undefined, 'no unsupported top-level paper_test');
 assert(row.selection_source === undefined, 'no unsupported top-level selection_source');
 assert(row.entry_snapshot?.paper_test?.paper_lane === 'paper_analysis', 'nested paper_analysis lane');
 assert(row.entry_snapshot?.paper_lane === 'paper_analysis', 'compact mirror lane');
-assert(row.entry_snapshot?.lot_size === 65, 'persisted lot equals authorized 65');
-assert(row.entry_snapshot?.paper_test?.structural_contract?.authorization_lot_size === 65, 'auth lot stamped');
-assert(row.entry_snapshot?.paper_test?.structural_contract?.lot_size === 65, 'structural lot');
+assert(row.entry_snapshot?.lot_size === 30, 'persisted lot equals authorized 30');
+assert(row.entry_snapshot?.paper_test?.structural_contract?.authorization_lot_size === 30, 'auth lot stamped');
+assert(row.entry_snapshot?.paper_test?.structural_contract?.lot_size === 30, 'structural lot');
 // Poison constants were 999 — prove they were not used
 assert(row.entry_snapshot?.lot_size !== 999, 'no C.NF_LOT fallback');
 assert(alerts.every((a) => !/REAL TRADE/i.test(a)), 'no Real action');
@@ -230,21 +230,21 @@ stored.length = 0;
 alerts.length = 0;
 confirms.length = 0;
 candidates.c_lots2 = {
-  ...JSON.parse(JSON.stringify(fixtureById.fixture_nf_2)),
-  id: 'fixture_nf_2', width: 100, isCredit: true,
+  ...JSON.parse(JSON.stringify(fixtureById.fixture_bnf_2)),
+  id: 'fixture_bnf_2', width: 100, isCredit: true,
   forces: { f1: 1, f2: 1, f3: 1, aligned: 3 },
   entryEligible: false, directionSafe: false, entryAction: 'BLOCKED', blocked: true,
   executionReadiness: { ready: false, mode: 'paper', reasons: ['blocked'] },
 };
-candidates.fixture_nf_2 = candidates.c_lots2;
+candidates.fixture_bnf_2 = candidates.c_lots2;
 sandbox.bd.generated_candidates.push(candidates.c_lots2);
-await sandbox.takeTradeImpl('fixture_nf_2', true);
+await sandbox.takeTradeImpl('fixture_bnf_2', true);
 assert(stored.length === 1, '2-lot insert');
 assert(stored[0].lots === 2, 'top-level lots=2');
-assert(stored[0].entry_snapshot?.contract_lot_size === 65, 'snapshot contract_lot_size');
+assert(stored[0].entry_snapshot?.contract_lot_size === 30, 'snapshot contract_lot_size');
 assert(stored[0].entry_snapshot?.number_of_lots === 2, 'snapshot number_of_lots');
-assert(stored[0].entry_snapshot?.quantity_units === 130, 'snapshot quantity_units');
-assert(stored[0].entry_snapshot?.lot_size === 130, 'legacy lot_size = total units');
+assert(stored[0].entry_snapshot?.quantity_units === 60, 'snapshot quantity_units');
+assert(stored[0].entry_snapshot?.lot_size === 60, 'legacy lot_size = total units');
 
 // R3.7 bare {allowed:true} locked at analysis authorization (not structural primary)
 const bareAuth = sandbox.paperAnalysisAuthorization({
@@ -267,13 +267,13 @@ const authorityDebit = {
     {action:'BUY',strike:54800,option_type:'PE',bid:789.75,ask:791.85,instrument_key:'NSE_FO|BNF54800PE'}],
 };
 const authorityFour = {
-  ...authorityDebit,id:'phone_nf_condor',index:'NF',type:'IRON_CONDOR',expiry:'2026-11-03',lotSize:65,isCredit:true,
+  ...authorityDebit,id:'phone_bnf_condor',index:'BNF',type:'IRON_CONDOR',expiry:'2026-11-03',lotSize:30,isCredit:true,
   sellStrike:23250,sellType:'CE',buyStrike:23400,buyType:'CE',sellStrike2:23150,sellType2:'PE',buyStrike2:23000,buyType2:'PE',
-  lotEvidence:{status:'VERIFIED',index:'NF',expiry:'2026-11-03'},
+  lotEvidence:{status:'VERIFIED',index:'BNF',expiry:'2026-11-03'},
   legs:[['SELL',23250,'CE',59.7,59.8],['SELL',23150,'PE',72.75,72.95],['BUY',23400,'CE',21.85,21.95],['BUY',23000,'PE',29.8,29.95]]
-    .map(([action,strike,option_type,bid,ask])=>({action,strike,option_type,bid,ask,instrument_key:`NSE_FO|NF${strike}${option_type}`})),
+    .map(([action,strike,option_type,bid,ask])=>({action,strike,option_type,bid,ask,instrument_key:`NSE_FO|BNF${strike}${option_type}`})),
 };
-for (const [source, premium, units] of [[authorityDebit,169.4,30],[authorityFour,80.55,65]]) {
+for (const [source, premium, units] of [[authorityDebit,169.4,30],[authorityFour,80.55,30]]) {
   candidates[source.id]=source;sandbox.bd.generated_candidates.push(source);
   const before=JSON.stringify(source);stored.length=0;alerts.length=0;confirms.length=0;
   await sandbox.takeTradeImpl(source.id,true);

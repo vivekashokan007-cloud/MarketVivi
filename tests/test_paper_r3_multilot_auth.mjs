@@ -40,7 +40,7 @@ execSync('python3 tests/_extract_paper_fns.py', {
   cwd: root, stdio: 'pipe', env: { ...process.env, PAPER_EXTRACT_OUT: extractOut },
 });
 let extracted = fs.readFileSync(extractOut, 'utf8');
-for (const n of ['finiteNumberOrNull','readValidatedMorningFiiDii','computeFiiDerivNet','readVixPreviousCloseAttribution','takeTradeImpl']) {
+for (const n of ['finiteNumberOrNull','readValidatedMorningFiiDii','computeFiiDerivNet','readVixPreviousCloseAttribution','bnfNewEntryAllowed','takeTradeImpl']) {
   const body = extractFunction(appSrc, n);
   if (!extracted.includes(`function ${n}`) && !extracted.includes(`async function ${n}`)) {
     extracted += '\n\n' + body;
@@ -126,8 +126,10 @@ vm.runInNewContext(
 );
 
 const oneLotPnls = {};
-for (const index of ['NF', 'BNF']) {
-  const cls = index === 'NF' ? 65 : 30;
+await sandbox.takeTradeImpl('fixture_nf_1', true);
+assert(stored.length === 0 && alerts.some(a => /Bank Nifty only/.test(a)), 'retired NF cannot be saved');
+for (const index of ['BNF']) {
+  const cls = 30;
   for (const n of [1, 2, 4]) {
     stored.length = 0;
     const id = `fixture_${index.toLowerCase()}_${n}`;

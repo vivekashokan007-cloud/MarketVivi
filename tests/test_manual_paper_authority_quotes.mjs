@@ -60,7 +60,7 @@ test('chart uses its snapshot index authority; stale authority is unavailable an
     brainResult:{direction_authority:{active:'index_direction_v1'},by_index:{BNF:{direction:{value:'BEAR'},regime:{value:'TREND_DOWN'}},NF:{direction:{value:'NEUTRAL'},regime:{value:'RANGE'}}}}};
   assert.match(c.renderIntradayChart('BNF',snapshot),/BEAR · TREND_DOWN/);
   assert.doesNotMatch(c.renderIntradayChart('BNF',snapshot),/>RANGE</);
-  assert.match(c.renderIntradayChart('NF',snapshot),/NEUTRAL · RANGE/);
+  assert.match(c.renderIntradayChart('NF',snapshot),/BEAR · TREND_DOWN/);
   c.brainFreshnessStatus=()=>({fresh:false});assert.match(c.renderIntradayChart('BNF',snapshot),/>UNAVAILABLE</);
   snapshot.brainResult={};assert.match(c.renderIntradayChart('BNF',snapshot),/>RANGE</);
 });
