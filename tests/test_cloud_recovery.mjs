@@ -16,7 +16,7 @@ function boot(initial, recovered) {
  const saves=[]; const events={}; const badges={};
  const native={ cloudReadWeb:()=>JSON.stringify(recovered), cloudSaveWeb:s=>{saves.push(JSON.parse(s));return true;},
    cloudRequestSync(){},cloudStatus:()=>JSON.stringify({state:'VERIFIED_CHECKPOINT',verified_at:'test'}) };
- const context={window:{AndroidBridge:native,localStorage:storage},document:{
+ const context={window:{AndroidBridge:native,localStorage:storage,addEventListener:(e,f)=>{events[e]=f;}},document:{
    addEventListener:(e,f)=>{events[e]=f;},getElementById:id=>badges[id]||null,
    createElement:()=>({style:{},setAttribute(){}}),body:{prepend:b=>{badges[b.id]=b;}}},setInterval(){}};
  vm.runInNewContext(code,context);
@@ -31,7 +31,7 @@ assert.equal(JSON.parse(b.saves.at(-1).mr2_closed_trades).length,351);
 b.storage.removeItem('mr2_theme'); assert.ok(!('mr2_theme' in b.saves.at(-1)));
 b=boot({mr2_theme:'old',mr2_token:'local-credential'},{mr2_theme:'restored',mr2_closed_trades:'[1,2]'});
 assert.equal(b.storage.getItem('mr2_theme'),'restored'); assert.equal(b.storage.getItem('mr2_token'),'local-credential');
-b.events.DOMContentLoaded(); assert.match(b.badges['mr-cloud-state'].textContent,/verified/);
+b.events.load(); assert.match(b.badges['mr-cloud-state'].textContent,/verified/);
 b=boot({mr2_theme:'old'},{}); assert.equal(b.storage.getItem('mr2_theme'),null);
 b.context.window.AndroidBridge.cloudSaveWeb=()=>false;
 b.storage.setItem('mr2_theme','unsent'); assert.equal(b.context.window.mrCloudCaptureError,true);

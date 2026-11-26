@@ -42,7 +42,7 @@
                 s.state==='VERIFIED_CHECKPOINT' ? 'Cloud checkpoint verified · '+s.verified_at : 'Cloud: '+s.state+' · pending data stays on this phone';
         } catch (_) { badge.textContent='Cloud status unavailable — backup not confirmed'; }
     }
-    document.addEventListener('DOMContentLoaded',()=>{ flush(); native.cloudRequestSync(); showStatus(); setInterval(showStatus,15000); });
+    window.addEventListener('load',()=>{ flush(); native.cloudRequestSync(); showStatus(); setInterval(showStatus,15000); },{once:true});
     document.addEventListener('visibilitychange',flush);
 })();
 /* CLOUD_RECOVERY_END */
