@@ -1,3 +1,51 @@
+/* CLOUD_RECOVERY_BEGIN: bootstrap before any trading/boot callbacks. */
+(function cloudRecoveryBootstrap() {
+    'use strict';
+    const native = typeof window !== 'undefined' && window.AndroidBridge;
+    if (!native || typeof native.cloudReadWeb !== 'function') return;
+    const storage = window.localStorage;
+    const proto = Object.getPrototypeOf(storage);
+    const original = {set: proto.setItem, remove: proto.removeItem, clear: proto.clear};
+    const secret = /(^|[_-])(token|auth_token|access_token|refresh_token|password|secret|api_key|apikey|sandbox_token|authorization|cookie|bearer)([_-]|$)/i;
+    const portable = key => !secret.test(key) && !key.startsWith('sb-') && !key.startsWith('g1_') && !key.startsWith('cloud_');
+    try {
+        const restored = JSON.parse(native.cloudReadWeb() || 'null');
+        // Native cache has already been hydrated from the verified account checkpoint.
+        // A missing snapshot on first upgrade leaves all existing phone state intact.
+        if (restored !== null) {
+            Object.keys(storage).filter(portable).forEach(k => { if (!(k in restored)) original.remove.call(storage, k); });
+            Object.entries(restored).forEach(([k,v]) => { if (portable(k) && typeof v === 'string') original.set.call(storage,k,v); });
+        }
+    } catch (_) { window.mrCloudCaptureError = true; }
+    function flush() {
+        try {
+            const values = {};
+            for (let i=0; i<storage.length; i++) { const k=storage.key(i); if (portable(k)) values[k]=storage.getItem(k); }
+            window.mrCloudCaptureError = native.cloudSaveWeb(JSON.stringify(values)) !== true;
+        } catch (_) { window.mrCloudCaptureError = true; }
+    }
+    proto.setItem = function(k,v) { original.set.call(this,k,v); if (this===storage) flush(); };
+    proto.removeItem = function(k) { original.remove.call(this,k); if (this===storage) flush(); };
+    proto.clear = function() { original.clear.call(this); if (this===storage) flush(); };
+    window.mrCloudFlush = flush;
+    flush();
+    function showStatus() {
+        let badge = document.getElementById('mr-cloud-state');
+        if (!badge) {
+            badge = document.createElement('div'); badge.id='mr-cloud-state'; badge.setAttribute('role','status');
+            badge.style.cssText='padding:8px 12px;font-size:12px;border-bottom:1px solid #68538a;background:var(--bg-card,#24202e);color:var(--text-primary,#ddd)';
+            document.body.prepend(badge);
+        }
+        try {
+            const s = JSON.parse(native.cloudStatus());
+            badge.textContent = window.mrCloudCaptureError ? 'Cloud: screen data capture failed — keep your phone export' :
+                s.state==='VERIFIED_CHECKPOINT' ? 'Cloud checkpoint verified · '+s.verified_at : 'Cloud: '+s.state+' · pending data stays on this phone';
+        } catch (_) { badge.textContent='Cloud status unavailable — backup not confirmed'; }
+    }
+    document.addEventListener('DOMContentLoaded',()=>{ flush(); native.cloudRequestSync(); showStatus(); setInterval(showStatus,15000); });
+    document.addEventListener('visibilitychange',flush);
+})();
+/* CLOUD_RECOVERY_END */
 // Active product scope. Legacy position/history readers remain intact for close-only migration.
 function bnfNewEntryAllowed(value) {
     return String(value?.index ?? value?.index_key ?? value ?? '').toUpperCase() === 'BNF';
@@ -5669,7 +5717,7 @@ function m0ToggleReadbackView(e) {
 
 // ── M0 Stage 2 CI-2: read-only research export via the Android Storage Access Framework ──────────────────────
 let m0ExportState = null;
-const M0_PWA_IDENTITY = { version: '2.6.111', build: 542, app_js_v: 1406 };
+const M0_PWA_IDENTITY = { version: '2.6.112', build: 543, app_js_v: 1407 };
 function m0ExportResultView(e) {
     const r = m0ExportState;
     if (!r) return '';
