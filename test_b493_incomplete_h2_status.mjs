@@ -7,6 +7,6 @@ const index = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 assert.match(app, /evaluationPhaseRaw === 'INCOMPLETE_H2_MARKET_DATA'/);
 assert.match(app, /Closing-window option marks are incomplete/);
 assert.match(app, /Labels are not saved, C3 is not started, and no price is fabricated/);
-assert.match(index, /v2\.6\.111 · b542/);
+assert.match(index, /v2\.6\.112 · b543/);
 
 console.log('b493 incomplete H2 status contract: OK');
